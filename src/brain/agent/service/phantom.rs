@@ -1518,6 +1518,123 @@ fn asserted_diagnostics(text: &str) -> Vec<String> {
     out
 }
 
+/// Completed artifacts the text claims were produced (#482).
+///
+/// A compaction summary is obeyed as the continuation document, so an artifact
+/// it reports as finished is acted on. Observed 2026-09-21 13:04:26: a
+/// `FullWindow` summary asserted `PRE-JUDGED VERDICTS (the analytical work is
+/// DONE ... transcribe them)`, quoted "the exact text, end of part3" and "the
+/// exact first two lines of part1", and ordered the woken agent to transcribe
+/// it — while all three `write_file` calls ran at 13:04:28, :39 and :48, AFTER
+/// the summary landed. A summary cannot quote what does not exist.
+///
+/// This is the artifact-existence half of the same principle as
+/// `asserted_facts` (#1423): what separates a report from a fabrication is
+/// whether the thing it names exists. It is a separate extractor rather than a
+/// fourth `asserted_tallies` keyword because the BACKING TEST differs — a tally
+/// is checked on its digits, and the digits in `13 HOLDS · 13 WRONG-MODE · 4
+/// DOES-NOT-HOLD` appear in any conversation that mentions thirteen of
+/// anything, so the incident's own count line would pass as backed. These facts
+/// are checked on their whole quoted span.
+///
+/// Deliberately narrow, in the posture of `asserted_shas`: a claim is recorded
+/// only when a completion cue and the artifact sit on the SAME line, so prose
+/// about files is not read as a claim, and a backticked path is skipped because
+/// a quoted path is a reference rather than a production claim.
+pub fn claimed_artifacts(text: &str) -> Vec<String> {
+    /// Bound the nudge and the scan.
+    const MAX_CLAIMS: usize = 10;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !completion_cue(&trimmed.to_lowercase()) {
+            continue;
+        }
+        let Some(name) = artifact_name(trimmed) else {
+            continue;
+        };
+        // A quoted path is being referenced, not produced.
+        if trimmed.contains(&format!("`{name}`")) {
+            continue;
+        }
+        out.push(name);
+    }
+    out.sort();
+    out.dedup();
+    out.truncate(MAX_CLAIMS);
+    out
+}
+
+/// Whether a line frames its work as finished rather than proposed.
+fn completion_cue(lower: &str) -> bool {
+    const CUES: [&str; 10] = [
+        "(exact",
+        "exact text",
+        "verbatim",
+        "transcribe",
+        "completed",
+        "work is done",
+        "has been written",
+        "have been written",
+        "were written",
+        "was written",
+    ];
+    CUES.iter().any(|c| lower.contains(*c))
+}
+
+/// The artifact a completion cue names, if the line names one.
+///
+/// Two shapes qualify: a run ending in a known extension (`part1.md`), and a
+/// bare stem carrying a digit and introduced by `of`/`in`/`into`/`from`
+/// (`end of part3`) — which is how the incident's summary named files it had
+/// never written. The LAST match on the line wins, because that is the artifact
+/// the cue is attached to.
+fn artifact_name(line: &str) -> Option<String> {
+    const EXTS: [&str; 6] = [".md", ".json", ".txt", ".csv", ".tsv", ".log"];
+    const INTROS: [&str; 4] = ["of ", "in ", "into ", "from "];
+    let chars: Vec<char> = line.chars().collect();
+    let is_name = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-';
+    let mut best = None;
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_name(chars[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && is_name(chars[i]) {
+            i += 1;
+        }
+        let run: String = chars[start..i].iter().collect();
+        let has_ext = EXTS.iter().any(|e| run.ends_with(*e)) && run.len() > 3;
+        let prefix: String = chars[..start].iter().collect::<String>().to_lowercase();
+        let bare_stem = run.chars().any(|c| c.is_ascii_digit())
+            && INTROS.iter().any(|p| prefix.ends_with(*p));
+        if has_ext || bare_stem {
+            best = Some(run);
+        }
+    }
+    best
+}
+
+/// Whether a claimed artifact exists anywhere in the conversation's evidence.
+///
+/// The whole span is the needle, unlike a tally: `13` alone appears in any
+/// conversation that mentions thirteen of anything, and the incident's count
+/// line is exactly that shape.
+///
+/// Separators are stripped from both sides, so `part3` matches the `part3.md`
+/// a write tool would have named and `out/part3.md` matches a bare `part3.md`.
+pub fn claimed_artifact_unbacked(claim: &str, evidence: &str) -> bool {
+    let strip = |s: &str| -> String {
+        s.chars()
+            .filter(|c| !c.is_whitespace() && *c != '/' && *c != '\\')
+            .collect()
+    };
+    let needle = strip(claim);
+    !needle.is_empty() && !strip(evidence).contains(&needle)
+}
+
 /// Whether one asserted fact exists in the conversation's evidence.
 ///
 /// A tally is checked in both spellings: a report may quote `7,926` from a run

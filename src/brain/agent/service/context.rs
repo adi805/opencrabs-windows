@@ -922,7 +922,91 @@ impl AgentService {
             }
         });
 
+        // #482: the summary is obeyed as the continuation document, so an
+        // artifact it reports as complete is acted on — the incident claimed a
+        // finished transcription, quoted the "exact text" of files that had
+        // never been written, and ordered the woken agent to transcribe it.
+        // The detectors that guard a live turn are not wired onto this path,
+        // and this is the one surface whose output becomes durable context, so
+        // the artifact-existence check runs against the very messages being
+        // summarised.
+        let summary = Self::flag_unbacked_artifacts(summary, &snapshot_messages);
+
         Ok(summary)
+    }
+
+    /// Append a harness-written correction for artifacts the summary reports as
+    /// complete but which no tool call in the summarised conversation produced
+    /// (#482).
+    ///
+    /// Rides inside the persisted marker, like `decorate_compaction_summary`'s
+    /// blocks: a correction a summary cannot be trusted to carry has to arrive
+    /// WITH it, not as a later message that can scroll away. The correction
+    /// quotes each claim back, the posture of `nudge::unbacked_facts_nudge` —
+    /// the model cannot reword its way past a name that appears nowhere.
+    fn flag_unbacked_artifacts(summary: String, messages: &[Message]) -> String {
+        let claims = crate::brain::agent::service::phantom::claimed_artifacts(&summary);
+        if claims.is_empty() {
+            return summary;
+        }
+        let evidence = Self::compaction_evidence(messages);
+        let unbacked: Vec<String> = claims
+            .into_iter()
+            .filter(|claim| {
+                crate::brain::agent::service::phantom::claimed_artifact_unbacked(claim, &evidence)
+            })
+            .collect();
+        if unbacked.is_empty() {
+            return summary;
+        }
+        let quoted = unbacked
+            .iter()
+            .map(|f| format!("`{f}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        tracing::warn!(
+            "Compaction summary reports artifacts with no producing call: {}",
+            quoted
+        );
+        format!(
+            "{summary}\n\n[System: This summary reports {quoted} as completed, but no tool call in \
+             the summarised conversation produced it — no `write_file`/`edit_file` names it and no \
+             tool result contains it. Treat it as NOT produced and re-derive the work from the \
+             conversation above; do not transcribe or extend anything the summary describes as \
+             finished. An artifact is real only when a tool call in this conversation created it.]"
+        )
+    }
+
+    /// Everything the summarised conversation observed: tool results, tool
+    /// inputs (what was actually run — a path in a `write_file` argument is as
+    /// real as one in its result) and the user's own text.
+    ///
+    /// The summariser's own output is deliberately absent: the summary is the
+    /// claim under test, and letting it vouch for itself is the defect.
+    fn compaction_evidence(messages: &[Message]) -> String {
+        let mut evidence = String::new();
+        for msg in messages {
+            for block in &msg.content {
+                match block {
+                    ContentBlock::ToolResult { content, .. } => {
+                        evidence.push_str(content);
+                        evidence.push('\n');
+                    }
+                    ContentBlock::ToolUse { input, .. } => {
+                        evidence.push_str(&input.to_string());
+                        evidence.push('\n');
+                    }
+                    ContentBlock::Text { text }
+                        if msg.role == crate::brain::provider::Role::User =>
+                    {
+                        evidence.push_str(text);
+                        evidence.push('\n');
+                    }
+                    _ => {}
+                }
+            }
+        }
+        evidence
     }
 
     /// Apply a previously-computed compaction summary to a live `AgentContext`.

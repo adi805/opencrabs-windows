@@ -670,6 +670,7 @@ pub mod phantom_post_success_exemption_test;
 pub mod phantom_pronoun_drop_test;
 pub mod phantom_side_effect_test;
 pub mod phantom_structured_report_test;
+pub mod compaction_artifact_claim_test;
 pub mod phantom_unbacked_facts_test;
 pub mod plan_approval_gate_test;
 pub mod plan_card_budget_test;
