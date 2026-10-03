@@ -50,6 +50,66 @@ fn thumbnail_rejects_non_image_bytes() {
     assert!(make_jpeg_thumbnail(b"%PDF-1.7\n").is_none());
 }
 
+/// Encode an RGBA gradient as PNG bytes, forcing `alpha` on every pixel.
+///
+/// The status path has to accept images that carry an alpha channel, and at a
+/// glance it looks like it cannot: JPEG has no alpha channel, so a reader of
+/// `make_jpeg_thumbnail` reasonably concludes that an RGBA PNG makes `write_to`
+/// fail and the function return `None` (PR-Agent reported exactly that on
+/// #1882). It does not fail. `DynamicImage::write_to` routes through
+/// `ImageEncoder::make_compatible_img`, which converts `Rgba8` to `Rgb8` for
+/// the JPEG encoder (`image` 0.25.10, `src/codecs/jpeg/encoder.rs`). The tests
+/// below pin that, so an `image` bump cannot quietly start refusing alpha PNGs
+/// and break image statuses.
+fn rgba_png_bytes(width: u32, height: u32, alpha: u8) -> Vec<u8> {
+    let img = image::RgbaImage::from_fn(width, height, |x, y| {
+        image::Rgba([(x % 251) as u8, (y % 241) as u8, 128, alpha])
+    });
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut out, image::ImageFormat::Png)
+        .expect("encode test PNG");
+    out.into_inner()
+}
+
+#[test]
+fn thumbnail_accepts_alpha_pngs() {
+    // Fully transparent is the case a "JPEG has no alpha" reading predicts
+    // fails hardest; opaque and semi-transparent pin the rest of the range.
+    for (label, alpha) in [
+        ("fully transparent", 0u8),
+        ("semi transparent", 128u8),
+        ("fully opaque", 255u8),
+    ] {
+        let png = rgba_png_bytes(640, 480, alpha);
+        let thumb = match make_jpeg_thumbnail(&png) {
+            Some(t) => t,
+            None => panic!("an RGBA PNG ({label}) must produce a thumbnail"),
+        };
+
+        assert_eq!(thumb[0], 0xFF, "JPEG SOI marker, byte 0 ({label})");
+        assert_eq!(thumb[1], 0xD8, "JPEG SOI marker, byte 1 ({label})");
+
+        let decoded = match image::load_from_memory(&thumb) {
+            Ok(d) => d,
+            Err(e) => panic!("the {label} thumbnail must decode: {e}"),
+        };
+        assert!(
+            decoded.width() <= STATUS_THUMBNAIL_MAX_EDGE
+                && decoded.height() <= STATUS_THUMBNAIL_MAX_EDGE,
+            "thumbnail {}x{} exceeds the {}px cap ({label})",
+            decoded.width(),
+            decoded.height(),
+            STATUS_THUMBNAIL_MAX_EDGE
+        );
+        assert!(
+            thumb.len() < 4096,
+            "thumbnail is {} bytes ({label})",
+            thumb.len()
+        );
+    }
+}
+
 // ── Source-scan sentinels: the dispatch wiring ───────────────────────
 
 fn status_arm() -> &'static str {
