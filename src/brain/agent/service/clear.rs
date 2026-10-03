@@ -11,8 +11,9 @@
 //! context loader already cuts at the last such row and the TUI already
 //! hides it on reload, so history stays on screen and in the database, the
 //! session keeps its id and title, and the next turn loads only the marker
-//! body. That body names the session and points the agent at
-//! `session_search`, so it is not blind, just unburdened.
+//! body. That body names the session, points the agent at
+//! `session_search`, and quotes the last six exchanges so the fresh start
+//! keeps a warm tail of the conversation instead of none (#1905).
 
 use uuid::Uuid;
 
@@ -29,21 +30,86 @@ pub(crate) const CLEAR_HINT: &str = "To continue fresh without a summary: cancel
      still running, then run /clear. The history stays in the session and the agent \
      starts from that point at no cost.";
 
+/// How many user/assistant pairs the marker quotes as context.
+const RECENT_PAIRS: usize = 6;
+
+/// Per-message cap for the quoted tail, in characters so accented text
+/// never splits a codepoint. Bounds the marker on chatty sessions.
+const RECENT_MESSAGE_CAP: usize = 500;
+
+/// Rows the quoted tail never includes: this prefix covers both `/clear`
+/// markers and ordinary compaction summaries, neither of which is
+/// conversation worth quoting back.
+fn is_compaction_row(content: &str) -> bool {
+    content.starts_with("[CONTEXT COMPACTION")
+}
+
+/// The pre-clear rows worth quoting: non-empty, not themselves markers,
+/// newest last, capped at the last six pairs.
+fn recent_tail(rows: &[(String, String)]) -> Vec<(String, String)> {
+    let relevant: Vec<(String, String)> = rows
+        .iter()
+        .filter(|(_, content)| !content.trim().is_empty() && !is_compaction_row(content))
+        .cloned()
+        .collect();
+    let start = relevant.len().saturating_sub(RECENT_PAIRS * 2);
+    relevant[start..].to_vec()
+}
+
+/// One quoted message, trimmed and capped.
+fn quoted(content: &str) -> String {
+    let trimmed = content.trim();
+    if trimmed.chars().count() <= RECENT_MESSAGE_CAP {
+        return trimmed.to_string();
+    }
+    let cut: String = trimmed.chars().take(RECENT_MESSAGE_CAP).collect();
+    format!("{cut} [...]")
+}
+
+/// The pairs section appended under the instructions, if anything carried.
+fn quoted_exchanges(recent: &[(String, String)]) -> Option<String> {
+    if recent.is_empty() {
+        return None;
+    }
+    let lines: Vec<String> = recent
+        .iter()
+        .map(|(role, content)| format!("{role}: {}", quoted(content)))
+        .collect();
+    Some(lines.join("\n\n"))
+}
+
 /// What the agent reads as its whole context after a clear.
-pub(crate) fn clear_marker(session_title: Option<&str>) -> String {
+pub(crate) fn clear_marker(session_title: Option<&str>, recent: &[(String, String)]) -> String {
     let title = session_title
         .map(str::trim)
         .filter(|t| !t.is_empty())
         .unwrap_or("untitled");
-    format!(
+    let exchanges = quoted_exchanges(&recent_tail(recent));
+    // The opening sentence must match what follows: the empty-history
+    // variant denies any carryover, the tailed one admits the quote.
+    let carry = if exchanges.is_some() {
+        "Only the last exchanges quoted below carry over; everything older is \
+         out of your context."
+    } else {
+        "Nothing said or done before it is in your context."
+    };
+    let base = format!(
         "{CLEAR_MARKER_PREFIX}\n\n\
-         The user cleared this session's context at this point. Nothing said or done \
-         before it is in your context. The full history is still stored in this session, \
-         titled '{title}'. If you need something from before, use the session_search tool: \
-         operation 'tail' with session '{title}' reads the last messages, operation \
-         'search' with a query and session '{title}' finds specific content. Fetch only \
-         what the task needs. Continue from the user's next message."
-    )
+         The user cleared this session's context at this point. {carry} The full history \
+         is still stored in this session, titled '{title}'. If you need something from \
+         before, use the session_search tool: operation 'tail' with session '{title}' \
+         reads the last messages, operation 'search' with a query and session '{title}' \
+         finds specific content. Fetch only what the task needs. Continue from the \
+         user's next message."
+    );
+    match exchanges {
+        None => base,
+        Some(exchanges) => format!(
+            "{base}\n\n\
+             The last exchanges before the clear, quoted as context only:\n\n\
+             {exchanges}"
+        ),
+    }
 }
 
 /// What happened, for the surface that asked.
@@ -101,11 +167,24 @@ impl AgentService {
             .map_err(AgentError::db)?
             .and_then(|s| s.title);
 
-        MessageService::new(self.context.clone())
+        let messages = MessageService::new(self.context.clone());
+
+        // Read before the marker row exists, so the quote is exactly what
+        // the user saw vanish. `clear_marker` filters out old marker and
+        // summary rows and caps the quote at the last six pairs itself.
+        let recent: Vec<(String, String)> = messages
+            .list_messages_for_session(session_id)
+            .await
+            .map_err(AgentError::db)?
+            .iter()
+            .map(|m| (m.role.clone(), m.content.clone()))
+            .collect();
+
+        messages
             .create_message(
                 session_id,
                 "user".to_string(),
-                clear_marker(session_title.as_deref()),
+                clear_marker(session_title.as_deref(), &recent),
             )
             .await
             .map_err(AgentError::db)?;

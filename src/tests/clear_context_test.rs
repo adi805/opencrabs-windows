@@ -22,7 +22,7 @@ const LOADER_PREFIX: &str = "[CONTEXT COMPACTION";
 #[test]
 fn the_marker_is_what_the_loader_and_the_tui_key_on() {
     assert!(CLEAR_MARKER_PREFIX.starts_with(LOADER_PREFIX));
-    let marker = clear_marker(Some("Router audit"));
+    let marker = clear_marker(Some("Router audit"), &[]);
     assert!(marker.starts_with(CLEAR_MARKER_PREFIX));
     // The TUI reload hides any row with this prefix; pin the check it uses.
     const TUI: &str = include_str!("../tui/app/messaging.rs");
@@ -31,7 +31,7 @@ fn the_marker_is_what_the_loader_and_the_tui_key_on() {
 
 #[test]
 fn the_body_names_the_session_and_the_search_tool() {
-    let marker = clear_marker(Some("  Router audit  "));
+    let marker = clear_marker(Some("  Router audit  "), &[]);
     let body = marker.split_once("\n\n").expect("banner then body").1;
     assert!(body.contains("session_search"));
     assert!(body.contains("'Router audit'"));
@@ -44,15 +44,15 @@ fn the_body_names_the_session_and_the_search_tool() {
 
 #[test]
 fn an_untitled_session_still_gets_a_usable_nudge() {
-    let marker = clear_marker(None);
+    let marker = clear_marker(None, &[]);
     assert!(marker.contains("'untitled'"));
     assert!(marker.contains("session_search"));
-    assert_eq!(clear_marker(Some("   ")), clear_marker(None));
+    assert_eq!(clear_marker(Some("   "), &[]), clear_marker(None, &[]));
 }
 
 #[test]
 fn the_banner_is_stripped_and_the_body_kept_when_loaded_as_context() {
-    let mut content = clear_marker(Some("Router audit"));
+    let mut content = clear_marker(Some("Router audit"), &[]);
     AgentService::strip_compaction_banner(&mut content);
     assert!(!content.starts_with("["));
     assert!(content.starts_with("The user cleared this session's context"));
@@ -121,6 +121,11 @@ async fn clearing_appends_the_marker_and_the_loader_cuts_there() {
     assert_eq!(marker.role, "user");
     assert!(marker.content.starts_with(CLEAR_MARKER_PREFIX));
     assert!(marker.content.contains("'Router audit'"));
+    assert!(
+        marker.content.contains("user: first question"),
+        "the marker quotes the exchanges that were cleared away (#1905)"
+    );
+    assert!(marker.content.contains("assistant: first answer"));
 
     let loaded = AgentService::messages_from_last_compaction(rows);
     assert_eq!(loaded.len(), 1, "the next turn loads only the marker");
@@ -133,6 +138,15 @@ async fn clearing_appends_the_marker_and_the_loader_cuts_there() {
         .await
         .unwrap();
     assert_eq!(rows.len(), 4);
+    let second = &rows[3];
+    assert!(
+        second.content.matches(CLEAR_MARKER_PREFIX).count() == 1,
+        "an older marker row is never quoted into the new one"
+    );
+    assert!(
+        second.content.contains("first question"),
+        "the live exchanges still carry into a second clear"
+    );
 }
 
 #[test]
@@ -213,4 +227,96 @@ fn a_failed_manual_compaction_points_at_clear() {
     assert!(CLEAR_HINT.contains("/clear"));
     const NOTICE: &str = include_str!("../brain/agent/service/compaction_notice.rs");
     assert!(NOTICE.contains("self.verbose && matches!(step, CompactionStep::Failed { .. })"));
+}
+
+#[test]
+fn the_marker_carries_only_the_last_six_pairs() {
+    let recent: Vec<(String, String)> = (1..=16)
+        .map(|i| {
+            let role = if i % 2 == 1 { "user" } else { "assistant" };
+            (role.to_string(), format!("exchange {i:02}"))
+        })
+        .collect();
+    let marker = clear_marker(Some("Router audit"), &recent);
+    assert!(marker.contains("The last exchanges before the clear, quoted as context only"));
+    assert!(marker.contains("user: exchange 05"), "oldest carried pair");
+    assert!(
+        marker.contains("assistant: exchange 16"),
+        "newest carried pair"
+    );
+    assert!(
+        !marker.contains("exchange 04"),
+        "older than six pairs is dropped"
+    );
+    assert!(
+        !marker.contains("Nothing said or done before it is in your context"),
+        "the marker must not deny the pairs it quotes"
+    );
+}
+
+#[test]
+fn an_empty_history_clears_without_a_pairs_section() {
+    let marker = clear_marker(Some("Router audit"), &[]);
+    assert!(!marker.contains("The last exchanges before the clear"));
+    assert!(marker.contains("Nothing said or done before it is in your context"));
+}
+
+#[test]
+fn a_long_carried_message_is_capped_on_a_char_boundary() {
+    let long = "ç".repeat(600);
+    let marker = clear_marker(Some("Router audit"), &[("user".to_string(), long)]);
+    let line = marker
+        .lines()
+        .find(|l| l.starts_with("user: "))
+        .expect("the carried message is quoted");
+    assert!(line.ends_with("[...]"));
+    let kept = line
+        .strip_prefix("user: ")
+        .and_then(|l| l.strip_suffix(" [...]"))
+        .unwrap();
+    assert_eq!(kept.chars().count(), 500);
+    assert!(kept.chars().all(|c| c == 'ç'), "no codepoint is split");
+}
+
+#[tokio::test]
+async fn a_long_thread_carries_only_the_tail_through_the_real_path() {
+    let db = Database::connect_in_memory().await.unwrap();
+    db.run_migrations().await.unwrap();
+    let context = ServiceContext::new(db.pool().clone());
+    let agent = AgentService::new_for_test(Arc::new(MockProvider), context.clone()).await;
+    let sessions = SessionService::new(context.clone());
+    let messages = MessageService::new(context);
+    let session = sessions.create_session(None).await.unwrap();
+    for i in 1..=14 {
+        let role = if i % 2 == 1 { "user" } else { "assistant" };
+        messages
+            .create_message(session.id, role.to_string(), format!("thread {i:02}"))
+            .await
+            .unwrap();
+    }
+
+    agent.clear_context(session.id).await.unwrap();
+
+    let rows = messages
+        .list_messages_for_session(session.id)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 15, "fourteen messages plus the marker");
+    let marker = &rows[14];
+    assert!(marker.content.contains("user: thread 03"), "oldest carried");
+    assert!(
+        marker.content.contains("assistant: thread 14"),
+        "newest carried"
+    );
+    assert!(
+        !marker.content.contains("thread 02"),
+        "beyond six pairs is dropped"
+    );
+    let loaded = AgentService::messages_from_last_compaction(rows);
+    assert_eq!(
+        loaded.len(),
+        1,
+        "still one context row: the tail rides inside the marker"
+    );
+    assert!(loaded[0].content.contains("thread 14"));
 }
