@@ -20,7 +20,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Clear, List, ListItem, ListState};
 
 use super::presets;
 use super::theme::{self, Theme};
@@ -202,15 +202,13 @@ pub fn draw(f: &mut Frame, area: Rect, state: &ThemePickerState) {
     let height = (state.items.len() as u16 + 6)
         .min(area.height.saturating_sub(4))
         .max(9);
-    let popup = centered_rect(area, width, height);
+    let popup = crate::tui::render::chrome::centered(area, width, height);
 
     f.render_widget(Clear, popup);
 
-    let block = Block::default()
-        .title(" Themes ")
-        .title_alignment(Alignment::Center)
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::role(theme::Role::Accent)));
+    let block =
+        crate::tui::render::chrome::modal_block(" Themes ", theme::role(theme::Role::Accent))
+            .title_alignment(Alignment::Center);
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
@@ -271,20 +269,11 @@ pub fn draw(f: &mut Frame, area: Rect, state: &ThemePickerState) {
     *list_state.offset_mut() = offset;
     f.render_stateful_widget(list, rows[0], &mut list_state);
 
-    let hints = Paragraph::new("↑/↓ preview · Enter apply · Esc cancel")
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(theme::role(theme::Role::TextMuted)));
-    f.render_widget(hints, rows[1]);
-}
-
-/// Fixed-size popup centered in `area`, clamped to fit.
-fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
-    let x = area.width.saturating_sub(width) / 2;
-    let y = area.height.saturating_sub(height) / 2;
-    Rect {
-        x: area.x + x,
-        y: area.y + y,
-        width: width.min(area.width),
-        height: height.min(area.height),
-    }
+    crate::tui::render::hints::render_footer(
+        f,
+        rows[1],
+        crate::tui::app::dialog_keys::dialog_keys(
+            crate::tui::app::dialog_keys::DialogScope::ThemePicker,
+        ),
+    );
 }

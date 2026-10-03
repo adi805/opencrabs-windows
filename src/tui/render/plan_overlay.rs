@@ -96,22 +96,33 @@ pub(super) fn render_plan_overlay(f: &mut Frame, app: &App, area: Rect) {
         Span::raw(" "),
     ]);
 
-    let footer = match state {
-        PlanModeState::PostInitEditing => {
-            " a approve · d discard · ↑/↓ scroll · Esc close  (validator runs on approve) "
+    // Canonical footer from the scoped keymap, sliced by state suffix
+    // (#1775): every state shows a true suffix of the PlanOverlay table,
+    // so no state can advertise a key it does not handle.
+    let keys = crate::tui::app::dialog_keys::dialog_keys(
+        crate::tui::app::dialog_keys::DialogScope::PlanOverlay,
+    );
+    let start = match state {
+        PlanModeState::PostInitEditing => 0,
+        PlanModeState::Active | PlanModeState::PreInitEditing => {
+            keys.iter().position(|k| k.label == "d").unwrap_or(0)
         }
-        PlanModeState::Active => " d discard · ↑/↓ scroll · Esc close ",
-        PlanModeState::PreInitEditing => " d discard (leave Plan mode) · Esc close ",
-        PlanModeState::NoPlan => " Esc close ",
+        PlanModeState::NoPlan => keys.iter().position(|k| k.label == "Esc").unwrap_or(0),
     };
+    let mut footer = crate::tui::render::hints::footer_line(" ", &keys[start..]);
+    if matches!(state, PlanModeState::PostInitEditing) {
+        footer.spans.push(Span::styled(
+            " (validator runs on approve) ",
+            Style::default().fg(theme::role(Role::GrayDim)),
+        ));
+    } else {
+        footer.spans.push(Span::raw(" "));
+    }
 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .title_bottom(Line::from(Span::styled(
-            footer,
-            Style::default().fg(theme::role(Role::GrayDim)),
-        )));
+        .title_bottom(footer);
 
     let paragraph = Paragraph::new(body)
         .block(block)

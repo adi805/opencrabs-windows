@@ -3,13 +3,15 @@
 //! File picker, directory picker, model selector, usage dialog, restart dialog, and update prompt.
 
 use super::super::app::App;
+use super::super::app::dialog_keys::{DialogScope, dialog_keys};
+use super::super::render::{chrome, hints};
 use super::theme::{self, Role};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph, Wrap},
 };
 
 /// Render the file picker
@@ -116,56 +118,24 @@ pub(super) fn render_file_picker(f: &mut Frame, app: &App, area: Rect) {
         )]));
     }
 
-    // Help text
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled(
-            "[↑↓]",
-            Style::default()
-                .fg(theme::role(Role::Gray))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            " Navigate  ",
-            Style::default().fg(theme::role(Role::TextPrimary)),
-        ),
-        Span::styled(
-            "[Enter]",
-            Style::default()
-                .fg(theme::role(Role::Gray))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            " Select  ",
-            Style::default().fg(theme::role(Role::TextPrimary)),
-        ),
-        Span::styled(
-            "[Esc]",
-            Style::default()
-                .fg(theme::role(Role::Error))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            " Cancel",
-            Style::default().fg(theme::role(Role::TextPrimary)),
-        ),
-    ]));
-
+    // Clear behind the picker so chat text does not bleed through the
+    // unspanned cells, then the shared modal chrome (#1775).
+    f.render_widget(Clear, area);
     let widget = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme::role(Role::Gray)))
-                .title(Span::styled(
-                    " Select a file ",
-                    Style::default()
-                        .fg(theme::role(Role::Gray))
-                        .add_modifier(Modifier::BOLD),
-                )),
-        )
+        .block(chrome::modal_block(
+            " Select a file ",
+            theme::role(Role::Accent),
+        ))
         .wrap(Wrap { trim: false });
 
     f.render_widget(widget, area);
+
+    // The canonical command footer, bottom inside the border (#1775).
+    hints::render_footer(
+        f,
+        chrome::footer_row(area),
+        dialog_keys(DialogScope::FilePicker),
+    );
 }
 
 /// Render directory picker (reuses file picker state, dirs only)
@@ -249,111 +219,32 @@ pub(super) fn render_directory_picker(f: &mut Frame, app: &App, area: Rect) {
         )]));
     }
 
-    // Help text
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled(
-            "[↑↓]",
-            Style::default()
-                .fg(theme::role(Role::Gray))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            " Navigate  ",
-            Style::default().fg(theme::role(Role::TextPrimary)),
-        ),
-        Span::styled(
-            "[Enter]",
-            Style::default()
-                .fg(theme::role(Role::Gray))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            " Open  ",
-            Style::default().fg(theme::role(Role::TextPrimary)),
-        ),
-        Span::styled(
-            "[Space/Tab]",
-            Style::default()
-                .fg(theme::role(Role::TealBright))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            " Select here  ",
-            Style::default().fg(theme::role(Role::TextPrimary)),
-        ),
-        Span::styled(
-            "[.]",
-            Style::default()
-                .fg(theme::role(Role::Gray))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(
-                " {} hidden  ",
-                if app.file_picker_show_hidden {
-                    "Hide"
-                } else {
-                    "Show"
-                }
-            ),
-            Style::default().fg(theme::role(Role::TextPrimary)),
-        ),
-        Span::styled(
-            "[Esc]",
-            Style::default()
-                .fg(theme::role(Role::Error))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            " Cancel",
-            Style::default().fg(theme::role(Role::TextPrimary)),
-        ),
-    ]));
-
+    // Clear behind the picker so chat text does not bleed through the
+    // unspanned cells, then the shared modal chrome (#1775).
+    f.render_widget(Clear, area);
     let widget = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme::role(Role::Gray)))
-                .title(Span::styled(
-                    " Change working directory ",
-                    Style::default()
-                        .fg(theme::role(Role::Gray))
-                        .add_modifier(Modifier::BOLD),
-                )),
-        )
+        .block(chrome::modal_block(
+            " Change working directory ",
+            theme::role(Role::Accent),
+        ))
         .wrap(Wrap { trim: false });
 
     f.render_widget(widget, area);
+
+    // The canonical command footer, bottom inside the border (#1775).
+    hints::render_footer(
+        f,
+        chrome::footer_row(area),
+        dialog_keys(DialogScope::DirectoryPicker),
+    );
 }
 
 /// Render restart confirmation dialog
 pub(super) fn render_restart_dialog(f: &mut Frame, app: &App, area: Rect) {
     let status = app.rebuild_status.as_deref().unwrap_or("Build successful");
 
-    let dialog_height = 8u16;
     let dialog_width = 50u16.min(area.width.saturating_sub(4));
-
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(40),
-            Constraint::Length(dialog_height),
-            Constraint::Percentage(40),
-        ])
-        .split(area);
-
-    let horizontal = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min((area.width.saturating_sub(dialog_width)) / 2),
-            Constraint::Length(dialog_width),
-            Constraint::Min(0),
-        ])
-        .split(vertical[1]);
-
-    let dialog_area = horizontal[1];
+    let dialog_area = chrome::centered(area, dialog_width, 8);
     f.render_widget(Clear, dialog_area);
 
     let lines = vec![
@@ -367,59 +258,28 @@ pub(super) fn render_restart_dialog(f: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from("  Restart with new binary?"),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "  [Enter] ",
-                Style::default()
-                    .fg(theme::role(Role::AccentTeal))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Restart  "),
-            Span::styled(
-                "[Esc] ",
-                Style::default()
-                    .fg(theme::role(Role::Error))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Cancel"),
-        ]),
     ];
 
-    let dialog = Paragraph::new(lines).block(
-        Block::default()
-            .title(" Rebuild Complete ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::role(Role::AccentTeal))),
-    );
+    let dialog = Paragraph::new(lines).block(chrome::modal_block(
+        " Rebuild Complete ",
+        theme::role(Role::AccentTeal),
+    ));
     f.render_widget(dialog, dialog_area);
+
+    // Shared footer, bottom inside the border (#1775).
+    hints::render_footer(
+        f,
+        chrome::footer_row(dialog_area),
+        dialog_keys(DialogScope::RestartPending),
+    );
 }
 
 /// Render update prompt dialog
 pub(super) fn render_update_dialog(f: &mut Frame, app: &App, area: Rect) {
     let version = app.update_available_version.as_deref().unwrap_or("unknown");
 
-    let dialog_height = 8u16;
     let dialog_width = 55u16.min(area.width.saturating_sub(4));
-
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(40),
-            Constraint::Length(dialog_height),
-            Constraint::Percentage(40),
-        ])
-        .split(area);
-
-    let horizontal = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min((area.width.saturating_sub(dialog_width)) / 2),
-            Constraint::Length(dialog_width),
-            Constraint::Min(0),
-        ])
-        .split(vertical[1]);
-
-    let dialog_area = horizontal[1];
+    let dialog_area = chrome::centered(area, dialog_width, 8);
     f.render_widget(Clear, dialog_area);
 
     let lines = vec![
@@ -433,29 +293,18 @@ pub(super) fn render_update_dialog(f: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from("  Update now?"),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "  [Enter] ",
-                Style::default()
-                    .fg(theme::role(Role::AccentTeal))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Update  "),
-            Span::styled(
-                "[Esc] ",
-                Style::default()
-                    .fg(theme::role(Role::Error))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Skip"),
-        ]),
     ];
 
-    let dialog = Paragraph::new(lines).block(
-        Block::default()
-            .title(" Update Available ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::role(Role::AccentTeal))),
-    );
+    let dialog = Paragraph::new(lines).block(chrome::modal_block(
+        " Update Available ",
+        theme::role(Role::AccentTeal),
+    ));
     f.render_widget(dialog, dialog_area);
+
+    // Shared footer, bottom inside the border (#1775).
+    hints::render_footer(
+        f,
+        chrome::footer_row(dialog_area),
+        dialog_keys(DialogScope::UpdatePrompt),
+    );
 }

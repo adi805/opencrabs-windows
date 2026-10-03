@@ -1784,6 +1784,39 @@ impl App {
                     });
                 }
                 return Ok(());
+            } else if event.code == KeyCode::Char('a') && event.modifiers == KeyModifiers::NONE {
+                // `a` — approve once directly (#1775): single-key verb the
+                // shared footer advertises. Independent of the highlighted
+                // option (Yes/Always/No): always approves ONCE, never
+                // touches the session auto policy.
+                let approval_data: Option<(Uuid, mpsc::UnboundedSender<ToolApprovalResponse>)> =
+                    self.messages
+                        .iter()
+                        .rev()
+                        .find_map(|m| m.approval.as_ref())
+                        .filter(|a| a.state == ApprovalState::Pending)
+                        .map(|a| (a.request_id, a.response_tx.clone()));
+
+                if let Some((request_id, response_tx)) = approval_data {
+                    let response = ToolApprovalResponse {
+                        request_id,
+                        approved: true,
+                        reason: None,
+                    };
+                    if let Err(e) = response_tx.send(response.clone()) {
+                        tracing::error!("Failed to send approval response back to agent: {:?}", e);
+                    }
+                    let _ = self
+                        .event_sender()
+                        .send(TuiEvent::ToolApprovalResponse(response));
+                    // Remove resolved approval message
+                    self.messages.retain(|m| {
+                        m.approval
+                            .as_ref()
+                            .is_none_or(|a| a.request_id != request_id)
+                    });
+                }
+                return Ok(());
             } else if keys::is_deny(&event) || keys::is_cancel(&event) {
                 // D/Esc shortcut — deny directly
                 let approval_data: Option<(Uuid, mpsc::UnboundedSender<ToolApprovalResponse>)> =
