@@ -304,6 +304,25 @@ pub(crate) fn mime_from_extension(path: &str) -> Option<String> {
     }
 }
 
+/// Largest edge of the status thumbnail, in pixels. WhatsApp requires a JPEG
+/// thumbnail alongside an image status; a 32x32 JPEG is a couple of hundred
+/// bytes and is all the client needs for the notification preview, so the
+/// full-resolution bytes go to the CDN untouched.
+pub(crate) const STATUS_THUMBNAIL_MAX_EDGE: u32 = 32;
+
+/// Build the JPEG thumbnail a WhatsApp image status must carry.
+///
+/// Returns `None` when the bytes are not a decodable image (or cannot be
+/// re-encoded), which the caller reports instead of posting a status whose
+/// thumbnail is missing.
+pub(crate) fn make_jpeg_thumbnail(bytes: &[u8]) -> Option<Vec<u8>> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let thumb = img.thumbnail(STATUS_THUMBNAIL_MAX_EDGE, STATUS_THUMBNAIL_MAX_EDGE);
+    let mut out = std::io::Cursor::new(Vec::new());
+    thumb.write_to(&mut out, image::ImageFormat::Jpeg).ok()?;
+    Some(out.into_inner())
+}
+
 /// Upload media to WhatsApp servers and return the upload response.
 /// Uses the same pattern as the WhatsApp handler.
 #[allow(clippy::result_large_err)]
@@ -369,7 +388,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "message": {
                     "type": "string",
-                    "description": "Message text (send, reply, caption for media); the new name or status text for set_profile_name / set_profile_status"
+                    "description": "Message text (send, reply, caption for media); the new name or status text for set_profile_name / set_profile_status. For status_update: the text status, or the caption when 'media_path' is given."
                 },
                 "phone": {
                     "type": "string",
@@ -385,7 +404,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "media_path": {
                     "type": "string",
-                    "description": "Local file path for media (send_photo, send_document, send_audio, send_video, send_sticker)"
+                    "description": "Local file path for media (send_photo, send_document, send_audio, send_video, send_sticker). For status_update: a local image file to post as an image status instead of a text status, in which case 'message' becomes its caption."
                 },
                 "multi_select": {
                     "type": "boolean",
@@ -423,7 +442,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "caption": {
                     "type": "string",
-                    "description": "Caption for media messages (send_photo, send_video, send_document)"
+                    "description": "Caption for media messages (send_photo, send_video, send_document). status_update takes its caption from 'message'."
                 },
                 "latitude": {
                     "type": "number",
@@ -1468,7 +1487,27 @@ impl Tool for WhatsAppSendTool {
             // apply: every target must be on the configured allowlist, and the
             // sends are paced, so there is no fire-and-forget mass-send path.
             "status_update" => {
-                let text = pget!(get_str(&input, "message")).to_string();
+                // #1485 follow-up: a status is text OR an image. `message` is
+                // therefore optional so it can double as the image caption; a
+                // status carrying neither is refused here rather than sending
+                // an empty one.
+                let text = input
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let media_path = input
+                    .get("media_path")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                if text.is_none() && media_path.is_none() {
+                    return Ok(ToolResult::error(
+                        "status_update needs 'message' (the text status, or the caption for an \
+                         image status) or 'media_path' (a local image file). Nothing was sent."
+                            .to_string(),
+                    ));
+                }
                 let (allowlist, pace) = {
                     let wa = &self.config_rx.borrow().channels.whatsapp;
                     (
@@ -1527,20 +1566,52 @@ impl Tool for WhatsAppSendTool {
                     }
                 }
                 let opts = whatsapp_rust::features::StatusSendOptions::default();
-                match client
-                    .status()
-                    .send_text(
-                        &text,
-                        broadcast::STATUS_BACKGROUND_ARGB,
-                        waproto::whatsapp::message::extended_text_message::FontType::SYSTEM,
-                        &jids,
-                        opts,
-                    )
-                    .await
-                {
-                    Ok(_) => Ok(ToolResult::success(format!(
-                        "Status update posted to {} allowlisted recipient(s), paced at {}s \
-                         (at least {}s of wall clock).",
+                let posted = match media_path {
+                    Some(path) => {
+                        let (bytes, mime, _filename) =
+                            pget!(read_local_media(&path, "image/jpeg").await);
+                        if !mime.starts_with("image/") {
+                            return Ok(ToolResult::error(format!(
+                                "'{path}' is {mime}; a status carries text or an image, and \
+                                 nothing was sent."
+                            )));
+                        }
+                        let thumbnail = match make_jpeg_thumbnail(&bytes) {
+                            Some(t) => t,
+                            None => {
+                                return Ok(ToolResult::error(format!(
+                                    "'{path}' could not be decoded as an image; nothing was sent."
+                                )));
+                            }
+                        };
+                        let upload = pget!(
+                            upload_media(&client, bytes, wacore::download::MediaType::Image).await
+                        );
+                        client
+                            .status()
+                            .send_image(upload, thumbnail, text.as_deref(), &jids, opts)
+                            .await
+                            .map(|_| format!("image status from {path}"))
+                    }
+                    None => {
+                        let body = text.as_deref().unwrap_or_default();
+                        client
+                            .status()
+                            .send_text(
+                                body,
+                                broadcast::STATUS_BACKGROUND_ARGB,
+                                waproto::whatsapp::message::extended_text_message::FontType::SYSTEM,
+                                &jids,
+                                opts,
+                            )
+                            .await
+                            .map(|_| "text status".to_string())
+                    }
+                };
+                match posted {
+                    Ok(kind) => Ok(ToolResult::success(format!(
+                        "Status update ({kind}) posted to {} allowlisted recipient(s), paced at \
+                         {}s (at least {}s of wall clock).",
                         jids.len(),
                         pace.as_secs(),
                         broadcast::burst_floor(jids.len(), pace).as_secs()
