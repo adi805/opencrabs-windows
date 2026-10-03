@@ -252,10 +252,7 @@ fn thinking_excerpt_keeps_a_multi_step_chain_intact() {
 fn tail_preserving_keeps_both_ends_and_reports_the_count() {
     let head_sentinel = "HEAD-SENTINEL";
     let tail_sentinel = "TAIL-SENTINEL";
-    let body = format!(
-        "{head_sentinel}{}{tail_sentinel}",
-        "m".repeat(5000)
-    );
+    let body = format!("{head_sentinel}{}{tail_sentinel}", "m".repeat(5000));
     let (out, dropped) = truncate_chars_tail_preserving(&body, 1000);
 
     assert!(out.contains(head_sentinel), "head survives: {out:.80}");
@@ -293,7 +290,10 @@ fn tail_preserving_degrades_to_head_only_at_a_tiny_budget() {
     let (out, dropped) = truncate_chars_tail_preserving(&body, 20);
     assert_eq!(out.chars().count(), 20, "output fits the budget");
     assert_eq!(dropped, 480, "20 kept of 500");
-    assert!(!out.contains("truncated"), "no marker at a tiny budget: {out}");
+    assert!(
+        !out.contains("truncated"),
+        "no marker at a tiny budget: {out}"
+    );
 }
 
 /// Multi-byte safety: the helper slices by CHARACTER, so a body full of

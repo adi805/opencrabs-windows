@@ -1220,15 +1220,17 @@ pub(crate) fn build_bg_echo_bubble(body: &str, title: &str) -> (BubbleWire, Stri
     // #490: keep BOTH ends. The head-only cut dropped the tail, which is where
     // a reader's own blocks live; the marker it leaves names the character
     // count that went, so the ending is visibly missing rather than silently.
-    let (body, dropped) = crate::utils::string::truncate_chars_tail_preserving(
-        body,
-        ECHO_BODY_CAP_CHARS,
-    );
+    let (body, dropped) =
+        crate::utils::string::truncate_chars_tail_preserving(body, ECHO_BODY_CAP_CHARS);
     // Plain suffix, deliberately WITHOUT the count: the body already carries
     // `… (truncated N chars) …` at the cut itself, and repeating N here would
     // re-create the double-reporting #490 exists to remove. The count lives
     // once, adjacent to the material it describes; this is the headline nudge.
-    let suffix = if dropped > 0 { " (truncated)".to_string() } else { String::new() };
+    let suffix = if dropped > 0 {
+        " (truncated)".to_string()
+    } else {
+        String::new()
+    };
     let markdown = format!("{title}{suffix}\n\n{body}");
     // The title is dynamic (sender label / task display line): escape it for
     // the HTML dialect so a `<` in a label can't corrupt the wrapper.
@@ -1441,11 +1443,13 @@ pub(crate) async fn build_notify_receipt_card(
     // The classic fallback is built by `build_bg_echo_bubble`, which applies
     // the classic budget itself — that call is handed the body UNCAPPED so
     // each leg gets exactly one cut, on the leg that needs it.
-    let (rich_body, rich_dropped) = crate::utils::string::truncate_chars_tail_preserving(
-        body,
-        ECHO_BODY_CAP_CHARS_RICH,
-    );
-    let rich_suffix = if rich_dropped > 0 { " (truncated)".to_string() } else { String::new() };
+    let (rich_body, rich_dropped) =
+        crate::utils::string::truncate_chars_tail_preserving(body, ECHO_BODY_CAP_CHARS_RICH);
+    let rich_suffix = if rich_dropped > 0 {
+        " (truncated)".to_string()
+    } else {
+        String::new()
+    };
     // Body rendered from markdown with <p> wrapping — the rich HTML dialect
     // chrome surfaces use (#1142); mermaid fences resolve exactly like the
     // final-reply path, gated so a fence-less body costs no HTTP.
