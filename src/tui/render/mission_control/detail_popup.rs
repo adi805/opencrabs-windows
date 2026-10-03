@@ -12,14 +12,15 @@ use crate::brain::mission_control::{
     McActivity, McInboxItem, McInboxKind, McScheduleItem, McScheduleKind, inbox_service,
 };
 use crate::tui::app::App;
+use crate::tui::app::dialog_keys::{DialogScope, dialog_keys};
 use crate::tui::app::mission_control::McPanel;
+use crate::tui::render::{chrome, hints};
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 /// Render a centred popup that fits its content (max ~60% × 70% of `area`).
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
@@ -64,8 +65,9 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         };
         visual_lines += wrapped as u16;
     }
-    // +2 for top/bottom border, +1 for breathing room
-    let content_height = visual_lines.saturating_add(3);
+    // +2 for top/bottom border, +1 breathing room, +1 for the shared
+    // footer row (#1775)
+    let content_height = visual_lines.saturating_add(4);
     let ph = content_height.min(max_ph).max(12);
 
     let px = area.x + area.width.saturating_sub(pw) / 2;
@@ -74,17 +76,22 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(Clear, popup);
 
-    let block = Block::default()
-        .title(title)
-        .title_style(theme::title_style(accent))
-        .borders(Borders::ALL)
-        .border_set(symbols::border::ROUNDED)
-        .border_style(Style::default().fg(accent));
+    let block = chrome::modal_block(&title, accent);
 
     let body = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .block(block);
     frame.render_widget(body, popup);
+
+    // The shared command footer, bottom inside the border (#1775). Inbox
+    // items carry verbs (apply/reject — real since the popup handler
+    // consumes a/r); the read-only panels get the navigate/close set.
+    let scope = if app.mc.focused_panel == McPanel::Inbox {
+        DialogScope::McDetailPopup
+    } else {
+        DialogScope::McDetailRead
+    };
+    hints::render_footer(frame, chrome::footer_row(popup), dialog_keys(scope));
 }
 
 // ── Inbox detail ────────────────────────────────────────────────────────────
@@ -125,14 +132,10 @@ fn render_inbox_item(item: &McInboxItem) -> Vec<Line<'static>> {
         // No variant-specific details currently active.
     }
 
-    lines.extend([
-        blank(),
-        section_heading("Apply / reject"),
-        body_line(format!(
-            "Use `rsi_proposals apply {}` to install or `reject {}` to discard.",
-            item.id, item.id
-        )),
-    ]);
+    // No trailing "Apply / reject" section: the shared footer at the
+    // bottom of the popup carries the real a/r bindings (#1775). The
+    // old body line pointed at an `rsi_proposals` CLI that does not
+    // exist on the PATH.
     lines
 }
 
