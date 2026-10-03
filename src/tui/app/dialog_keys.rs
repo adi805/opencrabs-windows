@@ -14,11 +14,6 @@
 //! stops being handled fails the test; a hint that was never true cannot
 //! be written.
 
-// TODO(#1775): temporary staircase allow. The catalog ships complete in
-// the first commit of the series; the remaining dialog surfaces migrate
-// onto it in the following commits, and this allow is removed by the
-// last one. Do not add new code that relies on it.
-#![allow(dead_code)]
 use crossterm::event::{KeyCode, KeyModifiers};
 
 /// Which dialog's keys we are describing. One variant per surface that
@@ -85,7 +80,10 @@ pub struct DialogKey {
     /// Key events the surface's input handler recognizes for this
     /// binding. The drift tests replay each of these into the handler.
     /// Empty for pseudo-bindings ("type to filter") that have no single
-    /// key event.
+    /// key event. No runtime code reads this: it exists for the
+    /// `#[cfg(test)]` drift tests, which is the whole point of the
+    /// catalog — the footer can only advertise keys the handler consumes.
+    #[allow(dead_code)] // read exclusively by the drift tests in src/tests/
     pub events: &'static [(KeyCode, KeyModifiers)],
     /// Footer display form, e.g. `a`, `Esc`, `↑↓`.
     pub label: &'static str,

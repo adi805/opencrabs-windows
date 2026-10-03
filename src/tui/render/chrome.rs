@@ -8,8 +8,6 @@
 //! pops — and no surface can forget the Clear or square its corners by
 //! accident.
 
-// TODO(#1775): temporary staircase allow — see src/tui/app/dialog_keys.rs.
-#![allow(dead_code)]
 use super::theme::{self, Role};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};

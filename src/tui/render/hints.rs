@@ -13,8 +13,6 @@
 //! Ctrl+C inside any open dialog, so the compact footer and the expanded
 //! panel can never disagree.
 
-// TODO(#1775): temporary staircase allow — see src/tui/app/dialog_keys.rs.
-#![allow(dead_code)]
 use crate::tui::app::dialog_keys::{DialogScope, dialog_keys};
 
 use super::chrome;
