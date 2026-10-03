@@ -76,7 +76,7 @@ fn tool_approval_footer_line_advertises_approve_hotkey() {
         .iter()
         .map(|s| s.content.clone())
         .collect::<String>();
-    for needle in ["a: approve", "Enter: confirm", "D/Esc: deny", "V: details"] {
+    for needle in ["a: approve", "Enter: confirm", "D/r/Esc: deny", "V: details"] {
         assert!(
             text.contains(needle),
             "ToolApproval footer missing {needle:?}: {text:?}"

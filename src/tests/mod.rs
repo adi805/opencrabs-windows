@@ -720,6 +720,7 @@ pub mod tui_components_logo_test;
 // Unix-only alongside the editor module it exercises (#1755).
 pub mod dialog_footer_batch_test;
 pub mod help_responsive_test;
+pub mod tool_approval_hotkeys_test;
 #[cfg(unix)]
 pub mod tui_editor_handoff_test;
 pub mod tui_events_test;

@@ -532,8 +532,12 @@ const TABLE_15: &[DialogKey] = &[
         verb: "confirm",
     },
     DialogKey {
-        events: &[k(KeyCode::Char('D')), k(KeyCode::Esc)],
-        label: "D/Esc",
+        events: &[
+            k(KeyCode::Char('D')),
+            k(KeyCode::Char('r')),
+            k(KeyCode::Esc),
+        ],
+        label: "D/r/Esc",
         verb: "deny",
     },
     DialogKey {
