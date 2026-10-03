@@ -134,7 +134,7 @@ fn render_inbox_item(item: &McInboxItem) -> Vec<Line<'static>> {
 
     // No trailing "Apply / reject" section: the shared footer at the
     // bottom of the popup carries the real a/r bindings (#1775). The
-    // old body line pointed at an `rsi_proposals` CLI that does not
+    // old body line pointed at a proposal-apply CLI that does not
     // exist on the PATH.
     lines
 }
