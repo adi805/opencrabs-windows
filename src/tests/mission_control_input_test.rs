@@ -247,16 +247,29 @@ fn r_on_schedule_panel_is_swallowed_not_rejected() {
 }
 
 #[test]
-fn apply_reject_do_not_fire_while_popup_is_open() {
-    // The popup-mode handler accepts only Esc + j/k. `a` and `r` are
-    // not recognised there — they fall back to NotConsumed so the
-    // user can't fire actions through the popup overlay.
+fn apply_reject_fire_while_popup_is_open_on_inbox() {
+    // #1775: the popup footer advertises `a: apply` / `r: reject`, so the
+    // keys must actually work with the detail open — same Inbox-only
+    // scoping as the panel path.
     let mut s = McState {
         detail_open: true,
         ..Default::default()
     };
     let a_out = decide(&mut s, 5, key(KeyCode::Char('a')));
-    assert_eq!(a_out, KeyOutcome::NotConsumed);
+    assert_eq!(a_out, KeyOutcome::ApplySelected);
     let r_out = decide(&mut s, 5, key(KeyCode::Char('r')));
-    assert_eq!(r_out, KeyOutcome::NotConsumed);
+    assert_eq!(r_out, KeyOutcome::RejectSelected);
+}
+
+#[test]
+fn apply_reject_still_swallowed_on_other_panels_with_popup_open() {
+    let mut s = McState {
+        detail_open: true,
+        focused_panel: McPanel::Schedule,
+        ..Default::default()
+    };
+    let a_out = decide(&mut s, 5, key(KeyCode::Char('a')));
+    assert_eq!(a_out, KeyOutcome::Consumed);
+    let r_out = decide(&mut s, 5, key(KeyCode::Char('r')));
+    assert_eq!(r_out, KeyOutcome::Consumed);
 }

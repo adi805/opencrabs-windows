@@ -7,10 +7,12 @@
 
 pub(crate) mod background;
 pub(crate) mod chat;
+pub(crate) mod chrome;
 mod dialogs;
 mod frame;
 
 mod help;
+pub(crate) mod hints;
 mod input;
 pub(crate) mod mission_control;
 pub(crate) mod notice;

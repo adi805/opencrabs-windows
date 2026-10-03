@@ -7,7 +7,9 @@ use super::theme;
 use super::{activity_panel, analytics_panel, detail_popup, inbox_panel, schedule_panel};
 
 use crate::tui::app::App;
+use crate::tui::app::dialog_keys::{DialogScope, dialog_keys};
 use crate::tui::app::mission_control::McPanel;
+use crate::tui::render::hints;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -48,40 +50,22 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// Bottom commands bar (2 rows): panel navigation keys on the first row,
-/// the global D/W/M/A analytics filter with the active window highlighted
-/// on the second (#900).
+/// Bottom bar (2 rows): the canonical dialog footer from the scoped
+/// keymap on the first row, the active analytics window on the second
+/// (#1775, #900). Footer and input handler both answer to
+/// `dialog_keys(MissionControl)`, and the drift test in
+/// `dialog_keys.rs` replays every advertised event through `decide()`
+/// to prove the pair cannot drift.
 fn draw_help_bar(frame: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(area);
 
-    let nav = Line::from(vec![
-        Span::styled(" Tab", theme::help_bar_style().add_modifier(Modifier::BOLD)),
-        Span::styled(": switch panel  ", theme::dim()),
-        Span::styled("↑↓", theme::help_bar_style().add_modifier(Modifier::BOLD)),
-        Span::styled(": navigate  ", theme::dim()),
-        Span::styled(
-            "Enter",
-            theme::help_bar_style().add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(": detail  ", theme::dim()),
-        Span::styled("a", theme::help_bar_style().add_modifier(Modifier::BOLD)),
-        Span::styled(": apply  ", theme::dim()),
-        Span::styled("r", theme::help_bar_style().add_modifier(Modifier::BOLD)),
-        Span::styled(": reject  ", theme::dim()),
-        Span::styled("Esc", theme::help_bar_style().add_modifier(Modifier::BOLD)),
-        Span::styled(": close", theme::dim()),
-    ]);
+    hints::render_footer(frame, rows[0], dialog_keys(DialogScope::MissionControl));
 
     let active = window_word(app.mc.analytics_window);
     let filter = Line::from(vec![
-        Span::styled(
-            " D/W/M/A",
-            theme::help_bar_style().add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(": filter analytics  ", theme::dim()),
         Span::styled("active: ", theme::dim()),
         Span::styled(
             active,
@@ -91,7 +75,6 @@ fn draw_help_bar(frame: &mut Frame, app: &App, area: Rect) {
         ),
     ]);
 
-    frame.render_widget(Paragraph::new(nav), rows[0]);
     if rows.len() > 1 {
         frame.render_widget(Paragraph::new(filter), rows[1]);
     }

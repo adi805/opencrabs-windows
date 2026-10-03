@@ -172,6 +172,23 @@ fn decide_with_popup(state: &mut McState, panel_item_count: usize, key: KeyEvent
             }
             KeyOutcome::Consumed
         }
+        // Apply / reject straight from the popup (#1775): the panel-level
+        // verbs work with the detail open too, so the popup footer can
+        // advertise them truthfully. Inbox-only, like the panel path.
+        KeyCode::Char('a') => {
+            if state.focused_panel == McPanel::Inbox && panel_item_count > 0 {
+                KeyOutcome::ApplySelected
+            } else {
+                KeyOutcome::Consumed
+            }
+        }
+        KeyCode::Char('r') => {
+            if state.focused_panel == McPanel::Inbox && panel_item_count > 0 {
+                KeyOutcome::RejectSelected
+            } else {
+                KeyOutcome::Consumed
+            }
+        }
         _ => KeyOutcome::NotConsumed,
     }
 }
