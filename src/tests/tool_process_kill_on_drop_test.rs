@@ -19,6 +19,10 @@
 //! stopped process (`T`/`t`) counts as stopped; the state character also makes
 //! a genuine failure legible, since a runnable state means the kill itself
 //! never landed rather than that the reap is late.
+//!
+//! The sanity check polls for the child to appear in a live state: an
+//! immediate sample can catch it stopped mid-`execve`, because a ptrace
+//! tracer halts it there, and one read then sees `T` or nothing at all.
 
 use tokio::process::Command;
 
@@ -52,6 +56,22 @@ fn is_running(pid: u32) -> bool {
     matches!(process_state(pid), Some('R' | 'S' | 'D' | 'I'))
 }
 
+/// Wait until the freshly spawned child is visible in `/proc` in a live
+/// state. A single immediate sample is racy under instrumentation: a
+/// ptrace-based coverage tracer (tarpaulin) halts the child at `execve`, so
+/// its state is momentarily `T`, and the `/proc` entry can lag the spawn.
+/// Any state other than `Z`/`X` counts as started; only the post-drop check
+/// cares that the process stops running.
+async fn await_alive(pid: u32, tries: u32) -> bool {
+    for _ in 0..tries {
+        if matches!(process_state(pid), Some(s) if s != 'Z' && s != 'X') {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    false
+}
+
 /// Poll until the process stops running, returning the last state it was seen
 /// in while still runnable — so a failure says why, not just that it failed.
 async fn still_running_after(pid: u32, tries: u32) -> Option<char> {
@@ -74,7 +94,10 @@ async fn dropping_a_child_with_kill_on_drop_stops_the_process() {
         .spawn()
         .expect("spawn sleep");
     let pid = child.id().expect("child has a pid");
-    assert!(is_running(pid), "sanity: the process started");
+    assert!(
+        await_alive(pid, 40).await,
+        "sanity: the process started (pid {pid})"
+    );
 
     drop(child);
 
