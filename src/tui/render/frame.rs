@@ -335,6 +335,17 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let area = f.area();
         crate::tui::render::theme_picker::draw(f, area, picker);
     }
+
+    // Ctrl+C expanded command panel (#1775), topmost. Self-heals if the
+    // dialog it documents closed on its own (approval resolved, popup
+    // dismissed) while the panel was open.
+    if app.dialog_help_open && app.active_dialog_scope() != Some(app.dialog_help_scope) {
+        app.dialog_help_open = false;
+    }
+    if app.dialog_help_open {
+        let area = f.area();
+        crate::tui::render::hints::render_command_panel(f, area, app.dialog_help_scope);
+    }
 }
 
 /// Render the chat area as split panes.

@@ -1,6 +1,7 @@
 //! Input handling — keyboard events, history, and approval interception.
 
 use super::events::{AppMode, ToolApprovalResponse, TuiEvent};
+use super::mission_control::McPanel;
 use super::*;
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -1391,6 +1392,62 @@ impl App {
                 .as_ref()
                 .is_some_and(|m| m.state == ApproveMenuState::Pending)
         })
+    }
+
+    /// The dialog currently occupying input focus, if any (#1775).
+    ///
+    /// Single source for the Ctrl+C expanded command panel: whichever
+    /// surface owns the keyboard reports its scope, and the panel renders
+    /// that scope's keymap. Order matters — popup-style intercepts
+    /// (pickers, password prompts, approval prompts) shadow the mode
+    /// beneath them, mirroring the handler order in
+    /// `handle_key_event`.
+    pub(crate) fn active_dialog_scope(&self) -> Option<super::dialog_keys::DialogScope> {
+        use super::dialog_keys::DialogScope;
+        use super::events::AppMode;
+
+        if self.theme_picker.is_some() {
+            return Some(DialogScope::ThemePicker);
+        }
+        if self.ssh_pending.is_some() || self.sudo_pending.is_some() {
+            return Some(DialogScope::SshPassword);
+        }
+        if self.has_pending_approve_menu() {
+            return Some(DialogScope::ApprovePolicyMenu);
+        }
+        if self.has_pending_approval() {
+            return Some(DialogScope::ToolApproval);
+        }
+        match self.mode {
+            AppMode::Help => Some(DialogScope::Help),
+            AppMode::Settings => Some(DialogScope::Settings),
+            AppMode::UsageDashboard => Some(DialogScope::UsageDashboard),
+            AppMode::FilePicker => Some(DialogScope::FilePicker),
+            AppMode::DirectoryPicker => Some(DialogScope::DirectoryPicker),
+            AppMode::RestartPending => Some(DialogScope::RestartPending),
+            AppMode::UpdatePrompt => Some(DialogScope::UpdatePrompt),
+            AppMode::PlanOverlay => Some(DialogScope::PlanOverlay),
+            AppMode::SkillsList => Some(DialogScope::SkillsDialog),
+            AppMode::Profiles => Some(DialogScope::ProfilesDialog),
+            AppMode::MissionControl => Some(if self.mc.log_viewer.is_some() {
+                DialogScope::McLogViewer
+            } else if self.mc.detail_open {
+                match self.mc.focused_panel {
+                    McPanel::Inbox => DialogScope::McDetailPopup,
+                    _ => DialogScope::McDetailRead,
+                }
+            } else {
+                DialogScope::MissionControl
+            }),
+            // Chat has no dialog chrome; Sessions/Projects/SessionFiles are
+            // deliberately outside the #1775 census; Onboarding keeps its
+            // contextual hints.
+            AppMode::Chat
+            | AppMode::Sessions
+            | AppMode::Projects
+            | AppMode::SessionFiles
+            | AppMode::Onboarding => None,
+        }
     }
 
     /// Handle keys in chat mode
