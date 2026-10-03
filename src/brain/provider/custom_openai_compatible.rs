@@ -5497,8 +5497,15 @@ struct OpenAICompletionTokensDetails {
 
 #[derive(Debug, Clone, Deserialize)]
 struct OpenAIStreamChunk {
+    /// Optional: InferHub omits id on the final usage-only chunk.
+    /// Without default, serde rejects the whole chunk (missing field
+    /// id) and the real token counts never reach the ledger.
+    #[serde(default)]
     id: String,
     model: Option<String>,
+    /// Optional for the same reason: the usage-only chunk may omit
+    /// choices entirely.
+    #[serde(default)]
     choices: Vec<OpenAIStreamChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<OpenAIUsage>,

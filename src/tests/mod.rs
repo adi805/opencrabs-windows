@@ -507,6 +507,7 @@ pub mod write_opencrabs_file_inline_test;
 #[cfg(unix)]
 pub mod custom_provider_no_models_test;
 pub mod custom_provider_stream_empty_finish_test;
+pub mod custom_provider_stream_missing_id_test;
 pub mod custom_provider_test;
 pub mod daemon_health_test;
 pub mod doc_parser_page_range_test;
