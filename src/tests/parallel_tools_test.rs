@@ -3,8 +3,10 @@
 //! Proves the three contracts of the parallel path: eligibility gating
 //! (approval-required tools and small batches stay sequential), result
 //! ordering (outcomes match the original tool_use order even when earlier
-//! tools finish later), and real concurrency (wall clock far below the sum
-//! of tool durations), plus cancellation.
+//! tools finish later), and real concurrency — pinned by a rendezvous that
+//! only opens when every call is in flight at once, rather than by wall clock,
+//! which instrumentation inflates far past any fixed threshold — plus
+//! cancellation.
 
 use crate::brain::agent::AgentService;
 use crate::brain::tools::{Tool, ToolExecutionContext, ToolRegistry};
@@ -50,6 +52,54 @@ impl Tool for SleepTool {
         tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
         Ok(crate::brain::tools::ToolResult::success(format!(
             "done:{tag}"
+        )))
+    }
+}
+
+/// How many calls the rendezvous batch holds: every one must be in flight
+/// before any of them returns.
+const RENDEZVOUS_PARTIES: usize = 3;
+
+/// Parks at a rendezvous that only opens once all [`RENDEZVOUS_PARTIES`] calls
+/// have arrived. A batch run one call at a time would park on the first call
+/// forever, so completing at all proves the calls were genuinely in flight
+/// together — a proof that survives instrumentation, unlike a wall-clock
+/// threshold (under tarpaulin the whole batch measured 707ms against a 260ms
+/// budget while still running concurrently).
+struct BarrierTool {
+    barrier: Arc<tokio::sync::Barrier>,
+}
+
+#[async_trait]
+impl Tool for BarrierTool {
+    fn name(&self) -> &str {
+        "barrier_tool"
+    }
+    fn description(&self) -> &str {
+        "waits at a rendezvous"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object", "properties": {"tag": {"type": "string"}}})
+    }
+    fn capabilities(&self) -> Vec<crate::brain::tools::ToolCapability> {
+        vec![]
+    }
+    fn requires_approval(&self) -> bool {
+        false
+    }
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolExecutionContext,
+    ) -> crate::brain::tools::Result<crate::brain::tools::ToolResult> {
+        let tag = input
+            .get("tag")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string();
+        self.barrier.wait().await;
+        Ok(crate::brain::tools::ToolResult::success(format!(
+            "rendezvous:{tag}"
         )))
     }
 }
@@ -105,6 +155,9 @@ async fn service_with_tools() -> AgentService {
     registry.register(Arc::new(MockTool));
     registry.register(Arc::new(MockToolRequiresApproval));
     registry.register(Arc::new(SleepTool));
+    registry.register(Arc::new(BarrierTool {
+        barrier: Arc::new(tokio::sync::Barrier::new(RENDEZVOUS_PARTIES)),
+    }));
     registry.register(Arc::new(PathWriterTool));
     // Config::default() derives zero for max_concurrent (serde defaults
     // only apply when parsing config.toml), so set the real default here.
@@ -202,22 +255,22 @@ async fn same_path_writers_stay_sequential() {
 }
 
 #[tokio::test]
-async fn parallel_batch_preserves_order_and_overlaps() {
+async fn parallel_batch_preserves_order() {
     let service = service_with_tools().await;
     let ctx = ToolExecutionContext::new(Uuid::new_v4());
-    // Slowest FIRST: with sequential execution this takes ~150+100+50=300ms;
-    // ordered results despite the first finishing last proves buffered
-    // in-order yielding, and the wall clock proves real overlap.
+    // Slowest FIRST, so the calls finish out of order: results still arriving
+    // in the original order proves buffered in-order yielding. This leg
+    // asserts nothing about wall clock on purpose — instrumentation inflates
+    // it past any fixed threshold. `parallel_batch_runs_in_flight_together`
+    // below carries the concurrency proof instead.
     let uses = batch(&[
         ("sleep_tool", json!({"ms": 150, "tag": "a"})),
         ("sleep_tool", json!({"ms": 100, "tag": "b"})),
         ("sleep_tool", json!({"ms": 50, "tag": "c"})),
     ]);
-    let started = std::time::Instant::now();
     let out = service
         .execute_tools_parallel(Uuid::new_v4(), uses, &ctx, None, None, Uuid::new_v4())
         .await;
-    let elapsed = started.elapsed();
 
     assert!(!out.cancelled);
     assert_eq!(out.successes, 3);
@@ -234,11 +287,31 @@ async fn parallel_batch_preserves_order_and_overlaps() {
         })
         .collect();
     assert_eq!(texts, vec!["done:a", "done:b", "done:c"]);
-    // Overlap: well under the 300ms sequential total.
-    assert!(
-        elapsed < std::time::Duration::from_millis(260),
-        "expected concurrent execution, took {elapsed:?}"
-    );
+}
+
+/// Real concurrency, pinned without a wall-clock threshold: each call parks at
+/// a rendezvous that only opens once all of them have started, so a batch that
+/// ran its calls one at a time would park on the first call and never return.
+/// The timeout turns that deadlock into a failure instead of a hang.
+#[tokio::test]
+async fn parallel_batch_runs_in_flight_together() {
+    let service = service_with_tools().await;
+    let ctx = ToolExecutionContext::new(Uuid::new_v4());
+    let uses = batch(&[
+        ("barrier_tool", json!({"tag": "a"})),
+        ("barrier_tool", json!({"tag": "b"})),
+        ("barrier_tool", json!({"tag": "c"})),
+    ]);
+
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        service.execute_tools_parallel(Uuid::new_v4(), uses, &ctx, None, None, Uuid::new_v4()),
+    )
+    .await
+    .expect("all three calls must be in flight together; a sequential batch never returns");
+
+    assert_eq!(out.successes, RENDEZVOUS_PARTIES);
+    assert_eq!(out.outputs.len(), RENDEZVOUS_PARTIES);
 }
 
 #[tokio::test]
