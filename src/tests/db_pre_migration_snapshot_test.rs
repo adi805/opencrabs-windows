@@ -385,11 +385,12 @@ async fn corrupt_image_is_refused_before_any_migration_runs() {
     );
 }
 
-/// The post-migration check survives the reordering: a healthy image migrates
-/// and comes out with the flag clear, so the flag keeps meaning "damage" and
-/// never "the check ran".
+/// #459/#677: `run_migrations()` no longer runs a post-migration integrity
+/// check, so nothing sets the flag on a healthy image and it must stay clear.
+/// (The scan that used to set it is gone; see
+/// `run_migrations_does_not_scan_on_every_open`.)
 #[tokio::test]
-async fn healthy_image_still_passes_the_post_migration_check() {
+async fn healthy_image_leaves_the_integrity_flag_clear() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join(".opencrabs");
     std::fs::create_dir_all(&home).unwrap();
@@ -411,32 +412,42 @@ async fn healthy_image_still_passes_the_post_migration_check() {
     );
 }
 
-/// Defect 2 is an ordering defect, so it is pinned by order. Behaviour proves
-/// the pre-flight refuses; only a structural pin stops someone moving the
-/// second check back in front of the migrations, where it would be useless
-/// twice over.
+/// #459/#677: `run_migrations()` must not scan the image on every open.
+///
+/// Upstream's unconditional post-migration `PRAGMA integrity_check` was
+/// re-imported by the 2026-09-29 sync (`d1e4b98ea`) over #459's removal, so
+/// every database open paid a full page scan -- measured 86 s on the 328 MB
+/// default image and >120 s on the 2.7 GB ops image (2026-10-04), which is what
+/// made `cron list` and every other cold CLI verb appear to hang.
+///
+/// This pins the removal by source, so the next sync fails loudly here instead
+/// of silently restoring the scan.
+///
+/// The preflight ordering is still pinned: upstream's #1779 check must run
+/// BEFORE the migration write, where it can refuse a torn image.
 #[test]
-fn integrity_checks_straddle_the_migration_write() {
+fn run_migrations_does_not_scan_on_every_open() {
     const SRC: &str = include_str!("../db/database.rs");
 
     let preflight = SRC
         .find("integrity_preflight(")
-        .expect("pre-migration integrity check must exist in run_migrations");
+        .expect("the pre-migration integrity check must exist in run_migrations");
     let write = SRC
         .find("migrations.to_latest(conn)")
         .expect("the migration write must exist");
-    let flag = SRC
-        .find("DB_INTEGRITY_FAILED.store(true")
-        .expect("the post-migration check must still set the integrity flag");
-
     assert!(
         preflight < write,
-        "integrity check must run BEFORE migrations, found preflight at {preflight} and the write at {write}"
+        "the pre-migration integrity check must run BEFORE the write, found \
+         preflight at {preflight} and the write at {write}"
     );
+
+    // The scan must not come back after the write: it reads every page, so its
+    // cost is O(database size) on EVERY open, and no foreground caller can act
+    // on the verdict (#459, #677).
     assert!(
-        flag > write,
-        "the post-migration check must still run AFTER migrations, found the \
-         flag at {flag} and the write at {write}"
+        !SRC.contains("Run integrity check on startup"),
+        "run_migrations() must not run an unconditional integrity_check after \
+         the migrations -- it scans every page on EVERY open (#459, #677)"
     );
 }
 
