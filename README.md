@@ -12,7 +12,7 @@
 
 **The autonomous, self-improving AI agent. Single Rust binary. Every channel.**
 
-> Autonomous, self-improving multi-channel AI agent built in Rust. Inspired by [Open Claw](https://github.com/openclaw/openclaw).
+> Autonomous, self-improving multi-channel AI agent built in Rust.
 
 ```
     ___                    ___           _
