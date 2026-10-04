@@ -177,26 +177,26 @@ fn split_summary_sections(summary: &str) -> Vec<SummarySection> {
             (None, Some(c)) => {
                 open = Some((c, trimmed.chars().take_while(|&x| x == c).count()));
             }
-            (Some((c, len)), Some(c2)) if c == c2 => {
-                if trimmed.chars().take_while(|&x| x == c).count() >= len {
-                    open = None;
-                }
+            (Some((c, len)), Some(c2))
+                if c == c2 && trimmed.chars().take_while(|&x| x == c).count() >= len =>
+            {
+                open = None;
             }
             _ => {}
         }
 
-        if !in_fence_before && fence.is_none() {
-            if let Some(n) = parse_section_number(line) {
-                if !cur.is_empty() {
-                    sections.push(SummarySection {
-                        heading: std::mem::take(&mut heading),
-                        text: std::mem::take(&mut cur),
-                        must_keep: is_must_keep_section(number),
-                    });
-                }
-                number = Some(n);
-                heading = line.trim_end().to_string();
+        if !in_fence_before && fence.is_none()
+            && let Some(n) = parse_section_number(line)
+        {
+            if !cur.is_empty() {
+                sections.push(SummarySection {
+                    heading: std::mem::take(&mut heading),
+                    text: std::mem::take(&mut cur),
+                    must_keep: is_must_keep_section(number),
+                });
             }
+            number = Some(n);
+            heading = line.trim_end().to_string();
         }
         cur.push_str(line);
     }
@@ -254,11 +254,11 @@ fn remove_largest_fenced_block(text: &str) -> Option<String> {
             (None, Some(c)) => {
                 open = Some((i, c, trimmed.chars().take_while(|&x| x == c).count()));
             }
-            (Some((start, c, len)), Some(c2)) if c == c2 => {
-                if trimmed.chars().take_while(|&x| x == c).count() >= len {
-                    blocks.push((start, i + 1));
-                    open = None;
-                }
+            (Some((start, c, len)), Some(c2))
+                if c == c2 && trimmed.chars().take_while(|&x| x == c).count() >= len =>
+            {
+                blocks.push((start, i + 1));
+                open = None;
             }
             _ => {}
         }
@@ -1329,15 +1329,15 @@ impl AgentService {
 
         // Section 10 keeps the manifest fence in the normal shape, but a sloppy
         // model may place it anywhere; re-attach it if trimming reached it.
-        if let Some(block) = manifest {
-            if parse_context_manifest(&result).is_none() {
-                result.push_str("\n```context-manifest\n");
-                result.push_str(&block);
-                if !block.ends_with('\n') {
-                    result.push('\n');
-                }
-                result.push_str("```\n");
+        if let Some(block) = manifest
+            && parse_context_manifest(&result).is_none()
+        {
+            result.push_str("\n```context-manifest\n");
+            result.push_str(&block);
+            if !block.ends_with('\n') {
+                result.push('\n');
             }
+            result.push_str("```\n");
         }
 
         let after = crate::brain::tokenizer::count_tokens(&result);
