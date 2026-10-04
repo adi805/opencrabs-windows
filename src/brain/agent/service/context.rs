@@ -10,6 +10,290 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct ContextManifest {
+    #[serde(default)]
+    pub active_skills: Vec<String>,
+    #[serde(default)]
+    pub discard_skills: Vec<String>,
+    #[serde(default)]
+    pub required_tools: Vec<String>,
+}
+
+/// Extract and parse a machine-readable `ContextManifest` from a compaction summary.
+///
+/// Searches for a fenced code block tagged `context-manifest` (or `context_manifest`),
+/// and parses it either as YAML or JSON. Fails soft (returns `None`) if omitted or malformed.
+pub fn parse_context_manifest(summary: &str) -> Option<ContextManifest> {
+    let block = extract_manifest_block(summary)?;
+    parse_manifest_text(&block)
+}
+
+fn extract_manifest_block(summary: &str) -> Option<String> {
+    let mut in_block = false;
+    let mut fence_char = '`';
+    let mut fence_len = 3;
+    let mut content = String::new();
+
+    for line in summary.lines() {
+        let trimmed = line.trim();
+        if !in_block {
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                let f_char = if trimmed.starts_with('`') { '`' } else { '~' };
+                let flen = trimmed.chars().take_while(|&c| c == f_char).count();
+                let tag = trimmed[flen..].trim().to_lowercase();
+                if tag == "context-manifest" || tag == "context_manifest" {
+                    in_block = true;
+                    fence_char = f_char;
+                    fence_len = flen;
+                    continue;
+                }
+            }
+        } else {
+            let chars_count = trimmed.chars().take_while(|&c| c == fence_char).count();
+            if chars_count >= fence_len && trimmed[chars_count..].trim().is_empty() {
+                return Some(content);
+            }
+            content.push_str(line);
+            content.push('\n');
+        }
+    }
+    if in_block && !content.trim().is_empty() {
+        return Some(content);
+    }
+    None
+}
+
+pub fn parse_manifest_text(text: &str) -> Option<ContextManifest> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(manifest) = serde_json::from_str::<ContextManifest>(trimmed) {
+        return Some(manifest);
+    }
+
+    let mut manifest = ContextManifest::default();
+    let mut current_section: Option<&str> = None;
+    let mut found_any_key = false;
+
+    for line in trimmed.lines() {
+        let line_trimmed = line.trim();
+        if line_trimmed.is_empty() || line_trimmed.starts_with('#') {
+            continue;
+        }
+
+        if let Some(rest) = line_trimmed.strip_prefix("active_skills:") {
+            current_section = Some("active_skills");
+            found_any_key = true;
+            let rest_trimmed = rest.trim();
+            if !rest_trimmed.is_empty() {
+                parse_inline_items(rest_trimmed, &mut manifest.active_skills);
+            }
+        } else if let Some(rest) = line_trimmed.strip_prefix("discard_skills:") {
+            current_section = Some("discard_skills");
+            found_any_key = true;
+            let rest_trimmed = rest.trim();
+            if !rest_trimmed.is_empty() {
+                parse_inline_items(rest_trimmed, &mut manifest.discard_skills);
+            }
+        } else if let Some(rest) = line_trimmed.strip_prefix("required_tools:") {
+            current_section = Some("required_tools");
+            found_any_key = true;
+            let rest_trimmed = rest.trim();
+            if !rest_trimmed.is_empty() {
+                parse_inline_items(rest_trimmed, &mut manifest.required_tools);
+            }
+        } else if let Some(item) = line_trimmed.strip_prefix('-') {
+            let item_clean = item.trim().trim_matches('"').trim_matches('\'').trim();
+            if !item_clean.is_empty() {
+                match current_section {
+                    Some("active_skills") => manifest.active_skills.push(item_clean.to_string()),
+                    Some("discard_skills") => manifest.discard_skills.push(item_clean.to_string()),
+                    Some("required_tools") => manifest.required_tools.push(item_clean.to_string()),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if found_any_key { Some(manifest) } else { None }
+}
+
+fn parse_inline_items(s: &str, target: &mut Vec<String>) {
+    let s = s.trim();
+    if s.starts_with('[') && s.ends_with(']') {
+        let inner = &s[1..s.len() - 1];
+        for part in inner.split(',') {
+            let clean = part.trim().trim_matches('"').trim_matches('\'').trim();
+            if !clean.is_empty() {
+                target.push(clean.to_string());
+            }
+        }
+    } else {
+        let clean = s.trim_matches('"').trim_matches('\'').trim();
+        if !clean.is_empty() && clean != "[]" {
+            target.push(clean.to_string());
+        }
+    }
+}
+
+/// One `## N.` section of a continuation document, heading and body verbatim.
+struct SummarySection {
+    /// The heading line as written, e.g. `## 1. Chronological Analysis`.
+    heading: String,
+    /// Heading + body, byte-for-byte.
+    text: String,
+    /// True for blocks a woken agent cannot recover from the document alone.
+    must_keep: bool,
+}
+
+/// The sections a trimmed document must never lose: the obligation (0), the
+/// recovery playbook (7), the next step (8) and the manifest (10) — plus the
+/// preamble before the first heading, kept rather than guessed at.
+fn is_must_keep_section(number: Option<u32>) -> bool {
+    matches!(number, None | Some(0) | Some(7) | Some(8) | Some(10))
+}
+
+/// Split a continuation document at its `## N.` headings. Lossless: the
+/// concatenation of the returned sections is the input, byte for byte.
+/// Fence-aware — a `##` line inside a code block is content, not a heading.
+fn split_summary_sections(summary: &str) -> Vec<SummarySection> {
+    let mut sections: Vec<SummarySection> = Vec::new();
+    let mut heading = String::new();
+    let mut number: Option<u32> = None;
+    let mut cur = String::new();
+    let mut open: Option<(char, usize)> = None;
+
+    for line in summary.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let fence = if trimmed.starts_with("```") {
+            Some('`')
+        } else if trimmed.starts_with("~~~") {
+            Some('~')
+        } else {
+            None
+        };
+        let in_fence_before = open.is_some();
+        match (open, fence) {
+            (None, Some(c)) => {
+                open = Some((c, trimmed.chars().take_while(|&x| x == c).count()));
+            }
+            (Some((c, len)), Some(c2)) if c == c2 => {
+                if trimmed.chars().take_while(|&x| x == c).count() >= len {
+                    open = None;
+                }
+            }
+            _ => {}
+        }
+
+        if !in_fence_before && fence.is_none() {
+            if let Some(n) = parse_section_number(line) {
+                if !cur.is_empty() {
+                    sections.push(SummarySection {
+                        heading: std::mem::take(&mut heading),
+                        text: std::mem::take(&mut cur),
+                        must_keep: is_must_keep_section(number),
+                    });
+                }
+                number = Some(n);
+                heading = line.trim_end().to_string();
+            }
+        }
+        cur.push_str(line);
+    }
+    if !cur.is_empty() {
+        sections.push(SummarySection {
+            heading,
+            text: cur,
+            must_keep: is_must_keep_section(number),
+        });
+    }
+    sections
+}
+
+/// `## 3. Title` → `Some(3)`. Any other line, `### 3.` included, is `None`.
+fn parse_section_number(line: &str) -> Option<u32> {
+    let rest = line.strip_prefix("## ")?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() || !rest[digits.len()..].starts_with('.') {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// A dropped section's replacement: its heading, so the document still reads
+/// as a document, and a pointer to where the content really lives.
+fn section_stub(section: &SummarySection) -> String {
+    if section.heading.is_empty() {
+        return String::new();
+    }
+    format!(
+        "{}\n[section omitted to fit the compaction budget — recover it from the session \
+         store with `session_search`]\n\n",
+        section.heading
+    )
+}
+
+/// Remove the largest fenced code block from `text`, replacing it with a
+/// one-line pointer. A fence is removed whole, never cut in half. `None`
+/// when no fenced block remains.
+fn remove_largest_fenced_block(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut blocks: Vec<(usize, usize)> = Vec::new();
+    let mut open: Option<(usize, char, usize)> = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        let fence = if trimmed.starts_with("```") {
+            Some('`')
+        } else if trimmed.starts_with("~~~") {
+            Some('~')
+        } else {
+            None
+        };
+        match (open, fence) {
+            (None, Some(c)) => {
+                open = Some((i, c, trimmed.chars().take_while(|&x| x == c).count()));
+            }
+            (Some((start, c, len)), Some(c2)) if c == c2 => {
+                if trimmed.chars().take_while(|&x| x == c).count() >= len {
+                    blocks.push((start, i + 1));
+                    open = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some((start, _, _)) = open {
+        blocks.push((start, lines.len()));
+    }
+
+    let (start, end) = blocks
+        .into_iter()
+        .max_by_key(|&(s, e)| lines[s..e].iter().map(|l| l.len()).sum::<usize>())?;
+
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i == start {
+            out.push_str(
+                "[fenced block omitted to fit the compaction budget — read it from the file \
+                 named above]\n",
+            );
+        } else if i < start || i >= end {
+            out.push_str(line);
+        }
+    }
+    Some(out)
+}
+
+/// The §0 status line the prompt mandates, matched case-insensitively so a
+/// capitalisation slip is not read as a lost obligation.
+fn has_obligation_status(summary: &str) -> bool {
+    summary.to_lowercase().contains("obligation status")
+}
+
+>>>>>>> 4a4a743c7 (fix(compaction): a structural trim guard enforces the continuation-document budget (#1930))
 impl AgentService {
     /// The per-turn plan reminder pinned at the end of the prompt, keyed to
     /// the session's plan-mode state: an Active checklist gets the task
@@ -951,6 +1235,17 @@ impl AgentService {
             }
         });
 
+        // #1930: the prompt ASKS for a ~3 000-token document, but asking is not
+        // enforcing — measured 2026-10-04, 208 of the 210 live markers exceeded
+        // the budget (mean 27.8 KB, max 69.2 KB) because a 40 000-token output
+        // allowance sat against a 9 000-token input reserve. Trim structurally
+        // HERE, after generation and BEFORE the #482 correction below, so the
+        // correction always survives into the persisted marker.
+        let summary = Self::enforce_summary_budget(
+            summary,
+            super::request_budget::COMPACTION_SUMMARY_MAX_TOKENS as usize,
+        );
+
         // #482: the summary is obeyed as the continuation document, so an
         // artifact it reports as complete is acted on — the incident claimed a
         // finished transcription, quoted the "exact text" of files that had
@@ -963,6 +1258,131 @@ impl AgentService {
 
         Ok(summary)
     }
+
+    /// Enforce the continuation document's token budget, structurally (#1930).
+    ///
+    /// The summariser prompt *asks* for a document of `budget_tokens`, but
+    /// asking is not enforcing: on 2026-10-04 the live markers read a mean of
+    /// 27 831 B against an ~11.7 KB budget (max 69 154 B; 208 of 210 over), and
+    /// a 40 000-token output allowance against a 9 000-token input reserve
+    /// guaranteed a model could produce one. A summary that is not trimmed
+    /// becomes the woken agent's ENTIRE context and is re-loaded every turn, so
+    /// its cost compounds with the session's own length.
+    ///
+    /// Trimming is at SECTION granularity and never inside a fence: a fenced
+    /// block is dropped whole or not at all. Four blocks are never candidates,
+    /// because a woken agent cannot recover them from the document alone —
+    /// section 0 (the obligation), section 7 (recovery), section 8 (next step)
+    /// and the `context-manifest` fence — and the preamble before the first
+    /// heading is kept rather than guessed at. If the must-keep set alone
+    /// exceeds the budget the guard WARNs and ships it: that is a prompt
+    /// defect, not a trimming one, and silently cutting the obligation out
+    /// would be worse than an over-budget document.
+    pub(crate) fn enforce_summary_budget(summary: String, budget_tokens: usize) -> String {
+        let before = crate::brain::tokenizer::count_tokens(&summary);
+        if before <= budget_tokens {
+            return summary;
+        }
+
+        let sections = split_summary_sections(&summary);
+        let manifest = extract_manifest_block(&summary);
+
+        // Largest trimmable section first; must-keep sections are never in this
+        // list, so neither pass can reach the four load-bearing blocks.
+        let mut trimmable: Vec<usize> = sections
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| !s.must_keep)
+            .map(|(i, _)| i)
+            .collect();
+        trimmable.sort_by_key(|&i| std::cmp::Reverse(sections[i].text.len()));
+
+        let mut rendered: Vec<String> = sections.iter().map(|s| s.text.clone()).collect();
+        let mut total = before;
+
+        // Pass 1 — fenced code blocks go first, the directive's own order
+        // ("name the file and line instead of pasting the block").
+        for &i in &trimmable {
+            while total > budget_tokens {
+                let Some(next) = remove_largest_fenced_block(&rendered[i]) else {
+                    break;
+                };
+                let next_total = total - crate::brain::tokenizer::count_tokens(&rendered[i])
+                    + crate::brain::tokenizer::count_tokens(&next);
+                if next_total >= total {
+                    break;
+                }
+                rendered[i] = next;
+                total = next_total;
+            }
+            if total <= budget_tokens {
+                break;
+            }
+        }
+
+        // Pass 2 — drop whole trimmable sections, largest first, leaving the
+        // heading plus a one-line pointer so the document stays navigable.
+        for &i in &trimmable {
+            if total <= budget_tokens {
+                break;
+            }
+            let stub = section_stub(&sections[i]);
+            let next_total = total - crate::brain::tokenizer::count_tokens(&rendered[i])
+                + crate::brain::tokenizer::count_tokens(&stub);
+            if next_total >= total {
+                continue;
+            }
+            rendered[i] = stub;
+            total = next_total;
+        }
+
+        let mut result = rendered.concat();
+
+        // Section 10 keeps the manifest fence in the normal shape, but a sloppy
+        // model may place it anywhere; re-attach it if trimming reached it.
+        if let Some(block) = manifest {
+            if parse_context_manifest(&result).is_none() {
+                result.push_str("\n```context-manifest\n");
+                result.push_str(&block);
+                if !block.ends_with('\n') {
+                    result.push('\n');
+                }
+                result.push_str("```\n");
+            }
+        }
+
+        let after = crate::brain::tokenizer::count_tokens(&result);
+
+        // The two invariants this guard exists to protect. WARN rather than
+        // ship a document that violates them.
+        if parse_context_manifest(&result).is_none() {
+            tracing::warn!(
+                "enforce_summary_budget: trimmed summary lost its context-manifest fence (#1930)"
+            );
+        }
+        if !has_obligation_status(&result) {
+            tracing::warn!(
+                "enforce_summary_budget: trimmed summary lost its §0 obligation-status line (#1930)"
+            );
+        }
+        if after > budget_tokens {
+            tracing::warn!(
+                "enforce_summary_budget: must-keep sections alone are {} tokens against a {} \
+                 budget — the summariser prompt is asking for more than it can keep (#1930)",
+                after,
+                budget_tokens
+            );
+        }
+
+        tracing::info!(
+            "enforce_summary_budget: trimmed: {} -> {} tokens (budget {})",
+            before,
+            after,
+            budget_tokens
+        );
+        result
+    }
+
 
     /// Append a harness-written correction for artifacts the summary reports as
     /// complete but which no tool call in the summarised conversation produced
