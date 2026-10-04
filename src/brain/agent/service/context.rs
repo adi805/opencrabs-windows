@@ -358,7 +358,7 @@ impl AgentService {
             context.max_tokens,
             context.usage_percentage(),
             model_name.to_string(),
-            self.request_max_tokens_for_session(session_id),
+            super::request_budget::compaction_summary_output_tokens(),
             self.get_working_directory_for_session(session_id),
             self.auto_approve_tools,
             cancel,
@@ -683,8 +683,11 @@ impl AgentService {
             })
             .unwrap_or(snapshot_messages.len());
 
-        // Reserve room for the summarizer's OUTPUT budget (8k) + prompt (~1k).
-        let output_reserve = 8_000usize + 1_000usize;
+        // Reserve room for the summariser's OUTPUT budget + prompt headroom.
+        // Both derive from the SAME constant as the request's
+        // `max_output_tokens` (#1930): a reserve that disagrees with the
+        // allowance hands the summariser more input than the window can hold.
+        let output_reserve = super::request_budget::compaction_summary_input_reserve();
         let max_input_budget = snapshot_max_tokens.saturating_sub(output_reserve);
         let all_msgs = &snapshot_messages[start..];
         let mut running_tokens = 0usize;
