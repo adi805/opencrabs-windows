@@ -37,12 +37,47 @@ fn is_active_profile(job_profile: Option<&str>, active: Option<&str>) -> bool {
 static INVALID_EXPR_WARNED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Escalation threshold (#1893): three consecutive tick failures is about three
+/// minutes of a stopped scheduler, long enough to rule out a transient DB
+/// blip, short enough to matter before a day of missed runs. Before this the
+/// loop logged and slept forever, so 5,100 failures over 3.5 days stayed as
+/// 5,100 log lines nobody read.
+pub(crate) const TICK_ALERT_AFTER_FAILURES: u32 = 3;
+
+/// Minimum spacing between escalation notices (#1893): a scheduler that cannot
+/// read its table fails every 60s forever, so an unthrottled alert becomes the
+/// new noise instead of the signal.
+pub(crate) const TICK_ALERT_MIN_SPACING: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Whether this tick failure deserves a user-facing notice yet (#1893).
+///
+/// Pure, and taking the clock as an argument, so the hour window is testable
+/// without sleeping an hour. `last_alert` is the process uptime at which the
+/// previous notice went out.
+pub(crate) fn alert_due(
+    failures: u32,
+    last_alert: Option<std::time::Duration>,
+    uptime: std::time::Duration,
+) -> bool {
+    if failures < TICK_ALERT_AFTER_FAILURES {
+        return false;
+    }
+    match last_alert {
+        None => true,
+        Some(at) => uptime.saturating_sub(at) >= TICK_ALERT_MIN_SPACING,
+    }
+}
+
 /// Background cron scheduler that polls the database and executes due jobs.
 pub struct CronScheduler {
     repo: CronJobRepository,
     run_repo: CronJobRunRepository,
     factory: Arc<ChannelFactory>,
     service_context: ServiceContext,
+    /// Delivery targets named by the last job list this scheduler could read
+    /// (#1893). A total read failure is precisely the moment `deliver_to` is
+    /// unreadable, so the targets have to be remembered while they still are.
+    known_targets: std::sync::Mutex<Vec<String>>,
 }
 
 impl CronScheduler {
@@ -57,6 +92,7 @@ impl CronScheduler {
             run_repo,
             factory,
             service_context,
+            known_targets: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -79,17 +115,105 @@ impl CronScheduler {
             tracing::error!("Failed to backfill missing next_run_at on startup: {e:#}");
         }
 
+        // #1893: a tick failure used to be log-only, and a log line is the one
+        // place nobody looks while the schedule is quietly dead. Track
+        // consecutive failures, escalate at the threshold, reset on success.
+        let started = std::time::Instant::now();
+        let mut failures: u32 = 0;
+        let mut last_alert: Option<std::time::Duration> = None;
+
         loop {
-            if let Err(e) = self.tick().await {
-                tracing::error!("Cron scheduler tick error: {e:#}");
+            match self.tick().await {
+                Ok(()) => {
+                    failures = 0;
+                    last_alert = None;
+                }
+                Err(e) => {
+                    failures = failures.saturating_add(1);
+                    tracing::error!("Cron scheduler tick error: {e:#}");
+                    let uptime = started.elapsed();
+                    if alert_due(failures, last_alert, uptime) {
+                        last_alert = Some(uptime);
+                        self.alert_tick_failure(failures, &e).await;
+                    }
+                }
             }
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         }
     }
 
+    /// Cache the delivery targets named by the jobs this tick could read
+    /// (#1893). Rewritten on every successful read, so a job whose `deliver_to`
+    /// was edited or deleted stops receiving notices.
+    fn remember_targets(&self, jobs: &[CronJob]) {
+        let mut targets: Vec<String> = Vec::new();
+        for job in jobs {
+            let Some(deliver_to) = job.deliver_to.as_deref() else {
+                continue;
+            };
+            for target in deliver_to
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if !targets.iter().any(|seen| seen == target) {
+                    targets.push(target.to_string());
+                }
+            }
+        }
+        if let Ok(mut known) = self.known_targets.lock() {
+            *known = targets;
+        }
+    }
+
+    /// Tell a human the scheduler has stopped, not only the log (#1893).
+    ///
+    /// Carries the full anyhow chain: an alert someone can act on has to say why
+    /// the schedule stopped, which is exactly what bare `{e}` was dropping
+    /// (#1894). With no target ever read (fresh process, table already broken)
+    /// there is nowhere to send, and that is logged loudly instead of skipped
+    /// silently.
+    async fn alert_tick_failure(&self, failures: u32, err: &anyhow::Error) {
+        let targets = self
+            .known_targets
+            .lock()
+            .map(|known| known.clone())
+            .unwrap_or_default();
+        if targets.is_empty() {
+            tracing::error!(
+                "Cron scheduler has failed {failures} consecutive ticks and has no delivery target to alert: no job list has ever been read by this process"
+            );
+            return;
+        }
+        let message = format!(
+            "Cron scheduler is stopped: {failures} consecutive tick failures, no scheduled job will fire until this is fixed. Cause: {err:#}"
+        );
+        for target in targets {
+            tracing::error!("Escalating cron scheduler failure to {target}");
+            let _ = deliver_result(
+                &target,
+                "cron scheduler",
+                &message,
+                None,
+                Some(self.service_context.pool()),
+            )
+            .await;
+        }
+    }
+
     /// One scheduler tick: check all enabled jobs and execute any that are due.
     async fn tick(&self) -> anyhow::Result<()> {
-        let mut jobs = self.repo.list_enabled().await?;
+        // #1893: read row by row. One unreadable row used to fail the whole
+        // read, which stopped every job instead of just the broken one.
+        let (mut jobs, skipped) = self.repo.list_enabled_with_skips().await?;
+        self.remember_targets(&jobs);
+        // "Nothing is due" must not absorb "nothing can be read": an empty list
+        // that skipped rows is a failure, and the tick loop escalates it.
+        if jobs.is_empty() && skipped > 0 {
+            return Err(anyhow::anyhow!(
+                "all {skipped} enabled cron_jobs row(s) failed to decode, no job can run"
+            ));
+        }
         let now = Utc::now();
 
         // Ensure all enabled jobs have next_run_at populated even if created externally

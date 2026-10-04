@@ -257,12 +257,12 @@ pub mod cron_next_run_at_test;
 pub mod cron_no_op_evidence_test;
 pub mod cron_profile_isolation_test;
 pub mod cron_run_stamp_test;
-pub mod cron_silent_death_test;
 pub mod cron_schedule_util_test;
 pub mod cron_scheduler_lock_test;
 pub mod cron_send_scope_test;
 pub mod cron_session_isolation_test;
 pub mod cron_session_target_test;
+pub mod cron_silent_death_test;
 pub mod cron_test;
 pub mod cron_tool_registry_test;
 pub mod cron_trigger_pipeline_test;
@@ -722,8 +722,8 @@ pub mod tui_clipboard_paste_keys_test;
 pub mod tui_clipboard_route_test;
 pub mod tui_components_logo_test;
 // Unix-only alongside the editor module it exercises (#1755).
-pub mod dialog_footer_batch_test;
 pub mod dialog_ctrl_c_panel_test;
+pub mod dialog_footer_batch_test;
 pub mod help_responsive_test;
 pub mod tool_approval_hotkeys_test;
 #[cfg(unix)]
