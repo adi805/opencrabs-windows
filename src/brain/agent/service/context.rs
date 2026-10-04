@@ -622,6 +622,50 @@ impl AgentService {
         )))
     }
 
+    /// #1930: the summariser's system prompt. Dense knowledge transfer under a
+    /// hard budget — the document is trimmed mechanically if it overruns, so
+    /// the instruction is completeness of FACTS, not volume of prose.
+    pub(crate) fn compaction_system_prompt() -> String {
+        "You are a continuation document generator. Your job is to create a dense, \
+         complete knowledge transfer document from a conversation so that a fresh AI agent can \
+         continue the work seamlessly. You must capture every file path, command, identifier, \
+         user preference, error and pending task. The agent reading your output will have ZERO \
+         prior context — your document is its entire memory. \
+         The document has a hard budget, stated in the user message, and is trimmed \
+         mechanically when it overruns — so write densely: every load-bearing fact, no filler, \
+         and name files and line numbers instead of pasting long code blocks. \
+         Missing a single fact could cause the agent to repeat mistakes or violate user preferences."
+            .to_string()
+    }
+
+    /// #1930: the closing directive of the continuation-document prompt — the
+    /// hard budget and the order in which it is spent.
+    ///
+    /// The prompt used to close by ordering maximum verbosity, with no stated
+    /// size and nothing trimming the result: measured 2026-10-04 that produced a
+    /// 27.8 KB mean (max 69.2 KB) against a 3 000-token budget. Retention is
+    /// ordered so the blocks a woken agent cannot work without (obligation
+    /// status, the `context-manifest` fence, the next step, the Recovery
+    /// Playbook) are named MUST, and the cheapest content to drop (long
+    /// snippets, long quotes) is named FIRST TO GO.
+    pub(crate) fn compaction_budget_directive(summary_budget_tokens: u32) -> String {
+        format!(
+            "BUDGET: the whole document MUST fit ~{summary_budget_tokens} tokens. A document \
+             that overruns is trimmed mechanically and loses whatever was written last, so spend \
+             the budget deliberately, in this order:\n\
+             1. MUST be complete — section 0 (obligation status + next action), the \
+             `context-manifest` fence in section 10, section 8 (next step), section 7 (recovery \
+             playbook).\n\
+             2. THEN exact paths, commands, identifiers and error strings — cheap and load-bearing.\n\
+             3. THEN sections 1-6 compressed to the shortest form that still carries the facts.\n\
+             4. FIRST TO GO when the budget is tight — long code snippets (name the file and line \
+             instead of pasting the block) and long quotes (keep only the decisive phrase).\n\
+             This is not a summary — it is a complete knowledge transfer, and the fresh agent has \
+             ZERO context beyond what you write here. Completeness means every load-bearing FACT \
+             survives, not every sentence."
+        )
+    }
+
     /// #1649: the scope header prepended to the summariser prompt. Empty for
     /// `FullWindow` — the first-compaction prompt stays byte-identical to the
     /// classic one (the parity probe pins this). Delta and consolidation get
@@ -829,15 +873,7 @@ impl AgentService {
              DO NOT be generic. DO NOT say \"I'm ready to continue.\" Reference actual conversation details \
              that only someone who was there would know.\n\n\
              Tool approval status: {}\n\n\
-             HARD BUDGET: the entire document must fit in {max_output_tokens} tokens. It is the \
-             fresh agent's only memory, but a document that overruns is cut off before its tail — \
-             so spend the budget in this order:\n\
-             1. MUST — §0 (obligation status + directive), §8 (next step), §9 (continuation message).\n\
-             2. THEN — file paths, identifiers, commands, and the §7 recovery plan.\n\
-             3. THEN — the narrative: §1-§6, compressed as tight as they can be.\n\
-             FIRST TO GO — code snippets and long quotes. Name a file and line rather than pasting \
-             its body. A short document that carries the directive beats a long one cut off \
-             mid-sentence: the fresh agent has ZERO context beyond what you write here.",
+             {budget_directive}",
             snapshot_usage_pct,
             snapshot_token_count,
             snapshot_max_tokens,
@@ -847,6 +883,9 @@ impl AgentService {
             } else {
                 "AUTO-APPROVE OFF — tool approval is REQUIRED for every tool call"
             },
+            budget_directive = Self::compaction_budget_directive(
+                super::request_budget::COMPACTION_SUMMARY_MAX_TOKENS,
+            ),
         );
 
         // #1649: the scope prelude rides in front of the unchanged body;
@@ -873,16 +912,7 @@ impl AgentService {
 
         let mut request = LLMRequest::new(effective_model, summary_messages)
             .with_max_tokens(max_output_tokens)
-            .with_system(
-                "You are a continuation document generator. Your job is to create a knowledge transfer \
-                 document from a conversation so that a fresh AI agent can continue the work seamlessly. \
-                 Capture every file path, identifier, user preference, error, and pending task — but stay \
-                 inside the stated token budget: the agent reading your output will have ZERO prior context, \
-                 so a document that is cut off before its tail loses exactly the sections it needs most. \
-                 Spend the budget in the order the prompt gives you, and prefer naming a file and line over \
-                 pasting its body."
-                    .to_string(),
-            );
+            .with_system(Self::compaction_system_prompt());
         request.working_directory = Some(working_directory.to_string_lossy().to_string());
         request.session_id = Some(session_id);
 
