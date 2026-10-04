@@ -257,6 +257,7 @@ pub mod cron_next_run_at_test;
 pub mod cron_no_op_evidence_test;
 pub mod cron_profile_isolation_test;
 pub mod cron_run_stamp_test;
+pub mod cron_silent_death_test;
 pub mod cron_schedule_util_test;
 pub mod cron_scheduler_lock_test;
 pub mod cron_send_scope_test;
