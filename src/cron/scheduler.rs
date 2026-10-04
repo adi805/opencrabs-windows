@@ -15,6 +15,7 @@ use crate::db::CronJobRepository;
 use crate::db::CronJobRunRepository;
 use crate::db::models::{CronJob, CronJobRun};
 use crate::services::{ServiceContext, SessionService};
+use crate::utils::string::truncate_str;
 use chrono::Utc;
 use std::sync::Arc;
 use tracing::Instrument;
@@ -1152,6 +1153,22 @@ pub(crate) fn tool_start_counter() -> (
     (starts, cb)
 }
 
+/// Truncate a run's output for delivery (channels have message limits).
+/// The cut must land on a UTF-8 char boundary: the raw `&content[..max_len]`
+/// panicked the scheduler when byte 4000 fell inside a multibyte char
+/// (`✅` in a morning recap, #1919).
+pub(crate) fn truncate_for_delivery(content: &str) -> String {
+    const MAX_LEN: usize = 4000;
+    if content.len() > MAX_LEN {
+        format!(
+            "{}...\n\n(truncated — full output in session)",
+            truncate_str(content, MAX_LEN)
+        )
+    } else {
+        content.to_string()
+    }
+}
+
 pub(crate) async fn deliver_result(
     deliver_to: &str,
     job_name: &str,
@@ -1191,16 +1208,7 @@ pub(crate) async fn deliver_result(
 
     let (channel, target_id) = (parts[0], parts[1]);
 
-    // Truncate content for delivery (channels have message limits)
-    let max_len = 4000;
-    let msg = if content.len() > max_len {
-        format!(
-            "{}...\n\n(truncated — full output in session)",
-            &content[..max_len]
-        )
-    } else {
-        content.to_string()
-    };
+    let msg = truncate_for_delivery(content);
 
     let delivery_msg = format!("⏰ **Cron: {job_name}**\n\n{msg}");
 
