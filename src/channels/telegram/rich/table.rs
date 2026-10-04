@@ -512,7 +512,7 @@ pub(crate) fn infer_missing_table_separators(text: &str) -> String {
 /// Escape bare leading `#` (not followed by space, or not a valid ATX heading)
 /// with a backslash (`\#`) so Telegram's native rich parser does not promote
 /// lines like `#174`, list items like `- #224`, or quotes like `> #236`
-/// into `<h1>` headers (#193, #243, adolfousier/opencrabs#1257).
+/// into `<h1>` headers (#193, #243, opencrabs/opencrabs#1257).
 ///
 /// Leaves code fences (``` and ~~~) and valid ATX headings untouched.
 pub(crate) fn shield_bare_leading_hashes(text: &str) -> String {

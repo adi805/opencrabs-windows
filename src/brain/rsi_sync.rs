@@ -33,7 +33,7 @@ use crate::brain::tools::brain_file_safety;
 /// files now live in both places (brain templates under
 /// `src/docs/reference/templates`, config examples at the root), so each
 /// entry carries its own repo-relative path (#819).
-const TEMPLATE_BASE_URL: &str = "https://raw.githubusercontent.com/adolfousier/opencrabs/main";
+const TEMPLATE_BASE_URL: &str = "https://raw.githubusercontent.com/opencrabs/opencrabs/main";
 
 /// A brain file: same name locally and under the templates directory.
 macro_rules! md {

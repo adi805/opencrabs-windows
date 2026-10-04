@@ -248,7 +248,7 @@ pub struct LLMResponse {
     /// failed). Raw call-shaped JSON is stripped from `content` at the
     /// parse boundary; the tool loop uses this flag for one corrective
     /// retry, then fails clean instead of delivering the residue.
-    /// (fork #66, ex-upstream adolfousier/opencrabs#1260)
+    /// (fork #66, ex-upstream opencrabs/opencrabs#1260)
     #[serde(default)]
     pub tool_text_leak: bool,
 }

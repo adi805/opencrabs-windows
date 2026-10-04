@@ -4,7 +4,7 @@
 use crate::utils::install::{InstallMethod, platform_suffix};
 
 pub(super) const GITHUB_API: &str =
-    "https://api.github.com/repos/adolfousier/opencrabs/releases/latest";
+    "https://api.github.com/repos/opencrabs/opencrabs/releases/latest";
 
 /// Build an honest, status-aware error string for a non-success
 /// response from `releases/latest`. Replaces the prior hardcoded

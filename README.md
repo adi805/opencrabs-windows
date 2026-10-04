@@ -2,11 +2,11 @@
 [![Rust Edition](https://img.shields.io/badge/rust-2024_edition-orange.svg)](https://www.rust-lang.org/)
 [![Ratatui](https://img.shields.io/badge/ratatui-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)](https://ratatui.rs)
 [![Docker](https://img.shields.io/badge/docker-%23000000.svg?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com)
-[![CI](https://github.com/adolfousier/opencrabs/actions/workflows/ci.yml/badge.svg)](https://github.com/adolfousier/opencrabs/actions/workflows/ci.yml)
-[![GitHub Stars](https://img.shields.io/github/stars/adolfousier/opencrabs?style=social)](https://github.com/adolfousier/opencrabs)
+[![CI](https://github.com/opencrabs/opencrabs/actions/workflows/ci.yml/badge.svg)](https://github.com/opencrabs/opencrabs/actions/workflows/ci.yml)
+[![GitHub Stars](https://img.shields.io/github/stars/opencrabs/opencrabs?style=social)](https://github.com/opencrabs/opencrabs)
 
-<a href="https://trendshift.io/repositories/22468?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-22468" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/22468/daily?language=Rust" alt="adolfousier/opencrabs — Trendshift #3 Repository Of The Day, Rust" width="250" height="55"/></a>
-<a href="https://trendshift.io/repositories/22468?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-22468" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/22468/weekly?language=Rust" alt="adolfousier/opencrabs — Trendshift #20 Repository Of The Week, Rust" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/22468?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-22468" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/22468/daily?language=Rust" alt="opencrabs/opencrabs — Trendshift #3 Repository Of The Day, Rust" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/22468?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-22468" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/22468/weekly?language=Rust" alt="opencrabs/opencrabs — Trendshift #20 Repository Of The Week, Rust" width="250" height="55"/></a>
 
 # 🦀 OpenCrabs
 
@@ -27,7 +27,7 @@
 
 **Author:** [Adolfo Usier](https://github.com/adolfousier)
 
-⭐ Star us on [GitHub](https://github.com/adolfousier/opencrabs) if you like what you see!
+⭐ Star us on [GitHub](https://github.com/opencrabs/opencrabs) if you like what you see!
 
 ---
 
@@ -221,7 +221,7 @@ Measured on this repository (1,383 `.rs` files), ground truth locked by grep bef
 | Query class | Before (FTS5+vector) | After (+ symbol graph) |
 |---|---|---|
 | Callers of a function | text chunks, no caller info | **exact callers, file + line** |
-| Callers, generic-heavy path | text chunks | **5/5** callers, file + line ([#1328](https://github.com/adolfousier/opencrabs/pull/1328)) |
+| Callers, generic-heavy path | text chunks | **5/5** callers, file + line ([#1328](https://github.com/opencrabs/opencrabs/pull/1328)) |
 | Duplicate implementations | 2 of 3 found | **3 of 3**, exact locations |
 | Module structure | file content only | + full function inventory |
 | Concept lookup | strong | unchanged — text lane untouched |
@@ -346,7 +346,7 @@ This override works for **every provider** — OpenAI-compatible (custom, xiaomi
 > - **Cost** is the lesser one, and it's softened by caching: OpenCrabs uses prompt caching across every caching-capable provider (currently averaging ~87% efficiency), and a long context is mostly an unchanged prefix served from cache — so a bigger window costs far less than the raw token count suggests.
 > - **Context loss** is the one to watch: most models degrade as the window fills — they lose track of the middle and recall less reliably. Only the latest SOTA models hold large context robustly: closed (Opus 4.7 / 4.8, Fable 5, GPT-5.5, Gemini 3.1, …) or open (Qwen 3.7, Kimi K2.7, MiMo V2.5, GLM 5.2, DeepSeek V4, and the newer releases that keep coming from these and other labs). So raise `context_window` mainly on those frontier models; on anything older or smaller, staying near 200k keeps answers sharper.
 >
-> **Local models want less:** 128k is a good sweet spot — go **lower** if your machine is tight on resources or you start noticing hallucinations/fabrications, and **higher** only if you have more than 32GB of RAM and have tested your model at a larger window. Not sure what fits your setup? Reach out to Adolfo for suggestions/support, or open a [GitHub discussion](https://github.com/adolfousier/opencrabs/discussions).
+> **Local models want less:** 128k is a good sweet spot — go **lower** if your machine is tight on resources or you start noticing hallucinations/fabrications, and **higher** only if you have more than 32GB of RAM and have tested your model at a larger window. Not sure what fits your setup? Reach out to Adolfo for suggestions/support, or open a [GitHub discussion](https://github.com/opencrabs/opencrabs/discussions).
 >
 > **Leave auto-compaction on** — it's been battle-tested over months and needs no babysitting. Only run a *manual* compaction (the `/compact` command) if you have a specific, strong reason to summarize early; otherwise let it manage itself.
 
@@ -1930,20 +1930,20 @@ OpenCrabs supports multi-agent structured debate via the **Bee Colony** protocol
 
 ### Option 1: Download Binary (just run it)
 
-Grab a pre-built binary from [GitHub Releases](https://github.com/adolfousier/opencrabs/releases) — available for Linux (amd64/arm64), macOS (amd64/arm64), and Windows.
+Grab a pre-built binary from [GitHub Releases](https://github.com/opencrabs/opencrabs/releases) — available for Linux (amd64/arm64), macOS (amd64/arm64), and Windows.
 
 ```bash
 # macOS (Apple Silicon) — downloads latest, installs to /usr/local/bin
-curl -sL "$(curl -s https://api.github.com/repos/adolfousier/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
 
 # macOS (Intel)
-curl -sL "$(curl -s https://api.github.com/repos/adolfousier/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
 
 # Linux (x86_64)
-curl -sL "$(curl -s https://api.github.com/repos/adolfousier/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
 
 # Linux (ARM64)
-curl -sL "$(curl -s https://api.github.com/repos/adolfousier/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
 ```
 
 Then just type `opencrabs` to start. The onboarding wizard handles everything on first run.
@@ -2044,11 +2044,11 @@ Required for `/rebuild`, adding custom tools, or modifying the agent.
 - **Linux (Fedora/RHEL):** `sudo dnf install gcc gcc-c++ make pkg-config clang openssl-devel cmake alsa-lib-devel libgomp`
 - **Linux (Arch):** `sudo pacman -S base-devel pkg-config clang openssl cmake alsa-lib gcc-libs`
 
-> **One-liner setup:** `bash <(curl -sL https://raw.githubusercontent.com/adolfousier/opencrabs/main/src/scripts/setup.sh)` — detects your platform, installs all dependencies, and sets up Rust.
+> **One-liner setup:** `bash <(curl -sL https://raw.githubusercontent.com/opencrabs/opencrabs/main/src/scripts/setup.sh)` — detects your platform, installs all dependencies, and sets up Rust.
 
 ```bash
 # Clone
-git clone https://github.com/adolfousier/opencrabs.git
+git clone https://github.com/opencrabs/opencrabs.git
 cd opencrabs
 
 # Build & run (development)
@@ -2077,7 +2077,7 @@ Run OpenCrabs in an isolated container. Build takes ~15min (Rust release + LTO).
 
 ```bash
 # Clone and run
-git clone https://github.com/adolfousier/opencrabs.git
+git clone https://github.com/opencrabs/opencrabs.git
 cd opencrabs
 
 # Run with docker compose
@@ -3691,7 +3691,7 @@ Auto-detects your default Chromium-based browser and uses its native profile (co
 
 > **Why no Firefox?** Browser automation uses Chrome DevTools Protocol (CDP). Firefox dropped CDP support entirely — it now uses WebDriver BiDi, which is a different protocol. All Chromium-based browsers speak CDP natively.
 
-**Sharing one browser across profiles ([#189](https://github.com/adolfousier/opencrabs/discussions/189)).** By default every profile spawns its own headless Chromium (~250-300MB each), so several active profiles can OOM a small VDS. Set `[browser] cdp_endpoint` to make all profiles connect to a single shared Chromium instead — dropping memory from ~750MB (3 × 250MB) to ~260MB. Start a standalone Chromium with remote debugging, then point each profile at it:
+**Sharing one browser across profiles ([#189](https://github.com/opencrabs/opencrabs/discussions/189)).** By default every profile spawns its own headless Chromium (~250-300MB each), so several active profiles can OOM a small VDS. Set `[browser] cdp_endpoint` to make all profiles connect to a single shared Chromium instead — dropping memory from ~750MB (3 × 250MB) to ~260MB. Start a standalone Chromium with remote debugging, then point each profile at it:
 
 ```bash
 chromium --remote-debugging-port=9222 --headless --no-sandbox
@@ -5009,7 +5009,7 @@ cargo clippy -- -D warnings
 | `profiling` | Enable pprof flamegraph profiling (Unix only) |
 | `eval` | Offline + live evaluation harness. Compiled automatically under `cfg(test)`, and present in release binaries, which are built with `--all-features` |
 
-> **What `local-stt` brings with it.** Running voice fully on-device is deliberate, so this stays enabled by default. It pulls `rwhisper`, whose dependency tree is still on `reqwest` 0.11 / `hyper` 0.14 and carries a low-severity `h2` denial-of-service advisory (RUSTSEC-2026-0258) plus five unmaintained or unsound crates. The exposure is bounded: that HTTP client is used only to download Whisper models from Hugging Face over TLS, and the advisory needs a hostile server flooding empty HTTP/2 frames, so it is not reachable from anything a session does. Build with `--no-default-features` and your own feature list to leave it out. Tracked in [#1402](https://github.com/adolfousier/opencrabs/issues/1402), and it clears when rwhisper ships against a `reqwest` on `hyper` 1.x.
+> **What `local-stt` brings with it.** Running voice fully on-device is deliberate, so this stays enabled by default. It pulls `rwhisper`, whose dependency tree is still on `reqwest` 0.11 / `hyper` 0.14 and carries a low-severity `h2` denial-of-service advisory (RUSTSEC-2026-0258) plus five unmaintained or unsound crates. The exposure is bounded: that HTTP client is used only to download Whisper models from Hugging Face over TLS, and the advisory needs a hostile server flooding empty HTTP/2 frames, so it is not reachable from anything a session does. Build with `--no-default-features` and your own feature list to leave it out. Tracked in [#1402](https://github.com/opencrabs/opencrabs/issues/1402), and it clears when rwhisper ships against a `reqwest` on `hyper` 1.x.
 
 ### Evaluation Harness
 
@@ -5065,7 +5065,7 @@ extra_paths = [
 # sweep_interval_secs = 300            # freshness sweep; changed files also caught lazily at search
 ```
 
-**Symbol graph for source code (feature: `code-graph`, on by default):** `.rs` files under `extra_paths` are additionally parsed with tree-sitter into a symbol graph — functions, structs, traits, impls, call edges, imports — stored in `symbols` / `call_edges` / `imports` tables alongside the FTS5+vector index. `memory_search` auto-routes structural queries ("who calls `retry_db_operation`", "where is X defined") to the graph lane; conceptual queries keep the text lane. Method calls are normalized to bare names (`store.insert_symbol(...)` indexes callee `insert_symbol`), enum-variant constructors (`Some` / `Ok`) are skipped, and production symbols rank above test symbols. Before/after numbers and the known generic-code recall gap ([#1325](https://github.com/adolfousier/opencrabs/issues/1325)): see [Structural code search](#-benchmarks) in the Benchmarks section.
+**Symbol graph for source code (feature: `code-graph`, on by default):** `.rs` files under `extra_paths` are additionally parsed with tree-sitter into a symbol graph — functions, structs, traits, impls, call edges, imports — stored in `symbols` / `call_edges` / `imports` tables alongside the FTS5+vector index. `memory_search` auto-routes structural queries ("who calls `retry_db_operation`", "where is X defined") to the graph lane; conceptual queries keep the text lane. Method calls are normalized to bare names (`store.insert_symbol(...)` indexes callee `insert_symbol`), enum-variant constructors (`Some` / `Ok`) are skipped, and production symbols rank above test symbols. Before/after numbers and the known generic-code recall gap ([#1325](https://github.com/opencrabs/opencrabs/issues/1325)): see [Structural code search](#-benchmarks) in the Benchmarks section.
 
 
 Benchmarked with `cargo bench --bench memory` on release builds:
@@ -5131,7 +5131,7 @@ The default release binary requires AVX2 (Haswell 2013+). If you have an older C
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
 
-Pre-built `*-compat` binaries are also available on the [releases page](https://github.com/adolfousier/opencrabs/releases) for AVX-only CPUs. Vector embeddings are off by default (#1798), so you get FTS5-only keyword search out of the box; set `vector_enabled = true` in `[memory]` only on machines that can run the GGUF engine.
+Pre-built `*-compat` binaries are also available on the [releases page](https://github.com/opencrabs/opencrabs/releases) for AVX-only CPUs. Vector embeddings are off by default (#1798), so you get FTS5-only keyword search out of the box; set `vector_enabled = true` in `[memory]` only on machines that can run the GGUF engine.
 
 ### macOS
 
@@ -5648,7 +5648,7 @@ Cloud API issues, billing questions, and account problems should be directed to 
 
 ## 🔐 Reporting a vulnerability
 
-Security issues go through [GitHub's private vulnerability reporting](https://github.com/adolfousier/opencrabs/security/advisories/new), not a public issue. See [SECURITY.md](SECURITY.md) for what is in scope, what to include, and which dependency advisories are already known and tracked.
+Security issues go through [GitHub's private vulnerability reporting](https://github.com/opencrabs/opencrabs/security/advisories/new), not a public issue. See [SECURITY.md](SECURITY.md) for what is in scope, what to include, and which dependency advisories are already known and tracked.
 
 ---
 
@@ -5676,7 +5676,7 @@ Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidel
 
 ```bash
 # Setup
-git clone https://github.com/adolfousier/opencrabs.git
+git clone https://github.com/opencrabs/opencrabs.git
 cd opencrabs
 cargo build
 cargo test
@@ -5701,16 +5701,16 @@ cargo test
 
 ## 📞 Support
 
-- **Issues:** [GitHub Issues](https://github.com/adolfousier/opencrabs/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/adolfousier/opencrabs/discussions)
-- **Docs:** [Documentation](https://github.com/adolfousier/opencrabs/tree/main/src/docs)
+- **Issues:** [GitHub Issues](https://github.com/opencrabs/opencrabs/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/opencrabs/opencrabs/discussions)
+- **Docs:** [Documentation](https://github.com/opencrabs/opencrabs/tree/main/src/docs)
 
 ---
 
 ## Trending
 
-<a href="https://trendshift.io/repositories/22468?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-22468" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/22468/daily?language=Rust" alt="adolfousier/opencrabs — Trendshift #3 Repository Of The Day, Rust" width="250" height="55"/></a>
-<a href="https://trendshift.io/repositories/22468?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-22468" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/22468/weekly?language=Rust" alt="adolfousier/opencrabs — Trendshift #20 Repository Of The Week, Rust" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/22468?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-22468" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/22468/daily?language=Rust" alt="opencrabs/opencrabs — Trendshift #3 Repository Of The Day, Rust" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/22468?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-22468" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/22468/weekly?language=Rust" alt="opencrabs/opencrabs — Trendshift #20 Repository Of The Week, Rust" width="250" height="55"/></a>
 
 ## ✨ Stay Tuned
 
@@ -5720,4 +5720,4 @@ cargo test
 
 ---
 
-[Latest Release](https://github.com/adolfousier/opencrabs/releases/tag/v0.2.81)
+[Latest Release](https://github.com/opencrabs/opencrabs/releases/tag/v0.2.81)

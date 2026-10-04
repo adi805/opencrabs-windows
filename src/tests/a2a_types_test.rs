@@ -46,7 +46,7 @@ fn test_agent_card_serialization() {
         }],
         provider: Some(AgentProvider {
             organization: "OpenCrabs Contributors".to_string(),
-            url: Some("https://github.com/adolfousier/opencrabs".to_string()),
+            url: Some("https://github.com/opencrabs/opencrabs".to_string()),
         }),
         capabilities: Some(AgentCapabilities {
             streaming: false,

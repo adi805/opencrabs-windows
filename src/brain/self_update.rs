@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 /// GitHub repo URL for auto-cloning when source is not available locally.
-const REPO_URL: &str = "https://github.com/adolfousier/opencrabs.git";
+const REPO_URL: &str = "https://github.com/opencrabs/opencrabs.git";
 
 /// Resolve the running executable's real on-disk path.
 ///

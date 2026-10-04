@@ -3291,7 +3291,7 @@ impl OpenAIProvider {
 
         // Detect models that dump tool JSON as text instead of structured
         // calls. Tightened detector (fork #66, ex-upstream
-        // adolfousier/opencrabs#1260): only a parseable call-shaped JSON
+        // opencrabs/opencrabs#1260): only a parseable call-shaped JSON
         // object outside code fences counts — prose about tools no longer
         // false-positives. On detection the raw JSON is STRIPPED from the
         // content and `tool_text_leak` is set on the response for the tool

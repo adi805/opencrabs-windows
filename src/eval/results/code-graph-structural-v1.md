@@ -47,7 +47,7 @@ almost entirely the enum noise removed, not lost real edges.
 
 - **Caller recall in generic code — resolved.** The v1 miss (`src/db/retry.rs:155`, a
   call nested in a `.await.context()` chain inside a generic function) is captured since
-  [#1328](https://github.com/adolfousier/opencrabs/pull/1328); the generic-heavy row is
+  [#1328](https://github.com/opencrabs/opencrabs/pull/1328); the generic-heavy row is
   5/5. Deeper generic/monomorphization edge cases remain unmeasured, but no known miss.
 - **Non-Rust languages.** Only `tree-sitter-rust` is wired. Python/TS/JS grammars are
   buildable but unextracted.

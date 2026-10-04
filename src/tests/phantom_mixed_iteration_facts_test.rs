@@ -129,8 +129,8 @@ fn a_recap_of_the_work_its_own_call_did_is_not_flagged() {
     // The union requirement: this iteration's own call counts as executed. Scored
     // against prior inputs alone, the command check would flag the very work the
     // response is about to do.
-    let in_flight = r#"{"command":"gh pr list -R adolfousier/opencrabs --state open"}"#;
-    let text = "Ran `gh pr list -R adolfousier/opencrabs --state open` for the current set.";
+    let in_flight = r#"{"command":"gh pr list -R opencrabs/opencrabs --state open"}"#;
+    let text = "Ran `gh pr list -R opencrabs/opencrabs --state open` for the current set.";
     assert!(
         mixed_iteration_facts(text, &[in_flight.to_string()], &[], "").is_none(),
         "the in-flight call must vouch for its own command"
@@ -141,7 +141,7 @@ fn a_recap_of_the_work_its_own_call_did_is_not_flagged() {
 fn the_same_recap_without_the_call_in_input_is_flagged() {
     // Negative control for the test above: without the union the command really
     // is unaccounted for, so the check must fire.
-    let text = "Ran `gh pr list -R adolfousier/opencrabs --state open` for the current set.";
+    let text = "Ran `gh pr list -R opencrabs/opencrabs --state open` for the current set.";
     let prior = r#"{"command":"git status"}"#;
     let violation = mixed_iteration_facts(text, &[prior.to_string()], &[], "")
         .expect("uncalled command missed");

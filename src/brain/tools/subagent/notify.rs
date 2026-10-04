@@ -2,7 +2,7 @@
 //!
 //! Thin agent-facing wrapper over `session_routes::deliver_to_session`, so an
 //! orchestrator (e.g. a compiling agent) can hand work back to the sessions
-//! whose commits broke the build (issue adolfousier/opencrabs#1203).
+//! whose commits broke the build (issue opencrabs/opencrabs#1203).
 //!
 //! Sender identity is injected MECHANICALLY from `ToolExecutionContext`
 //! — the calling model can neither forge nor omit the `[session-notify
