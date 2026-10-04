@@ -288,3 +288,95 @@ fn the_guard_runs_before_the_artifact_correction() {
          correction is never trimmed away (#1930)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The soak test (#1930, step 5) — the gate that would have caught #474.
+//
+// #474 was a compaction SPIRAL: each continuation document was fed back into
+// the next summarisation request, so the document grew round over round
+// (measured max 146 KB on 2026-09-21). #1649 (delta scoping) stopped the
+// growth, but nothing capped the SIZE: the 2026-10-04 live read is a mean of
+// 27 831 B, max 69 154 B, 208 of 210 markers over the ~11.7 KB target. This
+// test drives five rounds and pins both properties at once.
+//
+// It is a RUNTIME falsifier, not merely a compile one: the raw rounds are
+// asserted to be over budget, so a build without the guard (where the raw
+// document would be the output) fails the boundedness assertion — not just
+// the build.
+// ---------------------------------------------------------------------------
+
+/// Round `n`'s raw continuation document — the spiral's shape: every round
+/// larger than the last, and every one far over budget.
+fn summary_of_round(round: usize) -> String {
+    let repeats = 200 + round * 200;
+    let bulk = "the summariser recorded this in great detail, at length, twice over, \
+                with file paths, line numbers and quoted code. "
+        .repeat(repeats);
+    format!(
+        "## 0. IMMEDIATE TASK\n**Obligation status: OPEN**\n\
+         CONTINUE THIS TASK: keep going.\n\n\
+         ## 1. Chronological Analysis\n{bulk}\n\n\
+         ## 2. Files Modified\n{bulk}\n\n\
+         ## 7. Recovery Playbook\nRun `git log --oneline -3`.\n\n\
+         ## 8. Next Step\nCommit the guard.\n\n\
+         ## 10. Context Manifest\n```context-manifest\n\
+         active_skills:\n  - opencrabs-dev/editor.md\n```\n"
+    )
+}
+
+#[test]
+fn five_forced_compactions_stay_bounded() {
+    let budget = COMPACTION_SUMMARY_MAX_TOKENS as usize;
+    let ceiling = budget + budget / 10; // budget x 1.1
+
+    let mut raw_sizes = Vec::new();
+    let mut out_sizes = Vec::new();
+
+    for round in 0..5 {
+        let raw = summary_of_round(round);
+        let raw_tokens = crate::brain::tokenizer::count_tokens(&raw);
+
+        // The pre-fix reality: the raw document is over budget in every round.
+        // If this stops holding, the fixture has gone slack and the guard would
+        // be a no-op on it — the test would prove nothing.
+        assert!(
+            raw_tokens > budget,
+            "round {round}: the raw document must exceed the budget \
+             ({raw_tokens} vs {budget}), or the guard is never exercised"
+        );
+
+        let out = AgentService::enforce_summary_budget(raw, budget);
+        let out_tokens = crate::brain::tokenizer::count_tokens(&out);
+
+        assert!(
+            out_tokens <= ceiling,
+            "round {round}: the guarded document must fit budget x1.1 \
+             ({out_tokens} > {ceiling}) — this is the #474 spiral, uncapped"
+        );
+
+        raw_sizes.push(raw_tokens);
+        out_sizes.push(out_tokens);
+    }
+
+    // The spiral's shape, asserted on the INPUT side: the raw rounds grow.
+    for w in raw_sizes.windows(2) {
+        assert!(
+            w[1] > w[0],
+            "the fixture's raw rounds must grow round over round: {raw_sizes:?}"
+        );
+    }
+
+    // ...and the property the fix exists to provide: the OUTPUT series does not
+    // grow. Pre-fix this is exactly `raw_sizes` (the guard is absent, so the raw
+    // document is the output), which grows monotonically — so this assertion is
+    // what fails on the base commit.
+    assert!(
+        !out_sizes.windows(2).all(|w| w[1] > w[0]),
+        "the guarded series must not grow monotonically round over round \
+         (pre-fix it did: {out_sizes:?})"
+    );
+    assert!(
+        out_sizes.iter().all(|&s| s <= ceiling),
+        "every guarded round must be bounded ({out_sizes:?} vs ceiling {ceiling})"
+    );
+}
