@@ -111,15 +111,51 @@ fn enclosing(spans: &[Span], pos: usize) -> Option<&Span> {
         .min_by_key(|s| s.end - s.start)
 }
 
-/// Byte offsets of every bare `{e}` in `src`.
+/// Byte offsets of every bare `{e}` that sits in code rather than in prose.
+///
+/// A comment naming the flag is documentation, not a log line that dropped the
+/// chain: #1893 wrote "bare `{e}`" into the doc comment on
+/// `alert_tick_failure` and the count went to 3, so the scan has to read what
+/// it counts. Covers line and doc comments; a `//` inside a string literal does
+/// not start one, so the walk tracks quotes the same way `close_paren` does.
 fn bare_error_args(src: &str) -> Vec<usize> {
     let mut out = Vec::new();
     let mut from = 0usize;
     while let Some(rel) = src[from..].find("{e}") {
-        out.push(from + rel);
-        from += rel + 3;
+        let pos = from + rel;
+        let line_start = src[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        if !commented_before(src, line_start, pos) {
+            out.push(pos);
+        }
+        from = pos + 3;
     }
     out
+}
+
+/// True when a `//` marker sits between `line_start` and `pos` outside any
+/// string literal, meaning `pos` is prose and not a format string.
+fn commented_before(src: &str, line_start: usize, pos: usize) -> bool {
+    let b = &src.as_bytes()[line_start..pos];
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut i = 0usize;
+    while i < b.len() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b[i] == b'\\' {
+                escaped = true;
+            } else if b[i] == b'"' {
+                in_string = false;
+            }
+        } else if b[i] == b'"' {
+            in_string = true;
+        } else if b[i] == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 fn line_of(src: &str, pos: usize) -> usize {
