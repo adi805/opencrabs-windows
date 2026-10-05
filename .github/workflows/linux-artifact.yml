@@ -1,0 +1,116 @@
+name: Linux binary (artifact)
+
+# Why this file exists: nothing in this repo produces a Linux BINARY a human
+# can run. ci.yml proves the crate compiles and tests on Linux, and
+# windows-artifact.yml ships a Windows exe, but the Discord UX series (#1880)
+# landed 11 PRs that only ever saw a compiler: every claim about what renders
+# on screen - the plan card, the honest settle line, the evidence footer, the
+# silence warning - is still unobserved. The hosts that would run it
+# (Debian/Ubuntu 24.04 boxes) cannot build it: 4GB RAM and a standing rule
+# against compiling there. GitHub's Ubuntu runner is the free 16GB box that
+# can, and this job is the missing hand-off step.
+#
+# Deliberately a NEW file rather than a step in ci.yml: ci.yml is being edited
+# by the other PRs in this series, and a new path cannot conflict with them or
+# restart their in-flight runs. Same rationale as windows-artifact.yml.
+#
+# It deliberately does NOT dispatch release.yml: that file carries
+# `publish-crate` (a live crates.io push) and `create-release`, so dispatching
+# it from a fork is live-fire.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/linux-artifact]
+
+jobs:
+  linux-x64:
+    name: Build Linux x64 binary
+    # Pinned, not ubuntu-latest: the artifact has to run on the Ubuntu 24.04
+    # hosts it is built for, and the glibc a binary links against is the
+    # runner's. Pinning keeps that contract explicit instead of inheriting
+    # whatever `latest` rolls to next.
+    runs-on: ubuntu-24.04
+    # A cold --all-features build (llama's cmake C++ plus the thin-LTO link) is
+    # the long pole; warm from rust-cache it lands far lower.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux toolchain extras
+        # libasound2-dev: the audio features link ALSA (same install as
+        # release.yml's Linux leg). mold + clang: the linker ci.yml's test job
+        # uses, which keeps the link off the critical path.
+        run: sudo apt-get update -qq && sudo apt-get install -y libasound2-dev mold clang
+
+      - name: Install Rust (pinned by rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      # No `save-if` restriction: this job runs on PRs and workflow_dispatch
+      # only, so a refs/heads/main-only save-if would never fire and the cache
+      # would stay cold forever. That is exactly the bug that rode ci.yml's
+      # build job against the 40m cap until #50 fixed it.
+      - uses: swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build (same profile and flags as ci.yml's build job)
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+        run: cargo build --locked --profile ci --target x86_64-unknown-linux-gnu --all-features
+
+      - name: Smoke (execute it before shipping it)
+        shell: bash
+        run: |
+          # Actions bash runs with -e: guard the substitution so a failing
+          # binary still prints its stderr instead of dying silently (#1759).
+          set +e
+          ver=$(./target/x86_64-unknown-linux-gnu/ci/opencrabs --version 2>&1)
+          status=$?
+          set -e
+          echo "exit=$status version=$ver"
+          [ "$status" -eq 0 ] || exit 1
+          echo "$ver" | grep -qi opencrabs
+
+      # `--version` returns from argument parsing, before profile setup and
+      # logging init run, so it cannot catch an init-time failure. This drives
+      # a real non-TUI subcommand instead. It is bounded by `timeout` and
+      # non-fatal on purpose: a fresh runner home has no config, and an
+      # unvalidated probe must not be able to block the artifact. Read it as
+      # evidence, not as a gate.
+      - name: Init probe (non-TUI subcommand, informational)
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          out=$(timeout 60 ./target/x86_64-unknown-linux-gnu/ci/opencrabs doctor status 2>&1)
+          status=$?
+          set -e
+          echo "exit=$status"
+          echo "$out" | head -40
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencrabs-linux-x64
+          path: target/x86_64-unknown-linux-gnu/ci/opencrabs
+          if-no-files-found: error
+          retention-days: 30
+
+      # Runs AFTER the upload on purpose: the artifact is the deliverable, so
+      # nothing below can stop it being produced. This slice is the receipt for
+      # the series that built the binary - governor, settle outcome, plan card,
+      # silence warning, ack reaction, evidence footer, long-answer pager. The
+      # full suite already runs in ci.yml's Test job; this one is scoped to the
+      # surface the artifact exists to exercise.
+      - name: Scoped tests (the Discord surface this artifact is for)
+        shell: bash
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+        run: |
+          cargo test --locked --profile ci --target x86_64-unknown-linux-gnu --all-features \
+            --lib discord
