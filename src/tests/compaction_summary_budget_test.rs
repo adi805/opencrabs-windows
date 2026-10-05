@@ -7,16 +7,20 @@
 //! markers written that day exceeded a 3 000-token budget (mean 27.8 KB,
 //! max 69.2 KB), and the worst session compacted 59 times in one day.
 //!
-//! Both sides now derive from `COMPACTION_SUMMARY_MAX_TOKENS`. This test is the
-//! drift guard: it fails if either side re-acquires a literal, which is the one
-//! edit that silently restores the 4.44x disagreement.
+//! Both sides now derive from the same arithmetic: the DOCUMENT budget
+//! (`COMPACTION_SUMMARY_MAX_TOKENS`) plus a reasoning allowance for the request
+//! (#1933). This test is the drift guard: it fails if either side re-acquires a
+//! literal, which is the one edit that silently restores the 4.44x disagreement.
 
 use crate::brain::agent::service::context::parse_context_manifest;
 use crate::brain::agent::service::request_budget::{
     compaction_summary_input_reserve, compaction_summary_output_tokens,
-    COMPACTION_SUMMARY_MAX_TOKENS,
+    compaction_summary_request_allowance, COMPACTION_SUMMARY_MAX_TOKENS,
+    COMPACTION_SUMMARY_REASONING_HEADROOM_TOKENS,
 };
 use crate::brain::agent::service::AgentService;
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::SubscriberExt;
 
 /// The input reserve must COVER the output allowance.
 ///
@@ -24,27 +28,41 @@ use crate::brain::agent::service::AgentService;
 #[test]
 fn the_input_reserve_covers_the_output_allowance() {
     let reserve = compaction_summary_input_reserve();
-    let allowance = compaction_summary_output_tokens() as usize;
+    let allowance = compaction_summary_request_allowance() as usize;
     assert!(
         reserve > allowance,
         "input reserve ({reserve}) must exceed the summariser's output allowance \
          ({allowance}): a reserve smaller than the allowance hands the summariser \
          more input than the context window can hold (#1930)"
     );
+    // #1933: the request allowance must be LARGER than the document budget, or
+    // the reasoning is billed inside the document and truncates it.
+    assert!(
+        allowance > compaction_summary_output_tokens() as usize,
+        "the request allowance ({allowance}) must exceed the document budget \
+         ({}): equal values are exactly what cut the document at source (#1933)",
+        compaction_summary_output_tokens()
+    );
 }
 
-/// The reserve is the budget plus prompt headroom, and nothing else.
+/// The reserve is the request allowance plus prompt headroom, and nothing else.
 #[test]
 fn the_reserve_is_derived_from_the_one_constant() {
     assert_eq!(
         compaction_summary_output_tokens(),
         COMPACTION_SUMMARY_MAX_TOKENS,
-        "the summariser's allowance must BE the shared constant"
+        "the DOCUMENT budget must BE the shared constant"
     );
-    let headroom = compaction_summary_input_reserve() - compaction_summary_output_tokens() as usize;
+    assert_eq!(
+        compaction_summary_request_allowance(),
+        COMPACTION_SUMMARY_MAX_TOKENS + COMPACTION_SUMMARY_REASONING_HEADROOM_TOKENS,
+        "the request allowance must be the document budget plus the reasoning headroom (#1933)"
+    );
+    let headroom =
+        compaction_summary_input_reserve() - compaction_summary_request_allowance() as usize;
     assert_eq!(
         headroom, 1_000,
-        "the reserve must be the summary budget plus the prompt headroom"
+        "the reserve must be the request allowance plus the prompt headroom"
     );
 }
 
@@ -63,12 +81,18 @@ fn both_call_sites_derive_from_the_constant() {
         "context.rs must not carry a hard-coded output reserve literal (#1930)"
     );
     assert!(
-        context_src.contains("compaction_summary_output_tokens()"),
-        "the manual /compact call site must pass the shared output budget"
+        context_src.contains("compaction_summary_request_allowance()"),
+        "the manual /compact call site must pass the shared REQUEST allowance (#1933)"
     );
     assert!(
-        compaction_src.contains("compaction_summary_output_tokens()"),
-        "the background compaction call site must pass the shared output budget"
+        compaction_src.contains("compaction_summary_request_allowance()"),
+        "the background compaction call site must pass the shared REQUEST allowance (#1933)"
+    );
+    // The trim guard still enforces the DOCUMENT budget, not the request
+    // allowance: a generous allowance is safe only because the guard trims.
+    assert!(
+        context_src.contains("compaction_summary_output_tokens()"),
+        "the trim guard must keep trimming to the DOCUMENT budget (#1933)"
     );
 }
 
@@ -378,5 +402,167 @@ fn five_forced_compactions_stay_bounded() {
     assert!(
         out_sizes.iter().all(|&s| s <= ceiling),
         "every guarded round must be bounded ({out_sizes:?} vs ceiling {ceiling})"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Visibility (#1933): a SHORT document can still be INCOMPLETE.
+//
+// The guard used to return early when `before <= budget`, so the one failure
+// that removes the load-bearing blocks — a summariser cut at source
+// (`stop_reason = MaxTokens`) — was exactly the one it never inspected. The
+// first real compaction on the live box after #1930 shipped wrote a 4 134-byte
+// marker with no `context-manifest` fence at all: under budget, and unseen.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Default)]
+struct EventCapture {
+    events: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+}
+
+impl EventCapture {
+    fn warns(&self) -> Vec<String> {
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(level, _)| level == "WARN")
+            .map(|(_, message)| message.clone())
+            .collect()
+    }
+}
+
+impl<S: tracing::Subscriber> Layer<S> for EventCapture {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let mut visitor = MessageVisitor::default();
+        event.record(&mut visitor);
+        self.events.lock().unwrap().push((
+            event.metadata().level().to_string(),
+            visitor.message.unwrap_or_default(),
+        ));
+    }
+}
+
+#[derive(Default)]
+struct MessageVisitor {
+    message: Option<String>,
+}
+
+impl tracing::field::Visit for MessageVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = Some(format!("{value:?}"));
+        }
+    }
+}
+
+/// A fence-less document that FITS the budget must still WARN.
+///
+/// This is the live regression inverted: the marker that lost its fence was
+/// under budget, so the old guard returned without looking.
+#[test]
+fn an_under_budget_document_without_a_fence_warns() {
+    let doc = "## 0. IMMEDIATE TASK\n**Obligation status: OPEN**\n\
+               CONTINUE THIS TASK: it was cut before the manifest was written.\n";
+    let tokens = crate::brain::tokenizer::count_tokens(doc);
+    assert!(
+        tokens <= COMPACTION_SUMMARY_MAX_TOKENS as usize,
+        "the fixture must fit the budget ({tokens} > {}), or it takes the trim \
+         path and proves nothing about the early return (#1933)",
+        COMPACTION_SUMMARY_MAX_TOKENS
+    );
+
+    let capture = EventCapture::default();
+    let subscriber = tracing_subscriber::registry().with(capture.clone());
+    let out = tracing::subscriber::with_default(subscriber, || {
+        AgentService::enforce_summary_budget(
+            doc.to_string(),
+            COMPACTION_SUMMARY_MAX_TOKENS as usize,
+        )
+    });
+
+    assert_eq!(
+        out, doc,
+        "an under-budget document is still returned unchanged"
+    );
+    let warns = capture.warns();
+    assert!(
+        warns.iter().any(|m| m.contains("context-manifest")),
+        "a fence-less under-budget document must WARN (#1933); captured: {warns:?}"
+    );
+}
+
+/// A complete under-budget document stays silent: the new check must not turn
+/// every normal compaction into a warning.
+#[test]
+fn a_complete_under_budget_document_does_not_warn() {
+    let doc = "## 0. IMMEDIATE TASK\n**Obligation status: OPEN**\n\
+               CONTINUE THIS TASK: keep going.\n\n\
+               ## 10. Context Manifest\n```context-manifest\n\
+               active_skills:\n  - opencrabs-dev\n```\n";
+    let capture = EventCapture::default();
+    let subscriber = tracing_subscriber::registry().with(capture.clone());
+    let _out = tracing::subscriber::with_default(subscriber, || {
+        AgentService::enforce_summary_budget(
+            doc.to_string(),
+            COMPACTION_SUMMARY_MAX_TOKENS as usize,
+        )
+    });
+
+    assert!(
+        capture.warns().is_empty(),
+        "a complete under-budget document must not warn; captured: {:?}",
+        capture.warns()
+    );
+}
+
+/// A `MaxTokens` stop is a truncated document, whatever its token count reads.
+#[test]
+fn a_maxtokens_stop_warns_that_the_document_is_truncated() {
+    let usage = crate::brain::provider::TokenUsage {
+        output_tokens: 3_000,
+        reasoning_tokens: 1_842,
+        ..Default::default()
+    };
+
+    let capture = EventCapture::default();
+    let subscriber = tracing_subscriber::registry().with(capture.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        AgentService::warn_if_summary_truncated(
+            Some(crate::brain::provider::StopReason::MaxTokens),
+            &usage,
+        );
+    });
+
+    let warns = capture.warns();
+    assert!(
+        warns
+            .iter()
+            .any(|m| m.contains("MaxTokens") && m.contains("#1933")),
+        "a MaxTokens stop must WARN that the document is truncated (#1933); captured: {warns:?}"
+    );
+}
+
+/// A normal end-of-turn stop is not a truncation and must not warn.
+#[test]
+fn an_endturn_stop_does_not_warn() {
+    let usage = crate::brain::provider::TokenUsage::default();
+    let capture = EventCapture::default();
+    let subscriber = tracing_subscriber::registry().with(capture.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        AgentService::warn_if_summary_truncated(
+            Some(crate::brain::provider::StopReason::EndTurn),
+            &usage,
+        );
+    });
+
+    assert!(
+        capture.warns().is_empty(),
+        "an EndTurn stop is not a truncation; captured: {:?}",
+        capture.warns()
     );
 }
