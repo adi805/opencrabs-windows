@@ -569,28 +569,40 @@ pub(crate) fn extract_section_headers(content: &str) -> Vec<String> {
 /// are never touched, because those may be deliberate customisations. This is
 /// what carries new model pricing (#816, #817) into a live install without
 /// resetting rates the user set themselves.
+///
+/// Keys the user DELETED are the exception the additive rule cannot express:
+/// a removed table is indistinguishable from one that was never there, so it
+/// would be re-added every sync. `rsi/pruned.toml`'s `toml_keys` list records
+/// those dotted paths and they are denied here.
 fn sync_toml_file(
     local_path: &Path,
     filename: &str,
     local_content: &str,
     upstream_content: &str,
 ) -> FileSyncResult {
-    let (merged, report) =
-        match crate::brain::toml_merge::merge_additive(local_content, upstream_content) {
-            Ok(v) => v,
-            Err(e) => {
-                // A malformed file on either side leaves the local one untouched.
-                // Rewriting a working config from a broken template would be worse
-                // than skipping the update.
-                return FileSyncResult {
-                    filename: filename.to_string(),
-                    synced: false,
-                    sections_added: 0,
-                    error: Some(format!("{filename}: {e}")),
-                    bailed_for_cap: None,
-                };
-            }
-        };
+    // Dotted key paths the user deleted from this file (recorded in
+    // `rsi/pruned.toml`) are denied to the additive merge, so a section
+    // removed on purpose is not silently restored by the next sync.
+    let deny = crate::brain::rsi_pruned::PrunedState::load().toml_keys_for(filename);
+    let (merged, report) = match crate::brain::toml_merge::merge_additive_with_deny(
+        local_content,
+        upstream_content,
+        &deny,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            // A malformed file on either side leaves the local one untouched.
+            // Rewriting a working config from a broken template would be worse
+            // than skipping the update.
+            return FileSyncResult {
+                filename: filename.to_string(),
+                synced: false,
+                sections_added: 0,
+                error: Some(format!("{filename}: {e}")),
+                bailed_for_cap: None,
+            };
+        }
+    };
 
     if report.is_empty() {
         tracing::debug!("RSI sync: {filename} has no new keys, skipping");

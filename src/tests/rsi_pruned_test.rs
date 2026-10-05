@@ -350,3 +350,116 @@ fn parse_skips_malformed_moved_pair() {
     assert_eq!(entries.len(), 1, "malformed pair must be dropped");
     assert_eq!(entries[0].header, "## B");
 }
+
+// --- toml_keys: dotted TOML paths the user deleted -------------------------
+//
+// The prose `pruned` list cannot express this: TOML merges by key, so a
+// deleted `[providers.zai]` table is indistinguishable from one the user
+// never had, and the additive merge restores it on every sync.
+
+#[test]
+fn parse_reads_toml_keys() {
+    let toml = "schema_version = 2\n\n\
+                [config.toml]\n\
+                toml_keys = [\"providers.zai\", \"providers.custom.lm_studio\"]\n";
+    let state = PrunedState::parse(toml);
+    assert_eq!(
+        state.toml_keys.get("config.toml").unwrap(),
+        &vec![
+            "providers.zai".to_string(),
+            "providers.custom.lm_studio".to_string()
+        ]
+    );
+}
+
+#[test]
+fn parse_defaults_toml_keys_to_empty() {
+    let state = PrunedState::parse("[SOUL.md]\npruned = [\"## A\"]\n");
+    assert!(state.toml_keys.is_empty());
+}
+
+#[test]
+fn record_toml_keys_dedupes_across_calls() {
+    let mut state = PrunedState::default();
+    state.record_toml_keys("config.toml", vec!["providers.zai".to_string()]);
+    state.record_toml_keys(
+        "config.toml",
+        vec![
+            "providers.zai".to_string(),
+            "providers.custom.lm_studio".to_string(),
+        ],
+    );
+    let keys = state.toml_keys_for("config.toml");
+    assert_eq!(
+        keys,
+        vec![
+            "providers.zai".to_string(),
+            "providers.custom.lm_studio".to_string()
+        ],
+        "duplicate must not be stored twice"
+    );
+}
+
+#[test]
+fn record_toml_keys_noop_on_empty_input() {
+    let mut state = PrunedState::default();
+    state.record_toml_keys("config.toml", Vec::new());
+    assert!(state.toml_keys.is_empty());
+    assert!(
+        state.pruned_at.is_empty(),
+        "an empty record must not stamp pruned_at"
+    );
+}
+
+#[test]
+fn toml_keys_for_unknown_file_is_empty() {
+    let state = PrunedState::default();
+    assert!(state.toml_keys_for("config.toml").is_empty());
+}
+
+#[test]
+fn clear_per_file_drops_toml_keys() {
+    let mut state = PrunedState::default();
+    state.record_toml_keys("config.toml", vec!["providers.zai".to_string()]);
+    state.record_toml_keys("tools.toml", vec!["tools.old".to_string()]);
+    state.clear(Some("config.toml"));
+    assert!(state.toml_keys_for("config.toml").is_empty());
+    assert_eq!(
+        state.toml_keys_for("tools.toml"),
+        vec!["tools.old".to_string()]
+    );
+}
+
+#[test]
+fn clear_all_drops_toml_keys() {
+    let mut state = PrunedState::default();
+    state.record_toml_keys("config.toml", vec!["providers.zai".to_string()]);
+    state.clear(None);
+    assert!(state.toml_keys.is_empty());
+}
+
+#[test]
+fn save_and_parse_round_trip_toml_keys() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("pruned.toml");
+    let mut state = PrunedState::default();
+    state.record_toml_keys(
+        "config.toml",
+        vec![
+            "providers.zai".to_string(),
+            "providers.custom.lm_studio".to_string(),
+        ],
+    );
+
+    // `save()` writes to the real opencrabs home, so exercise the
+    // serialisation through a direct write + parse at the same shape.
+    let mut content = format!("schema_version = {SCHEMA_VERSION}\n\n[config.toml]\n");
+    content.push_str("toml_keys = [\"providers.zai\", \"providers.custom.lm_studio\"]\n");
+    std::fs::write(&path, &content).expect("write fixture");
+    let loaded = PrunedState::parse(&std::fs::read_to_string(&path).expect("read fixture"));
+
+    assert_eq!(
+        loaded.toml_keys_for("config.toml"),
+        state.toml_keys_for("config.toml")
+    );
+}

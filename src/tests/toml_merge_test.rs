@@ -110,3 +110,158 @@ fn nested_additions_reach_inside_existing_tables() {
     assert!(merged.contains("b = 2"), "{merged}");
     assert_eq!(report.added, vec!["providers.qwen.entries.b"]);
 }
+
+// --- Deny list (rsi/pruned.toml `toml_keys`) -------------------------------
+//
+// Additive merging cannot tell "the user never had this" from "the user
+// deleted this". A retired provider kept coming back on every sync until
+// deleted paths could be named explicitly and skipped.
+
+use crate::brain::toml_merge::merge_additive_with_deny;
+
+#[test]
+fn a_denied_table_is_not_added_back() {
+    // The load-bearing case: `[providers.zai]` was deleted on purpose.
+    let local = "[agent]\nname = \"x\"\n";
+    let upstream = "[agent]\nname = \"x\"\n\n[providers.zai]\nkey = \"placeholder\"\n";
+
+    let deny = ["providers.zai".to_string()];
+    let (merged, report) = merge_additive_with_deny(local, upstream, &deny).unwrap();
+
+    assert!(
+        !merged.contains("providers.zai"),
+        "denied table came back: {merged}"
+    );
+    assert!(!merged.contains("placeholder"), "{merged}");
+    assert!(
+        report.is_empty(),
+        "nothing should be reported added: {report:?}"
+    );
+    merged
+        .parse::<toml_edit::DocumentMut>()
+        .expect("merged output must be valid TOML");
+}
+
+#[test]
+fn a_denied_table_denies_its_whole_subtree() {
+    // Denying a table must cover nested tables under it, not just the key.
+    let local = "[agent]\nname = \"x\"\n";
+    let upstream = "[agent]\nname = \"x\"\n\n[providers.zai.deep]\ninner = 1\n";
+
+    let deny = ["providers.zai".to_string()];
+    let (merged, _) = merge_additive_with_deny(local, upstream, &deny).unwrap();
+
+    assert!(!merged.contains("providers.zai"), "{merged}");
+    assert!(!merged.contains("inner"), "{merged}");
+}
+
+#[test]
+fn a_denied_path_does_not_block_its_siblings() {
+    // Only the named path is skipped: a new provider must still arrive.
+    let local = "[agent]\nname = \"x\"\n";
+    let upstream =
+        "[agent]\nname = \"x\"\n\n[providers.zai]\nkey = \"p\"\n\n[providers.qwen]\nrate = 2.5\n";
+
+    let deny = ["providers.zai".to_string()];
+    let (merged, report) = merge_additive_with_deny(local, upstream, &deny).unwrap();
+
+    assert!(!merged.contains("providers.zai"), "{merged}");
+    assert!(
+        merged.contains("[providers.qwen]"),
+        "sibling must still merge: {merged}"
+    );
+    assert_eq!(report.added, vec!["providers"]);
+}
+
+#[test]
+fn an_empty_deny_list_keeps_the_additive_behaviour() {
+    // `merge_additive` is `merge_additive_with_deny(.., &[])`; the two must
+    // not drift, so pin the equivalence.
+    let local = "[providers.qwen]\nglm = 1.0\n";
+    let upstream = "[providers.qwen]\nglm = 1.0\nqwen38max = 2.5\n";
+
+    let (a, ra) = merge_additive(local, upstream).unwrap();
+    let (b, rb) = merge_additive_with_deny(local, upstream, &[]).unwrap();
+    assert_eq!(a, b);
+    assert_eq!(ra, rb);
+}
+
+#[test]
+fn denying_a_path_that_is_absent_changes_nothing() {
+    let local = "[providers.qwen]\nglm = 1.0\n";
+    let upstream = "[providers.qwen]\nglm = 1.0\nqwen38max = 2.5\n";
+
+    let deny = ["providers.nonexistent".to_string()];
+    let (merged, report) = merge_additive_with_deny(local, upstream, &deny).unwrap();
+
+    assert!(merged.contains("qwen38max"), "{merged}");
+    assert_eq!(report.added, vec!["providers.qwen.qwen38max"]);
+}
+
+#[test]
+fn denying_a_leaf_key_skips_only_that_key() {
+    // A leaf deny must not take its parent table with it.
+    let local = "[providers.qwen]\nglm = 1.0\n";
+    let upstream = "[providers.qwen]\nglm = 1.0\nqwen38max = 2.5\n";
+
+    let deny = ["providers.qwen.qwen38max".to_string()];
+    let (merged, report) = merge_additive_with_deny(local, upstream, &deny).unwrap();
+
+    assert!(!merged.contains("qwen38max"), "{merged}");
+    assert!(merged.contains("glm = 1.0"), "{merged}");
+    assert!(report.is_empty(), "{report:?}");
+}
+
+#[test]
+fn a_denied_value_is_not_added_back() {
+    // Same rule at a non-table key: a scalar the user removed stays removed.
+    let local = "[agent]\nname = \"x\"\n";
+    let upstream = "[agent]\nname = \"x\"\nlegacy_flag = true\n";
+
+    let deny = ["agent.legacy_flag".to_string()];
+    let (merged, report) = merge_additive_with_deny(local, upstream, &deny).unwrap();
+
+    assert!(!merged.contains("legacy_flag"), "{merged}");
+    assert!(report.is_empty(), "{report:?}");
+}
+
+#[test]
+fn a_denied_nested_path_is_pruned_even_when_its_parent_is_new() {
+    // The parent table `providers` does not exist locally either, so the
+    // merge never descends into the clone. The deny list must still apply.
+    let local = "[agent]\nname = \"x\"\n";
+    let upstream = "[agent]\nname = \"x\"\n\n\
+                    [providers.custom.lm_studio]\nkey = \"p\"\n\n\
+                    [providers.custom.inferhub]\nkey2 = \"q\"\n";
+
+    let deny = ["providers.custom.lm_studio".to_string()];
+    let (merged, report) = merge_additive_with_deny(local, upstream, &deny).unwrap();
+
+    assert!(
+        !merged.contains("lm_studio"),
+        "denied child came back: {merged}"
+    );
+    assert!(
+        merged.contains("inferhub"),
+        "sibling must survive: {merged}"
+    );
+    assert_eq!(report.added, vec!["providers"]);
+    merged
+        .parse::<toml_edit::DocumentMut>()
+        .expect("merged output must be valid TOML");
+}
+
+#[test]
+fn a_wholly_denied_new_subtree_is_not_inserted() {
+    // Every key of the new subtree is denied: the empty parent must not be
+    // inserted either, or the file gains a bare `[providers]` header.
+    let local = "[agent]\nname = \"x\"\n";
+    let upstream = "[agent]\nname = \"x\"\n\n[providers.zai]\nkey = \"p\"\n";
+
+    let deny = ["providers.zai".to_string()];
+    let (merged, report) = merge_additive_with_deny(local, upstream, &deny).unwrap();
+
+    assert!(!merged.contains("providers"), "{merged}");
+    assert!(report.is_empty(), "{report:?}");
+    assert_eq!(merged, local, "nothing should have changed: {merged}");
+}

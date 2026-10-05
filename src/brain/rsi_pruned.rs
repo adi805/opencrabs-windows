@@ -68,6 +68,15 @@ pub struct PrunedState {
     /// destination doesn't exist (e.g. user later deleted it, the
     /// upstream renamed it, or the destination was never created).
     pub moved: HashMap<String, Vec<MovedEntry>>,
+    /// Map from filename (e.g. "config.toml") to dotted TOML key paths
+    /// (e.g. `providers.zai`) the user deleted and sync must not re-add.
+    ///
+    /// The prose `pruned` list cannot express this: TOML merges by key,
+    /// not by `## ` header, so a deleted `[providers.zai]` table looks
+    /// identical to one the user never had and the additive merge
+    /// faithfully restores it. Recorded paths are handed to
+    /// `toml_merge::merge_additive_with_deny` as the deny list.
+    pub toml_keys: HashMap<String, Vec<String>>,
 }
 
 impl Default for PrunedState {
@@ -77,6 +86,7 @@ impl Default for PrunedState {
             pruned: HashMap::new(),
             pruned_at: HashMap::new(),
             moved: HashMap::new(),
+            toml_keys: HashMap::new(),
         }
     }
 }
@@ -115,6 +125,7 @@ impl PrunedState {
             pruned: HashMap::new(),
             pruned_at: HashMap::new(),
             moved: HashMap::new(),
+            toml_keys: HashMap::new(),
         };
         let mut current_file: Option<String> = None;
         // `moved` arrays can span multiple lines (one pair per row), so
@@ -173,6 +184,12 @@ impl PrunedState {
                     let headers = Self::parse_string_array(value);
                     if !headers.is_empty() {
                         state.pruned.insert(file.clone(), headers);
+                    }
+                } else if key == "toml_keys" {
+                    // Dotted TOML paths the user deleted from this file.
+                    let keys = Self::parse_string_array(value);
+                    if !keys.is_empty() {
+                        state.toml_keys.insert(file.clone(), keys);
                     }
                 } else if key == "moved" {
                     // Single-line case: closes on same line.
@@ -294,20 +311,24 @@ impl PrunedState {
         );
 
         // Stable order: union of all filenames that have any entry across
-        // pruned / pruned_at / moved, sorted alphabetically. A file with
-        // only a `moved` entry (no `pruned`) still gets its section.
+        // pruned / pruned_at / moved / toml_keys, sorted alphabetically. A
+        // file with only a `moved` or `toml_keys` entry (no `pruned`) still
+        // gets its section.
         let mut files: HashSet<&String> = HashSet::new();
         files.extend(self.pruned.keys());
         files.extend(self.pruned_at.keys());
         files.extend(self.moved.keys());
+        files.extend(self.toml_keys.keys());
         let mut files: Vec<&String> = files.into_iter().collect();
         files.sort();
 
         for file in files {
             let pruned_headers = self.pruned.get(file);
             let moved_pairs = self.moved.get(file);
+            let toml_keys = self.toml_keys.get(file);
             let has_any = pruned_headers.map(|h| !h.is_empty()).unwrap_or(false)
-                || moved_pairs.map(|m| !m.is_empty()).unwrap_or(false);
+                || moved_pairs.map(|m| !m.is_empty()).unwrap_or(false)
+                || toml_keys.map(|k| !k.is_empty()).unwrap_or(false);
             if !has_any {
                 continue;
             }
@@ -319,6 +340,17 @@ impl PrunedState {
                 let escaped: Vec<String> = headers
                     .iter()
                     .map(|h| format!("\"{}\"", h.replace('\\', "\\\\").replace('"', "\\\"")))
+                    .collect();
+                content.push_str(&escaped.join(", "));
+                content.push_str("]\n");
+            }
+            if let Some(keys) = toml_keys
+                && !keys.is_empty()
+            {
+                content.push_str("toml_keys = [");
+                let escaped: Vec<String> = keys
+                    .iter()
+                    .map(|k| format!("\"{}\"", k.replace('\\', "\\\\").replace('"', "\\\"")))
                     .collect();
                 content.push_str(&escaped.join(", "));
                 content.push_str("]\n");
@@ -381,18 +413,44 @@ impl PrunedState {
     }
 
     /// Clear all pruned entries for a file (or all files if filename is None).
-    /// Also clears `moved` entries for the same scope so a single
-    /// "forget about this file" action resets both lists in one call.
+    /// Also clears `moved` and `toml_keys` entries for the same scope so a
+    /// single "forget about this file" action resets every list in one call.
     pub fn clear(&mut self, filename: Option<&str>) {
         if let Some(f) = filename {
             self.pruned.remove(f);
             self.pruned_at.remove(f);
             self.moved.remove(f);
+            self.toml_keys.remove(f);
         } else {
             self.pruned.clear();
             self.pruned_at.clear();
             self.moved.clear();
+            self.toml_keys.clear();
         }
+    }
+
+    /// Record dotted TOML key paths the user deleted from `filename`, so
+    /// the additive merge does not re-add them on the next sync. Merges
+    /// with existing entries (no duplicates). No-op when `keys` is empty.
+    pub fn record_toml_keys(&mut self, filename: &str, keys: Vec<String>) {
+        if keys.is_empty() {
+            return;
+        }
+        let entry = self.toml_keys.entry(filename.to_string()).or_default();
+        for k in keys {
+            if !entry.contains(&k) {
+                entry.push(k);
+            }
+        }
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.pruned_at.insert(filename.to_string(), now);
+    }
+
+    /// Dotted TOML key paths denied for `filename`, in insertion order.
+    /// Empty when the file has none, which is what `sync_toml_file` passes
+    /// to the merge as its deny list.
+    pub fn toml_keys_for(&self, filename: &str) -> Vec<String> {
+        self.toml_keys.get(filename).cloned().unwrap_or_default()
     }
 
     /// Record that the user moved headers from `source_file` to one or
