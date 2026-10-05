@@ -103,6 +103,20 @@ impl Drop for ResumePresence {
     }
 }
 
+/// Chunk `text` for the channel's send surface (#1953). Discord must stay
+/// under its message cap, split with the fence-aware splitter the ingress
+/// uses so code blocks survive the seam. Every other channel keeps the
+/// single-message path: the proven cap disease is Discord's, and inventing
+/// chunking rules for whatsapp/slack is out of scope.
+pub(crate) fn chunks_for(channel: &str, text: &str) -> Vec<String> {
+    #[cfg(feature = "discord")]
+    if channel == "discord" {
+        return crate::channels::discord::handler::split_message(text, DISCORD_MAX);
+    }
+    let _ = channel;
+    vec![text.to_string()]
+}
+
 /// Clones of the channel transports a revived turn may deliver through.
 /// Fields are feature-gated exactly like the channels themselves.
 #[derive(Clone)]
@@ -114,6 +128,12 @@ pub(crate) struct ResumeTransports {
     #[cfg(feature = "slack")]
     pub(crate) slack: Arc<crate::channels::slack::SlackState>,
 }
+
+/// Discord's message cap. Resume answers ship through the same surface as
+/// live ones, so they must be chunked by the same fence-safe splitter the
+/// ingress uses (#1953, the #1949 disease on the other resume path).
+#[cfg(feature = "discord")]
+pub(crate) const DISCORD_MAX: usize = 2000;
 
 /// Send `text` on `channel` to `target`, waiting for the transport within
 /// the bounded grace before giving up, and loudly (#1950): every skip path
@@ -149,12 +169,26 @@ pub(crate) async fn resume_send_text(
                 return ResumeSendOutcome::TransportGone;
             };
             let chan = serenity::model::id::ChannelId::new(ch_id);
-            match chan.say(&http, text).await {
-                Ok(_) => ResumeSendOutcome::Sent,
-                Err(e) => {
-                    tracing::warn!(error = %e, "[boot-resume] discord: say failed for session {session_id}");
-                    ResumeSendOutcome::SendFailed
+            // #1953: send in chunks. One `say` over the cap fails outright,
+            // and the old code lost the entire answer to that error (the
+            // #1949 disease, resume path).
+            let chunks = chunks_for(channel, text);
+            let total = chunks.len();
+            let mut send_failed = false;
+            for (index, chunk) in chunks.into_iter().enumerate() {
+                if let Err(e) = chan.say(&http, &chunk).await {
+                    send_failed = true;
+                    if index == 0 {
+                        tracing::error!(error = %e, "[boot-resume] discord: first of {total} chunks failed, the whole answer was lost for session {session_id}");
+                    } else {
+                        tracing::warn!(error = %e, "[boot-resume] discord: chunk {} of {total} failed for session {session_id}", index + 1);
+                    }
                 }
+            }
+            if send_failed {
+                ResumeSendOutcome::SendFailed
+            } else {
+                ResumeSendOutcome::Sent
             }
         }
         #[cfg(feature = "whatsapp")]
