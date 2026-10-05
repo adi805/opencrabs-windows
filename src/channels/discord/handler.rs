@@ -1112,6 +1112,13 @@ pub(crate) async fn handle_message(
     let intermediate_handles_final = intermediate_handles.clone();
     let sent_intermediates_final = sent_intermediates.clone();
 
+    // Trace mode posts no intermediate, it folds each one into the bubble
+    // as a clipped note. Keep the last folded body so the final path can
+    // deliver it when the provider returned an empty final (#1942).
+    let last_trace_body: Arc<std::sync::Mutex<Option<String>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let last_trace_body_cb = last_trace_body.clone();
+
     use serenity::model::id::MessageId;
 
     // Turn bubble id, hoisted OUT of the progress-callback block so the
@@ -1314,6 +1321,9 @@ pub(crate) async fn handle_message(
                     // dedup would then see a matching key with no id and
                     // skip the real answer entirely.
                     if trace_narration {
+                        if let Ok(mut last) = last_trace_body_cb.lock() {
+                            *last = Some(clean.clone());
+                        }
                         let gmid = group_msg_id.clone();
                         let dstate = group_state_cb.clone();
                         let http = http.clone();
@@ -1524,6 +1534,13 @@ pub(crate) async fn handle_message(
                     tracing::warn!("Discord: intermediate post task panicked: {e}");
                 }
             }
+            // CLI providers return the answer only as intermediates, which
+            // trace mode folded into notes: deliver the last one (#1942).
+            let text_only = super::trace_answer::final_text_for_delivery(
+                text_only,
+                dc_cfg.trace_narration,
+                last_trace_body.lock().ok().and_then(|mut g| g.take()),
+            );
             let skip_final_post = {
                 let posted = sent_intermediates_final.lock().await;
                 if text_only.trim().is_empty() {

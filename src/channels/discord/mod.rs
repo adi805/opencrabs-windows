@@ -29,6 +29,7 @@ mod state;
 pub(crate) mod suggest_options;
 pub(crate) mod table_convert;
 pub(crate) mod tool_group;
+pub(crate) mod trace_answer;
 pub(crate) mod typing;
 
 pub use agent::DiscordAgent;
