@@ -62,6 +62,47 @@ pub(crate) fn resume_notice_text(session_id: Uuid) -> String {
     )
 }
 
+/// TUI presence for a revived remote turn (#1951).
+///
+/// Boot recovery replays the interrupted turn directly, bypassing the
+/// channel ingress that normally emits `ChannelProcessingStarted`, so a
+/// resumed non-TUI turn had no road to the TUI at all: the session list
+/// kept showing it idle while its answer was still being generated. This
+/// guard sends the started event on creation and the finished event on
+/// drop, covering every exit path of the revived task.
+pub(crate) struct ResumePresence {
+    tx: tokio::sync::mpsc::UnboundedSender<TuiEvent>,
+    session_id: Uuid,
+}
+
+impl ResumePresence {
+    /// Announce processing for a revived turn. Rows the restarted TUI
+    /// already paints via `PendingResumed` (`tui`) return `None`; a second
+    /// badge would claim the local turn is a remote one.
+    pub(crate) fn start(
+        tx: &tokio::sync::mpsc::UnboundedSender<TuiEvent>,
+        session_id: Uuid,
+        channel: &str,
+    ) -> Option<Self> {
+        if channel == "tui" {
+            return None;
+        }
+        let _ = tx.send(TuiEvent::ChannelProcessingStarted(session_id));
+        Some(Self {
+            tx: tx.clone(),
+            session_id,
+        })
+    }
+}
+
+impl Drop for ResumePresence {
+    fn drop(&mut self) {
+        let _ = self
+            .tx
+            .send(TuiEvent::ChannelProcessingFinished(self.session_id));
+    }
+}
+
 /// Clones of the channel transports a revived turn may deliver through.
 /// Fields are feature-gated exactly like the channels themselves.
 #[derive(Clone)]
@@ -201,6 +242,11 @@ pub(crate) async fn resume_delivery_task(
     // shared across all sessions, so swapping it for one session's saved
     // provider contaminates every other session. The FallbackProvider
     // handles model remapping automatically.
+
+    // #1951: a revived turn is doing work that no surface can see until the
+    // answer lands. Paint it on the TUI's session list for the whole task;
+    // the guard's Drop fires the finished event on every exit below.
+    let _presence = ResumePresence::start(&ev_tx, session_id, &channel);
 
     // #1950: announce the recovery on the originating channel as soon as its
     // transport wakes. Telegram's streaming arm and the TUI card announce
