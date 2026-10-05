@@ -1564,6 +1564,7 @@ async fn cmd_chat_inner(
                                 else {
                                     boot_parked_tg
                                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    boot_report::record_parked();
                                     crate::brain::agent::service::restart_recovery::deliver_or_park(
                                         session_id,
                                         crate::brain::agent::QueuedUserMessage {
