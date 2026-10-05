@@ -489,8 +489,11 @@ mod cap_tests {
     #[test]
     fn marker_counts_exactly_the_dropped_rows() {
         let rendered = render_content(&probe(250, 0, true));
+        // Line 0 is the summary (`✅ **250 tool calls** · …`), which also
+        // starts with an entry icon — only the entry rows count as shown.
         let shown = rendered
             .lines()
+            .skip(1)
             .filter(|l| l.starts_with(['✅', '❌', '\u{2699}']))
             .count();
         assert!(shown > 0 && shown < 250, "clamp kept {shown} rows");
