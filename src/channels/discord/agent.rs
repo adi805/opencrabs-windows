@@ -669,32 +669,49 @@ impl EventHandler for Handler {
                 return;
             }
 
-            // Provider picker callback → show models for that provider
+            // Tool-group Expand/Collapse toggle (#380): flip stored state
+            // and update THIS message via the interaction response.
             if let Some(mid_str) = custom_id.strip_prefix("toolgroup:") {
-                // Expand/Collapse toggle (#380): flip stored state and
-                // update THIS message via the interaction response (which
-                // also acks the click).
-                if let Ok(mid) = mid_str.parse::<u64>() {
-                    if let Some(group) = self.discord_state.toggle_tool_group(mid).await {
-                        use serenity::builder::{
-                            CreateInteractionResponse, CreateInteractionResponseMessage,
-                        };
-                        let resp = CreateInteractionResponse::UpdateMessage(
+                // Every path must resolve the interaction (#1949): a bare
+                // `Acknowledge` or a skipped response leaves Discord
+                // spinning its "didn't respond in time" toast.
+                // `render_content` clamps to the 2000-char wire cap, but
+                // if the API still refuses, answer with an ephemeral
+                // fallback instead of leaving the click unresolved.
+                use serenity::builder::{
+                    CreateInteractionResponse, CreateInteractionResponseMessage,
+                };
+                let resp = match mid_str.parse::<u64>() {
+                    Ok(mid) => match self.discord_state.toggle_tool_group(mid).await {
+                        Some(group) => CreateInteractionResponse::UpdateMessage(
                             CreateInteractionResponseMessage::new()
                                 .content(super::tool_group::render_content(&group))
                                 .components(super::tool_group::render_components(&group, mid)),
-                        );
-                        if let Err(e) = comp.create_response(&ctx.http, resp).await {
-                            tracing::warn!("Discord: tool group toggle response failed: {e}");
-                        }
-                    } else {
-                        tracing::debug!("Discord: tool group {mid} aged out — toggle ignored");
-                        let _ack = comp
-                            .create_response(
-                                &ctx.http,
-                                serenity::builder::CreateInteractionResponse::Acknowledge,
+                        ),
+                        None => {
+                            tracing::debug!("Discord: tool group {mid} aged out — toggle ignored");
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .ephemeral(true)
+                                    .content("This status bubble is too old to expand."),
                             )
-                            .await;
+                        }
+                    },
+                    Err(_) => CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .ephemeral(true)
+                            .content("This status bubble is too old to expand."),
+                    ),
+                };
+                if let Err(e) = comp.create_response(&ctx.http, resp).await {
+                    tracing::warn!("Discord: tool group toggle response failed: {e}");
+                    let fallback = CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .ephemeral(true)
+                            .content("Couldn't redraw the status bubble — try again shortly."),
+                    );
+                    if let Err(e2) = comp.create_response(&ctx.http, fallback).await {
+                        tracing::warn!("Discord: tool group toggle fallback response failed: {e2}");
                     }
                 }
                 return;
