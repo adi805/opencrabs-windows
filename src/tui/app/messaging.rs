@@ -613,7 +613,14 @@ impl App {
 
     /// Trim a list of DB messages to fit within a token budget (newest messages kept).
     /// Returns (kept_messages, hidden_count).
-    fn trim_messages_to_display_budget(
+    ///
+    /// The newest message is always kept, even if it alone exceeds the
+    /// budget: the walk breaks at the first over-budget row, and without
+    /// the floor a freshly-delivered 200k+ token answer got hidden behind
+    /// the "older messages hidden" marker on session switch: the report
+    /// vanished while the live view had just shown it (#1944). Hiding the
+    /// one row the user most recently received is never the trade we want.
+    pub(crate) fn trim_messages_to_display_budget(
         msgs: &[crate::db::models::Message],
         budget: usize,
     ) -> (Vec<crate::db::models::Message>, usize) {
@@ -627,9 +634,12 @@ impl App {
             tokens += t;
             keep += 1;
         }
+        // Keep-newest floor: an over-budget newest row is still displayed.
+        keep = keep.max(if msgs.is_empty() { 0 } else { 1 });
         let hidden = msgs.len() - keep;
         (msgs[hidden..].to_vec(), hidden)
     }
+
     /// Build the dim italic history marker shown at the top of the message list.
     fn make_history_marker(count: usize) -> DisplayMessage {
         DisplayMessage {
