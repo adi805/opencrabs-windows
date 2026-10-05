@@ -34,7 +34,16 @@ fn small_plan_untouched_when_budget_exceeds_desired() {
 
 #[test]
 fn seed_strip_survives_normal_panes() {
-    // The 3-line seed strip never grows and never shrinks on a sane
-    // pane: budget 11, desired 3.
-    assert_eq!(plan_card_height(3, 24, 4, 2), 3);
+    // The 5-line seed strip (#1945, text row padded by a blank above
+    // and below) never grows and never shrinks on a sane pane: budget
+    // 11, desired 5.
+    assert_eq!(plan_card_height(5, 24, 4, 2), 5);
+}
+
+#[test]
+fn seed_strip_degrades_to_card_min_on_tiny_pane() {
+    // On a pane with no room left the strip still gets CARD_MIN rows
+    // (borders + the text row; the widget renders it tight at height 3,
+    // never dropping the message behind the padding).
+    assert_eq!(plan_card_height(5, 8, 10, 2), 3);
 }
