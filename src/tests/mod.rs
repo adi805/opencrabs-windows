@@ -985,6 +985,7 @@ pub mod rebuild_preserves_background_manager_test;
 pub mod repetition_error_message_test;
 pub mod restart_recovery_test;
 pub mod restart_replay_context_test;
+pub mod restart_resume_delivery_test;
 pub mod shell_scan_test;
 pub mod skill_gate_test;
 pub mod slack_handler_test;
