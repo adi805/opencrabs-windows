@@ -630,7 +630,6 @@ impl App {
         let hidden = msgs.len() - keep;
         (msgs[hidden..].to_vec(), hidden)
     }
-
     /// Build the dim italic history marker shown at the top of the message list.
     fn make_history_marker(count: usize) -> DisplayMessage {
         DisplayMessage {
@@ -2125,21 +2124,33 @@ impl App {
     /// Handles paths with spaces (e.g. `/home/user/My Screenshots/photo.png`)
     /// and image URLs.
     ///
-    /// Strip terminal escape sequences (CSI, SGR mouse, OSC, etc.) from text.
+    /// Strip terminal escape sequences (CSI, SGR mouse, OSC, etc.), raw ETX
+    /// bytes and ESC-less mouse-report bursts from text.
     ///
     /// These leak into paste events when switching terminal focus while mouse
-    /// capture is active (e.g. tmux pane switch, alt-tab with iTerm2).
+    /// capture is active (e.g. tmux pane switch, alt-tab with iTerm2). When a
+    /// burst is split across reads the leading `\x1b` is consumed elsewhere
+    /// and the remainder arrives as plain text (`[<35;10;102M[<35;11;102M`);
+    /// the ESC-anchored walk alone would pass those through verbatim, so the
+    /// burst pass below catches them (#1943).
     pub(crate) fn strip_terminal_escapes(text: &str) -> String {
-        // Fast path: no ESC byte means nothing to strip
-        if !text.as_bytes().contains(&0x1b) {
+        let bytes = text.as_bytes();
+        // Fast path: no ESC, no ETX and no bracket means nothing to strip
+        if !bytes.contains(&0x1b) && !bytes.contains(&0x03) && !bytes.contains(&b'[') {
             return text.to_string();
         }
 
         let mut out = String::with_capacity(text.len());
-        let bytes = text.as_bytes();
         let len = bytes.len();
         let mut i = 0;
         while i < len {
+            if bytes[i] == 0x03 {
+                // ETX (Ctrl+C) leaked as a raw byte: a split burst leaves
+                // some terminals to hand it through as a typed char and it
+                // is never legitimate input text (#1943).
+                i += 1;
+                continue;
+            }
             if bytes[i] == 0x1b {
                 // ESC — start of escape sequence (always single-byte ASCII)
                 i += 1;
@@ -2188,7 +2199,75 @@ impl App {
                 i += ch_len;
             }
         }
+        Self::strip_mouse_report_bursts(&out)
+    }
+
+    /// Drop SGR (1006) and URXVT (1015) mouse-report bursts that arrive
+    /// without their leading `\x1b`.
+    ///
+    /// When an escape read is split mid-burst, crossterm never sees the ESC
+    /// and each report lands as ordinary characters: `[<35;10;102M` (SGR)
+    /// or `[35;10;102M` (URXVT). Those strings are exactly what poisoned
+    /// the input buffer for ~22 minutes in the #1943 incident: the typed
+    /// `/cmd` ended up buried behind a wall of bursts, so slash dispatch
+    /// (`input.starts_with('/')`) never matched and no command could run.
+    ///
+    /// Matching is deliberately strict so bracketed text stays intact:
+    /// - SGR: `[<` + at least one digit and two `;` segments + final `M`/`m`
+    /// - URXVT: same coordinate shape without the `<`
+    /// - no terminator (`[<35;10;102`) or too few segments (`[3;4]`) is
+    ///   ordinary text and passes through untouched.
+    pub(crate) fn strip_mouse_report_bursts(text: &str) -> String {
+        let bytes = text.as_bytes();
+        if !bytes.contains(&b'[') {
+            return text.to_string();
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'['
+                && let Some(len) = Self::mouse_report_len(bytes, i)
+            {
+                i += len;
+                continue;
+            }
+            let ch_len = utf8_char_len(bytes[i]);
+            if i + ch_len <= bytes.len() {
+                out.push_str(&text[i..i + ch_len]);
+            }
+            i += ch_len;
+        }
         out
+    }
+
+    /// Byte length of a mouse-report burst starting at `start` (which must
+    /// point at `[`), or None when the text there is not a complete report.
+    fn mouse_report_len(bytes: &[u8], start: usize) -> Option<usize> {
+        let mut j = start + 1;
+        let sgr = bytes.get(j) == Some(&b'<');
+        if sgr {
+            j += 1;
+        }
+        let mut digits = 0usize;
+        let mut separators = 0usize;
+        while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b';') {
+            if bytes[j].is_ascii_digit() {
+                digits += 1;
+            } else {
+                separators += 1;
+            }
+            j += 1;
+        }
+        // Real reports carry button;col;row: digits and both `;` segments,
+        // closed by a press/release final byte. Anything shorter is far more
+        // likely bracketed text than a burst, so it stays.
+        if !matches!(bytes.get(j), Some(b'M') | Some(b'm')) {
+            return None;
+        }
+        if digits > 0 && separators >= 2 {
+            return Some(j + 1 - start);
+        }
+        None
     }
 
     /// Normalize invisible/zero-width Unicode characters that web pages use

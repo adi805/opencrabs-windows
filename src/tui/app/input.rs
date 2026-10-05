@@ -36,6 +36,14 @@ pub(crate) fn should_restore_cancelled_query(
 /// matches either prefix and the current char fits the continuation pattern
 /// (digits, `;`, `M`, `m`) we treat it as garbage.
 pub(crate) fn is_mouse_sequence_fragment(c: char, buf: &str, cursor: usize) -> bool {
+    // Raw ESC and ETX arriving as KeyCode::Char are never legitimate
+    // typing: crossterm reports Esc as KeyCode::Esc and Ctrl+C as a
+    // control event, so these bytes only reach the char path when an
+    // escape read was split mid-sequence, the head of exactly the
+    // bursts this filter rejects. (#1943)
+    if matches!(c, '\x1b' | '\u{3}') {
+        return true;
+    }
     // Only bother checking chars that actually appear in mouse sequences
     if !matches!(c, '[' | '<' | '>' | 'M' | 'm' | ';') && !c.is_ascii_digit() {
         return false;
@@ -1290,7 +1298,11 @@ impl App {
             return;
         }
 
-        // Plain text: normal paste.
+        // Plain text: normal paste. Strip escape sequences and mouse-report
+        // bursts first: the bracketed-paste handler already does, and a
+        // clipboard copy of a leaked sequence would otherwise poison the
+        // buffer the same way (#1943).
+        let text = Self::strip_terminal_escapes(&text);
         self.insert_text_at_cursor(&text);
     }
 
@@ -2077,6 +2089,27 @@ impl App {
         } else if keys::is_submit(&event)
             && (!self.input_buffer.trim().is_empty() || !self.attachments.is_empty())
         {
+            // Pre-send scrub (#1943): the per-char gate, the paste path and
+            // the FocusGained cleaner each have blind spots: a burst split
+            // across crossterm reads lands here verbatim, so take one more
+            // pass over the buffer before it becomes a message or a slash
+            // command. A poisoned buffer starts with `[<35;…`, which kills
+            // every `starts_with('/')` dispatch check.
+            let scrubbed = Self::strip_terminal_escapes(&self.input_buffer);
+            if scrubbed != self.input_buffer {
+                tracing::debug!(
+                    "Scrubbed {} bytes of escape garbage before send",
+                    self.input_buffer.len() - scrubbed.len()
+                );
+                self.input_buffer = scrubbed;
+                self.cursor_position = self
+                    .input_buffer
+                    .floor_char_boundary(self.cursor_position.min(self.input_buffer.len()));
+            }
+            if self.input_buffer.trim().is_empty() && self.attachments.is_empty() {
+                // Only garbage was in the buffer: swallow the submit.
+                return Ok(());
+            }
             // Check for slash commands before sending to LLM
             let content = self.input_buffer.clone();
             if self.handle_slash_command(content.trim()).await {
@@ -2496,13 +2529,19 @@ impl App {
                     self.input_history_stash = self.input_buffer.clone();
                     let idx = self.input_history.len() - 1;
                     self.input_history_index = Some(idx);
-                    self.input_buffer = self.input_history[idx].clone();
+                    // Scrub on recall: history.txt predating #1943 can
+                    // still carry a poisoned line, and Arrow-Up would
+                    // reinstate it verbatim into the buffer.
+                    self.input_buffer = Self::strip_terminal_escapes(&self.input_history[idx]);
                     self.cursor_position = self.input_buffer.len();
                 }
                 Some(idx) if idx > 0 => {
                     let idx = idx - 1;
                     self.input_history_index = Some(idx);
-                    self.input_buffer = self.input_history[idx].clone();
+                    // Scrub on recall: history.txt predating #1943 can
+                    // still carry a poisoned line, and Arrow-Up would
+                    // reinstate it verbatim into the buffer.
+                    self.input_buffer = Self::strip_terminal_escapes(&self.input_history[idx]);
                     self.cursor_position = self.input_buffer.len();
                 }
                 _ => {} // already at oldest
@@ -2516,7 +2555,7 @@ impl App {
             if idx + 1 < self.input_history.len() {
                 let idx = idx + 1;
                 self.input_history_index = Some(idx);
-                self.input_buffer = self.input_history[idx].clone();
+                self.input_buffer = Self::strip_terminal_escapes(&self.input_history[idx]);
                 self.cursor_position = self.input_buffer.len();
             } else {
                 // Past newest — restore stashed input
