@@ -293,7 +293,6 @@ fn has_obligation_status(summary: &str) -> bool {
     summary.to_lowercase().contains("obligation status")
 }
 
->>>>>>> 4a4a743c7 (fix(compaction): a structural trim guard enforces the continuation-document budget (#1930))
 impl AgentService {
     /// The per-turn plan reminder pinned at the end of the prompt, keyed to
     /// the session's plan-mode state: an Active checklist gets the task
@@ -653,7 +652,7 @@ impl AgentService {
             context.max_tokens,
             context.usage_percentage(),
             model_name.to_string(),
-            super::request_budget::compaction_summary_output_tokens(),
+            super::request_budget::compaction_summary_request_allowance(),
             self.get_working_directory_for_session(session_id),
             self.auto_approve_tools,
             cancel,
@@ -1214,7 +1213,14 @@ impl AgentService {
         )
         .await?;
 
-        let summary = enforce_summary_budget(&Self::extract_text_from_response(&response));
+        // #1933: a `MaxTokens` stop means the request hit its output allowance
+        // and the document is CUT, whatever its token count reads. The trim
+        // guard cannot see this — a capped document sits exactly at the budget,
+        // which the guard's `before > budget` test never inspects — so the
+        // response's own verdict is read here, at the source.
+        Self::warn_if_summary_truncated(response.stop_reason.clone(), &response.usage);
+
+        let summary = Self::extract_text_from_response(&response);
 
         if let Err(e) = Self::save_compaction_summary_to_memory(&summary).await {
             tracing::warn!("Failed to save compaction summary to daily log: {}", e);
@@ -1243,7 +1249,7 @@ impl AgentService {
         // correction always survives into the persisted marker.
         let summary = Self::enforce_summary_budget(
             summary,
-            super::request_budget::COMPACTION_SUMMARY_MAX_TOKENS as usize,
+            super::request_budget::compaction_summary_output_tokens() as usize,
         );
 
         // #482: the summary is obeyed as the continuation document, so an
@@ -1281,6 +1287,13 @@ impl AgentService {
     pub(crate) fn enforce_summary_budget(summary: String, budget_tokens: usize) -> String {
         let before = crate::brain::tokenizer::count_tokens(&summary);
         if before <= budget_tokens {
+            // #1933: an under-budget document can still be INCOMPLETE. When the
+            // summariser is cut at source (`stop_reason = MaxTokens`) the visible
+            // document is short — it FITS the budget — while missing the §10
+            // fence entirely. This early return is exactly why the one failure
+            // that removes the fence was the one the guard never inspected, so
+            // the invariants are checked on BOTH paths.
+            Self::warn_on_summary_invariants(&summary);
             return summary;
         }
 
@@ -1355,16 +1368,7 @@ impl AgentService {
 
         // The two invariants this guard exists to protect. WARN rather than
         // ship a document that violates them.
-        if parse_context_manifest(&result).is_none() {
-            tracing::warn!(
-                "enforce_summary_budget: trimmed summary lost its context-manifest fence (#1930)"
-            );
-        }
-        if !has_obligation_status(&result) {
-            tracing::warn!(
-                "enforce_summary_budget: trimmed summary lost its §0 obligation-status line (#1930)"
-            );
-        }
+        Self::warn_on_summary_invariants(&result);
         if after > budget_tokens {
             tracing::warn!(
                 "enforce_summary_budget: must-keep sections alone are {} tokens against a {} \
@@ -1383,6 +1387,53 @@ impl AgentService {
         result
     }
 
+    /// WARN when a continuation document is missing a block a woken agent cannot
+    /// recover from anywhere else (#1930, #1933).
+    ///
+    /// Runs on the UNDER-budget path too, not only after a trim: a document cut
+    /// at source is short AND incomplete at once, and the trim-only check could
+    /// never see that combination. `parse_context_manifest` is
+    /// position-independent, so this is a real presence test rather than a shape
+    /// guess.
+    fn warn_on_summary_invariants(document: &str) {
+        if parse_context_manifest(document).is_none() {
+            tracing::warn!(
+                "enforce_summary_budget: continuation document carries no context-manifest fence (#1933)"
+            );
+        }
+        if !has_obligation_status(document) {
+            tracing::warn!(
+                "enforce_summary_budget: continuation document carries no §0 obligation-status line (#1933)"
+            );
+        }
+    }
+
+    /// WARN when the summariser's own stop reason says the document is
+    /// incomplete (#1933).
+    ///
+    /// A `MaxTokens` stop means the request hit its output allowance: the
+    /// document is CUT, whatever its token count reads. On 2026-10-04 the cut
+    /// landed before §10, so the persisted marker carried no `context-manifest`
+    /// fence — and the trim guard never saw it, because a capped document sits
+    /// exactly at the budget and the guard only inspected over-budget ones.
+    /// This is the visibility leg: read the response's own verdict, not the
+    /// document's size.
+    pub(crate) fn warn_if_summary_truncated(
+        stop_reason: Option<crate::brain::provider::StopReason>,
+        usage: &crate::brain::provider::TokenUsage,
+    ) {
+        if matches!(
+            stop_reason,
+            Some(crate::brain::provider::StopReason::MaxTokens)
+        ) {
+            tracing::warn!(
+                "compute_compaction_summary: summariser stopped at MaxTokens (output {} / reasoning {}) \
+                 — the continuation document is TRUNCATED and may have lost its load-bearing blocks (#1933)",
+                usage.output_tokens,
+                usage.reasoning_tokens,
+            );
+        }
+    }
 
     /// Append a harness-written correction for artifacts the summary reports as
     /// complete but which no tool call in the summarised conversation produced
