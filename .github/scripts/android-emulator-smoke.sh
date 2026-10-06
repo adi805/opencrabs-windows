@@ -92,6 +92,20 @@ enabled = true
 bind = "127.0.0.1"
 port = 18792
 CFG
+  # The commands above run as root, so everything they create is owned by root.
+  # The core runs as the app uid and has to WRITE here (it creates opencrabs.db
+  # and logs/), so a root-owned directory stops it starting and the surface then
+  # never answers - a failure caused by this harness, not by Android. Hand the
+  # tree to the app uid and restore the SELinux label, which root-created files
+  # under /data/data also get wrong.
+  APP_UID="$(adb shell stat -c %u "/data/data/$PKG" 2>/dev/null | tr -d '\r')"
+  if [ -n "$APP_UID" ]; then
+    adb shell "chown -R $APP_UID:$APP_UID $HOME_DIR" >> "$OUT/seed.txt" 2>&1 || true
+    adb shell "restorecon -R $HOME_DIR" >> "$OUT/seed.txt" 2>&1 || true
+    pass "seed handed to the app uid ($APP_UID)"
+  else
+    fail "could not read the app uid, the seed stays root-owned"
+  fi
   adb shell "cat $HOME_DIR/.opencrabs/config.toml" 2>&1 | tee "$OUT/config.toml"
   if grep -q "enabled = true" "$OUT/config.toml"; then
     pass "surface config seeded"
