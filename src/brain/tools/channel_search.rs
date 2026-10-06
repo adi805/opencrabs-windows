@@ -10,6 +10,57 @@ use async_trait::async_trait;
 use chrono::DateTime;
 use serde_json::Value;
 
+/// Is this thread id the General-topic SESSION-SCOPING sentinel (#1220)?
+/// Telegram-only: `channel_search` is built on every feature set, but the
+/// constant lives behind the `telegram` feature, and no other channel
+/// produces a forum thread at all.
+#[cfg(feature = "telegram")]
+fn is_general_topic(thread: i32) -> bool {
+    thread == crate::channels::telegram::session_resolve::GENERAL_TOPIC_ID
+}
+
+#[cfg(not(feature = "telegram"))]
+fn is_general_topic(_thread: i32) -> bool {
+    false
+}
+
+/// Which slice of a chat's message history an operation reads (#718/#719).
+/// ONE parameter carries all three states a topic-bound reader needs. Before
+/// this, `thread_id` was free-form and omitting it meant "no filter at all",
+/// so a session bound to a forum topic silently read every OTHER topic too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TopicScope {
+    /// This chat's General topic. Rows persist with `thread_id IS NULL`
+    /// (General messages carry no `message_thread_id`), so this resolves to
+    /// the `*_general` repository readers — never to a literal `'1'`
+    /// comparison, which would match only the legacy sentinel rows instead.
+    General,
+    /// One real forum topic, keyed exactly as persisted.
+    Thread(String),
+    /// No thread filter: every topic of the chat, interleaved. The pre-#718
+    /// behaviour, now an explicit opt-in.
+    All,
+}
+
+impl TopicScope {
+    /// Human label for the output header (D4). A wide read must be visible in
+    /// the transcript, so the header states the scope actually used —
+    /// including when it was inherited from the session binding rather than
+    /// passed.
+    fn label(&self, inherited: bool) -> String {
+        let base = match self {
+            Self::General => "General".to_string(),
+            Self::Thread(t) => format!("topic {t}"),
+            Self::All => "all topics".to_string(),
+        };
+        if inherited {
+            format!("{base} inherited")
+        } else {
+            base
+        }
+    }
+}
+
 /// Tool for listing and searching channel message history.
 pub struct ChannelSearchTool {
     repo: ChannelMessageRepository,
@@ -18,6 +69,107 @@ pub struct ChannelSearchTool {
 impl ChannelSearchTool {
     pub fn new(repo: ChannelMessageRepository) -> Self {
         Self { repo }
+    }
+}
+
+/// Compare two chat ids. Both sides are platform ids rendered as strings, so
+/// a textual compare is normally right; the numeric fallback means a
+/// formatting difference cannot silently drop the session's topic and fall
+/// through to an unfiltered read — which is the whole defect class (#718).
+fn same_chat(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.parse::<i64>(), b.parse::<i64>()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// Parse an explicit `topic_scope` value. `None` means the caller asked for
+/// the SESSION's own topic, which is resolved against the ambient binding
+/// below. An unknown value is a hard error naming the vocabulary: silently
+/// falling back to `all` is exactly the leak #718 is about.
+fn parse_topic_scope(raw: &str) -> Result<Option<TopicScope>> {
+    match raw {
+        "session" => Ok(None),
+        "all" => Ok(Some(TopicScope::All)),
+        "general" => Ok(Some(TopicScope::General)),
+        other => match other.strip_prefix("thread:") {
+            Some(id) if !id.is_empty() => Ok(Some(TopicScope::Thread(id.to_string()))),
+            _ => Err(super::error::ToolError::InvalidInput(format!(
+                "unknown topic_scope '{other}'. Valid: 'session' (default), 'general', 'all', 'thread:<id>'"
+            ))),
+        },
+    }
+}
+
+/// Resolve the effective topic scope for one operation (#718/#719). Returns
+/// the scope plus whether it was INHERITED from the session binding rather
+/// than passed explicitly — the header says which, so a wide read can never
+/// hide.
+async fn resolve_topic_scope(
+    input: &Value,
+    ctx: &ToolExecutionContext,
+    requested_chat: Option<&str>,
+) -> Result<(TopicScope, bool)> {
+    // An explicit request always wins over inheritance.
+    if let Some(raw) = input.get("topic_scope").and_then(|v| v.as_str()) {
+        if let Some(scope) = parse_topic_scope(raw.trim())? {
+            return Ok((scope, false));
+        }
+        // "session" — fall through and inherit from the ambient binding.
+    } else if let Some(tid) = input.get("thread_id").and_then(|v| v.as_str()) {
+        // Deprecated alias (D2): `thread_id:"5"` keeps its old meaning.
+        if !tid.is_empty() {
+            return Ok((TopicScope::Thread(tid.to_string()), false));
+        }
+    }
+
+    let Some(o) = ctx.origin_target.as_deref() else {
+        // No ambient binding (DM, cron, CLI, sub-agent, TUI): there is no
+        // topic to inherit, so read the whole chat — the pre-#718 behaviour.
+        return Ok((TopicScope::All, true));
+    };
+    let Some(requested) = requested_chat else {
+        // No chat given (a cross-chat `search`): topic ids are per-chat, so
+        // there is nothing to inherit.
+        return Ok((TopicScope::All, true));
+    };
+    if !same_chat(requested, &o.chat_id) {
+        // #718 explicitly defers this choice to the fix. Falling back to
+        // explicit-All rather than refusing, because the session has no topic
+        // context for a foreign chat, the tool legitimately supports
+        // cross-chat reads, and the header makes the wide read visible.
+        return Ok((TopicScope::All, true));
+    }
+
+    match o.thread {
+        Some(t) if !is_general_topic(t) => Ok((TopicScope::Thread(t.to_string()), true)),
+        // A known forum's General topic normalizes to this sentinel (#1220).
+        Some(_) => Ok((TopicScope::General, true)),
+        // The binding carries no thread. On a known forum that is still the
+        // General topic — a legacy NULL-encoded binding, or a row written
+        // before the sentinel existed. The forum evidence is the same
+        // `telegram_chat_topics` lookup the target resolver uses. When the
+        // world is not wired (cron, CLI, tests) or the chat is not a forum,
+        // this is a genuine DM / non-forum group and reads unfiltered.
+        None => {
+            let is_forum = match (ctx.world.as_ref(), o.channel) {
+                (Some(world), "telegram") => match o.chat_id.parse::<i64>() {
+                    Ok(cid) => {
+                        matches!(world.telegram_chat_topics(cid).await, Ok(Some(t)) if !t.is_empty())
+                    }
+                    Err(_) => false,
+                },
+                _ => false,
+            };
+            if is_forum {
+                Ok((TopicScope::General, true))
+            } else {
+                Ok((TopicScope::All, true))
+            }
+        }
     }
 }
 
@@ -31,7 +183,9 @@ impl Tool for ChannelSearchTool {
         "Search or list channel message history captured from Telegram groups, Telegram userbot chats, Discord, Slack, etc. \
          Use 'list_chats' to see known groups/channels with message counts. \
          Use 'recent' to get the last N messages from a specific chat. \
-         Use 'search' to find messages by content across chats."
+         Use 'search' to find messages by content across chats. \
+         On a forum, results are scoped to the calling session's own topic by default — \
+         the output header names the scope actually used."
     }
 
     fn input_schema(&self) -> Value {
@@ -61,9 +215,13 @@ impl Tool for ChannelSearchTool {
                     "description": "Max results to return (default: 20)",
                     "default": 20
                 },
+                "topic_scope": {
+                    "type": "string",
+                    "description": "Which messages to read (optional; default 'session'). 'session': the calling session's own forum topic (on a DM/cron/CLI surface with no topic binding this reads the whole chat); 'general': the chat's General topic; 'all': every topic interleaved — an explicit opt-in, since omitting this no longer means 'no filter'; 'thread:<id>': one specific forum topic."
+                },
                 "thread_id": {
                     "type": "string",
-                    "description": "Filter by thread/topic ID (optional, for Telegram forum topics)"
+                    "description": "DEPRECATED — use topic_scope 'thread:<id>'. Filter by thread/topic ID (optional, for Telegram forum topics)"
                 },
                 "message_type": {
                     "type": "string",
@@ -83,7 +241,7 @@ impl Tool for ChannelSearchTool {
         false
     }
 
-    async fn execute(&self, input: Value, _context: &ToolExecutionContext) -> Result<ToolResult> {
+    async fn execute(&self, input: Value, context: &ToolExecutionContext) -> Result<ToolResult> {
         let operation = input
             .get("operation")
             .and_then(|v| v.as_str())
@@ -149,13 +307,20 @@ impl Tool for ChannelSearchTool {
                     }
                 };
 
-                let thread_id = input.get("thread_id").and_then(|v| v.as_str());
+                let (scope, inherited) = resolve_topic_scope(&input, context, Some(chat_id)).await?;
 
-                let messages = self
-                    .repo
-                    .recent(channel, chat_id, n, thread_id, None)
-                    .await
-                    .map_err(|e| super::error::ToolError::Execution(e.to_string()))?;
+                let messages = match &scope {
+                    TopicScope::General => {
+                        self.repo
+                            .recent_general(channel.unwrap_or("telegram"), chat_id, n, None)
+                            .await
+                    }
+                    TopicScope::Thread(t) => {
+                        self.repo.recent(channel, chat_id, n, Some(t.as_str()), None).await
+                    }
+                    TopicScope::All => self.repo.recent(channel, chat_id, n, None, None).await,
+                }
+                .map_err(|e| super::error::ToolError::Execution(e.to_string()))?;
 
                 if messages.is_empty() {
                     return Ok(ToolResult::success(format!(
@@ -178,8 +343,9 @@ impl Tool for ChannelSearchTool {
                     .collect();
 
                 Ok(ToolResult::success(format!(
-                    "Recent messages in {} ({}):\n{}",
+                    "Recent messages in {} ({}, {}):\n{}",
                     chat_id,
+                    scope.label(inherited),
                     messages.len(),
                     lines.join("\n")
                 )))
@@ -196,13 +362,25 @@ impl Tool for ChannelSearchTool {
                 };
 
                 let chat_id = input.get("chat_id").and_then(|v| v.as_str());
-                let thread_id = input.get("thread_id").and_then(|v| v.as_str());
+                let (scope, inherited) = resolve_topic_scope(&input, context, chat_id).await?;
+                if matches!(scope, TopicScope::General) && chat_id.is_none() {
+                    return Ok(ToolResult::error(
+                        "'topic_scope: general' requires 'chat_id' — General is per-chat.".to_string(),
+                    ));
+                }
 
-                let messages = self
-                    .repo
-                    .search(channel, chat_id, query, n, thread_id)
-                    .await
-                    .map_err(|e| super::error::ToolError::Execution(e.to_string()))?;
+                let messages = match &scope {
+                    TopicScope::General => {
+                        self.repo
+                            .search_general(channel.unwrap_or("telegram"), chat_id.unwrap_or_default(), query, n)
+                            .await
+                    }
+                    TopicScope::Thread(t) => {
+                        self.repo.search(channel, chat_id, query, n, Some(t.as_str())).await
+                    }
+                    TopicScope::All => self.repo.search(channel, chat_id, query, n, None).await,
+                }
+                .map_err(|e| super::error::ToolError::Execution(e.to_string()))?;
 
                 if messages.is_empty() {
                     return Ok(ToolResult::success(format!(
@@ -238,8 +416,9 @@ impl Tool for ChannelSearchTool {
                     .collect();
 
                 Ok(ToolResult::success(format!(
-                    "Search results for \"{}\" ({}):\n{}",
+                    "Search results for \"{}\" ({}, {}):\n{}",
                     query,
+                    scope.label(inherited),
                     messages.len(),
                     lines.join("\n")
                 )))
@@ -255,14 +434,20 @@ impl Tool for ChannelSearchTool {
                     }
                 };
 
-                let thread_id = input.get("thread_id").and_then(|v| v.as_str());
+                let (scope, inherited) = resolve_topic_scope(&input, context, Some(chat_id)).await?;
 
-                let messages = self
-                    .repo
-                    .recent(channel, chat_id, n, thread_id, None)
-                    .await
-                    .map_err(|e| super::error::ToolError::Execution(e.to_string()))?;
-
+                let messages = match &scope {
+                    TopicScope::General => {
+                        self.repo
+                            .recent_general(channel.unwrap_or("telegram"), chat_id, n, None)
+                            .await
+                    }
+                    TopicScope::Thread(t) => {
+                        self.repo.recent(channel, chat_id, n, Some(t.as_str()), None).await
+                    }
+                    TopicScope::All => self.repo.recent(channel, chat_id, n, None, None).await,
+                }
+                .map_err(|e| super::error::ToolError::Execution(e.to_string()))?;
                 // Filter to only attachment types
                 let attachments: Vec<_> = messages
                     .iter()
@@ -297,8 +482,9 @@ impl Tool for ChannelSearchTool {
                     .collect();
 
                 Ok(ToolResult::success(format!(
-                    "Attachments in {} ({}):\n{}",
+                    "Attachments in {} ({}, {}):\n{}",
                     chat_id,
+                    scope.label(inherited),
                     attachments.len(),
                     lines.join("\n")
                 )))
