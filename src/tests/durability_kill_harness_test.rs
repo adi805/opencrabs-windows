@@ -28,6 +28,10 @@
 //! (the resume path that skips a re-issue) does not exist yet, so what is pinned
 //! here is the storage contract that consumer will rely on. The counter file is
 //! the stand-in for a side effect that cannot be rolled back.
+//!
+//! Gated to unix: the invariant is about `SIGKILL`, which Windows does not have,
+//! so the whole harness compiles out there rather than pretending to test it.
+#![cfg(unix)]
 
 use crate::config::profile::with_home_override_async;
 use crate::db::Database;
