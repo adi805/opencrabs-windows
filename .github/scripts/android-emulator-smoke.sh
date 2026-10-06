@@ -195,6 +195,24 @@ fi
 # ------------------------------------------------- surface liveness probe ----
 # Run before and after the RSS window. A single probe proves the socket opened;
 # two probes 60s apart are what distinguish "running" from "wedged".
+# Does the core hold the port at all? /proc/net/tcp is world-readable, so this
+# needs no root, and it separates "the surface never bound" (a config or core
+# bug) from "it bound but did not answer" (a request bug). Through `adb forward`
+# both arrive as curl error 52, which is exactly why three emulator runs could
+# not tell them apart. A table we cannot read is reported as inconclusive rather
+# than as a failure, so an unreadable /proc never invents a red result.
+say "device port $PORT"
+NET_TCP="$(adb shell "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null" 2>/dev/null | tr -d '\r')"
+if printf '%s\n' "$NET_TCP" | grep -qiE ":$(printf '%04X' "$PORT")[[:space:]]"; then
+  pass "the core holds tcp:$PORT on the device"
+elif [ -z "$NET_TCP" ]; then
+  echo "NOTE: could not read /proc/net/tcp on the device; the port binding was not checked"
+elif [ "$ROOTED" = "1" ]; then
+  fail "nothing holds tcp:$PORT on the device (the surface never bound)"
+else
+  echo "NOTE: nothing holds tcp:$PORT, expected: the config was not seeded (no root)"
+fi
+
 say "surface (t=0)"
 adb forward "tcp:$PORT" "tcp:$PORT" > /dev/null 2>&1 || true
 HEALTH_BEFORE=0
