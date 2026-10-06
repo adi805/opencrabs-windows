@@ -1,0 +1,52 @@
+name: diag-test-hang
+# Throwaway diagnostic: characterise the lib-test hang seen on the FR reconcile
+# branch. Not part of the gate; runs only on its own branch.
+on:
+  push:
+    branches: [diag/test-hang]
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y mold clang libasound2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: diag-hang
+      - name: Build lib test binary
+        run: |
+          cargo test --locked --profile ci --all-features --lib --no-run --message-format=json > /tmp/msg.json 2>/tmp/build.err
+          tail -3 /tmp/build.err
+          BIN=$(jq -r 'select(.executable != null) | .executable' /tmp/msg.json | tail -1)
+          echo "BIN=$BIN"
+          test -x "$BIN"
+          echo "BIN=$BIN" >> "$GITHUB_ENV"
+      - name: Count tests
+        run: |
+          "$BIN" --list 2>/dev/null | tail -3
+      - name: A default threads
+        continue-on-error: true
+        run: |
+          timeout 420 "$BIN" > /tmp/a.log 2>&1
+          echo "A_EXIT=$?"
+          echo "A_HUNG_COUNT=$(grep -c 'has been running for over' /tmp/a.log)"
+          grep 'has been running for over' /tmp/a.log | head -20
+          grep -c '\.\.\. ok' /tmp/a.log
+      - name: B single thread
+        continue-on-error: true
+        run: |
+          timeout 900 "$BIN" --test-threads=1 > /tmp/b.log 2>&1
+          echo "B_EXIT=$?"
+          echo "B_HUNG_COUNT=$(grep -c 'has been running for over' /tmp/b.log)"
+          tail -5 /tmp/b.log
+      - name: C sixteen threads
+        continue-on-error: true
+        run: |
+          timeout 420 "$BIN" --test-threads=16 > /tmp/c.log 2>&1
+          echo "C_EXIT=$?"
+          echo "C_HUNG_COUNT=$(grep -c 'has been running for over' /tmp/c.log)"
+          grep 'has been running for over' /tmp/c.log | head -20
