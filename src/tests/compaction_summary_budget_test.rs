@@ -313,6 +313,67 @@ fn the_guard_runs_before_the_artifact_correction() {
     );
 }
 
+/// #1933 (head-protect): the summariser prompt must order the load-bearing
+/// blocks BEFORE the prose, because a MaxTokens cut removes the TAIL.
+///
+/// Measured 2026-10-05: 48 continuation documents stopped at
+/// `MaxTokens (output 5500 / reasoning 0)` — the model writes a 5 500-token
+/// document against a 3 000-token budget and the cut takes whatever was
+/// written last. With §10 mandated "At the very end", the cut removed exactly
+/// the machine-readable fence the harness needs, and `extract_manifest_block`
+/// cannot re-attach a fence the source never carried.
+///
+/// The ordering lives inside the `base_prompt` format string, built in an
+/// async fn that needs a provider — so, like the guard-order test above, this
+/// reads the source text.
+#[test]
+fn the_prompt_emits_the_must_keep_blocks_before_the_prose() {
+    let src = include_str!("../brain/agent/service/context.rs");
+    let start = src
+        .find("let base_prompt = format!(")
+        .expect("the summariser prompt must be built in one format string");
+    let end = start
+        + src[start..]
+            .find("\n        );")
+            .expect("the prompt format string must close");
+    let prompt = &src[start..end];
+
+    let pos = |needle: &str| {
+        prompt
+            .find(needle)
+            .unwrap_or_else(|| panic!("the summariser prompt must contain {needle:?}"))
+    };
+
+    let s0 = pos("## 0. IMMEDIATE TASK");
+    let manifest = pos("## 10. Context Manifest");
+    let s7 = pos("## 7. Recovery Playbook");
+    let s8 = pos("## 8. Next Step");
+    let s1 = pos("## 1. Chronological Analysis");
+    let s6 = pos("## 6. Pending Tasks");
+    let s9 = pos("## 9. Continuation Message");
+
+    assert!(s0 < manifest, "§0 (the obligation) must be emitted first");
+    assert!(
+        manifest < s7 && s7 < s8,
+        "the must-keep blocks must be emitted 0 -> manifest -> §7 -> §8 (#1933)"
+    );
+    assert!(
+        s8 < s1,
+        "§7/§8 must precede the prose (§1-§6), so a tail cut removes only prose (#1933)"
+    );
+    assert!(
+        manifest < s1,
+        "the `context-manifest` fence must be emitted AHEAD of the prose (§1-§6): \
+         a tail cut of any size must not be able to remove it (#1933)"
+    );
+    assert!(s6 < s9, "§9 (the continuation message) stays last");
+    assert!(
+        !prompt.contains("At the very end"),
+        "§10 must no longer send the manifest to the very end of the document: \
+         that is the placement the MaxTokens cut removed (#1933)"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The soak test (#1930, step 5) — the gate that would have caught #474.
 //
