@@ -295,6 +295,17 @@ impl Database {
             .builder(Runtime::Tokio1)
             .context("Failed to build pool config")?
             .max_size(16)
+            // Bound the ACQUIRE path. deadpool's default `Timeouts::new()` sets
+            // every timeout to `None`, so `pool.get()` waits forever when every
+            // slot is held: no error, no log, just a task that never returns.
+            // That is one of the mechanisms behind the `db_pre_migration_snapshot_test`
+            // stall, where four blocked tests consume all four runner threads and
+            // the whole suite goes silent for 71 minutes (#55). A visible timeout
+            // is a diagnosable failure; an unbounded wait is a mystery.
+            //
+            // 60s is deliberately far above the pool's normal hold time (a
+            // statement runs for milliseconds), so it only fires on a real stall.
+            .wait_timeout(Some(std::time::Duration::from_secs(60)))
             .post_create(Hook::async_fn(|conn, _| {
                 Box::pin(async move {
                     conn.interact(|conn| apply_pragmas(conn))

@@ -155,3 +155,23 @@ fn test_migration_list_is_the_on_disk_files_in_name_order() {
         );
     }
 }
+
+/// #55: the pool's acquire path must be bounded.
+///
+/// `deadpool`'s default `Timeouts::new()` leaves `wait` as `None`, so a
+/// `pool.get()` with every slot held waits forever: no error, no log, no
+/// return. That is one of the mechanisms behind the
+/// `db_pre_migration_snapshot_test` stall, where four blocked tests hold all
+/// four runner threads and the suite goes silent for 71 minutes.
+///
+/// A test that only checks the value would pass even if a later refactor
+/// dropped the builder call, so this asserts the live pool, not the source.
+#[tokio::test]
+async fn pool_waits_for_a_slot_with_a_timeout_not_forever() {
+    let db = Database::connect_in_memory().await.unwrap();
+    let wait = db.pool().timeouts().wait;
+    assert!(
+        wait.is_some(),
+        "pool wait timeout is None, so a held pool blocks a caller forever (#55)"
+    );
+}
