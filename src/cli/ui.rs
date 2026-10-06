@@ -2008,6 +2008,36 @@ async fn cmd_chat_inner(
         false
     };
 
+    // Spawn the session surface if configured (PRD Feature 4, FR-006).
+    // Readiness is awaited so a gate refusal or a bind failure is reported at
+    // startup rather than surfacing later as a client that cannot connect.
+    if config.session_surface.enabled {
+        let surface_agent = channel_factory.create_agent_service().await;
+        let surface_ctx = service_context.clone();
+        let surface_config = config.session_surface.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            if let Err(e) = crate::session::surface::start_server(
+                &surface_config,
+                surface_agent,
+                surface_ctx,
+                Some(ready_tx),
+            )
+            .await
+            {
+                tracing::error!("Session surface error: {}", e);
+            }
+        });
+        match tokio::time::timeout(std::time::Duration::from_secs(30), ready_rx).await {
+            Ok(Ok(Ok(()))) => tracing::info!("Session surface ready"),
+            Ok(Ok(Err(e))) => tracing::error!("Session surface refused to start: {e}"),
+            Ok(Err(_)) => {
+                tracing::error!("Session surface task exited without signalling readiness")
+            }
+            Err(_) => tracing::error!("Timed out waiting for session surface readiness"),
+        }
+    }
+
     // Spawn cron scheduler — polls every 60s, executes jobs in the user's active session.
     // One scheduler per profile machine-wide (#444): if another process (e.g. a
     // multi-profile `daemon` that also covers this profile) already owns the
