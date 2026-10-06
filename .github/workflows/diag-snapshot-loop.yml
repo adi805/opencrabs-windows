@@ -148,6 +148,15 @@ jobs:
                     echo "    syscall: $(cat "$t/syscall" 2>/dev/null)"
                     sudo cat "$t/stack" 2>/dev/null | sed 's/^/    /'
                   done
+                  # The 2026-10-06 stack dump showed four threads waiting on ONE
+                  # static futex address (same 0x55.. value in three blocking
+                  # threads and one test thread) with no thread in any file
+                  # syscall. Naming that lock needs the executable's load base:
+                  # offset = futex_addr - base, then `nm -C "$BIN"` says which
+                  # `static Mutex`/`OnceLock` it is. gdb names it directly, but
+                  # gdb was absent on that run, so this is the fallback.
+                  echo "--- executable mapping (base for static addresses) ---"
+                  awk '$6 ~ /opencrabs/ {print; exit}' /proc/"$pid"/maps 2>/dev/null
                   echo "--- open fds ---"
                   ls -l /proc/"$pid"/fd 2>/dev/null | tail -40
                 } > /tmp/stall-dump.txt 2>&1
