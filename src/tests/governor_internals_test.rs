@@ -143,7 +143,15 @@ async fn note_429_pause_arms_both_halves_caps_and_counts() {
         .chat_until
         .expect("still paused")
         .duration_since(now);
-    assert_eq!(capped, Duration::from_secs(47), "45s cap + 2s margin");
+    // The cap is 45s plus the 2s margin `note_429_pause` adds. `gate_now()` is
+    // real time plus an offset, so a few microseconds elapse between arming the
+    // pause and reading it back — compare with a tolerance, never exact equality.
+    let tolerance = Duration::from_millis(50);
+    assert!(
+        capped >= Duration::from_secs(47) - tolerance
+            && capped <= Duration::from_secs(47) + tolerance,
+        "45s cap + 2s margin, got {capped:?}"
+    );
 
     // DMs are ungoverned by construction: no peer state is created for them.
     note_429_pause(777, Duration::from_secs(9));
@@ -202,7 +210,7 @@ fn ladder_order_drops_clock_first_and_final_never_drops() {
         )
     );
     assert!(line.contains("finals{queued=7,superseded=8,delivered=9,failed=10,pending=2}"));
-    assert!(line.contains("throttled_ms{typing=1500,send=2500,ri}"));
+    assert!(line.contains("throttled_ms{typing=1500,send=2500,rich=3500}"));
     assert!(line.contains("pause{pause_armed=3}"));
 }
 
