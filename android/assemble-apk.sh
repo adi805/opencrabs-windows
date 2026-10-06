@@ -65,6 +65,22 @@ NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
 # One lib/<abi>/ directory per ABI. libc++_shared.so is per-ABI inside the NDK:
 # the aarch64 copy will not load on x86_64 and vice versa, so the lookup has to
 # key off the ABI being staged rather than assume aarch64.
+#
+# The NDK names its ABI directories after the target TRIPLE, not after the APK
+# ABI name: arm64-v8a lives under aarch64-linux-android. Matching on the APK ABI
+# name therefore finds nothing for arm64, and a bare `find | head -1` with no
+# path filter could hand back another ABI's copy, which the loader refuses at
+# spawn time. Map explicitly and fail loudly on an unmapped ABI.
+abi_triple() {
+  case "$1" in
+    arm64-v8a)   echo "aarch64-linux-android" ;;
+    armeabi-v7a) echo "arm-linux-androideabi" ;;
+    x86)         echo "i686-linux-android" ;;
+    x86_64)      echo "x86_64-linux-android" ;;
+    *)           echo "" ;;
+  esac
+}
+
 stage_abi() {
   abi="$1"
   bin="$2"
@@ -78,11 +94,16 @@ stage_abi() {
   echo "core binary : $abi <- $bin ($(stat -c%s "$bin") bytes)"
 
   cxx=""
+  triple="$(abi_triple "$abi")"
+  if [ -z "$triple" ]; then
+    echo "unknown ABI '$abi': no NDK triple mapping, cannot locate libc++_shared.so" >&2
+    exit 2
+  fi
   if [ -n "$NDK" ] && [ -d "$NDK" ]; then
-    cxx="$(find "$NDK" -name libc++_shared.so -path "*${abi}*" 2>/dev/null | head -1)"
+    cxx="$(find "$NDK" -name libc++_shared.so -path "*${triple}*" 2>/dev/null | head -1)"
   fi
   if [ -z "$cxx" ]; then
-    echo "libc++_shared.so not found for $abi under NDK ('${NDK:-<unset>}')" >&2
+    echo "libc++_shared.so not found for $abi (NDK triple '$triple') under NDK ('${NDK:-<unset>}')" >&2
     echo "the core binary NEEDs it (readelf -d shows it in NEEDED), so the APK" >&2
     echo "would crash at spawn time without it" >&2
     exit 2
