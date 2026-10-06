@@ -54,6 +54,13 @@ jobs:
         with:
           key: diag-snapshot-loop
 
+      # The lib links ALSA (voice input), so the build script for alsa-sys needs
+      # `alsa.pc`. ci.yml installs this in every job that compiles; the first
+      # run of this workflow died at `alsa-sys` for exactly that reason, which
+      # is an infra failure and not the stall this job exists to find.
+      - name: Install system dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y libasound2-dev
+
       - name: Build the lib test binary once
         run: cargo test --locked --profile ci --all-features --lib --no-run
 
