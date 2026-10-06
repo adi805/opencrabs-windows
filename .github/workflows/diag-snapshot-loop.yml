@@ -149,7 +149,24 @@ jobs:
                     # name it. Keep the whole dump: 7 threads with deep tokio
                     # stacks is ~2k lines, and `info threads` makes the total
                     # count explicit even if the cap is ever hit again.
-                    timeout 90 gdb -p "$pid" -batch -ex 'info threads' -ex 'thread apply all bt' 2>&1 | tail -3000
+                    # `bt` names the mutex (the sqlite3.c frames) but not its
+                    # HOLDER: on the 2026-10-06 run every visible thread was
+                    # waiting on `staticMutexes.112+432` and none of them held
+                    # it, so the dump could not say who wedged first. This build
+                    # keeps symbols, so ask gdb about the mutex object itself:
+                    # glibc's `__data.__owner` is the TID holding it, and
+                    # `__data.__kind` distinguishes NORMAL(0) from RECURSIVE(1),
+                    # which is what decides cross-thread wait vs same-thread
+                    # re-entry. Each -ex stands alone: a failed expression prints
+                    # an error and the backtrace still lands.
+                    timeout 90 gdb -p "$pid" -batch \
+                      -ex 'info threads' \
+                      -ex 'thread apply all bt' \
+                      -ex 'info variables staticMutexes' \
+                      -ex "p (char*)&'staticMutexes.112'" \
+                      -ex "p ((pthread_mutex_t*)((char*)&'staticMutexes.112' + 432))->__data.__owner" \
+                      -ex "p ((pthread_mutex_t*)((char*)&'staticMutexes.112' + 432))->__data.__kind" \
+                      2>&1 | tail -3000
                   else
                     echo "(gdb not on PATH)"
                   fi
