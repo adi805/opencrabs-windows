@@ -102,8 +102,8 @@ The historical issue portfolio lives at `leshchenko1979/opencrabs` and is read-o
 **Search before you file** — open *and* closed, issues *and* PRs:
 
 ```bash
-gh search issues --repo adolfousier/opencrabs "<terms>" --state all
-gh search prs --repo adolfousier/opencrabs "<terms>" --state all
+gh search issues --repo opencrabs/opencrabs "<terms>" --state all
+gh search prs --repo opencrabs/opencrabs "<terms>" --state all
 ```
 
 A closed hit that already fixed the same defect means *reference it*, not *re-file it*. A duplicate costs a review cycle and splits the record across two threads.
