@@ -22,7 +22,7 @@ name: Android binary (artifact)
 on:
   workflow_dispatch:
   push:
-    branches: [feat/android-artifact]
+    branches: [feat/android-artifact, feat/android-apk]
 
 jobs:
   android-arm64:
@@ -98,5 +98,57 @@ jobs:
         with:
           name: opencrabs-android-arm64
           path: target/aarch64-linux-android/ci/opencrabs
+          if-no-files-found: error
+          retention-days: 30
+
+  # Wraps the binary from the job above into an installable APK.
+  #
+  # This is the packaging proof for the Android client: it answers the one
+  # question the build job cannot, namely whether the core can be shipped in a
+  # form Android will actually execute. The rule that shapes it: since Android
+  # 10 (API 29) W^X is enforced on the app data directory, so a binary cannot
+  # be exec'd from filesDir. The native library directory is the one place the
+  # loader will execute from, and the package manager only extracts entries
+  # named lib*.so - hence the rename to libopencrabs.so in assemble-apk.sh.
+  #
+  # Separate job, not a step: if the packaging step breaks it must not take the
+  # binary artifact down with it. Both are uploaded regardless.
+  android-apk:
+    name: Assemble debug APK
+    needs: android-arm64
+    # Same image as the build job so the NDK lookup for libc++_shared.so
+    # matches the one that produced the binary.
+    runs-on: ubuntu-24.04
+    # No compilation here: javac + d8 + aapt2 + apksigner.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch the core binary built above
+        uses: actions/download-artifact@v4
+        with:
+          name: opencrabs-android-arm64
+          path: apk-input
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27d
+          add-to-path: false
+
+      - name: Assemble the APK
+        env:
+          # Both names: the runner image preinstalls an NDK and exports
+          # ANDROID_NDK_ROOT, while the script reads either.
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: bash android/assemble-apk.sh apk-input/opencrabs
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencrabs-android-apk
+          path: android/out/opencrabs-debug.apk
           if-no-files-found: error
           retention-days: 30
