@@ -165,6 +165,30 @@ grep -i 'opencrabs' "$OUT/ps.txt" || true
 if [ -n "$APP_PID" ]; then pass "app process alive"; else fail "app process not running"; fi
 if [ -n "$CORE_PID" ]; then pass "core process alive"; else fail "core process not running"; fi
 
+# --------------------------------------------------- why bind could be denied ----
+# A bind that fails with EPERM (Operation not permitted) is the OS refusing the
+# call, not our code: the config was read and the socket call was reached. On
+# Android the two things that decide it are the app's inet group membership
+# (granted by android.permission.INTERNET) and the SELinux mode. Both are dumped
+# here so a failed run names the cause instead of leaving it to inference.
+say "why the bind could be refused"
+adb shell getenforce > "$OUT/getenforce.txt" 2>&1 || true
+echo "selinux  : $(tr -d '\r' < "$OUT/getenforce.txt" 2>/dev/null)"
+adb shell dumpsys package "$PKG" 2>/dev/null | grep -iE 'android.permission.(INTERNET|FOREGROUND)' | sed 's/^ *//' | sort -u > "$OUT/permissions.txt" 2>&1 || true
+cat "$OUT/permissions.txt" 2>/dev/null || true
+CORE_PID1="$(echo "$CORE_PID" | awk '{print $1}')"
+if [ -n "$CORE_PID1" ]; then
+  adb shell "cat /proc/$CORE_PID1/status" 2>/dev/null | grep -iE '^(Groups|Uid):' > "$OUT/core-groups.txt" 2>&1 || true
+  echo "core $(grep -i '^Uid' "$OUT/core-groups.txt" 2>/dev/null | tr -d '\r')"
+  echo "core $(grep -i '^Groups' "$OUT/core-groups.txt" 2>/dev/null | tr -d '\r')"
+  # 3003 is AID_INET, the supplementary group the INTERNET permission grants.
+  if grep -qE '(^|[[:space:]])3003([[:space:]]|$)' "$OUT/core-groups.txt" 2>/dev/null; then
+    echo "NOTE: core holds group 3003 (AID_INET): inet sockets allowed"
+  else
+    echo "NOTE: core does NOT hold group 3003 (AID_INET): inet socket creation may be denied"
+  fi
+fi
+
 # ---------------------------------------------------------------- logcat ----
 say "logcat (OpenCrabsCore)"
 adb logcat -d -s OpenCrabsCore:V > "$OUT/logcat-core.txt" 2>&1 || true
