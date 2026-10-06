@@ -125,6 +125,7 @@ impl super::AgentService {
     /// result order. Mirrors the sequential non-approval branch: same
     /// progress events, feedback recording, dashboard records, recent-path
     /// capture, and result/output shapes.
+    #[allow(clippy::too_many_arguments)] // batch executor: session, tools, ctx, cancel, progress, msg, turn
     pub(crate) async fn execute_tools_parallel(
         &self,
         session_id: Uuid,
@@ -133,9 +134,13 @@ impl super::AgentService {
         cancel_token: Option<&CancellationToken>,
         progress_callback: Option<&ProgressCallback>,
         assistant_msg_id: Uuid,
+        turn_id: Option<&str>,
     ) -> ParallelBatchOutcome {
         let mut approved_context = tool_context.clone();
         approved_context.auto_approve = true;
+        // FR-003: the ledger needs an owned key because the tool futures are
+        // moved into a stream, so a borrowed `&str` cannot outlive the call.
+        let turn_id_owned: Option<String> = turn_id.map(|s| s.to_string());
         let total = tool_uses.len();
         tracing::info!(
             "[TOOL_EXEC] ⚡ Executing {total} tools concurrently (max_concurrent={})",
@@ -146,6 +151,7 @@ impl super::AgentService {
             |(tool_id, tool_name, tool_input)| {
                 let ctx = approved_context.clone();
                 let cb = progress_callback.cloned();
+                let turn_key = turn_id_owned.clone();
                 async move {
                     if let Some(ref cb) = cb {
                         cb(
@@ -156,10 +162,40 @@ impl super::AgentService {
                             },
                         );
                     }
+                    // FR-003: intent committed BEFORE the concurrent effect
+                    // runs, so a crash mid-batch leaves `pending` rows rather
+                    // than invisible side effects.
+                    let effect_msg_id = assistant_msg_id.to_string();
+                    let effect_session_id = session_id.to_string();
+                    let effect_id = crate::brain::agent::service::effect_ledger::open_effect(
+                        turn_key.as_deref(),
+                        &effect_msg_id,
+                        &effect_session_id,
+                        &tool_name,
+                        &tool_id,
+                        &tool_input,
+                    )
+                    .await;
                     let exec = self
                         .tool_registry
                         .execute(&tool_name, tool_input.clone(), &ctx)
                         .await;
+                    if let Some(eid) = effect_id.as_deref() {
+                        let (st, pv): (&str, String) = match &exec {
+                            Ok(r) => (
+                                if r.success { "success" } else { "error" },
+                                r.output.chars().take(128).collect(),
+                            ),
+                            Err(e) => ("error", e.to_string().chars().take(128).collect()),
+                        };
+                        crate::brain::agent::service::effect_ledger::settle_effect(
+                            eid,
+                            st,
+                            Some(&pv),
+                            None,
+                        )
+                        .await;
+                    }
                     let outcome = match exec {
                         Ok(result) => ToolOutcome {
                             tool_id,

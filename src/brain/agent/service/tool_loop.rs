@@ -6740,6 +6740,7 @@ impl AgentService {
                         cancel_token.as_ref(),
                         progress_callback.as_ref(),
                         assistant_db_msg.id,
+                        turn_id.as_deref(),
                     )
                     .await;
                 if batch.successes > 0 {
@@ -6876,6 +6877,23 @@ impl AgentService {
                                 let mut approved_tool_context = tool_context.clone();
                                 approved_tool_context.auto_approve = true; // User approved this execution
 
+                                // FR-003: commit the effect's intent BEFORE the
+                                // side effect runs. A crash between the two then
+                                // leaves a `pending` row, which is what lets a
+                                // resume tell "already landed" from "never ran".
+                                let effect_msg_id = assistant_db_msg.id.to_string();
+                                let effect_session_id = session_id.to_string();
+                                let effect_id =
+                                    crate::brain::agent::service::effect_ledger::open_effect(
+                                        turn_id.as_deref(),
+                                        &effect_msg_id,
+                                        &effect_session_id,
+                                        &tool_name,
+                                        &tool_id,
+                                        &tool_input,
+                                    )
+                                    .await;
+
                                 // Execute the tool with approved context, racing against cancel
                                 // #1178 M1: set inside the Ok arm below when the tool ends the turn
                                 let mut halt_turn_requested = false;
@@ -6892,6 +6910,20 @@ impl AgentService {
                                 };
                                 match exec_result {
                                     Ok(result) => {
+                                        // FR-003: the side effect has happened;
+                                        // settle the row so a resume reads it as
+                                        // landed and never replays it.
+                                        if let Some(eid) = effect_id.as_deref() {
+                                            let pv: String =
+                                                result.output.chars().take(128).collect();
+                                            crate::brain::agent::service::effect_ledger::settle_effect(
+                                                eid,
+                                                if result.success { "success" } else { "error" },
+                                                Some(&pv),
+                                                None,
+                                            )
+                                            .await;
+                                        }
                                         // Halt policy lives on the tool via
                                         // Tool::halts_turn, consulted through
                                         // the registry; only a SUCCESSFUL run
@@ -7065,6 +7097,17 @@ impl AgentService {
                                         }
                                     }
                                     Err(e) => {
+                                        // FR-003: the effect never landed, but the
+                                        // row must stop being `pending` or a resume
+                                        // would keep reading it as unknown.
+                                        if let Some(eid) = effect_id.as_deref() {
+                                            let pv: String =
+                                                e.to_string().chars().take(128).collect();
+                                            crate::brain::agent::service::effect_ledger::settle_effect(
+                                                eid, "error", Some(&pv), None,
+                                            )
+                                            .await;
+                                        }
                                         let err_msg = format!("Tool execution error: {}", e);
                                         // GRANULAR LOG: Tool execution error
                                         tracing::error!(
@@ -7232,6 +7275,19 @@ impl AgentService {
                 let mut approved_context = tool_context.clone();
                 approved_context.auto_approve = true;
                 let tool_start = std::time::Instant::now();
+                // FR-003: intent before effect, same contract as the
+                // approval-path site above.
+                let effect_msg_id = assistant_db_msg.id.to_string();
+                let effect_session_id = session_id.to_string();
+                let effect_id = crate::brain::agent::service::effect_ledger::open_effect(
+                    turn_id.as_deref(),
+                    &effect_msg_id,
+                    &effect_session_id,
+                    &tool_name,
+                    &tool_id,
+                    &tool_input,
+                )
+                .await;
                 // #1178 M1: set inside the Ok arm below when the tool ends the turn
                 let mut halt_turn_requested = false;
                 let exec_result = tokio::select! {
@@ -7247,6 +7303,17 @@ impl AgentService {
                 };
                 match exec_result {
                     Ok(result) => {
+                        // FR-003: settle now the effect has landed.
+                        if let Some(eid) = effect_id.as_deref() {
+                            let pv: String = result.output.chars().take(128).collect();
+                            crate::brain::agent::service::effect_ledger::settle_effect(
+                                eid,
+                                if result.success { "success" } else { "error" },
+                                Some(&pv),
+                                Some(tool_start.elapsed().as_millis() as i64),
+                            )
+                            .await;
+                        }
                         // Registry-routed halt policy, success-gated (audit
                         // fix) — mirrors the approval-path site above.
                         if self.tool_registry.halts_turn(&tool_name) && result.success {
@@ -7371,6 +7438,17 @@ impl AgentService {
                         }
                     }
                     Err(e) => {
+                        // FR-003: settle the row even though the effect failed.
+                        if let Some(eid) = effect_id.as_deref() {
+                            let pv: String = e.to_string().chars().take(128).collect();
+                            crate::brain::agent::service::effect_ledger::settle_effect(
+                                eid,
+                                "error",
+                                Some(&pv),
+                                Some(tool_start.elapsed().as_millis() as i64),
+                            )
+                            .await;
+                        }
                         let err_msg = format!("Tool execution error: {}", e);
                         // GRANULAR LOG: Direct tool execution error
                         tracing::error!("[TOOL_EXEC] 💥 Tool '{}' error: {}", tool_name, err_msg);
