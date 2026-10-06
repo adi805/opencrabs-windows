@@ -69,6 +69,11 @@ jobs:
           ITERATIONS: ${{ inputs.iterations || '200' }}
           TIMEOUT_SECS: ${{ inputs.timeout_secs || '120' }}
         run: |
+          # `set +e` before anything else: Actions runs this step under `bash -e`,
+          # and a bound that kills the reporter produces a bare step timeout with
+          # no verdict. The 2026-10-06 run died exactly that way at 120s with zero
+          # iterations logged. The reporter must outlive the bound.
+          set +e
           set -u
           verdict=CLEAN
           done_iters=0
