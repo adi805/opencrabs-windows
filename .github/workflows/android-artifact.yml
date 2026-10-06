@@ -64,11 +64,18 @@ jobs:
 
       - name: Build (core only, channels excluded)
         env:
+          # Both names, because the runner image preinstalls an NDK and exports
+          # ANDROID_NDK_ROOT pointing at it, while cargo-ndk reads
+          # ANDROID_NDK_HOME. Left as-is they disagree and cargo-ndk logs a
+          # mismatch warning on every run.
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-        # -p 24 pins the API level the NDK links against (Android 7.0), so the
-        # floor is stated rather than inherited from cargo-ndk's default.
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        # Capital -P pins the API level (Android 7.0). Lowercase -p is NOT the
+        # platform flag: cargo-ndk's is -P, and a lowercase -p is read as
+        # cargo's --package, which made the first run panic with
+        # "unknown package: 24" before it compiled anything.
         run: >
-          cargo ndk -t arm64-v8a -p 24
+          cargo ndk -t arm64-v8a -P 24
           build --locked --profile ci
           --no-default-features --features rtk,code-graph
 
