@@ -242,9 +242,13 @@ pub struct Database {
 ///
 /// WAL mode, busy timeout, synchronous NORMAL, 64 MB page cache.
 fn apply_pragmas(conn: &rusqlite::Connection) -> std::result::Result<(), rusqlite::Error> {
+    // busy_timeout first. `journal_mode = WAL` needs a brief exclusive lock,
+    // and with the default timeout of 0 that switch fails immediately when any
+    // other connection holds the file. Setting the timeout first turns that
+    // fast-fail into a bounded wait (#55).
     conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA busy_timeout = 30000;
+        "PRAGMA busy_timeout = 30000;
+         PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
          PRAGMA cache_size = -65536;",
     )
