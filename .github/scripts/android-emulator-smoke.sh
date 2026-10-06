@@ -199,6 +199,17 @@ if [ -n "$CORE_LOG" ]; then
   grep -iE 'unknown keys|session_surface|surface|bind|listen|refus' "$OUT/core-log.txt" | tail -25 || true
   echo "--- core log: last 30 lines ---"
   tail -30 "$OUT/core-log.txt"
+  # Proof the core actually READ the seeded config. Without this, "nothing
+  # bound" cannot be told apart from "the core never saw enabled = true", and
+  # that ambiguity is expensive: two runs of identical app code disagreed (one
+  # bound, one did not) and neither log could say which of the two it was.
+  # The line is emitted only when the file layer is on, and the seed turns it
+  # on, so its presence proves the seeded file was the one loaded.
+  if grep -q "debug_logs ENABLED via config" "$OUT/core-log.txt"; then
+    pass "the core read the seeded config"
+  else
+    fail "the core did not read the seeded config (no debug_logs line) - the surface result below is meaningless"
+  fi
 else
   echo "NOTE: no core log under $HOME_DIR/.opencrabs/logs. The seed sets [agent] debug_logs = true, so an empty dir means the core never loaded that config (or never reached logging init) - not that the surface was reached and refused."
 fi
