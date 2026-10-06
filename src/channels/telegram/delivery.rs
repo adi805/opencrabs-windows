@@ -687,11 +687,30 @@ pub(crate) async fn deliver_final_response(
             // reflowed table. Idempotent on well-formed tables.
             let text_only = super::rich::reflow_collapsed_tables(&text_only);
 
+            // FR-007 (#1880): mechanical evidence footer, the Telegram twin of
+            // the Discord line. Source is the flow's tool messages — the real
+            // executions the user already watched — never the model's prose
+            // (NFR-003). Appended AFTER every dedup / react-only / fold
+            // decision above, so nothing downstream compares against the
+            // footerless body, and before the HTML render below so both the
+            // rich and classic paths carry it. No tools -> no line (AC-015).
+            let text_only = {
+                let s = streaming.lock().unwrap_or_else(|e| e.into_inner());
+                match crate::channels::evidence::evidence_line(
+                    s.tool_msgs.iter().map(|t| t.name.as_str()),
+                ) {
+                    Some(f) => format!("{text_only}\n\n{f}"),
+                    None => text_only,
+                }
+            };
+
             // Deliver final response — prefer editing the streaming message in-place
             // to avoid the delete+send race that causes duplicates.
             let html = markdown_to_telegram_html(&text_only);
-            // Final answers stay clean prose: the ctx footer lives on the
-            // settled flow message, not here.
+            // The CTX budget footer lives on the settled flow message, not
+            // here (#1841): the answer keeps clean prose plus the mechanical
+            // evidence line above, which is a different thing — proof of what
+            // ran, not progress chrome.
             let display_html = html.clone();
             tracing::info!(
                 "Telegram deliver: html.len={}, ctx footer on flow='{}'",

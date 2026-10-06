@@ -11,7 +11,7 @@ use tokio::sync::{Mutex, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::{interactions, tool_group};
+use super::{interactions, long_answer, tool_group};
 
 /// Shared Discord state for proactive messaging.
 ///
@@ -53,10 +53,33 @@ pub struct DiscordState {
     pub(super) pending_selects: Mutex<HashMap<String, (std::time::Instant, Vec<String>)>>,
     /// Pending modal forms: id -> (created, spec) (#383). Same lazy TTL.
     pub(super) pending_forms: Mutex<HashMap<String, (std::time::Instant, interactions::FormSpec)>>,
+    /// Long answers paged behind a button (FR-009), keyed by the id of the
+    /// message carrying page 0. Insertion-ordered for pruning; bounded at
+    /// `DiscordState::LONG_ANSWER_CAP` (see `long_answer`).
+    pub(super) long_answers: Mutex<long_answer::LongAnswerStore>,
     /// Collapsible tool groups keyed by message id, so the Expand/Collapse
     /// interaction can re-render after the turn ended. Insertion-ordered
     /// for pruning; bounded at [`Self::TOOL_GROUP_CAP`] (see `tool_group`).
     pub(super) tool_groups: Mutex<(Vec<u64>, HashMap<u64, tool_group::GroupState>)>,
+    /// Plan cards: session_id → (channel_id, message_id, signature).
+    ///
+    /// In-memory cache only; `db::repository::PlanCardRepository` is the
+    /// durable backing and the same rows Telegram reads and writes
+    /// (FR-008 / AC-019: no third state mechanism). The signature is the
+    /// rendered body plus its keyboard state, so an unchanged plan costs no
+    /// API call.
+    pub(super) plan_cards: Mutex<HashMap<Uuid, (u64, u64, String)>>,
+    /// Per-session lock serialising plan-card writes, mirroring Telegram's
+    /// `plan_card_locks` (#822). Without it two concurrent refreshes both
+    /// see no card, both post one, and the second id overwrites the first —
+    /// leaving a card visible but untracked, so it can never be edited or
+    /// removed again.
+    ///
+    /// Rate-limit backoff is deliberately NOT duplicated here: the Discord
+    /// governor (FR-003) already owns every write and applies its own
+    /// per-class bucket, which is the same reuse-over-reinvent rule AC-019
+    /// states for the lock.
+    pub(super) plan_card_locks: Mutex<HashMap<Uuid, std::sync::Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Default for DiscordState {
@@ -80,7 +103,52 @@ impl DiscordState {
             cancel_tokens: Mutex::new(HashMap::new()),
             pending_selects: Mutex::new(HashMap::new()),
             pending_forms: Mutex::new(HashMap::new()),
+            long_answers: Mutex::new((Vec::new(), HashMap::new())),
             tool_groups: Mutex::new((Vec::new(), HashMap::new())),
+            plan_cards: Mutex::new(HashMap::new()),
+            plan_card_locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Tracked plan card for a session: `(channel_id, message_id, signature)`.
+    pub(crate) async fn plan_card(&self, session_id: Uuid) -> Option<(u64, u64, String)> {
+        self.plan_cards.lock().await.get(&session_id).cloned()
+    }
+
+    /// Record the card currently on screen for a session. Called after a
+    /// successful create OR edit, so the signature always describes what the
+    /// chat actually shows.
+    pub(crate) async fn set_plan_card(
+        &self,
+        session_id: Uuid,
+        channel_id: u64,
+        message_id: u64,
+        signature: String,
+    ) {
+        self.plan_cards
+            .lock()
+            .await
+            .insert(session_id, (channel_id, message_id, signature));
+    }
+
+    /// Forget a session's card (deleted, or the plan is gone).
+    pub(crate) async fn clear_plan_card(&self, session_id: Uuid) {
+        self.plan_cards.lock().await.remove(&session_id);
+    }
+
+    /// Per-session write lock, created on first use.
+    ///
+    /// Mirrors Telegram's `plan_card_lock` (#822): the map read, the
+    /// edit-or-post decision and the id write must happen with nothing else
+    /// interleaving, or two refreshes race into two cards.
+    pub(crate) async fn plan_card_lock(
+        &self,
+        session_id: Uuid,
+    ) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.plan_card_locks.lock().await;
+        locks
+            .entry(session_id)
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 }

@@ -641,6 +641,35 @@ allowed_channels = ["channel_id"]       # Where the bot operates (empty = all ch
 # it the gateway connects and chat works, but every command registration returns
 # 403 and "/" stays empty. See src/docs/reference/DISCORD_COMMANDS.md.
 
+# Proactive write-budget governor (#1888 follow-up): per-channel token buckets
+# applied BEFORE Discord answers 429, layered beside the reactive retry_after
+# backoff. Discord allows roughly 5 message writes per 5 s per channel, so a
+# busy turn -- a progress card refreshed every tick, tool-group churn, chunked
+# answers -- could spend that budget and then keep hammering 429s.
+# Two classes share the governor: creates (new messages) and edits (in-place
+# updates). Cosmetic writes are DROPPED when the budget is spent, because every
+# refresh re-renders the full current state and the dropped content rides the
+# next admitted write. Settle renders and the final answer are never dropped:
+# they wait for a token instead, bounded by max_hold_secs.
+# [channels.discord.rate_limiter]
+# enabled = true                        # Master switch. Default: true.
+# creates_per_5s = 5                    # Create bucket refill per channel.
+# create_burst = 5                      # Create burst capacity.
+# edits_per_5s = 5                      # Edit bucket refill per channel.
+# edit_burst = 5                        # Edit burst capacity.
+# max_hold_secs = 10                    # Longest a droppable write waits before being dropped.
+# cooldown_base_millis = 1000           # First 429 cooldown; doubles per consecutive 429.
+# cooldown_max_millis = 60000           # Ceiling for the exponential 429 cooldown.
+
+# Progress-card display (FR-006). The live card stays the single message for a
+# turn; these knobs decide when it admits the turn has gone quiet.
+# [channels.discord.progress]
+# silence_warning_secs = 90             # Idle seconds before the card adds a
+                                        # "still working" line naming the last
+                                        # activity. 0 disables. Default: 90.
+                                        # The clock denominator is not set here:
+                                        # it reads [agent] thinking_loop_timeout_secs.
+
 [channels.telegram]
 enabled = false
 # allowed_users = [123456789]             # Who the bot replies to (numeric user ID, empty = everyone)

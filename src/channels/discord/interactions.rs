@@ -15,6 +15,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use super::writes::{self, Class};
+
 /// One pending modal form: what the modal shows when the button is hit.
 #[derive(Debug, Clone)]
 pub(crate) struct FormSpec {
@@ -103,7 +105,7 @@ pub(crate) async fn route_interaction_turn(
     }
     let channel = serenity::model::id::ChannelId::new(channel_id);
     for chunk in super::handler::split_message(trimmed, 2000) {
-        if let Err(e) = channel.say(&ctx.http, chunk).await {
+        if let Err(e) = writes::say(&ctx.http, channel, chunk, Class::Final).await {
             tracing::warn!("Discord interaction: failed to deliver reply: {e}");
         }
     }
@@ -130,6 +132,11 @@ pub(crate) async fn route_followup_turn(
     agent: Arc<AgentService>,
     session_svc: SessionService,
     discord_state: Arc<super::DiscordState>,
+    // Interaction token for the deferred ack, when this turn was started by a
+    // slash command. `Some` lets the final answer REPLACE the deferred message
+    // instead of arriving as an orphaned second reply (FR-002, AC-004); `None`
+    // keeps the legacy channel-say delivery.
+    interaction_token: Option<String>,
     is_dm: bool,
     user_id: u64,
     channel_id: u64,
@@ -217,6 +224,7 @@ pub(crate) async fn route_followup_turn(
                                     .upsert_tool_group(
                                         mid.get(),
                                         GroupState {
+                                            last_activity_at: std::time::Instant::now(),
                                             entries,
                                             notes: Vec::new(),
                                             expanded: false,
@@ -231,7 +239,9 @@ pub(crate) async fn route_followup_turn(
                                         &group,
                                         mid.get(),
                                     ));
-                                if let Err(e) = channel.edit_message(&http, mid, edit).await {
+                                if let Err(e) =
+                                    writes::edit(&http, channel, mid, edit, Class::Edit).await
+                                {
                                     tracing::warn!(
                                         "Discord: follow-up tap tool group edit failed (append): {e}"
                                     );
@@ -239,6 +249,7 @@ pub(crate) async fn route_followup_turn(
                             }
                             None => {
                                 let group = GroupState {
+                                    last_activity_at: std::time::Instant::now(),
                                     entries,
                                     notes: Vec::new(),
                                     expanded: false,
@@ -246,20 +257,21 @@ pub(crate) async fn route_followup_turn(
                                     settled: None,
                                 };
                                 let content = super::tool_group::render_content(&group);
-                                match channel.say(&http, &content).await {
-                                    Ok(sent_msg) => {
+                                match writes::say(&http, channel, &content, Class::Final).await {
+                                    Ok(Some(sent_msg)) => {
                                         let comps = super::tool_group::render_components(
                                             &group,
                                             sent_msg.id.get(),
                                         );
                                         if !comps.is_empty()
-                                            && let Err(e) = channel
-                                                .edit_message(
-                                                    &http,
-                                                    sent_msg.id,
-                                                    EditMessage::new().components(comps),
-                                                )
-                                                .await
+                                            && let Err(e) = writes::edit(
+                                                &http,
+                                                channel,
+                                                sent_msg.id,
+                                                EditMessage::new().components(comps),
+                                                Class::Final,
+                                            )
+                                            .await
                                         {
                                             tracing::warn!(
                                                 "Discord: follow-up tap tool group component fixup failed: {e}"
@@ -268,6 +280,9 @@ pub(crate) async fn route_followup_turn(
                                         dstate.upsert_tool_group(sent_msg.id.get(), group).await;
                                         *mid_guard = Some(sent_msg.id);
                                     }
+                                    Ok(None) => tracing::error!(
+                                        "Discord: follow-up tap tool group post refused despite Final class"
+                                    ),
                                     Err(e) => tracing::warn!(
                                         "Discord: follow-up tap failed to post tool group message: {e}"
                                     ),
@@ -298,6 +313,7 @@ pub(crate) async fn route_followup_turn(
                                 .upsert_tool_group(
                                     mid.get(),
                                     GroupState {
+                                        last_activity_at: std::time::Instant::now(),
                                         entries,
                                         notes: Vec::new(),
                                         expanded: false,
@@ -312,7 +328,9 @@ pub(crate) async fn route_followup_turn(
                                     &group,
                                     mid.get(),
                                 ));
-                            if let Err(e) = channel.edit_message(&http, mid, edit).await {
+                            if let Err(e) =
+                                writes::edit(&http, channel, mid, edit, Class::Edit).await
+                            {
                                 tracing::warn!(
                                     "Discord: follow-up tap tool group edit failed (status): {e}"
                                 );
@@ -324,7 +342,7 @@ pub(crate) async fn route_followup_turn(
                     tokio::spawn(async move {
                         let text =
                             format!("🔧 {}", crate::utils::sanitize::normalize_dashes(&message));
-                        if let Err(e) = channel.say(&http, &text).await {
+                        if let Err(e) = writes::say(&http, channel, &text, Class::Final).await {
                             tracing::warn!(error = %e, "Discord: follow-up tap self-heal post failed");
                         }
                     });
@@ -360,7 +378,9 @@ pub(crate) async fn route_followup_turn(
                                     &group,
                                     mid.get(),
                                 ));
-                            if let Err(e) = channel.edit_message(&http, mid, edit).await {
+                            if let Err(e) =
+                                writes::edit(&http, channel, mid, edit, Class::Edit).await
+                            {
                                 tracing::debug!(
                                     "Discord: follow-up tap trace note edit failed: {e}"
                                 );
@@ -383,7 +403,8 @@ pub(crate) async fn route_followup_turn(
                             prev.push(clean.clone());
                         }
                         for chunk in super::handler::split_message(&clean, 2000) {
-                            if let Err(e) = channel.say(&http, &chunk).await {
+                            if let Err(e) = writes::say(&http, channel, &chunk, Class::Final).await
+                            {
                                 tracing::debug!(
                                     "Discord: follow-up tap intermediate send failed: {e}"
                                 )
@@ -402,7 +423,7 @@ pub(crate) async fn route_followup_turn(
                     let http = http.clone();
                     tokio::spawn(async move {
                         let text = format!("⏳ Retry {}/{} — {}", attempt, max, reason);
-                        if let Err(e) = channel.say(&http, &text).await {
+                        if let Err(e) = writes::say(&http, channel, &text, Class::Final).await {
                             tracing::warn!(error = %e, "Discord: follow-up tap retry post failed");
                         }
                     });
@@ -413,7 +434,7 @@ pub(crate) async fn route_followup_turn(
                     let http = http.clone();
                     tokio::spawn(async move {
                         let text = format!("🔄 Now using {}/{}", to_name, to_model);
-                        if let Err(e) = channel.say(&http, &text).await {
+                        if let Err(e) = writes::say(&http, channel, &text, Class::Final).await {
                             tracing::warn!(error = %e, "Discord: follow-up tap provider switch post failed");
                         }
                     });
@@ -443,21 +464,29 @@ pub(crate) async fn route_followup_turn(
     // second zero — the whole of #1852. On a post failure the mid stays
     // None and bubble creation falls back to the first tool event.
     let turn_shell = super::tool_group::GroupState {
+        last_activity_at: std::time::Instant::now(),
         entries: Vec::new(),
         notes: Vec::new(),
         expanded: false,
         started_at: std::time::Instant::now(),
         settled: None,
     };
-    match channel
-        .say(&http, &super::tool_group::render_content(&turn_shell))
-        .await
+    match writes::say(
+        &http,
+        channel,
+        &super::tool_group::render_content(&turn_shell),
+        Class::Final,
+    )
+    .await
     {
-        Ok(sent_msg) => {
+        Ok(Some(sent_msg)) => {
             discord_state
                 .upsert_tool_group(sent_msg.id.get(), turn_shell)
                 .await;
             *turn_group_mid.lock().await = Some(sent_msg.id);
+        }
+        Ok(None) => {
+            tracing::error!("Discord: follow-up tap turn-start shell refused despite Final class")
         }
         Err(e) => {
             tracing::warn!("Discord: follow-up tap turn-start shell post failed: {e}")
@@ -554,7 +583,7 @@ pub(crate) async fn route_followup_turn(
                 let edit = serenity::builder::EditMessage::new()
                     .content(super::tool_group::render_content(&group))
                     .components(super::tool_group::render_components(&group, mid.get()));
-                if let Err(e) = channel.edit_message(&http, mid, edit).await {
+                if let Err(e) = writes::edit(&http, channel, mid, edit, Class::Edit).await {
                     tracing::debug!("Discord: follow-up tap trace mirror-note drop failed: {e}");
                 }
             }
@@ -563,6 +592,7 @@ pub(crate) async fn route_followup_turn(
                 && let Some(group) = discord_state
                     .settle_tool_group(
                         mid.get(),
+                        super::tool_group::TurnOutcome::Finished,
                         if ctx_line.is_empty() {
                             None
                         } else {
@@ -574,14 +604,48 @@ pub(crate) async fn route_followup_turn(
                 let edit = serenity::builder::EditMessage::new()
                     .content(super::tool_group::render_content(&group))
                     .components(super::tool_group::render_components(&group, mid.get()));
-                if let Err(e) = channel.edit_message(&http, mid, edit).await {
+                if let Err(e) = writes::edit(&http, channel, mid, edit, Class::Edit).await {
                     tracing::debug!("Discord: follow-up tap settled stamp failed: {e}");
                 }
             }
 
             if !skip_final_post {
-                for chunk in super::handler::split_message(&text_only, 2000) {
-                    if let Err(e) = channel.say(&http, &chunk).await {
+                let chunks = super::handler::split_message(&text_only, 2000);
+                // FR-002 (AC-004): when the turn was started by a slash
+                // command, the deferred ack IS the answer's home — edit it in
+                // place so the invocation and the result are one message
+                // instead of two. The token is good for 15 minutes; past that
+                // the edit fails and we fall back to a plain message tagged as
+                // a continuation (AC-005) rather than dropping the answer.
+                let mut delivered_via_token = false;
+                for (idx, chunk) in chunks.iter().enumerate() {
+                    if idx == 0
+                        && let Some(token) = interaction_token.as_deref()
+                    {
+                        let edit = serenity::builder::EditInteractionResponse::new()
+                            .content(chunk.clone());
+                        match http
+                            .edit_original_interaction_response(token, &edit, Vec::new())
+                            .await
+                        {
+                            Ok(_) => {
+                                delivered_via_token = true;
+                                continue;
+                            }
+                            Err(e) => tracing::warn!(
+                                "Discord: deferred ack edit failed (token expired?), falling back to a plain message: {e}"
+                            ),
+                        }
+                    }
+                    // A continuation marker covers both the overflow chunks of
+                    // a token delivery and the first chunk of a fallback.
+                    let payload =
+                        if idx > 0 || (interaction_token.is_some() && !delivered_via_token) {
+                            format!("\u{2026}{chunk}")
+                        } else {
+                            chunk.clone()
+                        };
+                    if let Err(e) = writes::say(&http, channel, &payload, Class::Final).await {
                         tracing::error!("Discord: follow-up tap reply delivery failed: {e}");
                     }
                 }
@@ -589,13 +653,36 @@ pub(crate) async fn route_followup_turn(
         }
         Err(ref e) if matches!(e, crate::brain::agent::AgentError::Cancelled) => {
             tracing::info!("Discord: follow-up tap turn cancelled for session {session_id}");
+            super::handler::settle_outcome(
+                &http,
+                channel,
+                &discord_state,
+                &turn_group_mid,
+                super::tool_group::TurnOutcome::Cancelled,
+                None,
+            )
+            .await;
         }
         Err(e) => {
             tracing::error!("Discord: follow-up tap agent error: {e}");
+            super::handler::settle_outcome(
+                &http,
+                channel,
+                &discord_state,
+                &turn_group_mid,
+                super::handler::classify_outcome(&e),
+                None,
+            )
+            .await;
             let error_msg = format!("❌ Error\n\n{}", crate::brain::agent::format_user_error(&e));
-            if let Err(e) = channel.say(&http, error_msg).await {
+            if let Err(e) = writes::say(&http, channel, error_msg, Class::Final).await {
                 tracing::warn!("Discord: follow-up tap error post failed: {e}");
             }
         }
     }
+    // Plan board (FR-008, #1880): reconcile this session's plan card after the
+    // turn, so a plan created, approved, advanced or discarded mid-turn shows
+    // its new state. ONE message per session, edited in place; a rendering
+    // identical to what the chat already shows costs no API call.
+    super::plan_card::refresh_plan_card(&http, channel, &discord_state, session_id).await;
 }

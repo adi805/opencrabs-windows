@@ -17,6 +17,7 @@ fn tool(name: &str, context: &str, status: Option<bool>) -> GroupEntry {
 
 fn group_with(entries: Vec<GroupEntry>, notes: Vec<String>) -> GroupState {
     GroupState {
+        last_activity_at: Instant::now(),
         entries,
         expanded: false,
         notes,
@@ -27,6 +28,7 @@ fn group_with(entries: Vec<GroupEntry>, notes: Vec<String>) -> GroupState {
 
 fn settled(group: &mut GroupState, ctx: Option<String>) {
     group.settled = Some(crate::channels::discord::tool_group::SettledStatus {
+        outcome: crate::channels::discord::tool_group::TurnOutcome::Finished,
         elapsed: Duration::from_secs(42),
         ctx,
     });
@@ -65,8 +67,8 @@ fn activity_prefers_the_latest_narration_note() {
     let settled_text = render_content(&g);
     let settled_first = settled_text.lines().next().expect("non-empty render");
     assert!(
-        settled_first.starts_with("✅ **2 tool calls** · ⏱️ 0:42"),
-        "settled line stays clean with the frozen clock: {settled_first}"
+        settled_first.starts_with("✅ Finished · **2 tool calls** · ⏱️ 0:42"),
+        "settled line leads with the turn outcome and keeps the frozen clock: {settled_first}"
     );
     assert!(
         !settled_first.contains("Scanning"),

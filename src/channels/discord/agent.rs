@@ -4,6 +4,7 @@
 
 use super::DiscordState;
 use super::handler;
+use super::writes::{self, Class};
 use crate::brain::agent::AgentService;
 use crate::config::Config;
 use crate::db::ChannelMessageRepository;
@@ -23,6 +24,9 @@ use serenity::prelude::*;
 pub struct DiscordAgent {
     agent_service: Arc<AgentService>,
     session_service: SessionService,
+    /// Kept alongside the service handles: plan Discard clears the session
+    /// goal through `GoalManager`, which needs the pool (FR-008).
+    service_context: ServiceContext,
     shared_session_id: Arc<Mutex<Option<Uuid>>>,
     discord_state: Arc<DiscordState>,
     config_rx: tokio::sync::watch::Receiver<Config>,
@@ -40,7 +44,8 @@ impl DiscordAgent {
     ) -> Self {
         Self {
             agent_service,
-            session_service: SessionService::new(service_context),
+            session_service: SessionService::new(service_context.clone()),
+            service_context,
             shared_session_id,
             discord_state,
             config_rx,
@@ -70,6 +75,7 @@ impl DiscordAgent {
 
             let agent = self.agent_service;
             let session_svc = self.session_service;
+            let service_context = self.service_context;
             let shared_session = self.shared_session_id;
             let discord_state = self.discord_state;
             let config_rx = self.config_rx;
@@ -82,6 +88,7 @@ impl DiscordAgent {
             let make_handler = || Handler {
                 agent: agent.clone(),
                 session_svc: session_svc.clone(),
+                service_context: service_context.clone(),
                 extra_sessions: extra_sessions.clone(),
                 shared_session: shared_session.clone(),
                 discord_state: discord_state.clone(),
@@ -129,6 +136,9 @@ impl DiscordAgent {
 struct Handler {
     agent: Arc<AgentService>,
     session_svc: SessionService,
+    /// Pool handle for the plan card's Discard (FR-008): `plan_mode::discard`
+    /// clears the session goal through `GoalManager`, which needs the pool.
+    service_context: ServiceContext,
     extra_sessions: Arc<Mutex<HashMap<u64, (Uuid, std::time::Instant)>>>,
     shared_session: Arc<Mutex<Option<Uuid>>>,
     discord_state: Arc<DiscordState>,
@@ -363,12 +373,29 @@ impl EventHandler for Handler {
             } else {
                 format!("{user_name}: {invocation}")
             };
+            // A slash command has no originating message, so `Acknowledge`
+            // (Discord's DEFERRED_UPDATE_MESSAGE, kind 6) is not a valid reply
+            // to it: there is nothing to update, the handshake fails, and the
+            // user gets the red "This interaction didn't respond" banner while
+            // the turn quietly carries on (#27, upstream #1888). `Defer`
+            // (kind 5) opens Discord's native loading state inside the
+            // 3-second window AND keeps the interaction alive, so the turn's
+            // answer can replace this very message instead of landing as an
+            // orphaned second reply (FR-002, AC-004).
             let _ack = command
                 .create_response(
                     &ctx.http,
-                    serenity::builder::CreateInteractionResponse::Acknowledge,
+                    serenity::builder::CreateInteractionResponse::Defer(
+                        serenity::builder::CreateInteractionResponseMessage::new(),
+                    ),
                 )
                 .await;
+            if let Err(e) = _ack {
+                tracing::warn!("Discord: could not defer {invocation}: {e}");
+            }
+            // FR-002: hand the turn the token so its answer can replace the
+            // deferred message instead of arriving as a second reply.
+            let interaction_token = Some(command.token.clone());
             let agent = self.agent.clone();
             let session_svc = self.session_svc.clone();
             let discord_state = self.discord_state.clone();
@@ -379,6 +406,7 @@ impl EventHandler for Handler {
                     agent,
                     session_svc,
                     discord_state,
+                    interaction_token,
                     is_dm,
                     user,
                     channel_id,
@@ -524,11 +552,14 @@ impl EventHandler for Handler {
                     // #1852: tapped suggestions ride the tool-loop display
                     // path (live status, tools, approvals, chained buttons)
                     // instead of the bare single-call interaction route.
+                    // No interaction token: the tap already resolved its
+                    // interaction with `UpdateMessage` (FR-002 is slash-only).
                     super::interactions::route_followup_turn(
                         &ctx2,
                         agent,
                         session_svc,
                         discord_state,
+                        None,
                         is_dm,
                         user,
                         channel_id,
@@ -669,6 +700,48 @@ impl EventHandler for Handler {
                 return;
             }
 
+            // Provider picker callback → show models for that provider
+            if let Some(rest) = custom_id.strip_prefix(super::long_answer::PAGER_PREFIX) {
+                // FR-009: reveal one page of a long answer WITHOUT adding a
+                // message to the channel — ephemeral, and it carries its own
+                // position so a pasted-out-of-context page still says where it
+                // came from. An aged-out pager answers plainly instead of
+                // silently doing nothing.
+                use serenity::builder::{
+                    CreateInteractionResponse, CreateInteractionResponseMessage,
+                };
+                let mut parts = rest.splitn(2, ':');
+                let mid = parts.next().and_then(|s| s.parse::<u64>().ok());
+                let page = parts.next().and_then(|s| s.parse::<usize>().ok());
+                let pages = match mid {
+                    Some(mid) => self.discord_state.long_answer_pages(mid).await,
+                    None => None,
+                };
+                let body = pages.as_deref().and_then(|pages| {
+                    page.and_then(|page| super::long_answer::page_body(pages, page))
+                });
+                let content = body.unwrap_or_else(|| {
+                    "That pager aged out. Ask me again and I will repost the answer.".to_string()
+                });
+                // Carry the pager forward: page 0 is in-channel and every later
+                // page is reachable only by press, so an answer that carried no
+                // row would strand the rest of the body behind this one press
+                // (FR-009).
+                let mut msg = CreateInteractionResponseMessage::new()
+                    .content(content)
+                    .ephemeral(true);
+                if let (Some(mid), Some(pages), Some(page)) = (mid, pages.as_ref(), page)
+                    && let Some(row) = super::long_answer::next_page_row(mid, page, pages.len())
+                {
+                    msg = msg.components(vec![row]);
+                }
+                let resp = CreateInteractionResponse::Message(msg);
+                if let Err(e) = comp.create_response(&ctx.http, resp).await {
+                    tracing::warn!("Discord: long-answer page response failed: {e}");
+                }
+                return;
+            }
+
             // Tool-group Expand/Collapse toggle (#380): flip stored state
             // and update THIS message via the interaction response.
             if let Some(mid_str) = custom_id.strip_prefix("toolgroup:") {
@@ -712,6 +785,149 @@ impl EventHandler for Handler {
                     );
                     if let Err(e2) = comp.create_response(&ctx.http, fallback).await {
                         tracing::warn!("Discord: tool group toggle fallback response failed: {e2}");
+                    }
+                }
+                return;
+            }
+
+            // Plan card Approve/Discard (`plan:` prefix, deliberately distinct
+            // from the tool-approval `approve:{id}` family). Owner-only for the
+            // same reason Telegram is: the keyboard sits in a channel any
+            // allowlisted member can see, so the tapper is re-checked here.
+            if super::plan_card::is_plan_callback(custom_id) {
+                use serenity::builder::{
+                    CreateInteractionResponse, CreateInteractionResponseMessage,
+                };
+                let cfg = self.config_rx.borrow().clone();
+                let caller = comp.user.id.get().to_string();
+                let is_owner = crate::config::owner::is_owner(
+                    &cfg.channels.discord.allowed_users,
+                    &cfg.channels.discord.bot_owner,
+                    &caller,
+                );
+                if !is_owner {
+                    tracing::warn!(
+                        "Discord: non-owner {} tapped '{}' — refused (OC-01)",
+                        caller,
+                        custom_id
+                    );
+                    let _ = comp
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("🔒 Owner only")
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+
+                let channel_id = comp.channel_id;
+                let Some(session_id) = self
+                    .discord_state
+                    .session_owner_by_channel(channel_id.get())
+                    .await
+                else {
+                    let _ = comp
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("No session for this channel.")
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await;
+                    return;
+                };
+
+                if custom_id == super::plan_card::PLAN_DISCARD {
+                    // Discard cancels the running turn first, exactly like the
+                    // Telegram arm: the plan is going away, so letting the turn
+                    // keep executing would write results against a dead plan.
+                    let cancelled = self.discord_state.cancel_session(session_id).await;
+                    let mut reply =
+                        crate::utils::plan_mode::discard(session_id, &self.service_context).await;
+                    if cancelled {
+                        reply = format!("⏹️ Cancelled the running turn. {reply}");
+                    }
+                    let _ = comp
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Plan discarded")
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await;
+                    super::plan_card::remove_plan_card(
+                        &ctx.http,
+                        channel_id,
+                        &self.discord_state,
+                        session_id,
+                    )
+                    .await;
+                    if let Err(e) = writes::say(&ctx.http, channel_id, &reply, Class::Final).await {
+                        tracing::warn!("Discord: plan discard note failed: {e}");
+                    }
+                    return;
+                }
+
+                // plan:ok — Approve, or the empty-tasks seed retry.
+                match crate::utils::plan_mode::try_approve(
+                    session_id,
+                    crate::tui::plan::ApprovalSource::User,
+                )
+                .await
+                {
+                    crate::utils::plan_mode::ApproveOutcome::Refused(msg) => {
+                        let _ = comp
+                            .create_response(
+                                &ctx.http,
+                                CreateInteractionResponse::Message(
+                                    CreateInteractionResponseMessage::new()
+                                        .content(msg)
+                                        .ephemeral(true),
+                                ),
+                            )
+                            .await;
+                    }
+                    crate::utils::plan_mode::ApproveOutcome::SeedTurn { prompt } => {
+                        let _ = comp
+                            .create_response(
+                                &ctx.http,
+                                CreateInteractionResponse::Message(
+                                    CreateInteractionResponseMessage::new()
+                                        .content("✅ Plan approved — starting now…")
+                                        .ephemeral(true),
+                                ),
+                            )
+                            .await;
+                        // Visible seed turn, spawned so the callback answers
+                        // inside Discord's 3s window. Runs through the same
+                        // resume path a background task uses, so the result
+                        // lands in the channel like any other turn.
+                        let agent = self.agent.clone();
+                        let http = ctx.http.clone();
+                        let target = channel_id.get().to_string();
+                        tokio::spawn(async move {
+                            // One let-chain rather than a nested `if let`:
+                            // clippy's `collapsible_if` fires on the nested
+                            // form under `-D warnings`, and edition 2024
+                            // allows the chained form.
+                            if let Some(content) = crate::channels::bg_resume::run_resume_turn(
+                                agent, session_id, prompt, "discord", &target,
+                            )
+                            .await
+                                && let Err(e) =
+                                    writes::say(&http, channel_id, &content, Class::Final).await
+                            {
+                                tracing::warn!("Discord: plan approval turn delivery failed: {e}");
+                            }
+                        });
                     }
                 }
                 return;
@@ -786,7 +1002,10 @@ impl EventHandler for Handler {
                         tokio::spawn(async move {
                             match agent_clone.send_message(sid, prompt, None).await {
                                 Ok(r) => {
-                                    if let Err(e) = channel_id.say(&http, &r.content).await {
+                                    if let Err(e) =
+                                        writes::say(&http, channel_id, &r.content, Class::Final)
+                                            .await
+                                    {
                                         tracing::warn!(error = %e, "failed to send Discord agent message");
                                     }
                                 }

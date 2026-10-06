@@ -6,6 +6,7 @@
 //! completed turn's final text (like the crash-recovery path in `cli/ui.rs`).
 
 use super::DiscordState;
+use super::writes::{self, Class};
 use crate::brain::agent::service::MessageEnqueueCallback;
 use crate::channels::bg_resume::{self, AgentHolder};
 use std::sync::Arc;
@@ -68,7 +69,7 @@ pub(crate) fn build_enqueue_callback(
                 let verdict_chars = content.chars().count();
                 let ch = serenity::model::id::ChannelId::new(channel_id);
                 for (index, chunk) in chunks.into_iter().enumerate() {
-                    if let Err(e) = ch.say(&http, &chunk).await {
+                    if let Err(e) = writes::say(&http, ch, &chunk, Class::Final).await {
                         if index == 0 {
                             tracing::error!(
                                 "[bg-resume] discord: first of {total} chunks failed, the whole verdict was lost ({verdict_chars} chars): {e}"

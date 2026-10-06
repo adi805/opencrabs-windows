@@ -7,6 +7,7 @@
 //! custom guild emoji classify as Neutral.
 
 use super::DiscordState;
+use super::writes::{self, Class};
 use crate::brain::agent::AgentService;
 use crate::config::Config;
 use crate::services::SessionService;
@@ -149,7 +150,8 @@ pub(crate) async fn handle_reaction_add(
     let trimmed = text_only.trim();
     if !trimmed.is_empty() {
         for chunk in super::handler::split_message(trimmed, 2000) {
-            if let Err(e) = reaction.channel_id.say(&ctx.http, chunk).await {
+            if let Err(e) = writes::say(&ctx.http, reaction.channel_id, &chunk, Class::Final).await
+            {
                 tracing::warn!("Discord reaction: failed to deliver reply: {e}");
             }
         }
