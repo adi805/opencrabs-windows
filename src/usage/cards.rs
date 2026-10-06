@@ -12,7 +12,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
 };
 
 const LABEL: Style = Style::new().fg(Color::DarkGray);
@@ -670,24 +670,14 @@ pub fn render_cache_efficiency(
 // ── Footer ───────────────────────────────────────────────────────────────────
 
 pub fn render_footer(f: &mut Frame, area: Rect) {
-    let line = Line::from(vec![
-        Span::styled("Tab", accent()),
-        Span::styled(" navigate  ", DIM),
-        Span::styled("Enter", accent()),
-        Span::styled(" details  ", DIM),
-        Span::styled("T", accent()),
-        Span::styled(" today  ", DIM),
-        Span::styled("W", accent()),
-        Span::styled(" week  ", DIM),
-        Span::styled("M", accent()),
-        Span::styled(" month  ", DIM),
-        Span::styled("A", accent()),
-        Span::styled(" all  ", DIM),
-        Span::styled("Esc", accent()),
-        Span::styled(" close", DIM),
-    ]);
-    let p = Paragraph::new(vec![line])
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: false });
-    f.render_widget(p, area);
+    // The canonical dialog footer from the scoped keymap (#1775) — the
+    // reference implementation the ticket pointed at, now uniform with
+    // every other dialog: left-aligned, key: verb, bold accent keys.
+    crate::tui::render::hints::render_footer(
+        f,
+        area,
+        crate::tui::app::dialog_keys::dialog_keys(
+            crate::tui::app::dialog_keys::DialogScope::UsageDashboard,
+        ),
+    );
 }

@@ -10,6 +10,21 @@ use crate::brain::agent::service::MessageEnqueueCallback;
 use crate::channels::bg_resume::{self, AgentHolder};
 use std::sync::Arc;
 
+/// Discord rejects any message over 2000 characters with `Message too large`
+/// and drops the entire payload (#1899), so a long resumed verdict that fails
+/// never reaches the channel at all. Chunk it through the same fence- and
+/// markup-aware splitter the live delivery path uses
+/// (`handler::split_message`, #876).
+///
+/// Blank content yields no chunks: an empty `say` is a 400 and the splitter
+/// would hand back one empty chunk for it.
+pub(crate) fn resume_delivery_chunks(content: &str) -> Vec<String> {
+    if content.trim().is_empty() {
+        return Vec::new();
+    }
+    super::handler::split_message(content, 2000)
+}
+
 pub(crate) fn build_enqueue_callback(
     state: Arc<DiscordState>,
     agent_holder: AgentHolder,
@@ -44,9 +59,28 @@ pub(crate) fn build_enqueue_callback(
                 bg_resume::run_resume_turn(agent, session_id, msg.context_text, "discord", &target)
                     .await
             {
+                let chunks = resume_delivery_chunks(&content);
+                let total = chunks.len();
+                if total == 0 {
+                    tracing::debug!("[bg-resume] discord: blank verdict, nothing sent");
+                    return;
+                }
+                let verdict_chars = content.chars().count();
                 let ch = serenity::model::id::ChannelId::new(channel_id);
-                if let Err(e) = ch.say(&http, &content).await {
-                    tracing::warn!("[bg-resume] discord: say failed: {e}");
+                for (index, chunk) in chunks.into_iter().enumerate() {
+                    if let Err(e) = ch.say(&http, &chunk).await {
+                        if index == 0 {
+                            tracing::error!(
+                                "[bg-resume] discord: first of {total} chunks failed, the whole verdict was lost ({verdict_chars} chars): {e}"
+                            );
+                        } else {
+                            tracing::warn!(
+                                "[bg-resume] discord: chunk {}/{total} failed, the rest of the verdict was dropped: {e}",
+                                index + 1
+                            );
+                        }
+                        break;
+                    }
                 }
             }
         });

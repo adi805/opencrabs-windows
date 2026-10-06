@@ -2,6 +2,8 @@
 //!
 //! Tool group display, inline approval dialogs, and approval policy menu.
 
+use super::super::app::dialog_keys::{DialogScope, dialog_keys};
+use super::super::render::hints;
 use super::theme::{self, Role};
 use ratatui::{
     style::{Modifier, Style},
@@ -274,15 +276,13 @@ pub(super) fn render_inline_approval<'a>(
                 ),
             ]));
 
-            // Always show hint so users know V expands full details
-            lines.push(Line::from(vec![Span::styled(
-                if approval.show_details {
-                    "  [V] collapse  [←→] navigate  [Enter] confirm"
-                } else {
-                    "  [V] expand full details  [←→] navigate  [Enter] confirm"
-                },
-                Style::default().fg(theme::role(Role::GrayDim)),
-            )]));
+            // Always show hint so users know V expands full details.
+            // Canonical footer from the scoped keymap (#1775): every
+            // advertised key is one the approval handler consumes.
+            lines.push(hints::footer_line(
+                "  ",
+                dialog_keys(DialogScope::ToolApproval),
+            ));
 
             // Expanded details: show all params fully, no truncation
             let safe_approval_input = crate::utils::redact_tool_input(&approval.tool_input);
@@ -539,10 +539,10 @@ pub(super) fn render_approve_menu<'a>(
             }
 
             lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "  [\u{2191}\u{2193}] Navigate  [Enter] Confirm  [Esc] Cancel",
-                Style::default().fg(theme::role(Role::GrayDim)),
-            )));
+            lines.push(hints::footer_line(
+                "  ",
+                dialog_keys(DialogScope::ApprovePolicyMenu),
+            ));
         }
         ApproveMenuState::Selected(choice) => {
             let (label, color) = match choice {

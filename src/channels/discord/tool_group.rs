@@ -219,6 +219,57 @@ fn summary_line(group: &GroupState) -> String {
     }
 }
 
+/// Discord hard-caps message content at 2000 chars (#1949): anything
+/// longer is rejected on the wire, and a rejected toggle response leaves
+/// the interaction unresolved — the client then blames a timeout. Every
+/// render path (live edits, settle, Expand responses) fits this cap by
+/// construction.
+pub(crate) const CONTENT_MAX_CHARS: usize = 2000;
+
+/// Room reserved for the omission marker so the clamped body stays under
+/// [`CONTENT_MAX_CHARS`] once the marker is appended.
+const OMIT_MARKER_RESERVE: usize = 80;
+
+/// Keep newest rows of an expansion that overshoots the cap. Walks rows
+/// backwards (the freshest activity is what people expand for), restores
+/// chronology, and states how many rows were dropped — never silently.
+fn clamp_rows(summary: String, rows: Vec<String>) -> String {
+    let budget = CONTENT_MAX_CHARS - OMIT_MARKER_RESERVE;
+    let mut used = summary.chars().count() + 1;
+    let mut kept: Vec<String> = Vec::new();
+    let mut dropped = 0usize;
+    for row in rows.into_iter().rev() {
+        let cost = row.chars().count() + 1;
+        if used + cost > budget {
+            dropped += 1;
+            continue;
+        }
+        used += cost;
+        kept.push(row);
+    }
+    let mut out = format!(
+        "{summary}\n{}",
+        kept.into_iter().rev().collect::<Vec<_>>().join("\n")
+    );
+    if dropped > 0 {
+        out.push_str(&format!(
+            "\n_{dropped} omitted to fit Discord's message limit_"
+        ));
+    }
+    out
+}
+
+/// Final wire guard: hard-cut at the cap on a char boundary. Entry rows
+/// and notes are clipped upstream, so this only exists for pathological
+/// callers — an oversized message must never reach the API.
+fn hard_clip(body: String) -> String {
+    if body.chars().count() <= CONTENT_MAX_CHARS {
+        return body;
+    }
+    let cut: String = body.chars().take(CONTENT_MAX_CHARS - 1).collect();
+    format!("{cut}…")
+}
+
 /// Message body for the group in its current display state.
 pub(crate) fn render_content(group: &GroupState) -> String {
     let tools_part = if group.entries.len() == 1 && !group.expanded {
@@ -230,15 +281,24 @@ pub(crate) fn render_content(group: &GroupState) -> String {
             .iter()
             .map(|e| format!("{} **{}**{}", entry_icon(e.status), e.name, e.context))
             .collect();
-        format!("{}\n{}", summary_line(group), lines.join("\n"))
+        clamp_rows(summary_line(group), lines)
     } else {
         summary_line(group)
     };
-    if group.notes.is_empty() {
-        tools_part
+    let mut body = if group.notes.is_empty() {
+        tools_part.clone()
     } else {
         format!("{tools_part}\n{}", notes_block(&group.notes))
+    };
+    // Notes ride after the rows; if the whole body still overshoots, drop
+    // the oldest notes first (the newest is what the ticker just wrote),
+    // and hard-cut as the last resort.
+    let mut notes: Vec<String> = group.notes.clone();
+    while body.chars().count() > CONTENT_MAX_CHARS && notes.len() > 1 {
+        notes.remove(0);
+        body = format!("{tools_part}\n{}", notes_block(&notes));
     }
+    hard_clip(body)
 }
 
 /// Toggle components for the group message; empty for single-tool groups
@@ -361,5 +421,85 @@ impl DiscordState {
         let idx = group.notes.iter().rposition(|n| pred(n))?;
         group.notes.remove(idx);
         Some(group.clone())
+    }
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use super::*;
+
+    fn probe(entries: usize, notes: usize, expanded: bool) -> GroupState {
+        GroupState {
+            entries: (0..entries)
+                .map(|i| GroupEntry {
+                    name: format!("tool{i}"),
+                    context: format!(" (long context line to reach the cap sooner #{i})"),
+                    status: Some(true),
+                })
+                .collect(),
+            notes: (0..notes)
+                .map(|i| clip_note(&"n".repeat(NOTE_MAX_CHARS + 40 + i)))
+                .collect(),
+            expanded,
+            started_at: Instant::now(),
+            settled: Some(SettledStatus {
+                elapsed: Duration::from_secs(3),
+                ctx: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn huge_expansion_fits_the_cap_and_states_drops() {
+        let rendered = render_content(&probe(300, 6, true));
+        let chars = rendered.chars().count();
+        assert!(chars <= CONTENT_MAX_CHARS, "expansion overshot: {chars}");
+        assert!(
+            rendered.contains("_") && rendered.contains("omitted to fit"),
+            "silent drop: {rendered}"
+        );
+        assert!(
+            rendered.contains("tool299"),
+            "the newest entry must survive the clamp"
+        );
+    }
+
+    #[test]
+    fn small_expansion_is_untouched() {
+        let rendered = render_content(&probe(3, 0, true));
+        assert!(rendered.contains("tool0") && rendered.contains("tool2"));
+        assert!(!rendered.contains("omitted to fit"));
+    }
+
+    #[test]
+    fn collapsed_note_flood_fits_the_cap() {
+        let rendered = render_content(&probe(30, 6, false));
+        assert!(rendered.chars().count() <= CONTENT_MAX_CHARS);
+    }
+
+    #[test]
+    fn multibyte_context_never_splits_a_char() {
+        let mut g = probe(2, 0, true);
+        g.entries[0].context = " (".repeat(3000);
+        let rendered = render_content(&g);
+        assert!(rendered.chars().count() <= CONTENT_MAX_CHARS);
+        assert!(!rendered.ends_with('\u{FFFD}'));
+    }
+
+    #[test]
+    fn marker_counts_exactly_the_dropped_rows() {
+        let rendered = render_content(&probe(250, 0, true));
+        // Line 0 is the summary (`✅ **250 tool calls** · …`), which also
+        // starts with an entry icon — only the entry rows count as shown.
+        let shown = rendered
+            .lines()
+            .skip(1)
+            .filter(|l| l.starts_with(['✅', '❌', '\u{2699}']))
+            .count();
+        assert!(shown > 0 && shown < 250, "clamp kept {shown} rows");
+        assert!(
+            rendered.contains(&format!("_{} omitted to fit", 250 - shown)),
+            "marker disagrees with visible rows:\n{rendered}"
+        );
     }
 }

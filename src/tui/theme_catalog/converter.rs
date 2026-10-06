@@ -252,5 +252,6 @@ fn key_of(role: Role) -> &'static str {
         Role::SurfaceCodeAlt => "surface_code_alt",
         Role::Ink => "ink",
         Role::PurpleSoft => "purple_soft",
+        Role::BorderModal => "border_modal",
     }
 }

@@ -20,7 +20,9 @@
 
 use super::card;
 use crate::tui::app::App;
+use crate::tui::app::dialog_keys::{DialogScope, dialog_keys};
 use crate::tui::app::skills_dialog::matching;
+use crate::tui::render::hints;
 
 use super::super::palette;
 use super::super::theme::{self, Role};
@@ -121,15 +123,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_help_bar(frame: &mut Frame, area: Rect) {
-    let line = Line::from(vec![
-        Span::styled(" Tab/↑↓", palette::dim()),
-        Span::styled(": navigate  ", palette::dim()),
-        Span::styled("Enter", palette::dim()),
-        Span::styled(": run  ", palette::dim()),
-        Span::styled("Esc", palette::dim()),
-        Span::styled(": close  ", palette::dim()),
-        Span::styled("type", palette::dim()),
-        Span::styled(": filter", palette::dim()),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    // Shared canonical footer (#1775). Before this the whole bar was
+    // palette::dim spans — keys indistinguishable from verbs.
+    hints::render_footer(frame, area, dialog_keys(DialogScope::SkillsDialog));
 }

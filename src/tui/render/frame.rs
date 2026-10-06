@@ -149,8 +149,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
         .map(|p| {
             let desired: u16 = if p.tasks.is_empty() {
                 // Seed window (approved design, checklist not built yet):
-                // a 3-line strip carries Building checklist… / seed-error.
-                3
+                // a 5-line strip carries Building checklist… / seed-error
+                // with a blank row above and below the text; the 3-line
+                // budget left the text squeezed between the two borders
+                // and it read as broken (#1945).
+                5
             } else {
                 (p.tasks.len() + 2).min(12) as u16
             };
@@ -334,6 +337,17 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if let Some(picker) = &app.theme_picker {
         let area = f.area();
         crate::tui::render::theme_picker::draw(f, area, picker);
+    }
+
+    // Ctrl+C expanded command panel (#1775), topmost. Self-heals if the
+    // dialog it documents closed on its own (approval resolved, popup
+    // dismissed) while the panel was open.
+    if app.dialog_help_open && app.active_dialog_scope() != Some(app.dialog_help_scope) {
+        app.dialog_help_open = false;
+    }
+    if app.dialog_help_open {
+        let area = f.area();
+        crate::tui::render::hints::render_command_panel(f, area, app.dialog_help_scope);
     }
 }
 

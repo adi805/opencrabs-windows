@@ -1,4 +1,4 @@
-//! Unit tests for leading-hash shielding on Telegram rich markdown (#193, adolfousier/opencrabs#1257).
+//! Unit tests for leading-hash shielding on Telegram rich markdown (#193, opencrabs/opencrabs#1257).
 
 use crate::channels::telegram::rich::{normalize_tables, shield_bare_leading_hashes};
 

@@ -5,7 +5,7 @@
 **Do not open a public issue for a security vulnerability.**
 
 Report it through GitHub's private vulnerability reporting: go to the
-[Security tab](https://github.com/adolfousier/opencrabs/security/advisories/new)
+[Security tab](https://github.com/opencrabs/opencrabs/security/advisories/new)
 and open a draft advisory. That channel is private to the maintainers and
 lets us work on a fix before anything is public.
 
@@ -71,7 +71,7 @@ annotated in `.github/workflows/ci.yml` with why each one stands and what
 would clear it.
 
 Before reporting a dependency advisory, please check that list and
-[#1402](https://github.com/adolfousier/opencrabs/issues/1402). A report that
+[#1402](https://github.com/opencrabs/opencrabs/issues/1402). A report that
 one of them is *reachable in a way we have not accounted for* is very welcome
 and is not a duplicate.
 

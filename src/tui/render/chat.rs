@@ -2,8 +2,10 @@
 //!
 //! Main chat view and thinking indicator.
 
+use super::super::app::dialog_keys::{DialogScope, dialog_keys};
 use super::super::app::{App, DisplayMessage};
 use super::super::markdown::parse_markdown;
+use super::hints;
 use super::theme::{self, Role};
 use super::tools::{render_approve_menu, render_inline_approval, render_tool_group};
 use super::utils::wrap_line_with_padding;
@@ -1385,22 +1387,10 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
             ),
             Span::styled("\u{2588}", Style::default().fg(theme::role(Role::Gray))),
         ]));
-        lines.push(Line::from(vec![
-            Span::styled(
-                "  [Enter] ",
-                Style::default()
-                    .fg(theme::role(Role::AccentTeal))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Submit  ", Style::default().fg(theme::role(Role::GrayDim))),
-            Span::styled(
-                "[Esc] ",
-                Style::default()
-                    .fg(theme::role(Role::AccentTeal))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Cancel", Style::default().fg(theme::role(Role::GrayDim))),
-        ]));
+        lines.push(hints::footer_line(
+            "  ",
+            dialog_keys(DialogScope::SshPassword),
+        ));
         lines.push(Line::from(""));
     }
 
@@ -1451,22 +1441,10 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
             Span::styled("\u{2588}", Style::default().fg(theme::role(Role::Gray))),
         ]));
         // Help line
-        lines.push(Line::from(vec![
-            Span::styled(
-                "  [Enter] ",
-                Style::default()
-                    .fg(theme::role(Role::AccentTeal))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Submit  ", Style::default().fg(theme::role(Role::GrayDim))),
-            Span::styled(
-                "[Esc] ",
-                Style::default()
-                    .fg(theme::role(Role::Error))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Cancel", Style::default().fg(theme::role(Role::GrayDim))),
-        ]));
+        lines.push(hints::footer_line(
+            "  ",
+            dialog_keys(DialogScope::SshPassword),
+        ));
         lines.push(Line::from(""));
     }
 

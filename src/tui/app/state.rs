@@ -673,6 +673,13 @@ pub struct App {
     /// Ctrl+C confirmation state (first clears input, second quits)
     pub(crate) ctrl_c_pending_at: Option<std::time::Instant>,
 
+    /// Ctrl+C expanded per-dialog command panel (#1775): open flag plus
+    /// the scope it was opened for. Modal — while open it consumes every
+    /// key until dismissed (Esc/q/Ctrl+C). `active_dialog_scope()` going
+    /// None (the dialog closed on its own) closes it at render time.
+    pub(crate) dialog_help_open: bool,
+    pub(crate) dialog_help_scope: super::dialog_keys::DialogScope,
+
     /// Help/Settings scroll offset
     pub help_scroll_offset: usize,
     /// Command catalogue for the help screen, collected once on entry (#1530).
@@ -1080,6 +1087,8 @@ impl App {
 
             escape_pending_at: None,
             ctrl_c_pending_at: None,
+            dialog_help_open: false,
+            dialog_help_scope: super::dialog_keys::DialogScope::Help,
             help_scroll_offset: 0,
             help_catalog: Vec::new(),
             help_search: String::new(),
@@ -3406,6 +3415,33 @@ impl App {
     async fn handle_key_event(&mut self, event: crossterm::event::KeyEvent) -> Result<()> {
         use super::events::keys;
         use crossterm::event::{KeyCode, KeyModifiers};
+
+        // Ctrl+C expanded command panel (#1775). Modal: while open, every
+        // key is consumed; Esc/q/Ctrl+C dismiss it. Checked before all
+        // dialog handlers so the panel wins focus from any of them.
+        if self.dialog_help_open {
+            let dismiss =
+                matches!(event.code, KeyCode::Esc | KeyCode::Char('q')) || keys::is_quit(&event);
+            if dismiss {
+                self.dialog_help_open = false;
+            }
+            return Ok(());
+        }
+
+        // Ctrl+C with a dialog open expands that dialog's command panel
+        // instead of starting the quit flow (#1775). Placed before the
+        // sudo/theme/ssh intercepts because those swallow everything —
+        // without this, Ctrl+C inside them pushed a literal 'c' into the
+        // password buffer. In Chat mode `active_dialog_scope()` is None
+        // and the global quit path below runs exactly as before.
+        if keys::is_quit(&event)
+            && let Some(scope) = self.active_dialog_scope()
+        {
+            self.dialog_help_scope = scope;
+            self.dialog_help_open = true;
+            self.ctrl_c_pending_at = None;
+            return Ok(());
+        }
 
         // F12 toggles mouse capture so the user can drag-select text natively.
         // Handled before everything else (including modal dialogs) so it always

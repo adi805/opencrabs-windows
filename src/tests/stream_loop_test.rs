@@ -9,7 +9,7 @@ fn detects_obvious_loop() {
     // Simulates MiniMax repeating the same tweet summary (block > 200 bytes)
     let block = "Tweet 1 (main post): https://x.com/opencrabs/status/2032245500150226963 \
                  Tweet 2 (fixes): WhatsApp QR width fixed on Windows, assets consolidated \
-                 Tweet 3 (links): https://github.com/adolfousier/opencrabs/releases/tag/v0.2.75 ";
+                 Tweet 3 (links): https://github.com/opencrabs/opencrabs/releases/tag/v0.2.75 ";
     assert!(block.len() > 200, "block must exceed min_match");
     let window = format!("{}{}", block, block);
     assert!(detect_text_repetition(&window, 200));
@@ -58,7 +58,7 @@ fn detects_realistic_minimax_loop() {
                     **Tweet 1** (main post): https://x.com/opencrabs/status/2032245500150226963\n\n\
                     **Tweet 2** (fixes): Fixes & Updates WhatsApp QR width fixed on Windows \
                     Assets consolidated into src/ Post-evolve shows version diff\n\n\
-                    **Tweet 3** (links): https://github.com/adolfousier/opencrabs/releases/tag/v0.2.75\n\n";
+                    **Tweet 3** (links): https://github.com/opencrabs/opencrabs/releases/tag/v0.2.75\n\n";
     let window = format!("{}{}", repeated, repeated);
     assert!(detect_text_repetition(&window, 200));
 }

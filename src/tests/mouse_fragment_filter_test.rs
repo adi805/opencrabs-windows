@@ -141,3 +141,26 @@ fn handles_multibyte_chars_safely() {
     // Should not panic.
     let _ = is_mouse_sequence_fragment('1', &buf, cursor);
 }
+
+// --- Raw ESC / ETX arriving as chars (#1943) ---
+
+#[test]
+fn raw_esc_char_is_fragment() {
+    // Crossterm reports Esc as KeyCode::Esc, so a bare ESC reaching the
+    // char path means a split escape read, never legitimate typing.
+    // The gate fires regardless of buffer tail.
+    assert!(is_mouse_sequence_fragment('\x1b', "File both issues", 14));
+    assert!(is_mouse_sequence_fragment('\x1b', "", 0));
+}
+
+#[test]
+fn raw_etx_char_is_fragment() {
+    // The `^C` visible in the #1943 screenshot: Ctrl+C leaked through as
+    // a raw 0x03 char. Not text the user asked for.
+    assert!(is_mouse_sequence_fragment(
+        '\u{3}',
+        "[<35;10;102Mgarbage",
+        13
+    ));
+    assert!(is_mouse_sequence_fragment('\u{3}', "plain", 5));
+}
