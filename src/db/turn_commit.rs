@@ -47,6 +47,9 @@ pub struct TurnCommit<'a> {
 /// because the turn was already reconciled as interrupted.
 pub async fn commit_turn(pool: &Pool, commit: TurnCommit<'_>) -> Result<()> {
     let turn_id = commit.turn_id.to_string();
+    // The closure below is `move`, so it needs its own handle: `turn_id` is
+    // still needed for the error message when the turn was already settled.
+    let turn_id_sql = turn_id.clone();
     let session_id = commit.session_id.to_string();
     let message_id = commit.message_id.to_string();
     let provider = commit.provider.to_string();
@@ -109,7 +112,7 @@ pub async fn commit_turn(pool: &Pool, commit: TurnCommit<'_>) -> Result<()> {
             let changed = tx.execute(
                 "UPDATE turns SET state = 'committed', committed_at = strftime('%s', 'now') \
                  WHERE id = ?1 AND state = 'running'",
-                params![turn_id],
+                params![turn_id_sql],
             )?;
             if changed == 0 {
                 return Ok(false);
