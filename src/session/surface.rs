@@ -145,20 +145,22 @@ pub(crate) fn build_router(state: SurfaceState, allowed_origins: &[String]) -> R
 
 /// Start the session surface.
 ///
-/// Runs as a background task — call from `tokio::spawn`. If `ready` is
-/// provided, signals `Ok(())` once the socket is bound and listening (or
-/// immediately when disabled), or `Err` if gate validation, address parsing,
-/// or socket binding fails.
+/// Runs as a background task; call from `tokio::spawn`. If `ready` is
+/// provided it reports the address the listener actually bound (port 0 when
+/// the surface is disabled) once the socket is listening, or `Err` if gate
+/// validation, address parsing, or socket binding fails.
 pub async fn start_server(
     config: &SessionSurfaceConfig,
     agent_service: Arc<AgentService>,
     service_context: ServiceContext,
-    ready: Option<tokio::sync::oneshot::Sender<anyhow::Result<()>>>,
+    ready: Option<tokio::sync::oneshot::Sender<anyhow::Result<SocketAddr>>>,
 ) -> anyhow::Result<()> {
     if !config.enabled {
         tracing::info!("Session surface disabled in config");
         if let Some(tx) = ready {
-            let _ = tx.send(Ok(()));
+            // Nothing is listening when the surface is disabled; a zero port
+            // says so without inventing an address.
+            let _ = tx.send(Ok(SocketAddr::from(([127, 0, 0, 1], 0))));
         }
         return Ok(());
     }
@@ -200,9 +202,13 @@ pub async fn start_server(
         }
     };
 
-    tracing::info!("Session surface listening on http://{}", addr);
+    // Report the address the socket actually bound, not the one we asked for:
+    // with `port = 0` the OS picks the port, and a caller that asserts the
+    // listener is loopback needs the real address.
+    let bound = listener.local_addr()?;
+    tracing::info!("Session surface listening on http://{}", bound);
     if let Some(tx) = ready {
-        let _ = tx.send(Ok(()));
+        let _ = tx.send(Ok(bound));
     }
 
     axum::serve(listener, app).await?;

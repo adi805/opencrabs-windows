@@ -2029,7 +2029,7 @@ async fn cmd_chat_inner(
             }
         });
         match tokio::time::timeout(std::time::Duration::from_secs(30), ready_rx).await {
-            Ok(Ok(Ok(()))) => tracing::info!("Session surface ready"),
+            Ok(Ok(Ok(_bound))) => tracing::info!("Session surface ready"),
             Ok(Ok(Err(e))) => tracing::error!("Session surface refused to start: {e}"),
             Ok(Err(_)) => {
                 tracing::error!("Session surface task exited without signalling readiness")
