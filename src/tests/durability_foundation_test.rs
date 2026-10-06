@@ -308,3 +308,207 @@ async fn unknown_effect_key_reads_none() {
             .is_none()
     );
 }
+
+// ── FR-002: the atomic turn commit ──────────────────────────────────
+
+/// Insert a session row and return its id.
+async fn seed_session(db: &Database, token_count: i64, total_cost: f64) -> Uuid {
+    let id = Uuid::new_v4();
+    let sid = id.to_string();
+    db.pool()
+        .get()
+        .await
+        .unwrap()
+        .interact(move |conn| {
+            conn.execute(
+                "INSERT INTO sessions (id, title, created_at, updated_at, token_count, total_cost) \
+                 VALUES (?1, 't', strftime('%s','now'), strftime('%s','now'), ?2, ?3)",
+                rusqlite::params![sid, token_count, total_cost],
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    id
+}
+
+/// Insert an assistant message row and return its id.
+async fn seed_assistant_message(db: &Database, session_id: Uuid) -> Uuid {
+    let id = Uuid::new_v4();
+    let mid = id.to_string();
+    let sid = session_id.to_string();
+    db.pool()
+        .get()
+        .await
+        .unwrap()
+        .interact(move |conn| {
+            conn.execute(
+                "INSERT INTO messages (id, session_id, role, content, sequence, created_at) \
+                 VALUES (?1, ?2, 'assistant', 'hi', 1, strftime('%s','now'))",
+                rusqlite::params![mid, sid],
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    id
+}
+
+/// Read one i64 column from a one-row query.
+async fn scalar_i64(db: &Database, sql: &str) -> i64 {
+    let sql = sql.to_string();
+    db.pool()
+        .get()
+        .await
+        .unwrap()
+        .interact(move |conn| conn.query_row(&sql, [], |row| row.get::<_, i64>(0)))
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+async fn scalar_f64(db: &Database, sql: &str) -> f64 {
+    let sql = sql.to_string();
+    db.pool()
+        .get()
+        .await
+        .unwrap()
+        .interact(move |conn| conn.query_row(&sql, [], |row| row.get::<_, f64>(0)))
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+fn commit<'a>(turn_id: &'a str, session_id: Uuid, message_id: Uuid) -> crate::db::TurnCommit<'a> {
+    crate::db::TurnCommit {
+        turn_id,
+        session_id,
+        message_id,
+        token_count: 100,
+        cost: 0.5,
+        input_tokens: Some(80),
+        cache_creation_tokens: Some(0),
+        cache_read_tokens: Some(0),
+        duration_secs: Some(3),
+        provider: "test-provider",
+        model: "test-model",
+    }
+}
+
+#[tokio::test]
+async fn commit_turn_writes_all_four_effects_in_one_unit() {
+    let db = make_db().await;
+    let turns = TurnRepository::new(db.pool().clone());
+    let session_id = seed_session(&db, 10, 1.0).await;
+    let message_id = seed_assistant_message(&db, session_id).await;
+    let turn_id = turns.open(session_id).await.unwrap();
+
+    crate::db::commit_turn(&db.pool().clone(), commit(&turn_id, session_id, message_id))
+        .await
+        .expect("commit succeeds on a running turn");
+
+    // message usage
+    let msg_tokens = scalar_i64(
+        &db,
+        &format!("SELECT token_count FROM messages WHERE id = '{message_id}'"),
+    )
+    .await;
+    assert_eq!(msg_tokens, 100);
+    // session totals moved
+    let sess_tokens = scalar_i64(
+        &db,
+        &format!("SELECT token_count FROM sessions WHERE id = '{session_id}'"),
+    )
+    .await;
+    assert_eq!(sess_tokens, 110, "session totals add the turn's tokens");
+    let sess_cost = scalar_f64(
+        &db,
+        &format!("SELECT total_cost FROM sessions WHERE id = '{session_id}'"),
+    )
+    .await;
+    assert!(
+        (sess_cost - 1.5).abs() < 1e-9,
+        "session cost adds the turn's cost"
+    );
+    // ledger row appended
+    let ledger = scalar_i64(
+        &db,
+        &format!("SELECT COUNT(*) FROM usage_ledger WHERE session_id = '{session_id}'"),
+    )
+    .await;
+    assert_eq!(ledger, 1, "exactly one ledger row per committed turn");
+    // journal settled
+    assert_eq!(
+        turns.find_by_id(&turn_id).await.unwrap().unwrap().state,
+        TURN_COMMITTED
+    );
+}
+
+#[tokio::test]
+async fn commit_turn_refuses_an_interrupted_turn_and_writes_nothing() {
+    let db = make_db().await;
+    let turns = TurnRepository::new(db.pool().clone());
+    let session_id = seed_session(&db, 10, 1.0).await;
+    let message_id = seed_assistant_message(&db, session_id).await;
+    let turn_id = turns.open(session_id).await.unwrap();
+    // Boot reconciled the turn: the process that owned it died.
+    turns.reconcile_running().await.unwrap();
+
+    let err = crate::db::commit_turn(&db.pool().clone(), commit(&turn_id, session_id, message_id))
+        .await
+        .expect_err("an interrupted turn must not commit");
+    assert!(err.to_string().contains("not running"), "err was: {err}");
+
+    // Nothing was written: the transaction rolled back entirely.
+    let msg_tokens = scalar_i64(
+        &db,
+        &format!("SELECT COALESCE(token_count, -1) FROM messages WHERE id = '{message_id}'"),
+    )
+    .await;
+    assert_eq!(msg_tokens, -1, "the message usage stayed unwritten");
+    let sess_tokens = scalar_i64(
+        &db,
+        &format!("SELECT token_count FROM sessions WHERE id = '{session_id}'"),
+    )
+    .await;
+    assert_eq!(sess_tokens, 10, "the session total did not move");
+    let ledger = scalar_i64(
+        &db,
+        &format!("SELECT COUNT(*) FROM usage_ledger WHERE session_id = '{session_id}'"),
+    )
+    .await;
+    assert_eq!(ledger, 0, "no ledger row was appended");
+    assert_eq!(
+        turns.find_by_id(&turn_id).await.unwrap().unwrap().state,
+        TURN_INTERRUPTED
+    );
+}
+
+#[tokio::test]
+async fn commit_turn_twice_counts_usage_once() {
+    let db = make_db().await;
+    let turns = TurnRepository::new(db.pool().clone());
+    let session_id = seed_session(&db, 0, 0.0).await;
+    let message_id = seed_assistant_message(&db, session_id).await;
+    let turn_id = turns.open(session_id).await.unwrap();
+
+    crate::db::commit_turn(&db.pool().clone(), commit(&turn_id, session_id, message_id))
+        .await
+        .unwrap();
+    let second =
+        crate::db::commit_turn(&db.pool().clone(), commit(&turn_id, session_id, message_id)).await;
+    assert!(second.is_err(), "a settled turn cannot be committed again");
+
+    let sess_tokens = scalar_i64(
+        &db,
+        &format!("SELECT token_count FROM sessions WHERE id = '{session_id}'"),
+    )
+    .await;
+    assert_eq!(sess_tokens, 100, "usage is counted exactly once");
+    let ledger = scalar_i64(
+        &db,
+        &format!("SELECT COUNT(*) FROM usage_ledger WHERE session_id = '{session_id}'"),
+    )
+    .await;
+    assert_eq!(ledger, 1);
+}
