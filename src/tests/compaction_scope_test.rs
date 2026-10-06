@@ -285,3 +285,81 @@ fn sentinel_quoted_in_a_summary_body_does_not_hide_the_boundary() {
     assert!(kept[1].content.contains(SEGMENT_SENTINEL));
     assert_eq!(kept[2].content, "q3");
 }
+
+/// #1928-C: the PERSIST seam. The production chain is
+/// `apply_scoped_compaction_summary` (welds the marker into the live context
+/// and — post-#1928 — returns its exact bytes) → `CompactionOutcome::Summarised(applied)`
+/// → `marker("")`, which is what `apply_compaction_continuation` writes to the DB.
+///
+/// A delta compaction must persist a row that BEGINS with the delta banner.
+/// On the pre-#1928 tree `marker("")` rebuilt the full-window banner from the
+/// summary, so the sentinel never reached the DB and the delta leg below fails
+/// at the `persisted` assertion — that is the defect this test pins.
+#[test]
+fn delta_persist_seam_writes_the_sentinel_banner() {
+    use crate::brain::agent::service::compaction::CompactionOutcome;
+
+    let delta_banner = format!("{COMPACTION_MARKER_PREFIX} — {SEGMENT_SENTINEL}");
+
+    // ── Delta leg: a prior marker makes the scope a delta. ─────────────
+    let mut c = ctx(100_000);
+    c.add_message(Message::user("q1"));
+    c.compact_with_summary("SUMMARY ONE".to_string(), 0);
+    c.add_message(Message::user("q2"));
+
+    let applied = AgentService::apply_scoped_compaction_summary(
+        &mut c,
+        CompactionScope::DeltaSinceMarker,
+        "SEGMENT TWO body",
+    );
+    assert!(
+        applied.starts_with(&delta_banner),
+        "the apply step must weld a sentinel-bannered marker; got: {applied}"
+    );
+
+    // The exact construction the persist path performs.
+    let persisted = CompactionOutcome::Summarised(applied.clone()).marker("");
+    assert!(
+        persisted.starts_with(&delta_banner),
+        "a delta compaction must persist a row beginning with the delta banner; \
+         got: {persisted}"
+    );
+    assert_eq!(
+        persisted, applied,
+        "the persist path must write the applied bytes verbatim, not a rebuilt banner"
+    );
+
+    // ── Control: a full window must NOT look like a segment. ───────────
+    let mut f = ctx(100_000);
+    f.add_message(Message::user("q1"));
+    let applied_full = AgentService::apply_scoped_compaction_summary(
+        &mut f,
+        CompactionScope::FullWindow,
+        "FULL BODY",
+    );
+    assert!(
+        !applied_full.starts_with(&delta_banner),
+        "control: a full-window marker must not carry the sentinel banner"
+    );
+    let persisted_full = CompactionOutcome::Summarised(applied_full.clone()).marker("");
+    assert!(
+        !persisted_full.starts_with(&delta_banner),
+        "control: the full-window persist path must stay untagged, or the loader \
+         would skip the real boundary"
+    );
+    assert_eq!(persisted_full, applied_full);
+
+    // ── Negative control: the pre-#1928 rebuild must fail the predicate. ──
+    // This is the exact string the old `marker()` emitted for a Summarised
+    // outcome — the full-window banner wrapped around the payload. If the
+    // predicate above ever stopped discriminating, this control would catch
+    // it: the rebuild does NOT begin with the delta banner.
+    let legacy_rebuild = format!(
+        "[CONTEXT COMPACTION — The conversation was automatically compacted. \
+         Below is a structured summary of everything before this point.]\n\n{applied}"
+    );
+    assert!(
+        !legacy_rebuild.starts_with(&delta_banner),
+        "the pre-#1928 rebuild must not satisfy the sentinel-banner predicate"
+    );
+}
