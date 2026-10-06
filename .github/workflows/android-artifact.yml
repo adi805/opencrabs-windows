@@ -1,0 +1,102 @@
+name: Android binary (artifact)
+
+# Why this file exists: milestone 1 of the Android client needs proof that the
+# core crate cross-compiles to aarch64-linux-android and links against Bionic.
+# Nothing in the repo produces that binary today: ci.yml compiles and tests on
+# Linux, windows-artifact.yml ships an exe, linux-artifact.yml ships a Linux
+# binary. The Android leg is the missing hand-off.
+#
+# Deliberately a NEW file rather than a step in ci.yml: ci.yml is edited by
+# other work in flight, and a new path cannot conflict with it or restart its
+# runs. Same rationale as linux-artifact.yml and windows-artifact.yml.
+#
+# Scope: core only (--no-default-features --features rtk,code-graph). Channels
+# are excluded on purpose (Android PRD decision, 2026-10-06 05:25): the app
+# runs the TUI on-device and carries no bot tokens. Dropping them also drops
+# teloxide, serenity, whatsapp-rust, chromey, pdfium and the ALSA-backed voice
+# features, none of which cross-compile to Android without extra native libs.
+#
+# It deliberately does NOT dispatch release.yml: that file carries
+# `publish-crate` (a live crates.io push) and `create-release`.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/android-artifact]
+
+jobs:
+  android-arm64:
+    name: Build Android arm64 binary
+    # Pinned, not ubuntu-latest: the NDK/clang pair this links with is part of
+    # the contract, so keep it explicit instead of inheriting a roll.
+    runs-on: ubuntu-24.04
+    # Cold, this is a full --locked cargo build plus a vendored OpenSSL source
+    # build (the android-only dep in Cargo.toml). Warm from rust-cache it lands
+    # far lower. Generous on purpose: a cap that clips a green build costs a
+    # whole cycle, which is the bug that rode ci.yml's macOS job until #50.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (pinned by rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27d
+          # cargo-ndk reads ANDROID_NDK_HOME, so keep the NDK off PATH and
+          # hand the path over explicitly instead of guessing at PATH order.
+          add-to-path: false
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      # No `save-if` restriction: this job runs on PRs and workflow_dispatch
+      # only, so a refs/heads/main-only save-if would never fire and the cache
+      # would stay cold forever (the bug #50 fixed in ci.yml).
+      - uses: swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build (core only, channels excluded)
+        env:
+          # Both names, because the runner image preinstalls an NDK and exports
+          # ANDROID_NDK_ROOT pointing at it, while cargo-ndk reads
+          # ANDROID_NDK_HOME. Left as-is they disagree and cargo-ndk logs a
+          # mismatch warning on every run.
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        # Capital -P pins the API level (Android 7.0). Lowercase -p is NOT the
+        # platform flag: cargo-ndk's is -P, and a lowercase -p is read as
+        # cargo's --package, which made the first run panic with
+        # "unknown package: 24" before it compiled anything.
+        run: >
+          cargo ndk -t arm64-v8a -P 24
+          build --locked --profile ci
+          --no-default-features --features rtk,code-graph
+
+      - name: Smoke (prove it is an Android arm64 ELF)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=target/aarch64-linux-android/ci/opencrabs
+          ls -l "$bin"
+          file "$bin"
+          # The artifact is only worth shipping if the header says AArch64 and
+          # the dynamic section names Bionic's libs. This cannot execute here
+          # (it is an Android ELF), so the header and NEEDED list ARE the
+          # evidence.
+          readelf -h "$bin" | grep -E "Class:|Machine:|OS/ABI:"
+          readelf -d "$bin" | grep -E "NEEDED" || true
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencrabs-android-arm64
+          path: target/aarch64-linux-android/ci/opencrabs
+          if-no-files-found: error
+          retention-days: 30

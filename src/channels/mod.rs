@@ -32,6 +32,15 @@ pub mod trello;
 #[cfg(feature = "whatsapp")]
 pub mod whatsapp;
 
+/// Canonical Telegram thread id of a forum group's built-in General topic.
+///
+/// It is a SESSION-SCOPING KEY, never an address (#1220), and the legacy
+/// `telegram:<chat>[:<thread>]` deliver_to grammar plus
+/// `OriginTarget::deliver_to` need it even when the `telegram` feature is
+/// off, so it lives here rather than inside the feature-gated module.
+/// `telegram::session_resolve` re-exports it.
+pub const GENERAL_TOPIC_ID: i32 = 1;
+
 mod greeting;
 
 pub use factory::ChannelFactory;

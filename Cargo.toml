@@ -244,6 +244,15 @@ rwhisper = { version = "0.4", optional = true, features = ["metal", "accelerate"
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"
 
+# Android: the NDK ships no libssl/libcrypto, and reqwest's `native-tls` feature
+# (see the reqwest entry above) pulls native-tls -> openssl-sys, whose build
+# script otherwise looks for an OpenSSL installation the NDK does not provide.
+# The `vendored` feature builds OpenSSL from source with the NDK toolchain.
+# Scoped to this target on purpose: every other platform keeps linking whatever
+# OpenSSL it already resolved, so nothing off Android changes.
+[target.'cfg(target_os = "android")'.dependencies]
+openssl-sys = { version = "0.9", features = ["vendored"] }
+
 [features]
 # `local-stt` stays in the default set on purpose: running voice fully
 # on-device is a headline capability, not an add-on. It carries the

@@ -27,7 +27,7 @@ fn deliver_to_bakes_chat_only_for_general_topic() {
     let general = OriginTarget {
         channel: "telegram",
         chat_id: "-1001234567890".to_string(),
-        thread: Some(crate::channels::telegram::session_resolve::GENERAL_TOPIC_ID),
+        thread: Some(crate::channels::GENERAL_TOPIC_ID),
     };
     assert_eq!(general.deliver_to(), "telegram:-1001234567890");
 }
