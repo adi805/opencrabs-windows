@@ -100,6 +100,12 @@ public class CoreService extends Service {
         argv.add(exe.getAbsolutePath());
         argv.add("daemon");
 
+        // argv is the app's own binary (nativeLibraryDir, set by the package
+        // manager) plus a literal subcommand, and ProcessBuilder(List) spawns no
+        // shell, so no caller-controlled data reaches a command line. Semgrep's
+        // command-injection-process-builder rule flags any non-literal first
+        // argument, so the finding is a false positive here.
+        // nosemgrep: java.lang.security.audit.command-injection-process-builder.command-injection-process-builder
         ProcessBuilder builder = new ProcessBuilder(argv);
         builder.directory(getFilesDir());
         builder.redirectErrorStream(true);
