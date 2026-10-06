@@ -58,8 +58,13 @@ jobs:
       # `alsa.pc`. ci.yml installs this in every job that compiles; the first
       # run of this workflow died at `alsa-sys` for exactly that reason, which
       # is an infra failure and not the stall this job exists to find.
+      # `gdb` is the point of this step's second package: the 2026-10-06 run
+      # captured /proc per-thread state (wchan + kernel stacks) but printed
+      # "(gdb not on PATH)", so the userspace frames that name the exact
+      # function holding the lock were missing. wchan says `futex_do_wait`,
+      # which is contention, not the line that contends.
       - name: Install system dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y libasound2-dev gdb
 
       # Build once, then hand the binary path to the loop.
       #
