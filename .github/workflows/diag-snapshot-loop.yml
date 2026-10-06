@@ -18,6 +18,12 @@ name: Diag snapshot loop
 # also a result, and it is recorded in the run summary either way.
 
 on:
+  # Scoped to this diag branch: the job is not a gate, and a
+  # dispatch-only workflow cannot be launched by `gh workflow run`
+  # until the file exists on the default branch.
+  push:
+    branches:
+      - diag/snapshot-loop
   workflow_dispatch:
     inputs:
       iterations:
@@ -53,8 +59,8 @@ jobs:
 
       - name: Loop the snapshot module
         env:
-          ITERATIONS: ${{ inputs.iterations }}
-          TIMEOUT_SECS: ${{ inputs.timeout_secs }}
+          ITERATIONS: ${{ inputs.iterations || '200' }}
+          TIMEOUT_SECS: ${{ inputs.timeout_secs || '120' }}
         run: |
           set -u
           verdict=CLEAN
