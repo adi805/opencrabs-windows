@@ -86,8 +86,10 @@ public class CoreService extends Service {
     }
 
     private void spawnCore() {
-        if (core != null && core.isAlive()) {
-            Log.i(TAG, "core already running, pid=" + core.pid());
+        Log.i(TAG, "runtime sdk=" + Build.VERSION.SDK_INT
+                + " processPidMethod=" + hasProcessPid());
+        if (isAlive(core)) {
+            Log.i(TAG, "core already running, pid=" + pidText(core));
             return;
         }
         File exe = coreBinary(this);
@@ -143,7 +145,7 @@ public class CoreService extends Service {
             }, "core-output");
             pump.setDaemon(true);
             pump.start();
-            Log.i(TAG, "core started, pid=" + core.pid());
+            Log.i(TAG, "core started, pid=" + pidText(core));
         } catch (Exception e) {
             Log.e(TAG, "spawn failed", e);
         }
@@ -155,5 +157,67 @@ public class CoreService extends Service {
             core.destroy();
         }
         super.onDestroy();
+    }
+
+    // ---------------------------------------------------------- process api --
+    // Process.pid() and Process.isAlive() are NOT part of Android's
+    // java.lang.Process. They exist in the JDK, and because assemble-apk.sh runs
+    // javac with android.jar on -classpath rather than -bootclasspath, javac
+    // resolves java.lang.* from the JDK: the calls compile cleanly and then
+    // throw NoSuchMethodError on device. That is exactly what happened on the
+    // API 34 emulator (compileSdk 34, so android.jar was correct): the throw
+    // escaped onStartCommand, killed the service, and left the already-spawned
+    // core orphaned with nobody draining its stdout pipe. Reflect, and fall
+    // back to exitValue(), which exists on every API level.
+
+    private static boolean hasProcessPid() {
+        try {
+            Process.class.getMethod("pid");
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static long pidOf(Process p) {
+        if (p == null) {
+            return -1L;
+        }
+        try {
+            Object pid = Process.class.getMethod("pid").invoke(p);
+            if (pid instanceof Number) {
+                return ((Number) pid).longValue();
+            }
+        } catch (Throwable t) {
+            // NoSuchMethodException/NoSuchMethodError on Android: fall through.
+        }
+        return -1L;
+    }
+
+    private static String pidText(Process p) {
+        long pid = pidOf(p);
+        return pid > 0 ? Long.toString(pid) : "unknown";
+    }
+
+    private static boolean isAlive(Process p) {
+        if (p == null) {
+            return false;
+        }
+        try {
+            Object alive = Process.class.getMethod("isAlive").invoke(p);
+            if (alive instanceof Boolean) {
+                return (Boolean) alive;
+            }
+        } catch (Throwable t) {
+            // Not available at this API level; use the exitValue() probe below.
+        }
+        try {
+            p.exitValue();
+            return false;
+        } catch (IllegalThreadStateException stillRunning) {
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 }
