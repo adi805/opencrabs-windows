@@ -626,7 +626,7 @@ impl AgentService {
         model_name: &str,
         cancel_token: Option<&CancellationToken>,
         notifier: Option<super::compaction_notice::CompactionNotifier>,
-    ) -> Result<String> {
+    ) -> Result<(String, String)> {
         // This call replaces the whole context, so a background summariser
         // still describing the pre-call conversation is describing something
         // that will not exist by the time it returns. Applying its result
@@ -665,8 +665,8 @@ impl AgentService {
             Self::decorate_compaction_summary(summary, session_id, self.subagent_manager.clone())
                 .await;
 
-        Self::apply_compaction_summary(context, &summary);
-        Ok(summary)
+        let applied_marker = Self::apply_compaction_summary(context, &summary);
+        Ok((summary, applied_marker))
     }
 
     /// Attach the state a model's prose summary cannot be trusted to carry.
@@ -1529,7 +1529,7 @@ impl AgentService {
         scope: CompactionScope,
         summary: &str,
         snapshot_len: usize,
-    ) {
+    ) -> String {
         // The index addresses the message vector this turn is appending to.
         // A vector shorter than the snapshot cannot be that one: the context
         // is rebuilt from the database at the start of every turn, so this
@@ -1541,8 +1541,7 @@ impl AgentService {
                  applying the summary without a delta",
                 context.messages.len(),
             );
-            Self::apply_scoped_compaction_summary(context, scope, summary);
-            return;
+            return Self::apply_scoped_compaction_summary(context, scope, summary);
         }
 
         let mut delta = context.messages.split_off(snapshot_len);
@@ -1550,7 +1549,7 @@ impl AgentService {
         // computed against exactly what it summarises — scoped (#1649): a
         // delta segment replaces only what followed the last marker, a
         // consolidation replaces the segment run, full window clears all.
-        Self::apply_scoped_compaction_summary(context, scope, summary);
+        let applied_marker = Self::apply_scoped_compaction_summary(context, scope, summary);
 
         // The summary lands as a user message. A delta opening with tool
         // results has lost the assistant tool_use that authorised them, and
@@ -1569,15 +1568,17 @@ impl AgentService {
             context.add_message(msg);
         }
         tracing::info!("Compaction: kept {kept} messages appended during the summariser call");
+        applied_marker
     }
 
-    pub(super) fn apply_compaction_summary(context: &mut AgentContext, summary: &str) {
+    /// Returns the marker text the apply welded into the context (#1928).
+    pub(super) fn apply_compaction_summary(context: &mut AgentContext, summary: &str) -> String {
         // The synchronous path (`/compact`, the two emergency recoveries):
         // full-window by definition — the summary was computed against the
         // whole window, so the apply clears everything and prepends one
         // marker. The background path goes through
         // `apply_compaction_summary_after` with the scope it spawned with.
-        Self::apply_scoped_compaction_summary(context, CompactionScope::FullWindow, summary);
+        Self::apply_scoped_compaction_summary(context, CompactionScope::FullWindow, summary)
     }
 
     /// Scope-aware apply (#1649). Welds the recovered brain context onto the
@@ -1589,7 +1590,7 @@ impl AgentService {
         context: &mut AgentContext,
         scope: CompactionScope,
         summary: &str,
-    ) {
+    ) -> String {
         // No verbatim recent-pairs snapshot is welded onto the marker: the
         // summary prompt's "IMMEDIATE TASK" section already quotes the last
         // exchange from the history, so a second copy duplicated it inside
@@ -1606,7 +1607,7 @@ impl AgentService {
         // the duplicate on every turn until the next reload (#1676).
         let marker_body = summary.to_string();
 
-        match scope {
+        let applied_marker = match scope {
             CompactionScope::FullWindow => {
                 // After compaction, the summary IS the conversation — it's
                 // prepended as a single user message and the agent picks up
@@ -1616,26 +1617,27 @@ impl AgentService {
                 // window and defeat the whole purpose of compacting. Pass 0
                 // so `compact_with_summary` clears everything and prepends
                 // just the summary.
-                context.compact_with_summary(marker_body, 0);
+                context.compact_with_summary(marker_body, 0)
             }
             CompactionScope::DeltaSinceMarker => {
                 // The prior frozen segments stay in force verbatim; only the
                 // messages the delta summary described are replaced by this
                 // new segment marker.
-                context.compact_with_delta_summary(marker_body);
+                context.compact_with_delta_summary(marker_body)
             }
             CompactionScope::SegmentConsolidation => {
                 // The segments merge into ONE superseding marker; the tail
                 // after the segment run is untouched.
-                context.consolidate_segments(marker_body);
+                context.consolidate_segments(marker_body)
             }
-        }
+        };
 
         tracing::info!(
             "Context compacted ({scope:?}): now at {:.0}% ({} tokens)",
             context.usage_percentage(),
             context.token_count
         );
+        applied_marker
     }
 
     /// Save a compaction summary to a daily memory log at `~/.opencrabs/memory/YYYY-MM-DD.md`.
