@@ -11,6 +11,7 @@
 //! | point | what already happened when the process dies |
 //! |---|---|
 //! | `after-open` | the turn row exists and nothing else |
+//! | `during-stream` | the assistant text is mid-write, the turn has not committed |
 //! | `after-intent` | the intent is on disk, the effect has not run |
 //! | `after-effect` | the external effect ran, its result is not recorded |
 //! | `after-settle` | the effect is settled, the turn is not committed |
@@ -46,8 +47,9 @@ const DB_ENV: &str = "OC_KILL_HARNESS_DB";
 const COUNTER_ENV: &str = "OC_KILL_HARNESS_COUNTER";
 
 /// The injection points, in the order a turn walks them.
-const POINTS: [&str; 5] = [
+const POINTS: [&str; 6] = [
     "after-open",
+    "during-stream",
     "after-intent",
     "after-effect",
     "after-settle",
@@ -132,6 +134,35 @@ async fn kill_harness_child() {
         let turn_id = turns.open(session_id).await.expect("open turn");
         die_if(&point, "after-open");
 
+        if point == "during-stream" {
+            // The assistant text is being written but the turn has not
+            // committed. The write sits in an OPEN transaction when the kill
+            // lands, so SQLite must roll it back: a correct implementation
+            // leaves no row behind. If a future change ever persists streamed
+            // text outside the turn's own commit, the parent's zero-row
+            // assertion below fails and names this point.
+            let stream_sid = sid.clone();
+            let stream_point = point.clone();
+            db.pool()
+                .get()
+                .await
+                .expect("conn for the stream write")
+                .interact(move |conn| -> rusqlite::Result<()> {
+                    let tx = conn.transaction()?;
+                    tx.execute(
+                        "INSERT INTO messages (id, session_id, role, content, sequence, created_at) \
+                         VALUES (?1, ?2, 'assistant', 'streamed, never committed', 1, strftime('%s','now'))",
+                        rusqlite::params![Uuid::new_v4().to_string(), stream_sid],
+                    )?;
+                    // The kill lands with the transaction still open.
+                    die_if(&stream_point, "during-stream");
+                    tx.commit()
+                })
+                .await
+                .expect("stream write task")
+                .expect("stream write");
+        }
+
         let effect_id = Uuid::new_v4().to_string();
         effects
             .record_intent(
@@ -190,6 +221,20 @@ async fn read_state(db: &Database) -> (Option<String>, Option<String>, i64, i64)
                 Ok((id, state, pending, settled))
             },
         )
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+/// Assistant rows persisted for the harness session, read back from disk.
+async fn count_messages(db: &Database) -> i64 {
+    db.pool()
+        .get()
+        .await
+        .unwrap()
+        .interact(|conn| -> rusqlite::Result<i64> {
+            conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+        })
         .await
         .unwrap()
         .unwrap()
@@ -254,6 +299,15 @@ async fn a_kill_at_every_point_leaves_recoverable_storage() {
             "after-open" => {
                 assert_eq!((pending, settled), (0, 0), "nothing recorded yet");
                 assert_eq!(count_effects(&counter), 0, "no effect ran");
+            }
+            "during-stream" => {
+                assert_eq!((pending, settled), (0, 0), "no effect recorded");
+                assert_eq!(count_effects(&counter), 0, "no effect ran");
+                assert_eq!(
+                    count_messages(&db).await,
+                    0,
+                    "an uncommitted stream write must not survive the kill"
+                );
             }
             "after-intent" => {
                 assert_eq!((pending, settled), (1, 0), "intent on disk, unsettled");

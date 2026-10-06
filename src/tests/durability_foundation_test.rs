@@ -7,6 +7,7 @@
 //! from the agent loop is a later change; what is proven here is that the
 //! storage layer cannot represent the broken states.
 
+use crate::config::profile::with_home_override_async;
 use crate::db::Database;
 use crate::db::repository::submission::{SUBMISSION_DONE, SUBMISSION_RUNNING};
 use crate::db::repository::turn::{TURN_COMMITTED, TURN_INTERRUPTED, TURN_RUNNING};
@@ -262,6 +263,55 @@ async fn provider_session_ids_differ_per_session() {
     assert_ne!(
         repo.ensure("sess-a").await.unwrap(),
         repo.ensure("sess-b").await.unwrap()
+    );
+}
+
+#[tokio::test]
+async fn provider_session_id_survives_a_reopen() {
+    // AC-009: the identity must be read back from disk after the database is
+    // closed and reopened, not merely stable across two calls on one handle.
+    // The in-memory `make_db` above cannot prove that; a file-backed database
+    // opened twice can.
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join(".opencrabs");
+    std::fs::create_dir_all(&home).unwrap();
+    let db_path = home.join("opencrabs.db");
+
+    let minted = {
+        let home = home.clone();
+        let db_path = db_path.clone();
+        with_home_override_async(home, async move {
+            let db = Database::connect(&db_path).await.unwrap();
+            db.run_migrations().await.unwrap();
+            let repo = SessionIdentityRepository::new(db.pool().clone());
+            repo.ensure("sess-restart").await.unwrap()
+        })
+        .await
+    };
+
+    // A fresh handle and a fresh pool: the only source for `minted` is the file.
+    let (read_back, ensured_again) = {
+        let home = home.clone();
+        let db_path = db_path.clone();
+        with_home_override_async(home, async move {
+            let db = Database::connect(&db_path).await.unwrap();
+            db.run_migrations().await.unwrap();
+            let repo = SessionIdentityRepository::new(db.pool().clone());
+            let read_back = repo.get("sess-restart").await.unwrap();
+            let ensured_again = repo.ensure("sess-restart").await.unwrap();
+            (read_back, ensured_again)
+        })
+        .await
+    };
+
+    assert_eq!(
+        read_back.as_deref(),
+        Some(minted.as_str()),
+        "the provider identity is read back identically after a reopen"
+    );
+    assert_eq!(
+        ensured_again, minted,
+        "ensure does not mint a second id after a reopen"
     );
 }
 
