@@ -43,7 +43,7 @@
 //! ([`summary_loop`]).
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
@@ -236,14 +236,6 @@ impl Limits {
 //
 // Source of truth: `docs/governor-policy-matrix.md`.
 // A cell that changes here is a behavioural change and must be named as one.
-
-/// Event-time ring surfaces. A peer counts recent traffic per surface so the
-/// shared spacing floor and the aggregate bound can see the SUM the per-surface
-/// buckets each read under ceiling (#580).
-pub(crate) const SURFACE_TYPING: &str = "typing";
-pub(crate) const SURFACE_EDITS: &str = "edits";
-pub(crate) const SURFACE_SENDS: &str = "sends";
-pub(crate) const SURFACE_RICH: &str = "rich";
 
 /// Whether a surface consults the shared cross-surface spacing floor (#676).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -444,6 +436,132 @@ impl SurfacePolicy {
         permit: PermitPolicy::Refuse,
         sets_forum_seen: true,
     };
+}
+
+// ---------------------------------------------------------------------------
+// The engine (#635)
+// ---------------------------------------------------------------------------
+
+/// Which surface's hold counter a gate's elapsed hold is attributed to
+/// (#635). The three counters stay separate in the summary because they
+/// measure three different budgets — merging them would hide which surface
+/// spent the time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoldSurface {
+    /// G1 — the wait against `typing_max_hold`.
+    Typing,
+    /// G3 — the wait against `SEND_MAX_HOLD`.
+    Sends,
+    /// G4 — the wait for a rich token.
+    Rich,
+}
+
+/// Attribute hold time spent by a gate back to its peer's counters, keyed by
+/// the surface that spent it (#635). One helper replaces the three
+/// byte-identical `fold_throttle_ms` / `fold_send_ms` / `fold_rich_ms` copies,
+/// which differed only in the counter they bumped. Best effort: a peer entry
+/// vanishing between hold and fold loses one sample.
+fn fold_hold_ms(chat_id: i64, waited: Duration, surface: HoldSurface) {
+    if waited.is_zero() {
+        return;
+    }
+    let ms = waited.as_millis() as u64;
+    if ms == 0 {
+        return;
+    }
+    if let Some(peer) = peers_guard().get_mut(&chat_id) {
+        match surface {
+            HoldSurface::Typing => peer.counters.throttled_typing_ms += ms,
+            HoldSurface::Sends => peer.counters.throttled_send_ms += ms,
+            HoldSurface::Rich => peer.counters.throttled_rich_ms += ms,
+        }
+    }
+}
+
+/// The one admission engine behind all four governor gates (#635).
+///
+/// Each gate used to carry its own copy of this skeleton — lock the peer,
+/// honour `forum_seen`, take the surface's bucket(s), decide admit/drop/hold —
+/// and the copies drifted: #757 was `pace_send` and `pace_rich` disagreeing
+/// about the spacing floor, in code that was otherwise the same seven stages.
+/// Here the stages live once and every difference between gates is a column of
+/// [`SurfacePolicy`].
+///
+/// `admit` runs UNDER the peers lock and owns the surface's own buckets and
+/// counters; it returns the raw verdict. The engine applies the shared spacing
+/// floor and the hold budget, which are the two decisions that must not be
+/// re-expressed per gate: a gate that re-derives its own hold cap is exactly
+/// the divergence this removes. `waited_so_far` is the hold the caller has
+/// already absorbed this attempt, which is what the budget is measured
+/// against.
+///
+/// [`PaceOutcome::Bypass`] is the engine's own answer, never `admit`'s: the
+/// surface was not run at all because the peer is still ungoverned.
+fn pace_engine<F>(
+    policy: &SurfacePolicy,
+    lim: &Limits,
+    chat_id: i64,
+    thread_id: Option<i32>,
+    waited_so_far: Duration,
+    admit: F,
+) -> PaceOutcome
+where
+    F: FnOnce(&mut Peer, Instant, Duration) -> PaceOutcome,
+{
+    let mut map = peers_guard();
+    let peer = map.entry(chat_id).or_default();
+    if policy.sets_forum_seen && thread_id.is_some() {
+        peer.forum_seen = true;
+    }
+    if !peer.forum_seen {
+        return PaceOutcome::Bypass;
+    }
+    let now = gate_now();
+    let spacing_hold = match policy.spacing {
+        SpacingPolicy::Exempt => Duration::ZERO,
+        SpacingPolicy::Wait | SpacingPolicy::DropDroppable => {
+            spacing_wait(&peer.recent, now, lim.spacing_floor)
+        }
+    };
+    let verdict = admit(peer, now, spacing_hold);
+    if let PaceOutcome::Defer(wait) = verdict {
+        // The hold budget is the ONE place a `Defer` can become terminal.
+        // `HoldBudget::None` is no cap at all, not "no waiting": G4 waits
+        // until a token refills, however long that takes, and its
+        // `hold_exceeded` cell is unreachable by construction.
+        let over = match policy.hold {
+            HoldBudget::None => false,
+            HoldBudget::Typing => waited_so_far + wait > lim.typing_max_hold,
+            HoldBudget::Send => waited_so_far + wait > SEND_MAX_HOLD,
+        };
+        if !over {
+            return PaceOutcome::Defer(wait);
+        }
+        // An over-budget hold is still an event on the surface's OWN counters,
+        // and the surface — not the engine — knows which ones. It is recorded
+        // HERE, under the lock the gate already holds and with the instant the
+        // gate itself computed: re-locking in the caller would take the mutex
+        // twice and drift `now`, and the ring push is exactly what the next
+        // request's spacing floor measures its gap against. Getting this wrong
+        // is not cosmetic — a fail-open send that goes out uncounted leaves
+        // `admitted_sends` short of the traffic that actually reached Telegram.
+        match policy.hold_exceeded {
+            HoldExceeded::DropTyping => {
+                peer.counters.dropped_typing += 1;
+                PaceOutcome::Drop(DropReason::HoldExceeded)
+            }
+            HoldExceeded::AdmitSend => {
+                peer.counters.admitted_sends += 1;
+                peer.recent.push(now, SURFACE_SENDS);
+                PaceOutcome::FailOpen(wait)
+            }
+            // No surface reaches here: G2 never defers, and G4 has no cap to
+            // exceed. Fail closed if the table and the engine ever disagree.
+            HoldExceeded::Unreachable => PaceOutcome::Drop(DropReason::HoldExceeded),
+        }
+    } else {
+        verdict
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -823,6 +941,16 @@ fn peers() -> &'static Mutex<HashMap<i64, Peer>> {
     PEERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Lock the peers map, recovering from a poisoned mutex.
+///
+/// The gates never hold a lock across an `.await`, so a panic that poisons the
+/// mutex leaves the map consistent; recovering the guard keeps a single
+/// poisoned peer from wedging every other chat's pacing. One helper so the
+/// recovery is written once instead of at each of the lock sites.
+fn peers_guard() -> MutexGuard<'static, HashMap<i64, Peer>> {
+    peers().lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Format one peer's summary line. Pure so the field coverage is pinned by a
 /// test: adding a counter without extending this format fails the test.
 pub(crate) fn format_summary(
@@ -874,7 +1002,7 @@ async fn summary_loop() {
         let period = Limits::from_config().summary_log_period;
         tokio::time::sleep(period).await;
         let lines: Vec<String> = {
-            let map = peers().lock().unwrap_or_else(|e| e.into_inner());
+            let map = peers_guard();
             map.iter()
                 .filter_map(|(chat_id, peer)| {
                     let profile = peer.recent.profile(gate_now());
@@ -911,12 +1039,6 @@ fn ensure_summary_task() {
 // G1 — typing
 // ---------------------------------------------------------------------------
 
-enum Decision {
-    Admit,
-    Drop,
-    Hold(Duration),
-}
-
 /// G1 gate for `sendChatAction`. Returns true when the caller must fire the
 /// action now; false when the refresh was collapsed away (cosmetic loss, the
 /// next tick re-fires). Hold-and-release under pressure: a caller whose wait
@@ -941,56 +1063,55 @@ pub(crate) async fn admit_chat_action(chat: ChatId, thread_id: Option<i32>) -> b
     ensure_summary_task();
     let mut waited = Duration::ZERO;
     loop {
-        let decision = {
-            let mut map = peers().lock().unwrap_or_else(|e| e.into_inner());
-            let peer = map.entry(chat_id).or_default();
-            if thread_id.is_some() {
-                peer.forum_seen = true;
-            }
-            if !peer.forum_seen {
-                return true;
-            }
-            let now = gate_now();
-            let bucket = ensure_bucket(
-                &mut peer.typing,
-                lim.typing_burst,
-                1.0 / lim.typing_interval.as_secs_f64(),
-            );
-            match bucket.take(now) {
-                Ok(()) => {
-                    peer.counters.admitted_typing += 1;
-                    // The floor does NOT gate typing (#1927): it is cosmetic,
-                    // self-healing chrome, and shedding it buys no real budget.
-                    // It DOES feed the ring, so a typing refresh counts as an
-                    // admission against the chat's one-per-second rule.
-                    peer.recent.push(now, SURFACE_TYPING);
-                    Decision::Admit
-                }
-                Err(wait) => {
-                    if waited + wait > lim.typing_max_hold {
-                        peer.counters.dropped_typing += 1;
-                        Decision::Drop
-                    } else {
-                        Decision::Hold(wait)
+        let decision = pace_engine(
+            &SurfacePolicy::TYPING,
+            &lim,
+            chat_id,
+            thread_id,
+            waited,
+            |peer, now, _spacing_hold| {
+                // #676 — typing is EXEMPT from the spacing floor. Measured: zero
+                // typing refusals across 8 days of logs while typing sits pinned
+                // at its own ~20/min ceiling, so Telegram does not meter it like
+                // a message (owner ruling 2026-09-08: the limits are per-surface,
+                // and the offending arm is the evidence). Two tests also pin this
+                // bucket — not spacing — as the gate governing the shared typing
+                // budget, which a floor would break.
+                let bucket = ensure_bucket(
+                    &mut peer.typing,
+                    lim.typing_burst,
+                    1.0 / lim.typing_interval.as_secs_f64(),
+                );
+                match bucket.take(now) {
+                    Ok(()) => {
+                        peer.counters.admitted_typing += 1;
+                        peer.recent.push(now, SURFACE_TYPING);
+                        PaceOutcome::Admit
                     }
+                    // The hold budget (`typing_max_hold`) is applied by the
+                    // engine, which is the one place that knows how long this
+                    // attempt has already held.
+                    Err(wait) => PaceOutcome::Defer(wait),
                 }
-            }
-        };
+            },
+        );
         match decision {
-            Decision::Admit => {
-                fold_throttle_ms(chat_id, waited);
+            // `Bypass` is the engine's ungoverned-peer answer, and a typing
+            // refresh for an ungoverned chat fires exactly as it always did.
+            PaceOutcome::Bypass | PaceOutcome::Admit => {
+                fold_hold_ms(chat_id, waited, HoldSurface::Typing);
                 return true;
             }
-            Decision::Drop => {
+            PaceOutcome::Drop(_) => {
                 tracing::debug!(
                     "Telegram rate-limiter: typing refresh dropped for chat={chat_id} after \
                      holding {waited:?} (hold cap {}s)",
                     lim.typing_max_hold.as_secs()
                 );
-                fold_throttle_ms(chat_id, waited);
+                fold_hold_ms(chat_id, waited, HoldSurface::Typing);
                 return false;
             }
-            Decision::Hold(wait) => {
+            PaceOutcome::Defer(wait) => {
                 let start = gate_now();
                 tokio::time::sleep(wait).await;
                 // Under tokio's paused runtime the sleep above returns
@@ -1001,26 +1122,13 @@ pub(crate) async fn admit_chat_action(chat: ChatId, thread_id: Option<i32>) -> b
                 test_support::advance(wait.as_millis() as u64);
                 waited += gate_now().duration_since(start);
             }
+            // G1 has neither a queue nor a fail-open arm; the policy table says
+            // so. Reaching here would mean the table and the gate disagree.
+            PaceOutcome::Queue | PaceOutcome::FailOpen(_) => {
+                fold_hold_ms(chat_id, waited, HoldSurface::Typing);
+                return true;
+            }
         }
-    }
-}
-
-/// Attribute hold time spent by a gate back to its peer's counters. Best
-/// effort: a peer entry vanishing between hold and fold loses one sample.
-fn fold_throttle_ms(chat_id: i64, waited: Duration) {
-    if waited.is_zero() {
-        return;
-    }
-    let ms = waited.as_millis() as u64;
-    if ms == 0 {
-        return;
-    }
-    if let Some(peer) = peers()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_mut(&chat_id)
-    {
-        peer.counters.throttled_typing_ms += ms;
     }
 }
 
@@ -1071,15 +1179,6 @@ impl EditClass {
     pub(crate) fn is_droppable(self) -> bool {
         !matches!(self, EditClass::Final | EditClass::Interactive)
     }
-}
-
-enum Admission {
-    /// Token consumed — the caller performs its edit now.
-    Now,
-    /// Chrome class with no budget — dropped and counted (self-healing).
-    Dropped(EditClass),
-    /// Final with no budget — payload queued latest-wins; drainer owns it.
-    Queued,
 }
 
 /// G2 gate for `editMessageText`. Returns true when the caller must perform
@@ -1142,25 +1241,24 @@ pub(crate) async fn edit_admission_media_kb(
         return true;
     }
     ensure_summary_task();
-    let now = gate_now();
-    let admission = {
-        let mut map = peers().lock().unwrap_or_else(|e| e.into_inner());
-        let peer = map.entry(chat_id.0).or_default();
-        // Edits rarely carry a topic id; a peer reached here without any
-        // topic-scoped call yet (e.g. right after restart) stays ungoverned
-        // until G1 or a topic-scoped call marks it.
-        if !peer.forum_seen {
-            return true;
-        }
-        // #1927: the cross-surface floor is charged AHEAD of the edit bucket.
-        // A droppable chrome class it sheds costs no token (it self-heals on
-        // the next full render, so holding it buys nothing); a final still
-        // queues; an interactive edit still passes through.
-        let floor_wait = spacing_wait(&peer.recent, now, lim.spacing_floor);
-        if !floor_wait.is_zero() && class.is_droppable() {
-            peer.counters.note_spacing_drop();
-            Admission::Dropped(class)
-        } else {
+    // One pass, no loop: G2 answers in one shot. `Duration::ZERO` is the hold
+    // already absorbed, which is always nothing for a surface that never waits.
+    let admission = pace_engine(
+        &SurfacePolicy::EDITS,
+        &lim,
+        chat_id.0,
+        None,
+        Duration::ZERO,
+        |peer, now, spacing_hold| {
+            // #676 — the spacing floor governs DROPPABLE chrome only: an
+            // in-interval cosmetic tick is refused before it can spend a token,
+            // while content falls through to the arms below untouched. Content
+            // is NEVER floored — it is already paced by the bucket.
+            let droppable = class.is_droppable();
+            if droppable && !spacing_hold.is_zero() {
+                peer.counters.note_spacing_drop();
+                return PaceOutcome::Drop(DropReason::SpacingFloor);
+            }
             let bucket = ensure_bucket(&mut peer.edits, lim.edit_burst, lim.edit_rate_per_sec);
             if bucket.take(now).is_ok() {
                 peer.counters.admitted_edits += 1;
@@ -1169,13 +1267,13 @@ pub(crate) async fn edit_admission_media_kb(
                 if !rich {
                     peer.recent.push(now, SURFACE_EDITS);
                 }
-                Admission::Now
+                PaceOutcome::Admit
             } else if class == EditClass::Interactive {
                 // Interactive UI edits never drop and never queue; pass through immediately
                 if !rich {
                     peer.recent.push(now, SURFACE_EDITS);
                 }
-                Admission::Now
+                PaceOutcome::Admit
             } else if class == EditClass::Final {
                 let superseded = peer
                     .finals
@@ -1196,27 +1294,30 @@ pub(crate) async fn edit_admission_media_kb(
                     peer.counters.superseded_finals += 1;
                 }
                 peer.counters.queued_finals += 1;
-                Admission::Queued
+                PaceOutcome::Queue
             } else {
                 peer.counters.note_drop(class);
-                Admission::Dropped(class)
+                PaceOutcome::Drop(DropReason::BucketDry)
             }
-        }
-    };
+        },
+    );
     match admission {
-        Admission::Now => true,
-        Admission::Dropped(dropped) => {
+        // `Bypass` is the ungoverned peer: edits rarely carry a topic id, so a
+        // peer reached here without any topic-scoped call yet (e.g. right after
+        // restart) stays ungoverned until G1 or a topic-scoped call marks it.
+        PaceOutcome::Bypass | PaceOutcome::Admit => true,
+        PaceOutcome::Drop(_) => {
             tracing::debug!(
                 "Telegram rate-limiter: {:?} edit (rank {}) dropped for chat={} msg={} — \
                  next full-state refresh carries it",
-                dropped,
-                dropped.drop_rank(),
+                class,
+                class.drop_rank(),
                 chat_id.0,
                 msg_id.0
             );
             false
         }
-        Admission::Queued => {
+        PaceOutcome::Queue => {
             tracing::debug!(
                 "Telegram rate-limiter: final edit queued latest-wins for chat={} msg={}",
                 chat_id.0,
@@ -1225,6 +1326,8 @@ pub(crate) async fn edit_admission_media_kb(
             ensure_drain(chat_id.0);
             false
         }
+        // G2 answers in one shot: no wait loop, no fail-open arm.
+        PaceOutcome::Defer(_) | PaceOutcome::FailOpen(_) => true,
     }
 }
 
@@ -1232,7 +1335,7 @@ pub(crate) async fn edit_admission_media_kb(
 /// Returns `None` on "nothing to do this tick" (no peer, empty queue, or no
 /// edit budget yet).
 fn take_due_final(chat_id: i64, lim: &Limits) -> Option<(i32, PendingFinal)> {
-    let mut map = peers().lock().unwrap_or_else(|e| e.into_inner());
+    let mut map = peers_guard();
     let peer = map.get_mut(&chat_id)?;
     if peer.finals.is_empty() {
         peer.draining = false;
@@ -1260,9 +1363,7 @@ async fn drain_finals(chat_id: i64) {
         let lim = Limits::from_config();
         let Some(job) = take_due_final(chat_id, &lim) else {
             // Queue drained (draining flag cleared inside) or no budget yet.
-            let empty = peers()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
+            let empty = peers_guard()
                 .get(&chat_id)
                 .is_none_or(|p| p.finals.is_empty());
             if empty {
@@ -1278,7 +1379,7 @@ async fn drain_finals(chat_id: i64) {
 /// drainer is running; the task itself retires when the queue drains.
 fn ensure_drain(chat_id: i64) {
     let should_spawn = {
-        let mut map = peers().lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = peers_guard();
         let peer = map.entry(chat_id).or_default();
         if peer.draining || peer.finals.is_empty() {
             false
@@ -1326,7 +1427,7 @@ async fn deliver_final(chat_id: i64, msg_id: i32, mut pending: PendingFinal) {
         super::rate_limit::record_global_429(wait);
     }
     let verdict = {
-        let mut map = peers().lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = peers_guard();
         let Some(peer) = map.get_mut(&chat_id) else {
             // The peer vanished between pop and verdict: no counter will ever
             // move for this final. Still fire the settle hook so a parked
@@ -1438,18 +1539,9 @@ async fn run_final_edit(chat_id: i64, msg_id: i32, pending: &PendingFinal) -> Re
 // G3 — send pacing
 // ---------------------------------------------------------------------------
 
-enum PaceVerdict {
-    Go,
-    /// Budget exhausted — fail OPEN (delay-never-drop, #297): the send goes
-    /// out and the reactive backstop owns whatever comes back.
-    FailOpen(Duration),
-    Wait(Duration),
-}
-
-/// G3 gate ahead of full-message sends. Three AND-ed constraints: ~1/s
-/// spacing, an ~18/min group ceiling (both configurable), and the
-/// cross-surface spacing floor (#1927). Holds the caller just long enough to
-/// satisfy the longest of the three, never drops, and fails open past
+/// G3 gate ahead of full-message sends. Two AND-ed buckets: ~1/s spacing and
+/// an ~18/min group ceiling (both configurable). Holds the caller just long
+/// enough to buy a token pair, never drops, and fails open past
 /// [`SEND_MAX_HOLD`] so a pathological configuration degrades to today's
 /// behavior instead of stalling turns.
 pub(crate) async fn pace_send(chat: ChatId) {
@@ -1472,58 +1564,61 @@ pub(crate) async fn pace_send(chat: ChatId) {
 
     let mut waited = Duration::ZERO;
     loop {
-        let verdict = {
-            let mut map = peers().lock().unwrap_or_else(|e| e.into_inner());
-            let peer = map.entry(chat_id).or_default();
-            if !peer.forum_seen {
-                return;
-            }
-            let now = gate_now();
-            // #1927: the cross-surface floor joins the two send buckets as a
-            // third, AND-ed constraint — the wait is the longest of the three.
-            let spacing_hold = spacing_wait(&peer.recent, now, lim.spacing_floor);
-            let sec = ensure_bucket(
-                &mut peer.sends_sec,
-                lim.send_burst,
-                1.0 / lim.send_interval.as_secs_f64(),
-            );
-            let min = ensure_bucket(
-                &mut peer.sends_min,
-                lim.send_minute_ceiling,
-                f64::from(lim.send_minute_ceiling) / 60.0,
-            );
-            let need = sec
-                .next_token_in(now)
-                .max(min.next_token_in(now))
-                .max(spacing_hold);
-            if need.is_zero() {
-                let _ = sec.take(now);
-                let _ = min.take(now);
-                peer.counters.admitted_sends += 1;
-                peer.recent.push(now, SURFACE_SENDS);
-                PaceVerdict::Go
-            } else if waited + need > SEND_MAX_HOLD {
-                peer.counters.admitted_sends += 1;
-                PaceVerdict::FailOpen(need)
-            } else {
-                PaceVerdict::Wait(need)
-            }
-        };
+        let verdict = pace_engine(
+            &SurfacePolicy::SENDS,
+            &lim,
+            chat_id,
+            None,
+            waited,
+            |peer, now, spacing_hold| {
+                // #676 - a plain send is content, so the spacing floor is
+                // WAITED out rather than dropped; the loop's existing
+                // SEND_MAX_HOLD arm bounds it exactly like a bucket hold. The
+                // wait is the REMAINDER of the interval, not the whole floor.
+                let sec = ensure_bucket(
+                    &mut peer.sends_sec,
+                    lim.send_burst,
+                    1.0 / lim.send_interval.as_secs_f64(),
+                );
+                let min = ensure_bucket(
+                    &mut peer.sends_min,
+                    lim.send_minute_ceiling,
+                    f64::from(lim.send_minute_ceiling) / 60.0,
+                );
+                let need = sec
+                    .next_token_in(now)
+                    .max(min.next_token_in(now))
+                    .max(spacing_hold);
+                if need.is_zero() {
+                    let _ = sec.take(now);
+                    let _ = min.take(now);
+                    peer.counters.admitted_sends += 1;
+                    peer.recent.push(now, SURFACE_SENDS);
+                    PaceOutcome::Admit
+                } else {
+                    // `SEND_MAX_HOLD` is applied by the engine, which owns the
+                    // fail-open cell: past the cap this becomes `FailOpen(need)`
+                    // and the send goes out anyway (#297).
+                    PaceOutcome::Defer(need)
+                }
+            },
+        );
         match verdict {
-            PaceVerdict::Go => {
-                fold_send_ms(chat_id, waited);
+            PaceOutcome::Bypass => return,
+            PaceOutcome::Admit => {
+                fold_hold_ms(chat_id, waited, HoldSurface::Sends);
                 return;
             }
-            PaceVerdict::FailOpen(next) => {
+            PaceOutcome::FailOpen(next) => {
                 tracing::warn!(
                     "Telegram rate-limiter: send pacing held {waited:?} for chat={chat_id}, \
                      still {} from a token — failing open to the reactive backstop",
                     next.as_secs_f64()
                 );
-                fold_send_ms(chat_id, waited);
+                fold_hold_ms(chat_id, waited, HoldSurface::Sends);
                 return;
             }
-            PaceVerdict::Wait(delay) => {
+            PaceOutcome::Defer(delay) => {
                 let start = gate_now();
                 tokio::time::sleep(delay).await;
                 // Under tokio's paused runtime the sleep above returns
@@ -1533,6 +1628,11 @@ pub(crate) async fn pace_send(chat: ChatId) {
                 #[cfg(test)]
                 test_support::advance(delay.as_millis() as u64);
                 waited += gate_now().duration_since(start);
+            }
+            // G3 is delay-never-drop and has no queue.
+            PaceOutcome::Drop(_) | PaceOutcome::Queue => {
+                fold_hold_ms(chat_id, waited, HoldSurface::Sends);
+                return;
             }
         }
     }
@@ -1576,41 +1676,45 @@ pub(crate) async fn pace_rich(chat: ChatId, thread_id: Option<i32>) {
     ensure_summary_task();
     let mut waited = Duration::ZERO;
     loop {
-        let delay = {
-            let mut map = peers().lock().unwrap_or_else(|e| e.into_inner());
-            let peer = map.entry(chat_id).or_default();
-            // The rich path carries the topic itself, so it can establish
-            // forums-only rollout on its own rather than waiting for a typing
-            // gate to have run first for this chat. Contract (#1708): this id
-            // is session-certified upstream; a raw reply-chain id from an
-            // ordinary group must never reach here (scan-test enforced).
-            if thread_id.is_some() {
-                peer.forum_seen = true;
-            }
-            if !peer.forum_seen {
+        let verdict = pace_engine(
+            &SurfacePolicy::RICH,
+            &lim,
+            chat_id,
+            thread_id,
+            waited,
+            |peer, now, spacing_hold| {
+                // The rich path carries the topic itself, so it can establish
+                // forums-only rollout on its own rather than waiting for a typing
+                // gate to have run first for this chat. Contract (#1708): this id
+                // is session-certified upstream; a raw reply-chain id from an
+                // ordinary group must never reach here (scan-test enforced).
+                let bucket = ensure_bucket(&mut peer.rich, lim.rich_burst, lim.rich_rate_per_sec);
+                // The cross-surface floor joins the rich bucket as a second,
+                // AND-ed constraint: a rich edit WAITS out the floor remainder
+                // rather than firing inside it (landed g4 rich-floor test).
+                let need = bucket.next_token_in(now).max(spacing_hold);
+                if need.is_zero() {
+                    let _ = bucket.take(now);
+                    peer.counters.admitted_rich += 1;
+                    peer.recent.push(now, SURFACE_RICH);
+                    PaceOutcome::Admit
+                } else {
+                    // `HoldBudget::None` on the rich row is no CAP, not no
+                    // waiting: the engine passes this `Defer` straight back and
+                    // the loop below sleeps it, so rich content waits until a
+                    // token refills and never fires unadmitted.
+                    PaceOutcome::Defer(need)
+                }
+            },
+        );
+        match verdict {
+            // `Bypass` is the ungoverned peer, `Admit` a bought token: both mean
+            // the rich call may go out now.
+            PaceOutcome::Bypass | PaceOutcome::Admit => {
+                fold_hold_ms(chat_id, waited, HoldSurface::Rich);
                 return;
             }
-            let now = gate_now();
-            // #1927: the cross-surface floor joins the rich bucket as a
-            // second, AND-ed constraint.
-            let spacing_hold = spacing_wait(&peer.recent, now, lim.spacing_floor);
-            let bucket = ensure_bucket(&mut peer.rich, lim.rich_burst, lim.rich_rate_per_sec);
-            let need = bucket.next_token_in(now).max(spacing_hold);
-            if need.is_zero() {
-                let _ = bucket.take(now);
-                peer.counters.admitted_rich += 1;
-                peer.recent.push(now, SURFACE_RICH);
-                None
-            } else {
-                Some(need)
-            }
-        };
-        match delay {
-            None => {
-                fold_rich_ms(chat_id, waited);
-                return;
-            }
-            Some(delay) => {
+            PaceOutcome::Defer(delay) => {
                 let start = gate_now();
                 tokio::time::sleep(delay).await;
                 // Under tokio's paused runtime the sleep above returns
@@ -1621,44 +1725,13 @@ pub(crate) async fn pace_rich(chat: ChatId, thread_id: Option<i32>) {
                 test_support::advance(delay.as_millis() as u64);
                 waited += gate_now().duration_since(start);
             }
+            // G4 is delay-never-drop and has no fail-open cap: none of these
+            // arms is reachable from the rich row, so end the call like a wait.
+            PaceOutcome::Drop(_) | PaceOutcome::Queue | PaceOutcome::FailOpen(_) => {
+                fold_hold_ms(chat_id, waited, HoldSurface::Rich);
+                return;
+            }
         }
-    }
-}
-
-/// Attribute G4 hold time back to the peer's counters.
-fn fold_rich_ms(chat_id: i64, waited: Duration) {
-    if waited.is_zero() {
-        return;
-    }
-    let ms = waited.as_millis() as u64;
-    if ms == 0 {
-        return;
-    }
-    if let Some(peer) = peers()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_mut(&chat_id)
-    {
-        peer.counters.throttled_rich_ms += ms;
-    }
-}
-
-/// Attribute G3 hold time back to the peer's counters. Best effort, mirroring
-/// [`fold_throttle_ms`].
-fn fold_send_ms(chat_id: i64, waited: Duration) {
-    if waited.is_zero() {
-        return;
-    }
-    let ms = waited.as_millis() as u64;
-    if ms == 0 {
-        return;
-    }
-    if let Some(peer) = peers()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_mut(&chat_id)
-    {
-        peer.counters.throttled_send_ms += ms;
     }
 }
 
@@ -1683,7 +1756,7 @@ pub(crate) mod test_support {
 
     /// Wipe all peer state and pin the virtual clock at `offset_ms`.
     pub(crate) fn reset(offset_ms: u64) {
-        peers().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        peers_guard().clear();
         *GLOBAL_PACER.lock().unwrap_or_else(|e| e.into_inner()) = None;
         crate::channels::telegram::rate_limit::reset_global_cooldown();
         CLOCK_OFFSET_MS.store(offset_ms, Ordering::Relaxed);
@@ -1722,9 +1795,7 @@ pub(crate) mod test_support {
     /// so a test controls exactly how many tokens each bucket starts with.
     pub(crate) fn mark_forum(chat: ChatId) {
         let chat_id = chat.0;
-        peers()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        peers_guard()
             .entry(chat_id)
             .or_default()
             .forum_seen = true;
@@ -1734,7 +1805,7 @@ pub(crate) mod test_support {
     /// gates use (`kind`: "typing" | "edits" | "sends_sec" | "sends_min").
     pub(crate) fn burn_bucket(chat: ChatId, kind: BucketKind, capacity: u32, rate_per_sec: f64) {
         let chat_id = chat.0;
-        let mut map = peers().lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = peers_guard();
         let peer = map.entry(chat_id).or_default();
         peer.forum_seen = true;
         let slot = match kind {
@@ -1788,7 +1859,7 @@ pub(crate) mod test_support {
     /// Read [`Snap`] for `chat_id`; `None` when no gate has touched the peer.
     pub(crate) fn snapshot(chat: ChatId) -> Option<Snap> {
         let chat_id = chat.0;
-        let map = peers().lock().unwrap_or_else(|e| e.into_inner());
+        let map = peers_guard();
         map.get(&chat_id).map(|p| Snap {
             forum_seen: p.forum_seen,
             typing_admitted: p.counters.admitted_typing,
