@@ -2,9 +2,11 @@
 //!
 //! Background task that checks the `cron_jobs` table every 60 seconds,
 //! executes due jobs in a shared "Cron" session, and delivers results
-//! to the configured channel. Each run inserts a compaction marker after
-//! completion so the next run starts with empty context (no cross-job
-//! history contamination). Cron jobs are fully isolated from the TUI —
+//! to the configured channel. Each run inserts its compaction marker at run
+//! START, before the turn reads history, so the next fire starts from an empty
+//! context AND a run the daemon killed mid-flight still leaves a boundary
+//! behind (#149 contamination vector, #1703 stale-context reload). Cron jobs
+//! are fully isolated from the TUI —
 //! they never share or mutate the user's active session.
 
 use crate::channels::ChannelFactory;
@@ -13,6 +15,7 @@ use crate::db::CronJobRepository;
 use crate::db::CronJobRunRepository;
 use crate::db::models::{CronJob, CronJobRun};
 use crate::services::{ServiceContext, SessionService};
+use crate::utils::string::truncate_str;
 use chrono::Utc;
 use std::sync::Arc;
 use tracing::Instrument;
@@ -35,12 +38,47 @@ fn is_active_profile(job_profile: Option<&str>, active: Option<&str>) -> bool {
 static INVALID_EXPR_WARNED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Escalation threshold (#1893): three consecutive tick failures is about three
+/// minutes of a stopped scheduler, long enough to rule out a transient DB
+/// blip, short enough to matter before a day of missed runs. Before this the
+/// loop logged and slept forever, so 5,100 failures over 3.5 days stayed as
+/// 5,100 log lines nobody read.
+pub(crate) const TICK_ALERT_AFTER_FAILURES: u32 = 3;
+
+/// Minimum spacing between escalation notices (#1893): a scheduler that cannot
+/// read its table fails every 60s forever, so an unthrottled alert becomes the
+/// new noise instead of the signal.
+pub(crate) const TICK_ALERT_MIN_SPACING: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Whether this tick failure deserves a user-facing notice yet (#1893).
+///
+/// Pure, and taking the clock as an argument, so the hour window is testable
+/// without sleeping an hour. `last_alert` is the process uptime at which the
+/// previous notice went out.
+pub(crate) fn alert_due(
+    failures: u32,
+    last_alert: Option<std::time::Duration>,
+    uptime: std::time::Duration,
+) -> bool {
+    if failures < TICK_ALERT_AFTER_FAILURES {
+        return false;
+    }
+    match last_alert {
+        None => true,
+        Some(at) => uptime.saturating_sub(at) >= TICK_ALERT_MIN_SPACING,
+    }
+}
+
 /// Background cron scheduler that polls the database and executes due jobs.
 pub struct CronScheduler {
     repo: CronJobRepository,
     run_repo: CronJobRunRepository,
     factory: Arc<ChannelFactory>,
     service_context: ServiceContext,
+    /// Delivery targets named by the last job list this scheduler could read
+    /// (#1893). A total read failure is precisely the moment `deliver_to` is
+    /// unreadable, so the targets have to be remembered while they still are.
+    known_targets: std::sync::Mutex<Vec<String>>,
 }
 
 impl CronScheduler {
@@ -55,6 +93,7 @@ impl CronScheduler {
             run_repo,
             factory,
             service_context,
+            known_targets: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -74,20 +113,108 @@ impl CronScheduler {
             "Cron scheduler started — polling every 60s (shared Cron session, compaction-isolated)"
         );
         if let Err(e) = self.backfill_missing_next_run().await {
-            tracing::error!("Failed to backfill missing next_run_at on startup: {e}");
+            tracing::error!("Failed to backfill missing next_run_at on startup: {e:#}");
         }
 
+        // #1893: a tick failure used to be log-only, and a log line is the one
+        // place nobody looks while the schedule is quietly dead. Track
+        // consecutive failures, escalate at the threshold, reset on success.
+        let started = std::time::Instant::now();
+        let mut failures: u32 = 0;
+        let mut last_alert: Option<std::time::Duration> = None;
+
         loop {
-            if let Err(e) = self.tick().await {
-                tracing::error!("Cron scheduler tick error: {e}");
+            match self.tick().await {
+                Ok(()) => {
+                    failures = 0;
+                    last_alert = None;
+                }
+                Err(e) => {
+                    failures = failures.saturating_add(1);
+                    tracing::error!("Cron scheduler tick error: {e:#}");
+                    let uptime = started.elapsed();
+                    if alert_due(failures, last_alert, uptime) {
+                        last_alert = Some(uptime);
+                        self.alert_tick_failure(failures, &e).await;
+                    }
+                }
             }
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         }
     }
 
+    /// Cache the delivery targets named by the jobs this tick could read
+    /// (#1893). Rewritten on every successful read, so a job whose `deliver_to`
+    /// was edited or deleted stops receiving notices.
+    fn remember_targets(&self, jobs: &[CronJob]) {
+        let mut targets: Vec<String> = Vec::new();
+        for job in jobs {
+            let Some(deliver_to) = job.deliver_to.as_deref() else {
+                continue;
+            };
+            for target in deliver_to
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if !targets.iter().any(|seen| seen == target) {
+                    targets.push(target.to_string());
+                }
+            }
+        }
+        if let Ok(mut known) = self.known_targets.lock() {
+            *known = targets;
+        }
+    }
+
+    /// Tell a human the scheduler has stopped, not only the log (#1893).
+    ///
+    /// Carries the full anyhow chain: an alert someone can act on has to say why
+    /// the schedule stopped, which is exactly what bare `{e}` was dropping
+    /// (#1894). With no target ever read (fresh process, table already broken)
+    /// there is nowhere to send, and that is logged loudly instead of skipped
+    /// silently.
+    async fn alert_tick_failure(&self, failures: u32, err: &anyhow::Error) {
+        let targets = self
+            .known_targets
+            .lock()
+            .map(|known| known.clone())
+            .unwrap_or_default();
+        if targets.is_empty() {
+            tracing::error!(
+                "Cron scheduler has failed {failures} consecutive ticks and has no delivery target to alert: no job list has ever been read by this process"
+            );
+            return;
+        }
+        let message = format!(
+            "Cron scheduler is stopped: {failures} consecutive tick failures, no scheduled job will fire until this is fixed. Cause: {err:#}"
+        );
+        for target in targets {
+            tracing::error!("Escalating cron scheduler failure to {target}");
+            let _ = deliver_result(
+                &target,
+                "cron scheduler",
+                &message,
+                None,
+                Some(self.service_context.pool()),
+            )
+            .await;
+        }
+    }
+
     /// One scheduler tick: check all enabled jobs and execute any that are due.
     async fn tick(&self) -> anyhow::Result<()> {
-        let mut jobs = self.repo.list_enabled().await?;
+        // #1893: read row by row. One unreadable row used to fail the whole
+        // read, which stopped every job instead of just the broken one.
+        let (mut jobs, skipped) = self.repo.list_enabled_with_skips().await?;
+        self.remember_targets(&jobs);
+        // "Nothing is due" must not absorb "nothing can be read": an empty list
+        // that skipped rows is a failure, and the tick loop escalates it.
+        if jobs.is_empty() && skipped > 0 {
+            return Err(anyhow::anyhow!(
+                "all {skipped} enabled cron_jobs row(s) failed to decode, no job can run"
+            ));
+        }
         let now = Utc::now();
 
         // Ensure all enabled jobs have next_run_at populated even if created externally
@@ -268,7 +395,7 @@ impl CronScheduler {
                         };
 
                         if let Err(e) = result {
-                            tracing::error!("Cron job '{}' failed: {e}", job.name);
+                            tracing::error!("Cron job '{}' failed: {e:#}", job.name);
                         }
                     }
                     .instrument(tracing::info_span!("job", name = %job_name, id = %job_id)),
@@ -383,11 +510,12 @@ pub(crate) fn cron_session_title_suffix(job: &CronJob) -> String {
 /// every job. That design cross-pollinates whenever jobs overlap in time,
 /// which the 60s tick makes routine, not exceptional:
 ///
-/// 1. **History**: a run inserts its `[CONTEXT COMPACTION]` marker only at
-///    the END of the turn, and context loads from the LAST marker in the
-///    session (`messages_from_last_compaction`). A job B starting while job
-///    A is mid-flight reads A's prompt + partial tool activity as its own
-///    context. Two concurrent turns also interleave writes into one history.
+/// 1. **History**: context loads from the LAST `[CONTEXT COMPACTION]` marker
+///    in the session (`messages_from_last_compaction`). With one shared
+///    session, a fire's own boundary is the only thing that bounds its load,
+///    so job B starting while job A is mid-flight can pick up A's rows that
+///    landed between B's marker and B's load, and two concurrent turns
+///    interleave writes into one history. Per-job sessions remove both.
 /// 2. **Provider/model**: `execute_job` swaps the per-session provider keyed
 ///    to the session id — with one shared id, a concurrent job's swap
 ///    overwrites the running job's provider mid-turn (last writer wins).
@@ -397,9 +525,11 @@ pub(crate) fn cron_session_title_suffix(job: &CronJob) -> String {
 /// (`[chat:N]` suffix) so a user rename of the readable part still resolves
 /// to the same session row while different jobs never share one.
 ///
-/// Cross-RUN contamination within a single job is still bounded by the
-/// end-of-run compaction marker: the job's own next fire starts from an
-/// empty context (deliberate — cron prompts are self-contained).
+/// Cross-RUN contamination within a single job is bounded by the boundary each
+/// run writes at its own START (`open_run_boundary`): the job's next fire
+/// reloads from that newest marker and nothing else, so neither a finished run
+/// nor one the daemon killed mid-flight can hand its stale tool results forward
+/// (deliberate - cron prompts are self-contained).
 ///
 /// There is no per-run single-flight guard here: overlapping fires of the
 /// same job each get a session that ONLY that job writes, so the two
@@ -503,6 +633,45 @@ async fn resolve_job_agent(
     Ok((config, Arc::new(builder)))
 }
 
+/// The compaction boundary that opens a cron run (#1703 fix 3).
+///
+/// Written ONCE per run, at run START, before the turn reads history — never
+/// after it. `messages_from_last_compaction` (`service/context.rs`) walks
+/// backward to the LAST `[CONTEXT COMPACTION]` user row and loads everything
+/// from there forward, so the marker's position in the sequence is the whole
+/// guarantee: a run that wrote its boundary only on completion left NO marker
+/// when the daemon died mid-flight, and the next fire reloaded from the
+/// PREVIOUS run's marker, i.e. the dead run's prompt and half-finished tool
+/// results came back as live context. Opening every run with its own marker
+/// means the newest boundary is always younger than anything the run before
+/// it produced, so a death between the marker and the finish line strands
+/// those rows behind the next fire's own boundary instead.
+///
+/// Must keep the `[CONTEXT COMPACTION` prefix (that is the anchor the loader
+/// searches) and must NOT contain `SEGMENT_SENTINEL` — a segment marker
+/// extends the compaction window instead of restarting it.
+pub(crate) const CRON_RUN_BOUNDARY: &str = "[CONTEXT COMPACTION — Cron job execution boundary]";
+
+/// Stamp the boundary row that bounds this run's history for the NEXT fire.
+///
+/// A failed write is logged, not fatal: without the boundary the next fire of
+/// this job starts from an empty context instead of the previous run's history
+/// (a stale-context regression, not a crash), so a missing marker must not
+/// silently eat the run. Same reasoning as the run-record insert above.
+async fn open_run_boundary(ctx: &ServiceContext, session_id: Uuid) {
+    let message_svc = crate::services::MessageService::new(ctx.clone());
+    if let Err(e) = message_svc
+        .create_message(
+            session_id,
+            "user".to_string(),
+            CRON_RUN_BOUNDARY.to_string(),
+        )
+        .await
+    {
+        tracing::warn!("Failed to insert cron compaction marker: {e:#}");
+    }
+}
+
 /// Execute a single cron job in its own isolated session.
 /// Isolated from TUI — never touches the user's active session.
 /// Results are always stored in the DB; channel delivery is optional.
@@ -557,7 +726,7 @@ async fn execute_job(
                     );
                     let run_id = run.id.to_string();
                     if let Err(e) = run_repo.insert(&run).await {
-                        tracing::error!("Failed to insert cron run record: {e}");
+                        tracing::error!("Failed to insert cron run record: {e:#}");
                     }
                     let err_msg = format!(
                         "model '{}' not supported by provider '{}' — cron config invalid",
@@ -572,7 +741,7 @@ async fn execute_job(
             Err(e) => {
                 tracing::warn!(
                     "Cron job '{}' — cannot pre-validate model (provider '{}' creation \
-                     failed: {e}) — proceeding with default validation",
+                     failed: {e:#}) — proceeding with default validation",
                     job.name,
                     provider_name
                 );
@@ -589,8 +758,11 @@ async fn execute_job(
     );
     let run_id = run.id.to_string();
     if let Err(e) = run_repo.insert(&run).await {
-        tracing::error!("Failed to insert cron run record: {e}");
+        tracing::error!("Failed to insert cron run record: {e:#}");
     }
+    // #1703 fix 2: the run's start time, formatted once for the delivery
+    // stamps; the ledger row keeps the full timestamp itself.
+    let run_started_at = run.started_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     let session_id = cron_session_id;
     tracing::info!(
@@ -598,6 +770,16 @@ async fn execute_job(
         job.name,
         session_id
     );
+
+    // #1703 fix 3: open the run with its compaction boundary, BEFORE the turn
+    // reads history. The turn loads `[last marker .. new prompt]` inside
+    // send_message_with_tools_and_callback, so this row is already the newest
+    // marker by the time that load runs: this fire sees an empty context, and
+    // if the daemon dies before the run finishes, whatever it managed to write
+    // sits behind this boundary and is discarded by the NEXT fire rather than
+    // reloaded as live tool results. One boundary per run, at start, never at
+    // the end - a run that closed with a marker would double-stamp.
+    open_run_boundary(ctx, session_id).await;
 
     // Swap to cron-specific provider if configured
     if let Some(ref provider_name) = effective_provider {
@@ -616,7 +798,7 @@ async fn execute_job(
             }
             Err(e) => {
                 tracing::warn!(
-                    "Cron job '{}' — failed to create provider '{}': {e}, using system default",
+                    "Cron job '{}' — failed to create provider '{}': {e:#}, using system default",
                     job.name,
                     provider_name
                 );
@@ -679,6 +861,11 @@ async fn execute_job(
                 .collect()
         });
 
+    // #1703: execution evidence probe. Count every tool that actually
+    // starts inside this run; the completion path refuses a `success`
+    // verdict without at least one start.
+    let (tool_starts, evidence_cb) = tool_start_counter();
+
     // Execute with auto-approved tools (no interactive user)
     let result = crate::cron::send_scope::with_permitted_targets(
         permitted_targets,
@@ -691,7 +878,7 @@ async fn execute_job(
                 // Auto-approve all tools for cron jobs
                 Box::pin(async { Ok((true, false)) })
             })),
-            None, // no progress callback
+            Some(evidence_cb),
             "cron",
             None,
             None,
@@ -702,27 +889,64 @@ async fn execute_job(
     match result {
         Ok(response) => {
             let clean = crate::utils::sanitize::strip_llm_artifacts(&response.content);
+            // #1703: a `success` verdict requires execution evidence. A turn
+            // that started zero tools cannot be told apart from a stale
+            // context replay, so the row is recorded `no_op` and every
+            // destination receives a timestamped one-line notice instead of
+            // the report.
+            let starts = tool_starts.load(std::sync::atomic::Ordering::Relaxed);
 
             tracing::info!(
-                "Cron job '{}' completed — {} tokens, ${:.6}",
+                "Cron job '{}' completed — {} tokens, ${:.6}, {} tool start(s)",
                 job.name,
                 response.usage.input_tokens + response.usage.output_tokens,
-                response.cost
+                response.cost,
+                starts
             );
 
-            // Save result to DB
-            if let Err(e) = run_repo
-                .complete_success(
-                    &run_id,
-                    &clean,
-                    response.usage.input_tokens as i64,
-                    response.usage.output_tokens as i64,
-                    response.cost,
-                )
-                .await
-            {
-                tracing::error!("Failed to save cron run result to DB: {e}");
-            }
+            let at = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            let deliver = match classify_turn_outcome(starts, &job.name, &run_id, &at) {
+                TurnOutcome::Success => {
+                    // Save result to DB
+                    if let Err(e) = run_repo
+                        .complete_success(
+                            &run_id,
+                            &clean,
+                            response.usage.input_tokens as i64,
+                            response.usage.output_tokens as i64,
+                            response.cost,
+                        )
+                        .await
+                    {
+                        tracing::error!("Failed to save cron run result to DB: {e:#}");
+                    }
+                    // #1703 fix 2: the ledger row keeps the raw report; the
+                    // delivered copy carries the run that produced it.
+                    stamp_delivery(&clean, &run_id, &run_started_at)
+                }
+                TurnOutcome::NoOp(notice) => {
+                    tracing::warn!(
+                        "Cron job '{}' executed no tools this run, recorded as no_op, report suppressed (#1703)",
+                        job.name
+                    );
+                    // The produced report stays on the row for forensics: a
+                    // replay is only diagnosable when its text survives the
+                    // gate.
+                    if let Err(e) = run_repo
+                        .complete_no_op(
+                            &run_id,
+                            &clean,
+                            response.usage.input_tokens as i64,
+                            response.usage.output_tokens as i64,
+                            response.cost,
+                        )
+                        .await
+                    {
+                        tracing::error!("Failed to save cron no-op run to DB: {e:#}");
+                    }
+                    notice
+                }
+            };
 
             // Optionally deliver to configured channels too
             if let Some(ref deliver_to) = job.deliver_to {
@@ -734,7 +958,7 @@ async fn execute_job(
                     let _ = deliver_result(
                         target,
                         &job.name,
-                        &clean,
+                        &deliver,
                         job.deliver_api_key.as_deref(),
                         Some(ctx.pool()),
                     )
@@ -743,10 +967,10 @@ async fn execute_job(
             }
 
             // Maybe dispatch goal to session
-            let _ = crate::cron::PipelineExecutor::maybe_dispatch_goal(job, ctx, &clean).await;
+            let _ = crate::cron::PipelineExecutor::maybe_dispatch_goal(job, ctx, &deliver).await;
         }
         Err(e) => {
-            tracing::error!("Cron job '{}' agent error: {e}", job.name);
+            tracing::error!("Cron job '{}' agent error: {e:#}", job.name);
 
             // Save error to DB
             let error_msg = format!("{e}");
@@ -756,7 +980,13 @@ async fn execute_job(
 
             // Optionally deliver error to configured channels too
             if let Some(ref deliver_to) = job.deliver_to {
-                let msg = format!("Cron job '{}' failed: {e}", job.name);
+                // #1703 fix 2: scheduled error deliveries are messages the
+                // run produced too, they carry their run stamp as well.
+                let msg = stamp_delivery(
+                    &format!("Cron job '{}' failed: {e}", job.name),
+                    &run_id,
+                    &run_started_at,
+                );
                 for target in deliver_to
                     .split(',')
                     .map(str::trim)
@@ -775,21 +1005,10 @@ async fn execute_job(
         }
     }
 
-    // Insert a compaction marker so the next cron run starts with empty
-    // context. Without this, every job would see the full conversation
-    // history of all previous jobs (the contamination vector).
-    let message_svc = crate::services::MessageService::new(ctx.clone());
-    if let Err(e) = message_svc
-        .create_message(
-            session_id,
-            "user".to_string(),
-            "[CONTEXT COMPACTION — Cron job execution boundary]".to_string(),
-        )
-        .await
-    {
-        tracing::warn!("Failed to insert cron compaction marker: {e}");
-    }
-
+    // No boundary written here on purpose (#1703 fix 3): the run OPENED with
+    // one, before its turn read history. A second marker per run would break
+    // the 1:1 run-to-boundary ratio that makes stale context attributable,
+    // and nothing after the turn needs sealing - the next fire writes its own.
     Ok(())
 }
 
@@ -977,6 +1196,103 @@ pub(crate) fn resolve_session_target(
 /// (fork #144: into a session's notify queue through the shared
 /// `notify_policy` path — default mode `turn-end`, cron results are turn
 /// outputs), or an HTTP(S) URL for generic webhook delivery.
+/// Ledger outcome of a completed cron agent turn (#1703 hole 1). A
+/// `success` verdict requires execution evidence: at least one tool must
+/// have started inside the run. Zero starts is indistinguishable from a
+/// stale context replay, so the turn is recorded `no_op` and its report is
+/// replaced by a timestamped notice.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TurnOutcome {
+    /// At least one tool executed: the report is stored and delivered.
+    Success,
+    /// Zero tools executed: the produced report stays on the row for
+    /// forensics, and the carried notice is what every destination gets.
+    NoOp(String),
+}
+
+/// Pure decision behind the evidence gate: `starts` counts the tool
+/// executions observed inside this run, `at` is the completion timestamp
+/// written into the notice.
+pub(crate) fn classify_turn_outcome(
+    starts: usize,
+    job_name: &str,
+    run_id: &str,
+    at: &str,
+) -> TurnOutcome {
+    if starts == 0 {
+        TurnOutcome::NoOp(not_executed_notice(job_name, run_id, at))
+    } else {
+        TurnOutcome::Success
+    }
+}
+
+/// The one-line notice that replaces the report of a zero-evidence run
+/// (#1703). Timestamped and run-stamped so a reader can anchor it.
+pub(crate) fn not_executed_notice(job_name: &str, run_id: &str, at: &str) -> String {
+    format!(
+        "Cron job '{job_name}' not executed: no tool ran in this run ({at}, run {run_id}). The report was suppressed."
+    )
+}
+
+/// #1703 fix 2: the run stamp carried by every delivered cron message, so a
+/// reader can anchor a message to the ledger row that produced it even when
+/// the writer cannot tell fresh work from a stale replay. Short run id plus
+/// the run's own start time: the start time is what separates two runs of
+/// the same job.
+pub(crate) fn run_stamp(run_id: &str, started_at: &str) -> String {
+    let short = run_id.get(..8).unwrap_or(run_id);
+    format!("[run {short}, started {started_at}]")
+}
+
+/// Append [`run_stamp`] to delivered content, never twice: text already
+/// carrying this run's stamp passes through unchanged, so no call site can
+/// stack stamps by accident (#1703).
+pub(crate) fn stamp_delivery(content: &str, run_id: &str, started_at: &str) -> String {
+    let stamp = run_stamp(run_id, started_at);
+    if content.contains(&stamp) {
+        content.to_string()
+    } else {
+        format!("{content}\n\n{stamp}")
+    }
+}
+
+/// Execution-evidence probe for one cron run (#1703): a shared counter fed
+/// by a progress callback that only counts `ToolStarted`. Streaming chunks,
+/// intermediate text and completions must never inflate the evidence.
+pub(crate) fn tool_start_counter() -> (
+    Arc<std::sync::atomic::AtomicUsize>,
+    crate::brain::agent::ProgressCallback,
+) {
+    use crate::brain::agent::{ProgressCallback, ProgressEvent};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let starts = Arc::new(AtomicUsize::new(0));
+    let cb: ProgressCallback = {
+        let starts = starts.clone();
+        Arc::new(move |_sid: Uuid, event: ProgressEvent| {
+            if matches!(event, ProgressEvent::ToolStarted { .. }) {
+                starts.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+    };
+    (starts, cb)
+}
+
+/// Truncate a run's output for delivery (channels have message limits).
+/// The cut must land on a UTF-8 char boundary: the raw `&content[..max_len]`
+/// panicked the scheduler when byte 4000 fell inside a multibyte char
+/// (`✅` in a morning recap, #1919).
+pub(crate) fn truncate_for_delivery(content: &str) -> String {
+    const MAX_LEN: usize = 4000;
+    if content.len() > MAX_LEN {
+        format!(
+            "{}...\n\n(truncated — full output in session)",
+            truncate_str(content, MAX_LEN)
+        )
+    } else {
+        content.to_string()
+    }
+}
+
 pub(crate) async fn deliver_result(
     deliver_to: &str,
     job_name: &str,
@@ -1016,16 +1332,7 @@ pub(crate) async fn deliver_result(
 
     let (channel, target_id) = (parts[0], parts[1]);
 
-    // Truncate content for delivery (channels have message limits)
-    let max_len = 4000;
-    let msg = if content.len() > max_len {
-        format!(
-            "{}...\n\n(truncated — full output in session)",
-            &content[..max_len]
-        )
-    } else {
-        content.to_string()
-    };
+    let msg = truncate_for_delivery(content);
 
     let delivery_msg = format!("⏰ **Cron: {job_name}**\n\n{msg}");
 
@@ -1150,7 +1457,7 @@ async fn execute_direct_trigger_job(
     );
     let run_id = run.id.to_string();
     if let Err(e) = run_repo.insert(&run).await {
-        tracing::error!("Failed to insert cron run record: {e}");
+        tracing::error!("Failed to insert cron run record: {e:#}");
     }
 
     let raw_output = trig_res.combined_output();
@@ -1169,7 +1476,7 @@ async fn execute_direct_trigger_job(
 
     // Save result to DB (0 tokens)
     if let Err(e) = run_repo.complete_success(&run_id, &clean, 0, 0, 0.0).await {
-        tracing::error!("Failed to save direct cron run result to DB: {e}");
+        tracing::error!("Failed to save direct cron run result to DB: {e:#}");
     }
 
     // Deliver to configured channels
@@ -1223,7 +1530,7 @@ async fn deliver_http(url: &str, job_name: &str, content: &str, api_key: Option<
             );
         }
         Err(e) => {
-            tracing::error!("HTTP delivery to {url} error: {e}");
+            tracing::error!("HTTP delivery to {url} error: {e:#}");
         }
     }
 }
@@ -1322,7 +1629,7 @@ async fn deliver_telegram(
             Err(e) => {
                 tracing::error!(
                     "Cron job '{job_name}': cannot validate chat {chat_id} for thread \
-                     {tid} delivery: {e} — refusing delivery"
+                     {tid} delivery: {e:#} — refusing delivery"
                 );
                 return None;
             }
@@ -1367,13 +1674,15 @@ async fn deliver_telegram(
             Err(e) => {
                 if let Some(t) = thread_id {
                     tracing::error!(
-                        "Cron delivery for '{job_name}' to chat {chat_id} thread {t} failed: {e} — \
+                        "Cron delivery for '{job_name}' to chat {chat_id} thread {t} failed: {e:#} — \
                          if the error is 'message thread not found', topic {t} does not exist \
                          in chat {chat_id}; fix the job's deliver_to (there is no fallback to the \
                          default topic)"
                     );
                 } else {
-                    tracing::error!("Cron delivery for '{job_name}' to chat {chat_id} failed: {e}");
+                    tracing::error!(
+                        "Cron delivery for '{job_name}' to chat {chat_id} failed: {e:#}"
+                    );
                 }
             }
         }
@@ -1442,7 +1751,7 @@ async fn deliver_discord(channel_id: &str, message: &str) {
                 );
             }
             Err(e) => {
-                tracing::error!("Discord delivery to {channel_id} HTTP error: {e}");
+                tracing::error!("Discord delivery to {channel_id} HTTP error: {e:#}");
             }
         }
     }
@@ -1485,7 +1794,7 @@ async fn deliver_discord_forum(forum_id: &str, job_name: &str, message: &str) {
             Ok(json) => json,
             Err(e) => {
                 tracing::error!(
-                    "Discord forum delivery: unreadable channel object for {forum_id}: {e}"
+                    "Discord forum delivery: unreadable channel object for {forum_id}: {e:#}"
                 );
                 return;
             }
@@ -1499,7 +1808,7 @@ async fn deliver_discord_forum(forum_id: &str, job_name: &str, message: &str) {
             return;
         }
         Err(e) => {
-            tracing::error!("Discord forum delivery: HTTP error reading channel {forum_id}: {e}");
+            tracing::error!("Discord forum delivery: HTTP error reading channel {forum_id}: {e:#}");
             return;
         }
     };
@@ -1556,7 +1865,7 @@ async fn deliver_discord_forum(forum_id: &str, job_name: &str, message: &str) {
             None
         }
         Err(e) => {
-            tracing::error!("Discord forum delivery to {forum_id} HTTP error: {e}");
+            tracing::error!("Discord forum delivery to {forum_id} HTTP error: {e:#}");
             None
         }
     };
@@ -1588,7 +1897,7 @@ async fn deliver_discord_forum(forum_id: &str, job_name: &str, message: &str) {
                 );
             }
             Err(e) => {
-                tracing::error!("Discord forum follow-up to thread {thread_id} HTTP error: {e}");
+                tracing::error!("Discord forum follow-up to thread {thread_id} HTTP error: {e:#}");
             }
         }
     }
@@ -1636,7 +1945,7 @@ async fn deliver_slack(channel_id: &str, message: &str) {
                 }
             }
             Err(e) => {
-                tracing::error!("Slack delivery to {channel_id} HTTP error: {e}");
+                tracing::error!("Slack delivery to {channel_id} HTTP error: {e:#}");
             }
         }
     }

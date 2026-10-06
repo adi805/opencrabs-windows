@@ -10,7 +10,7 @@
 //!   * Explicit user instruction: "post this in topic 17".
 //!
 //! Suggested by leshchenko1979 on issue #130:
-//! https://github.com/adolfousier/opencrabs/issues/130#issuecomment-4582189795
+//! https://github.com/opencrabs/opencrabs/issues/130#issuecomment-4582189795
 
 use crate::brain::tools::telegram_send::resolve_thread_id;
 use crate::channels::telegram::TelegramState;

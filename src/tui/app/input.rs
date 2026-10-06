@@ -1,6 +1,7 @@
 //! Input handling — keyboard events, history, and approval interception.
 
 use super::events::{AppMode, ToolApprovalResponse, TuiEvent};
+use super::mission_control::McPanel;
 use super::*;
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -35,6 +36,14 @@ pub(crate) fn should_restore_cancelled_query(
 /// matches either prefix and the current char fits the continuation pattern
 /// (digits, `;`, `M`, `m`) we treat it as garbage.
 pub(crate) fn is_mouse_sequence_fragment(c: char, buf: &str, cursor: usize) -> bool {
+    // Raw ESC and ETX arriving as KeyCode::Char are never legitimate
+    // typing: crossterm reports Esc as KeyCode::Esc and Ctrl+C as a
+    // control event, so these bytes only reach the char path when an
+    // escape read was split mid-sequence, the head of exactly the
+    // bursts this filter rejects. (#1943)
+    if matches!(c, '\x1b' | '\u{3}') {
+        return true;
+    }
     // Only bother checking chars that actually appear in mouse sequences
     if !matches!(c, '[' | '<' | '>' | 'M' | 'm' | ';') && !c.is_ascii_digit() {
         return false;
@@ -1289,7 +1298,11 @@ impl App {
             return;
         }
 
-        // Plain text: normal paste.
+        // Plain text: normal paste. Strip escape sequences and mouse-report
+        // bursts first: the bracketed-paste handler already does, and a
+        // clipboard copy of a leaked sequence would otherwise poison the
+        // buffer the same way (#1943).
+        let text = Self::strip_terminal_escapes(&text);
         self.insert_text_at_cursor(&text);
     }
 
@@ -1391,6 +1404,62 @@ impl App {
                 .as_ref()
                 .is_some_and(|m| m.state == ApproveMenuState::Pending)
         })
+    }
+
+    /// The dialog currently occupying input focus, if any (#1775).
+    ///
+    /// Single source for the Ctrl+C expanded command panel: whichever
+    /// surface owns the keyboard reports its scope, and the panel renders
+    /// that scope's keymap. Order matters — popup-style intercepts
+    /// (pickers, password prompts, approval prompts) shadow the mode
+    /// beneath them, mirroring the handler order in
+    /// `handle_key_event`.
+    pub(crate) fn active_dialog_scope(&self) -> Option<super::dialog_keys::DialogScope> {
+        use super::dialog_keys::DialogScope;
+        use super::events::AppMode;
+
+        if self.theme_picker.is_some() {
+            return Some(DialogScope::ThemePicker);
+        }
+        if self.ssh_pending.is_some() || self.sudo_pending.is_some() {
+            return Some(DialogScope::SshPassword);
+        }
+        if self.has_pending_approve_menu() {
+            return Some(DialogScope::ApprovePolicyMenu);
+        }
+        if self.has_pending_approval() {
+            return Some(DialogScope::ToolApproval);
+        }
+        match self.mode {
+            AppMode::Help => Some(DialogScope::Help),
+            AppMode::Settings => Some(DialogScope::Settings),
+            AppMode::UsageDashboard => Some(DialogScope::UsageDashboard),
+            AppMode::FilePicker => Some(DialogScope::FilePicker),
+            AppMode::DirectoryPicker => Some(DialogScope::DirectoryPicker),
+            AppMode::RestartPending => Some(DialogScope::RestartPending),
+            AppMode::UpdatePrompt => Some(DialogScope::UpdatePrompt),
+            AppMode::PlanOverlay => Some(DialogScope::PlanOverlay),
+            AppMode::SkillsList => Some(DialogScope::SkillsDialog),
+            AppMode::Profiles => Some(DialogScope::ProfilesDialog),
+            AppMode::MissionControl => Some(if self.mc.log_viewer.is_some() {
+                DialogScope::McLogViewer
+            } else if self.mc.detail_open {
+                match self.mc.focused_panel {
+                    McPanel::Inbox => DialogScope::McDetailPopup,
+                    _ => DialogScope::McDetailRead,
+                }
+            } else {
+                DialogScope::MissionControl
+            }),
+            // Chat has no dialog chrome; Sessions/Projects/SessionFiles are
+            // deliberately outside the #1775 census; Onboarding keeps its
+            // contextual hints.
+            AppMode::Chat
+            | AppMode::Sessions
+            | AppMode::Projects
+            | AppMode::SessionFiles
+            | AppMode::Onboarding => None,
+        }
     }
 
     /// Handle keys in chat mode
@@ -1784,6 +1853,39 @@ impl App {
                     });
                 }
                 return Ok(());
+            } else if event.code == KeyCode::Char('a') && event.modifiers == KeyModifiers::NONE {
+                // `a` — approve once directly (#1775): single-key verb the
+                // shared footer advertises. Independent of the highlighted
+                // option (Yes/Always/No): always approves ONCE, never
+                // touches the session auto policy.
+                let approval_data: Option<(Uuid, mpsc::UnboundedSender<ToolApprovalResponse>)> =
+                    self.messages
+                        .iter()
+                        .rev()
+                        .find_map(|m| m.approval.as_ref())
+                        .filter(|a| a.state == ApprovalState::Pending)
+                        .map(|a| (a.request_id, a.response_tx.clone()));
+
+                if let Some((request_id, response_tx)) = approval_data {
+                    let response = ToolApprovalResponse {
+                        request_id,
+                        approved: true,
+                        reason: None,
+                    };
+                    if let Err(e) = response_tx.send(response.clone()) {
+                        tracing::error!("Failed to send approval response back to agent: {:?}", e);
+                    }
+                    let _ = self
+                        .event_sender()
+                        .send(TuiEvent::ToolApprovalResponse(response));
+                    // Remove resolved approval message
+                    self.messages.retain(|m| {
+                        m.approval
+                            .as_ref()
+                            .is_none_or(|a| a.request_id != request_id)
+                    });
+                }
+                return Ok(());
             } else if keys::is_deny(&event) || keys::is_cancel(&event) {
                 // D/Esc shortcut — deny directly
                 let approval_data: Option<(Uuid, mpsc::UnboundedSender<ToolApprovalResponse>)> =
@@ -1987,6 +2089,27 @@ impl App {
         } else if keys::is_submit(&event)
             && (!self.input_buffer.trim().is_empty() || !self.attachments.is_empty())
         {
+            // Pre-send scrub (#1943): the per-char gate, the paste path and
+            // the FocusGained cleaner each have blind spots: a burst split
+            // across crossterm reads lands here verbatim, so take one more
+            // pass over the buffer before it becomes a message or a slash
+            // command. A poisoned buffer starts with `[<35;…`, which kills
+            // every `starts_with('/')` dispatch check.
+            let scrubbed = Self::strip_terminal_escapes(&self.input_buffer);
+            if scrubbed != self.input_buffer {
+                tracing::debug!(
+                    "Scrubbed {} bytes of escape garbage before send",
+                    self.input_buffer.len() - scrubbed.len()
+                );
+                self.input_buffer = scrubbed;
+                self.cursor_position = self
+                    .input_buffer
+                    .floor_char_boundary(self.cursor_position.min(self.input_buffer.len()));
+            }
+            if self.input_buffer.trim().is_empty() && self.attachments.is_empty() {
+                // Only garbage was in the buffer: swallow the submit.
+                return Ok(());
+            }
             // Check for slash commands before sending to LLM
             let content = self.input_buffer.clone();
             if self.handle_slash_command(content.trim()).await {
@@ -2406,13 +2529,19 @@ impl App {
                     self.input_history_stash = self.input_buffer.clone();
                     let idx = self.input_history.len() - 1;
                     self.input_history_index = Some(idx);
-                    self.input_buffer = self.input_history[idx].clone();
+                    // Scrub on recall: history.txt predating #1943 can
+                    // still carry a poisoned line, and Arrow-Up would
+                    // reinstate it verbatim into the buffer.
+                    self.input_buffer = Self::strip_terminal_escapes(&self.input_history[idx]);
                     self.cursor_position = self.input_buffer.len();
                 }
                 Some(idx) if idx > 0 => {
                     let idx = idx - 1;
                     self.input_history_index = Some(idx);
-                    self.input_buffer = self.input_history[idx].clone();
+                    // Scrub on recall: history.txt predating #1943 can
+                    // still carry a poisoned line, and Arrow-Up would
+                    // reinstate it verbatim into the buffer.
+                    self.input_buffer = Self::strip_terminal_escapes(&self.input_history[idx]);
                     self.cursor_position = self.input_buffer.len();
                 }
                 _ => {} // already at oldest
@@ -2426,7 +2555,7 @@ impl App {
             if idx + 1 < self.input_history.len() {
                 let idx = idx + 1;
                 self.input_history_index = Some(idx);
-                self.input_buffer = self.input_history[idx].clone();
+                self.input_buffer = Self::strip_terminal_escapes(&self.input_history[idx]);
                 self.cursor_position = self.input_buffer.len();
             } else {
                 // Past newest — restore stashed input

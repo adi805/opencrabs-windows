@@ -27,6 +27,9 @@ struct Ledger {
     delivered: usize,
     /// Resumes that errored, or whose channel never connected.
     failed: usize,
+    /// Resumes whose answer was handed to the parking route rather than
+    /// a surface: neither delivered nor failed (#1952).
+    parked: usize,
     /// Why turns cannot be recorded for the next restart, when they cannot.
     /// A boot that finds nothing because nothing could be written must not
     /// read as a boot that had nothing to recover (#1401).
@@ -70,6 +73,13 @@ pub fn record_failed() {
     with(|l| l.failed += 1);
 }
 
+/// A dispatched resume's answer was handed to the parking route to await
+/// its channel (#1952): it must never be counted as delivered, because no
+/// surface has seen it yet.
+pub fn record_parked() {
+    with(|l| l.parked += 1);
+}
+
 /// The probe insert into `pending_requests` failed: no turn in this run can
 /// be recovered after the next restart.
 pub fn record_tracking_disabled(reason: String) {
@@ -83,18 +93,19 @@ pub fn record_tracking_disabled(reason: String) {
 /// is zero, because "this boot had nothing to recover" is the fact that
 /// makes its absence meaningful on the boots that did.
 pub fn summary_line() -> String {
-    let (interrupted, resumed, delivered, failed, disabled) = with(|l| {
+    let (interrupted, resumed, delivered, failed, parked, disabled) = with(|l| {
         (
             l.interrupted.len(),
             l.resumed.iter().map(Uuid::to_string).collect::<Vec<_>>(),
             l.delivered,
             l.failed,
+            l.parked,
             l.tracking_disabled.clone(),
         )
     })
     .unwrap_or_default();
     let mut line = format!(
-        "[boot] interrupted={interrupted} resumed=[{}] delivered={delivered} failed={failed}",
+        "[boot] interrupted={interrupted} resumed=[{}] delivered={delivered} failed={failed} parked={parked}",
         resumed.join(" ")
     );
     if let Some(reason) = disabled {

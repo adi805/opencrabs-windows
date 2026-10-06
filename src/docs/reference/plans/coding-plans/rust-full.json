@@ -134,7 +134,7 @@
     {
       "order": 10,
       "title": "Push + PR",
-      "description": "Push to upstream (NOT origin): `git push upstream <branch>`\n\nCreate PR: `gh pr create --repo adolfousier/opencrabs --head leshchenko1979:<branch>`\n\nImmediately verify PR diff: `gh pr diff --name-only` should match expected files. If it doesn't, close the PR and start over from origin/main.",
+      "description": "Push to upstream (NOT origin): `git push upstream <branch>`\n\nCreate PR: `gh pr create --repo opencrabs/opencrabs --head leshchenko1979:<branch>`\n\nImmediately verify PR diff: `gh pr diff --name-only` should match expected files. If it doesn't, close the PR and start over from origin/main.",
       "task_type": "Configuration",
       "complexity": 1,
       "dependencies": [

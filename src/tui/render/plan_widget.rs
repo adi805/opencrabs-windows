@@ -42,8 +42,19 @@ pub(super) fn render_plan_checklist(f: &mut Frame, app: &App, area: Rect) {
             )
         };
         let title = format!(" 📋 {} · Active ", plan.title);
-        let para = Paragraph::new(Line::from(Span::styled(text, style)))
-            .block(Block::default().borders(Borders::ALL).title(title));
+        // Blank rows above and below the text inside the 5-line seed box
+        // (#1945): with only the bordered text row the strip read as text
+        // jammed between its own borders. On a squeezed 3-line box (chat
+        // floor wins over the card) there is one inner row for text, so
+        // padding would push the message out of view: degrade to the
+        // tight single line there instead.
+        let styled = Span::styled(text, style);
+        let lines = if area.height >= 5 {
+            vec![Line::from(""), Line::from(styled), Line::from("")]
+        } else {
+            vec![Line::from(styled)]
+        };
+        let para = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title));
         f.render_widget(para, area);
         return;
     }

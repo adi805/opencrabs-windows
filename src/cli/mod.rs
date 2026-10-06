@@ -19,6 +19,7 @@ pub(crate) mod migrate;
 // the Linux lint job: the only callers are the cfg(windows) arms in commands.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod service_windows;
+pub(crate) mod resume_delivery;
 pub(crate) mod session_notify;
 pub(crate) mod session_resolve;
 pub(crate) mod session_set_model;

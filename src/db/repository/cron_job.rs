@@ -103,6 +103,25 @@ pub struct CronJobRepository {
     pool: Pool,
 }
 
+/// Report one `cron_jobs` row the scheduler refused to decode, once per process
+/// per row (#1893).
+///
+/// The tick re-reads the table every 60s, so warning on every pass would emit
+/// 1,440 identical lines a day for one permanently broken row. That is the same
+/// noise class `INVALID_EXPR_WARNED` guards against in the scheduler. Keyed on
+/// the row id, which `list_enabled_with_skips` puts in front of any inner cause
+/// text.
+fn warn_skipped_row(detail: &str) {
+    static WARNED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let key = detail.split(" name=").next().unwrap_or(detail).to_string();
+    // A poisoned lock must not swallow the signal, so warn anyway.
+    let fresh = WARNED.lock().map(|mut set| set.insert(key)).unwrap_or(true);
+    if fresh {
+        tracing::warn!("Skipping unreadable cron_jobs row: {detail}");
+    }
+}
+
 impl CronJobRepository {
     pub fn new(pool: Pool) -> Self {
         Self { pool }
@@ -194,19 +213,58 @@ impl CronJobRepository {
             }
         }
     }
+    /// Enabled jobs, skipping rows that fail to decode instead of failing the
+    /// whole read (#1893).
+    ///
+    /// This used to `collect::<Result<Vec<_>, _>>()` one atomic read: a single
+    /// unreadable row made the call return `Err`, and the scheduler treated
+    /// `Err` as transient, so one corrupt row stopped ALL scheduled output.
+    /// Field evidence was 5,100 identical ticks over 3.5 days.
     pub async fn list_enabled(&self) -> Result<Vec<CronJob>> {
+        let (jobs, _skipped) = self.list_enabled_with_skips().await?;
+        Ok(jobs)
+    }
+
+    /// [`Self::list_enabled`] plus how many enabled rows were skipped because
+    /// they did not decode. The count is what lets the scheduler tell "nothing
+    /// is due" apart from "nothing can be read" (#1893).
+    pub async fn list_enabled_with_skips(&self) -> Result<(Vec<CronJob>, usize)> {
         // Same retry/timeout pattern as list_all (#665)
         let query = || async {
             self.pool
                 .get()
                 .await
                 .context("Failed to get connection")?
-                .interact(|conn| {
+                .interact(|conn| -> Result<(Vec<CronJob>, usize)> {
                     let mut stmt = conn.prepare_cached(
                         "SELECT * FROM cron_jobs WHERE enabled = 1 ORDER BY name",
                     )?;
-                    let rows = stmt.query_map([], CronJob::from_row)?;
-                    rows.collect::<std::result::Result<Vec<_>, _>>()
+                    // Capture id and name BEFORE `from_row`, like `list_all`, so
+                    // the row that was skipped is attributable instead of the
+                    // anonymous "row 0/0" rusqlite produces by default.
+                    let rows = stmt.query_map([], |row| {
+                        let id: String = row.get::<_, String>("id").unwrap_or_default();
+                        let name: String = row.get::<_, String>("name").unwrap_or_default();
+                        CronJob::from_row(row).map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                format!("id={id} name={name}: {e}").into(),
+                            )
+                        })
+                    })?;
+                    let mut jobs = Vec::new();
+                    let mut skipped = 0usize;
+                    for row in rows {
+                        match row {
+                            Ok(job) => jobs.push(job),
+                            Err(e) => {
+                                skipped += 1;
+                                warn_skipped_row(&e.to_string());
+                            }
+                        }
+                    }
+                    Ok((jobs, skipped))
                 })
                 .await
                 .map_err(interact_err)?

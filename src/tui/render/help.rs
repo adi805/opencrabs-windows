@@ -3,7 +3,9 @@
 //! Help screen, plan mode view, plan mode help bar, and settings screen.
 
 use super::super::app::App;
+use super::super::app::dialog_keys::{DialogScope, dialog_keys};
 use super::super::app::help_catalog;
+use super::super::render::hints;
 use super::theme::{self, Role};
 use ratatui::{
     Frame,
@@ -35,12 +37,6 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App, area: Rect) {
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         ))
     }
-
-    // Split into two columns
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
 
     // ── LEFT COLUMN ──
     let cyan = theme::role(Role::AccentTeal);
@@ -129,30 +125,6 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App, area: Rect) {
         Line::from(""),
         Line::from(""),
         Line::from(vec![
-            Span::styled(
-                " [↑↓ PgUp/Dn]",
-                Style::default()
-                    .fg(theme::role(Role::AccentTeal))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Scroll  ", Style::default().fg(theme::role(Role::GrayDim))),
-            Span::styled(
-                "[/]",
-                Style::default()
-                    .fg(theme::role(Role::AccentTeal))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Search  ", Style::default().fg(theme::role(Role::GrayDim))),
-            Span::styled(
-                "[Esc]",
-                Style::default()
-                    .fg(theme::role(Role::AccentTeal))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Back", Style::default().fg(theme::role(Role::GrayDim))),
-        ]),
-        Line::from(""),
-        Line::from(vec![
             Span::styled(" 📖 ", Style::default().fg(theme::role(Role::Accent))),
             Span::styled(
                 "docs.opencrabs.com",
@@ -200,6 +172,7 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App, area: Rect) {
         Line::from(""),
         section_header("TOOL APPROVAL"),
         kv("↑ / ↓", "Navigate options", cyan),
+        kv("a", "Approve once", cyan),
         kv("Enter", "Confirm selection", cyan),
         kv("D / Esc", "Deny", cyan),
         kv("V", "Toggle details", cyan),
@@ -275,11 +248,40 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App, area: Rect) {
         left.push(Line::from(""));
     }
 
+    // Footer row at the bottom of the screen + columns above it (#1775):
+    // the shared footer replaces the in-content bracket strip.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+
+    // Responsive (#1775): two 50/50 columns when there is room, a single
+    // full-width column under 100 cols — the old fixed split squeezed
+    // both panes into unreadability on narrow terminals.
+    let wide = area.width >= 100;
+    let (left_area, right_area) = if wide {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(rows[0]);
+        (columns[0], columns[1])
+    } else {
+        (rows[0], rows[0])
+    };
+    let (content, extra) = if wide {
+        (left, right)
+    } else {
+        let mut combined = left;
+        combined.extend(right);
+        (combined, Vec::new())
+    };
     // Record what was rendered so the key handler can clamp scroll to it.
     // `render_chat` does the same with `chat_area_height`; without it the
     // offset has no ceiling and winds off the end of the content (#1527).
-    app.help_content_rows = left.len();
-    app.help_viewport_rows = area.height.saturating_sub(2) as usize; // minus borders
+    // (Plain field writes, not `&mut app`: `content` may still borrow
+    // `app.help_catalog` through the section rows.)
+    app.help_content_rows = content.len();
+    app.help_viewport_rows = left_area.height.saturating_sub(2) as usize; // minus borders
     let scroll = app.help_scroll_offset.min(help_catalog::max_scroll(
         app.help_content_rows,
         app.help_viewport_rows,
@@ -291,7 +293,7 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App, area: Rect) {
         " 📚 Help & Commands ".to_string()
     };
 
-    let left_para = Paragraph::new(left)
+    let left_para = Paragraph::new(content)
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -305,16 +307,20 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App, area: Rect) {
         )
         .scroll((scroll, 0));
 
-    let right_para = Paragraph::new(right)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme::role(Role::Gray))),
-        )
-        .scroll((scroll, 0));
+    f.render_widget(left_para, left_area);
 
-    f.render_widget(left_para, columns[0]);
-    f.render_widget(right_para, columns[1]);
+    if !extra.is_empty() {
+        let right_para = Paragraph::new(extra)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme::role(Role::Gray))),
+            )
+            .scroll((scroll, 0));
+        f.render_widget(right_para, right_area);
+    }
+
+    hints::render_footer(f, rows[1], dialog_keys(DialogScope::Help));
 }
 
 /// Render the settings screen
@@ -421,27 +427,17 @@ pub(super) fn render_settings(f: &mut Frame, app: &mut App, area: Rect) {
         kv("Working dir", &wd_display),
         Line::from(""),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "  [↑↓ PgUp/Dn]",
-                Style::default()
-                    .fg(theme::role(Role::BlueSlate))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Scroll  ", Style::default().fg(theme::role(Role::GrayDim))),
-            Span::styled(
-                "[Esc]",
-                Style::default()
-                    .fg(theme::role(Role::Accent))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Back", Style::default().fg(theme::role(Role::GrayDim))),
-        ]),
-        Line::from(""),
     ];
 
+    // Footer row at the bottom (#1775): shared footer replaces the
+    // in-content bracket strip.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+
     // Pad to fill the area
-    let min_height = area.height as usize;
+    let min_height = rows[0].height as usize;
     while lines.len() < min_height {
         lines.push(Line::from(""));
     }
@@ -452,7 +448,7 @@ pub(super) fn render_settings(f: &mut Frame, app: &mut App, area: Rect) {
     // it was never opened: max_scroll(0, 0) is 0, and Settings would refuse to
     // scroll at all.
     app.help_content_rows = lines.len();
-    app.help_viewport_rows = area.height.saturating_sub(2) as usize; // minus borders
+    app.help_viewport_rows = rows[0].height.saturating_sub(2) as usize; // minus borders
     let scroll = app.help_scroll_offset.min(help_catalog::max_scroll(
         app.help_content_rows,
         app.help_viewport_rows,
@@ -472,5 +468,6 @@ pub(super) fn render_settings(f: &mut Frame, app: &mut App, area: Rect) {
         )
         .scroll((scroll, 0));
 
-    f.render_widget(para, area);
+    f.render_widget(para, rows[0]);
+    hints::render_footer(f, rows[1], dialog_keys(DialogScope::Settings));
 }

@@ -208,22 +208,12 @@ fn draw_bar(
         ));
     }
 
-    let bold =
-        |s: &'static str| Span::styled(s, theme::help_bar_style().add_modifier(Modifier::BOLD));
-    let keys = Line::from(vec![
-        bold(" ↑↓/jk"),
-        Span::styled(": scroll  ", theme::dim()),
-        bold("g/G"),
-        Span::styled(": top/end  ", theme::dim()),
-        bold("e/w/i/d"),
-        Span::styled(": level  ", theme::dim()),
-        bold("/"),
-        Span::styled(": search  ", theme::dim()),
-        bold("[ ]"),
-        Span::styled(": prev/next day  ", theme::dim()),
-        bold("Esc"),
-        Span::styled(": back", theme::dim()),
-    ]);
+    let keys = crate::tui::render::hints::footer_line(
+        "",
+        crate::tui::app::dialog_keys::dialog_keys(
+            crate::tui::app::dialog_keys::DialogScope::McLogViewer,
+        ),
+    );
 
     frame.render_widget(Paragraph::new(Line::from(status)), rows[0]);
     if rows.len() > 1 {

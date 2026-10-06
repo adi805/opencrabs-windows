@@ -1690,7 +1690,7 @@ impl AgentService {
         #[cfg_attr(not(feature = "telegram"), allow(unused))]
         let mut mermaid_regen_retries: u32 = 0;
         // Tool-text leak (leshchenko1979/opencrabs#66, ex-upstream
-        // adolfousier/opencrabs#1260): the provider stripped unrecoverable
+        // opencrabs/opencrabs#1260): the provider stripped unrecoverable
         // tool-call JSON and set tool_text_leak. One corrective retry with a
         // structured-calls nudge; a second leak fails the turn clean instead
         // of delivering raw internals as the final answer.
@@ -5867,7 +5867,7 @@ impl AgentService {
                 }
 
                 // ── Tool-text leak: corrective retry, then fail clean ───
-                // (fork #66, ex-upstream adolfousier/opencrabs#1260) The
+                // (fork #66, ex-upstream opencrabs/opencrabs#1260) The
                 // provider flagged unrecoverable tool-call JSON as text.
                 // With tools available, give the model ONE structured-calls
                 // nudge; if it leaks again, fail the turn clean — never

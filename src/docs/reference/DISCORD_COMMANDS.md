@@ -1,6 +1,6 @@
 # Discord application commands (slash commands)
 
-Issue: [#1850](https://github.com/adolfousier/opencrabs/issues/1850): OpenCrabs has no Discord slash commands.
+Issue: [#1850](https://github.com/opencrabs/opencrabs/issues/1850): OpenCrabs has no Discord slash commands.
 
 OpenCrabs projects `commands.toml` onto Discord's native slash-command list for
 every guild the bot is in, so a command defined in that file appears in the

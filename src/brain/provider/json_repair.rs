@@ -188,7 +188,7 @@ pub fn try_repair(raw: &str) -> Option<String> {
 }
 
 // ── Call-shaped JSON detection (tool-text leak defense) ─────────────────
-// fork #66, ex-upstream adolfousier/opencrabs#1260.
+// fork #66, ex-upstream opencrabs/opencrabs#1260.
 //
 // When a model with weak function-calling support "invokes" a tool, it
 // dumps the call as raw JSON text instead of a structured tool_calls

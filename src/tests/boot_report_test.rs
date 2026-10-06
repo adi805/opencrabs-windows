@@ -24,7 +24,7 @@ fn an_empty_boot_still_says_so() {
     let _g = guard();
     assert_eq!(
         summary_line(),
-        "[boot] interrupted=0 resumed=[] delivered=0 failed=0"
+        "[boot] interrupted=0 resumed=[] delivered=0 failed=0 parked=0"
     );
 }
 
@@ -47,6 +47,21 @@ fn duplicate_rows_count_as_one_session_but_every_resume_counts() {
     assert!(line.contains(&uuid(2).to_string()), "line was: {line}");
     assert!(line.contains("delivered=1"), "line was: {line}");
     assert!(line.contains("failed=1"), "line was: {line}");
+}
+
+#[test]
+fn a_handed_off_answer_is_parked_not_delivered() {
+    let _g = guard();
+    // #1952: a resumed answer routed to the parking lane has reached no
+    // surface. Counting it delivered is the exact lie that let the audit's
+    // silent drops hide behind a green `delivered` number.
+    record_interrupted(uuid(3));
+    record_resumed(uuid(3));
+    record_parked();
+    let line = summary_line();
+    assert!(line.contains("delivered=0"), "line was: {line}");
+    assert!(line.contains("failed=0"), "line was: {line}");
+    assert!(line.contains("parked=1"), "line was: {line}");
 }
 
 #[test]

@@ -6,7 +6,7 @@
 
 pub use crate::tui::render::palette::{dim, muted, title_style};
 
-use ratatui::style::{Color, Style};
+use ratatui::style::Color;
 
 use crate::tui::render::theme::{self, Role};
 
@@ -65,10 +65,4 @@ pub fn border_schedule_focus() -> Color {
 /// Analytics panel focus accent (green, from the analytics dashboard palette).
 pub fn border_analytics_focus() -> Color {
     theme::role(Role::AnalyticsGreen)
-}
-
-// ── Help bar ────────────────────────────────────────────────────────────────
-
-pub fn help_bar_style() -> Style {
-    Style::default().fg(theme::role(Role::Gray))
 }

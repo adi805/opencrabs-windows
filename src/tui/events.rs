@@ -663,7 +663,13 @@ pub mod keys {
     pub fn is_deny(event: &KeyEvent) -> bool {
         matches!(
             event.code,
-            KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Char('n') | KeyCode::Char('N')
+            KeyCode::Char('d')
+                | KeyCode::Char('D')
+                | KeyCode::Char('n')
+                | KeyCode::Char('N')
+                // `r` — reject synonym the shared footer advertises
+                // (#1775); same semantics as D, no modifier combos.
+                | KeyCode::Char('r')
         ) && event.modifiers.is_empty()
     }
 

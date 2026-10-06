@@ -1325,7 +1325,7 @@ impl AgentService {
             None
         };
 
-        // Streaming leak flag (fork #66, ex-upstream adolfousier/opencrabs#1260):
+        // Streaming leak flag (fork #66, ex-upstream opencrabs/opencrabs#1260):
         // text was already emitted to display as deltas, so there is no
         // retro-strip here — the flag lets the tool loop attempt one
         // corrective retry and otherwise fail clean instead of accepting

@@ -136,7 +136,13 @@ jobs:
     # release unnoticed.
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    # 75, not 40: a cold macOS --all-features build measured 39m53s of
+    # compile+link on this fork (run 37417080584, 2026-10-06) and the 40m
+    # cap killed the job 1.3s after cargo reported `Finished`, so the job
+    # never concluded and rust-cache never saved, so every retry was cold
+    # again and the PR could never go green. The Windows leg got the same
+    # treatment (40 -> 90) for the same reason; 75 stays under that ceiling.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -510,11 +516,13 @@ jobs:
     name: Test
     needs: [lint, audit]
     runs-on: ubuntu-latest
-    # 60: fork PRs run this on hosted runners at roughly 3x self-hosted
+    # 90: fork PRs run this on hosted runners at roughly 3x self-hosted
     # speed, and the 30 cap killed cold-cache fork runs twice (runs
     # 36078125556 and 36069934718, both cancelled at ~30 while green code
-    # waited). Warm hosted fits in 20; 60 is the cold-cache ceiling.
-    timeout-minutes: 60
+    # waited). Warm hosted fits in 20. The 60 cap then killed a cold fork run
+    # too: on run 37417080584 Test ran 59m11s and was still compiling when the
+    # run was superseded, so 90 is the cold-cache ceiling.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
 

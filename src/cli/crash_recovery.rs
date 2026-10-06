@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::utils::install::{InstallMethod, binary_name, platform_suffix};
 
-const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/adolfousier/opencrabs/releases";
+const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/opencrabs/opencrabs/releases";
 
 /// A single release entry from GitHub.
 #[derive(Debug)]

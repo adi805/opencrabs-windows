@@ -14,7 +14,7 @@ use crate::brain::tools::evolve::verify::{
 #[test]
 fn github_release_hosts_are_allowed() {
     assert!(is_allowed_download_host(
-        "https://github.com/adolfousier/opencrabs/releases/download/v0.5.0/opencrabs-v0.5.0-aarch64-apple-darwin.tar.gz"
+        "https://github.com/opencrabs/opencrabs/releases/download/v0.5.0/opencrabs-v0.5.0-aarch64-apple-darwin.tar.gz"
     ));
     assert!(is_allowed_download_host(
         "https://objects.githubusercontent.com/github-production-release-asset/x/y"
@@ -38,7 +38,7 @@ fn any_other_host_is_refused() {
 fn plaintext_http_is_refused() {
     // TLS is what authenticates the host; an http asset URL is not trusted.
     assert!(!is_allowed_download_host(
-        "http://github.com/adolfousier/opencrabs/releases/download/v0.5.0/x.tar.gz"
+        "http://github.com/opencrabs/opencrabs/releases/download/v0.5.0/x.tar.gz"
     ));
 }
 

@@ -92,6 +92,8 @@ pub enum Role {
     SurfaceCodeAlt, // palette::SURFACE_CODE_ALT
     Ink,            // palette::INK
     PurpleSoft,     // palette::PURPLE_SOFT
+    BorderModal,    // modal dialog borders (#1775): default TEAL_BRIGHT,
+                    // per-theme (presets use the theme's purple)
 }
 
 /// ANSI-256 palette: 43 u8 indices (16..=255) paralleling ThemeColors.
@@ -143,6 +145,7 @@ pub struct AnsiColors {
     pub surface_code_alt: u8,
     pub ink: u8,
     pub purple_soft: u8,
+    pub border_modal: u8,
     /// Canvas background, quantized. `None` when the theme declares no
     /// background (see [`ThemeColors::background`]).
     pub background: Option<u8>,
@@ -194,6 +197,9 @@ pub struct ThemeColors {
     pub surface_code_alt: Color,
     pub ink: Color,
     pub purple_soft: Color,
+    /// Modal dialog borders (#1775): distinct from panel borders so the
+    /// dialog edge pops against the background.
+    pub border_modal: Color,
     /// The canvas the whole UI is drawn on, when the theme declares one
     /// (#1634).
     ///
@@ -307,6 +313,7 @@ impl ThemeColors {
             Role::SurfaceCodeAlt => self.surface_code_alt,
             Role::Ink => self.ink,
             Role::PurpleSoft => self.purple_soft,
+            Role::BorderModal => self.border_modal,
         }
     }
 
@@ -357,6 +364,7 @@ impl ThemeColors {
             Role::SurfaceCodeAlt => Color::Indexed(self.ansi.surface_code_alt),
             Role::Ink => Color::Indexed(self.ansi.ink),
             Role::PurpleSoft => Color::Indexed(self.ansi.purple_soft),
+            Role::BorderModal => Color::Indexed(self.ansi.border_modal),
         }
     }
 }
@@ -417,6 +425,7 @@ pub static CRAB_DARK: Theme = Theme {
         surface_code_alt: palette::SURFACE_CODE_ALT,
         ink: palette::INK,
         purple_soft: palette::PURPLE_SOFT,
+        border_modal: palette::TEAL_BRIGHT,
         // No canvas: the default theme leaves the terminal's own
         // background showing, exactly as it did before #1634.
         background: None,
@@ -464,6 +473,7 @@ pub static CRAB_DARK: Theme = Theme {
             surface_code_alt: 236,
             ink: 234,
             purple_soft: 140,
+            border_modal: 73,
             background: None,
         },
     },

@@ -100,6 +100,10 @@ struct UserThemeFile {
     surface_code_alt: String,
     ink: String,
     purple_soft: String,
+    /// Modal dialog borders (#1775). Optional: absent falls back to
+    /// accent_teal, matching the built-in default.
+    #[serde(default)]
+    border_modal: Option<String>,
     /// Canvas background (#1634). Optional so every theme file written
     /// before the canvas existed stays valid: absent means the theme
     /// declares none and the terminal's own background shows through.
@@ -267,6 +271,11 @@ pub(crate) fn build_theme(stem: &str, text: &str) -> Result<Theme, String> {
     let surface_code_alt = hx!(surface_code_alt);
     let ink = hx!(ink);
     let purple_soft = hx!(purple_soft);
+    let border_modal = match f.border_modal.as_deref() {
+        Some(raw) => parse_hex(raw)
+            .ok_or_else(|| format!("border_modal: invalid hex {raw:?} (expected \"#RRGGBB\")"))?,
+        None => accent_teal, // #1775: absent = accent teal, like the default theme
+    };
     let background = match f.background.as_deref() {
         Some(raw) => Some(
             parse_hex(raw)
@@ -318,6 +327,7 @@ pub(crate) fn build_theme(stem: &str, text: &str) -> Result<Theme, String> {
         surface_code_alt: quant(surface_code_alt),
         ink: quant(ink),
         purple_soft: quant(purple_soft),
+        border_modal: quant(border_modal),
         background: background.map(quant),
     };
     let rgb = ThemeColors {
@@ -364,6 +374,7 @@ pub(crate) fn build_theme(stem: &str, text: &str) -> Result<Theme, String> {
         surface_code_alt,
         ink,
         purple_soft,
+        border_modal,
         background,
         ansi,
     };

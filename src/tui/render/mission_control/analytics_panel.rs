@@ -194,7 +194,8 @@ fn card_body(kind: CardKind, a: &McAnalytics, w: usize) -> Vec<Line<'static>> {
 }
 
 /// D/W/M/All filter tabs, active tab highlighted in the accent color (#900).
-/// A trailing hotkey hint keeps the global D/W/M/A keys discoverable.
+/// The hotkeys themselves live in the Mission Control footer table (#1775),
+/// so no trailing hint is needed here — the footer already says D/W/M/A.
 fn tabs_line(active: TimeWindow) -> Line<'static> {
     let tabs = [
         (TimeWindow::Day, "D"),
@@ -216,10 +217,6 @@ fn tabs_line(active: TimeWindow) -> Line<'static> {
         };
         spans.push(Span::styled(format!("[{label}]"), style));
     }
-    spans.push(Span::styled(
-        "  D/W/M/A to switch",
-        Style::default().fg(theme::text_dim()),
-    ));
     Line::from(spans)
 }
 
