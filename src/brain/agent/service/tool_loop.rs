@@ -6740,7 +6740,7 @@ impl AgentService {
                         cancel_token.as_ref(),
                         progress_callback.as_ref(),
                         assistant_db_msg.id,
-                        turn_id.as_deref(),
+                        turn_id,
                     )
                     .await;
                 if batch.successes > 0 {
@@ -6885,7 +6885,7 @@ impl AgentService {
                                 let effect_session_id = session_id.to_string();
                                 let effect_id =
                                     crate::brain::agent::service::effect_ledger::open_effect(
-                                        turn_id.as_deref(),
+                                        turn_id,
                                         &effect_msg_id,
                                         &effect_session_id,
                                         &tool_name,
@@ -7280,7 +7280,7 @@ impl AgentService {
                 let effect_msg_id = assistant_db_msg.id.to_string();
                 let effect_session_id = session_id.to_string();
                 let effect_id = crate::brain::agent::service::effect_ledger::open_effect(
-                    turn_id.as_deref(),
+                    turn_id,
                     &effect_msg_id,
                     &effect_session_id,
                     &tool_name,

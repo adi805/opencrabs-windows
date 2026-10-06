@@ -20,6 +20,7 @@
 use crate::db::Database;
 use crate::db::repository::ToolExecutionRepository;
 use std::path::Path;
+use uuid::Uuid;
 
 async fn make_db() -> Database {
     let db = Database::connect_in_memory().await.unwrap();
