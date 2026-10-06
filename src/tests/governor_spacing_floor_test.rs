@@ -48,9 +48,18 @@ fn recent_ring_counts_within_window_and_per_surface() {
     assert_eq!(r.count_within(now, Duration::from_secs(1)), 3);
     // Only the 400 ms sample falls inside a 150 ms window ending at 500 ms.
     assert_eq!(r.count_within(now, Duration::from_millis(150)), 1);
-    assert_eq!(r.count_surface(now, Duration::from_secs(1), governor::SURFACE_TYPING), 2);
-    assert_eq!(r.count_surface(now, Duration::from_secs(1), governor::SURFACE_EDITS), 1);
-    assert_eq!(r.count_surface(now, Duration::from_secs(1), governor::SURFACE_SENDS), 0);
+    assert_eq!(
+        r.count_surface(now, Duration::from_secs(1), governor::SURFACE_TYPING),
+        2
+    );
+    assert_eq!(
+        r.count_surface(now, Duration::from_secs(1), governor::SURFACE_EDITS),
+        1
+    );
+    assert_eq!(
+        r.count_surface(now, Duration::from_secs(1), governor::SURFACE_SENDS),
+        0
+    );
     // The gap is measured to the NEWEST sample of any surface.
     assert_eq!(r.gap_ms(now), Some(100));
 }
@@ -62,7 +71,10 @@ fn recent_ring_is_bounded_and_drops_the_oldest_sample() {
     // One typing sample first, then overflow the ring past its cap.
     r.push(t0, governor::SURFACE_TYPING);
     for i in 1..=governor::RECENT_CAP {
-        r.push(t0 + Duration::from_millis(i as u64), governor::SURFACE_EDITS);
+        r.push(
+            t0 + Duration::from_millis(i as u64),
+            governor::SURFACE_EDITS,
+        );
     }
     let now = t0 + Duration::from_secs(10);
     assert_eq!(
@@ -113,7 +125,10 @@ fn spacing_wait_is_zero_when_the_floor_is_disabled() {
     let mut r = governor::Recent::default();
     r.push(t0, governor::SURFACE_SENDS);
     // `spacing_floor_ms = 0` means "no floor", not "wait forever".
-    assert_eq!(governor::spacing_wait(&r, t0, Duration::ZERO), Duration::ZERO);
+    assert_eq!(
+        governor::spacing_wait(&r, t0, Duration::ZERO),
+        Duration::ZERO
+    );
 }
 
 #[test]
@@ -144,8 +159,7 @@ fn spacing_floor_defaults_to_one_second_and_the_template_still_parses() {
     let parsed: Config = toml::from_str(include_str!("../../config.toml.example"))
         .expect("embedded config.toml.example must still parse with the floor commented out");
     assert_eq!(
-        parsed.channels.telegram.rate_limiter.spacing_floor_ms,
-        1000,
+        parsed.channels.telegram.rate_limiter.spacing_floor_ms, 1000,
         "an ABSENT key must fall back to the default, not fail the parse"
     );
 }
@@ -165,10 +179,15 @@ fn summary_line_reports_spacing_drops_without_disturbing_earlier_groups() {
 
     assert!(line.contains("chat=-100123"), "{line}");
     assert!(
-        line.contains("dropped{clock=0,brain_preview=0,intermediary=0,status=0,typing=0,spacing=3}"),
+        line.contains(
+            "dropped{clock=0,brain_preview=0,intermediary=0,status=0,typing=0,spacing=3}"
+        ),
         "the floor counter rides the dropped group: {line}"
     );
-    assert!(line.contains("throttled_ms{typing=0,send=0,rich=0}"), "{line}");
+    assert!(
+        line.contains("throttled_ms{typing=0,send=0,rich=0}"),
+        "{line}"
+    );
     // No profile passed => no per-second block, so the cumulative groups keep
     // the exact shape the pinning test in governor_internals_test asserts.
     assert!(!line.contains("window{"), "{line}");
@@ -194,7 +213,10 @@ fn recent_profile_renders_windows_surfaces_and_gap() {
 
     let line = p.render();
     assert!(line.contains("window{1s=2,5s=2,60s=2}"), "{line}");
-    assert!(line.contains("by_surface{typing=1,edits=0,sends=0,rich=1}"), "{line}");
+    assert!(
+        line.contains("by_surface{typing=1,edits=0,sends=0,rich=1}"),
+        "{line}"
+    );
     assert!(line.contains("gap_ms=200"), "{line}");
 }
 
@@ -218,7 +240,10 @@ async fn recent_profile_renders_a_governed_peer() {
     let line = governor::recent_profile(Some(chat.0));
     assert!(line.contains(&format!("chat={}", chat.0)), "{line}");
     assert!(line.contains("window{1s=1,5s=1,60s=1}"), "{line}");
-    assert!(line.contains("by_surface{typing=1,edits=0,sends=0,rich=0}"), "{line}");
+    assert!(
+        line.contains("by_surface{typing=1,edits=0,sends=0,rich=0}"),
+        "{line}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +312,10 @@ async fn g2_floor_sheds_droppable_chrome_but_queues_finals() {
     );
 
     let snap = ts::snapshot(chat).expect("peer registered");
-    assert_eq!(snap.dropped_spacing, 1, "only the chrome edit is a floor drop");
+    assert_eq!(
+        snap.dropped_spacing, 1,
+        "only the chrome edit is a floor drop"
+    );
     assert_eq!(snap.queued_finals, 1, "the final is queued, never shed");
     assert_eq!(snap.edits_admitted, 0, "neither edit spent a bucket token");
 }

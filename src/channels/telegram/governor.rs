@@ -615,7 +615,9 @@ pub(crate) fn format_summary(
     }
     // The per-second block is appended LAST so the cumulative groups above
     // keep the exact shape their pinning test asserts.
-    let recent_block = recent.map(|p| format!(" {}", p.render())).unwrap_or_default();
+    let recent_block = recent
+        .map(|p| format!(" {}", p.render()))
+        .unwrap_or_default();
     Some(format!(
         "Telegram rate-limiter chat={chat_id}: \
          admitted{{typing={},edits={},sends={},rich={}}} \
@@ -655,12 +657,7 @@ async fn summary_loop() {
             map.iter()
                 .filter_map(|(chat_id, peer)| {
                     let profile = peer.recent.profile(gate_now());
-                    format_summary(
-                        *chat_id,
-                        &peer.counters,
-                        peer.finals.len(),
-                        Some(&profile),
-                    )
+                    format_summary(*chat_id, &peer.counters, peer.finals.len(), Some(&profile))
                 })
                 .collect()
         };

@@ -133,7 +133,6 @@ fn request_line_prefix_cannot_be_confused_with_a_landing_line() {
     assert!(!line.contains("Telegram send failed:"), "got: {line}");
 }
 
-
 // ---------------------------------------------------------------------------
 // Emitted half: the line must actually reach the log at INFO.
 // ---------------------------------------------------------------------------

@@ -96,7 +96,11 @@ fn ladder_order_drops_clock_first_and_final_never_drops() {
     let line = format_summary(-100123, &c, 2, None).expect("active peer must summarize");
     assert!(line.contains("chat=-100123"));
     assert!(line.contains("admitted{typing=12,edits=34,sends=5,rich=11}"));
-    assert!(line.contains("dropped{clock=1,brain_preview=2,intermediary=3,status=4,typing=6,spacing=0}"));
+    assert!(
+        line.contains(
+            "dropped{clock=1,brain_preview=2,intermediary=3,status=4,typing=6,spacing=0}"
+        )
+    );
     assert!(line.contains("finals{queued=7,superseded=8,delivered=9,failed=10,pending=2}"));
     assert!(line.contains("throttled_ms{typing=1500,send=2500,rich=3500}"));
 }
