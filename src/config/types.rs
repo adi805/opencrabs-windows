@@ -66,6 +66,10 @@ pub struct Config {
     #[serde(default, alias = "gateway")]
     pub a2a: A2aConfig,
 
+    /// Session surface (loopback HTTP/JSON for the Android client)
+    #[serde(default)]
+    pub session_surface: SessionSurfaceConfig,
+
     /// Image generation and vision configuration
     #[serde(default)]
     pub image: ImageConfig,
@@ -355,6 +359,57 @@ impl Default for A2aConfig {
             port: default_a2a_port(),
             allowed_origins: vec![],
             advertise_url: None,
+            api_key: None,
+        }
+    }
+}
+
+/// Session surface configuration (PRD Feature 4, FR-006).
+///
+/// The loopback HTTP/JSON surface the Android client talks to: session list,
+/// transcript, idempotent submit, and an event stream. Disabled by default, so
+/// nothing listens until an operator turns it on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSurfaceConfig {
+    /// Whether the session surface is enabled (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Bind address (default: "127.0.0.1")
+    #[serde(default = "default_surface_bind")]
+    pub bind: String,
+
+    /// Listen port (default: 18792)
+    #[serde(default = "default_surface_port")]
+    pub port: u16,
+
+    /// Allowed CORS origins — must be set explicitly, no cross-origin requests
+    /// allowed by default
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+
+    /// Bearer token every request must carry. The surface can run the agent
+    /// with tools, so a non-loopback bind with no token is refused at startup
+    /// rather than started open (#1473).
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+fn default_surface_bind() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_surface_port() -> u16 {
+    18792
+}
+
+impl Default for SessionSurfaceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: default_surface_bind(),
+            port: default_surface_port(),
+            allowed_origins: vec![],
             api_key: None,
         }
     }
@@ -3212,6 +3267,7 @@ impl Default for Config {
             agent: AgentConfig::default(),
             daemon: DaemonConfig::default(),
             a2a: A2aConfig::default(),
+            session_surface: SessionSurfaceConfig::default(),
             image: ImageConfig::default(),
             cron: CronConfig::default(),
             memory: MemoryConfig::default(),

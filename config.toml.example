@@ -792,6 +792,22 @@ port = 18790            # A2A gateway port
 # api_key = "your-secret-key"
 
 # ========================================
+# Session Surface (loopback HTTP/JSON for the Android client)
+# ========================================
+# Read-only transcript plus an idempotent submit and an SSE event stream.
+# Disabled by default, so nothing listens until you turn it on.
+[session_surface]
+enabled = false
+bind = "127.0.0.1"      # Loopback only. A non-loopback bind with no api_key is refused at startup.
+port = 18792             # Session surface port
+# CORS allowed origins (empty = no cross-origin requests allowed)
+# allowed_origins = ["http://localhost:3000"]
+# Bearer token every request must carry. The surface can run the agent with
+# tools, so a non-loopback bind without a token is refused at startup (#1473).
+# Can also be set in keys.toml under [session_surface] api_key = "..."
+# api_key = "your-secret-key"
+
+# ========================================
 # Web Search Providers (default to free Duck Duck Go, no need additional web search provider)
 # ========================================
 
