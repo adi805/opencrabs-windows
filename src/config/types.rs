@@ -3267,6 +3267,7 @@ impl Default for Config {
             agent: AgentConfig::default(),
             daemon: DaemonConfig::default(),
             a2a: A2aConfig::default(),
+            session_surface: SessionSurfaceConfig::default(),
             image: ImageConfig::default(),
             cron: CronConfig::default(),
             memory: MemoryConfig::default(),
