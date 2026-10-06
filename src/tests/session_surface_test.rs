@@ -156,3 +156,111 @@ async fn a_correct_token_reaches_the_handler() {
     // Reached the handler and listed sessions (none in a fresh DB).
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+// ── FR-004: the submit path is idempotent on requestId ─────────────────────
+//
+// Milestone 2 part (c) shipped the storage contract with tests but had no
+// production caller. This handler is that caller, so the idempotency claim is
+// only real if it holds at the HTTP boundary and not just in the repository.
+
+fn submit_request(session: &str, request_id: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/surface/sessions/{session}/submit"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "request_id": request_id,
+                "input": "hello from the test",
+                "model": null,
+            })
+            .to_string(),
+        ))
+        .expect("request")
+}
+
+/// `created` is the flag the handler uses to decide whether to spawn a run, so
+/// reading it is how a test counts runs without watching a task spawn.
+async fn created_flag(response: axum::response::Response) -> bool {
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    json["created"].as_bool().expect("created is a bool")
+}
+
+async fn submission_rows(pool: crate::db::Pool, session: &str) -> usize {
+    crate::db::repository::submission::SubmissionRepository::new(pool)
+        .list_for_session(session)
+        .await
+        .expect("list submissions")
+        .len()
+}
+
+#[tokio::test]
+async fn a_replayed_request_id_returns_the_same_submission_and_owns_one_run() {
+    let state = test_state_with_token(Some("secret")).await;
+    let pool = state.pool.clone();
+    let app = build_router(state, &[]);
+    let session = uuid::Uuid::new_v4().to_string();
+
+    let first = app
+        .clone()
+        .oneshot(submit_request(&session, "req-replay", "secret"))
+        .await
+        .expect("first response");
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    assert!(
+        created_flag(first).await,
+        "the first submit is the claim that owns the run"
+    );
+
+    let second = app
+        .oneshot(submit_request(&session, "req-replay", "secret"))
+        .await
+        .expect("second response");
+    assert_eq!(second.status(), StatusCode::ACCEPTED);
+    assert!(
+        !created_flag(second).await,
+        "a replay must not own a second run: created=false is what stops the spawn"
+    );
+
+    assert_eq!(
+        submission_rows(pool, &session).await,
+        1,
+        "one requestId is one row, however many times it is submitted"
+    );
+}
+
+#[tokio::test]
+async fn two_parallel_submits_of_one_request_id_produce_exactly_one_row() {
+    let state = test_state_with_token(Some("secret")).await;
+    let pool = state.pool.clone();
+    let app = build_router(state, &[]);
+    let session = uuid::Uuid::new_v4().to_string();
+
+    let a = app
+        .clone()
+        .oneshot(submit_request(&session, "req-parallel", "secret"));
+    let b = app
+        .clone()
+        .oneshot(submit_request(&session, "req-parallel", "secret"));
+    let (a, b) = tokio::join!(a, b);
+    let (a, b) = (a.expect("a response"), b.expect("b response"));
+    assert_eq!(a.status(), StatusCode::ACCEPTED);
+    assert_eq!(b.status(), StatusCode::ACCEPTED);
+
+    let created = [created_flag(a).await, created_flag(b).await];
+    assert_eq!(
+        created.iter().filter(|c| **c).count(),
+        1,
+        "exactly one of the two racing submits may own the run: {created:?}"
+    );
+
+    assert_eq!(
+        submission_rows(pool, &session).await,
+        1,
+        "two parallel submits of one requestId is still one row"
+    );
+}
