@@ -58,15 +58,31 @@ echo "apk      : $APK ($(stat -c%s "$APK" 2>/dev/null || echo '?') bytes)"
 # rootable. Root is how the config seed below reaches the app's private data
 # dir without adding android:debuggable to the shipped manifest.
 say "root"
+# adb root races device registration. The emulator can report boot complete
+# while adbd still refuses commands on this serial, and a single-shot call then
+# dies with "device not found". That happened on run 37541308719: root was
+# reported unavailable, the seed was skipped, and the two surface checks failed
+# for a reason that lived entirely in this harness. So retry until the shell
+# answers as uid 0, and decide from `id -u` rather than adb's own wording,
+# which differs between platform-tools versions.
 ROOTED=0
-adb root > "$OUT/adb-root.txt" 2>&1 || true
+for _ in $(seq 1 30); do
+  adb root > "$OUT/adb-root.txt" 2>&1 || true
+  if [ "$(adb shell id -u 2>/dev/null | tr -d '\r')" = "0" ]; then
+    ROOTED=1
+    adb wait-for-device
+    break
+  fi
+  sleep 2
+done
 cat "$OUT/adb-root.txt"
-if grep -qiE 'restarting adbd as root|already running as root' "$OUT/adb-root.txt"; then
-  ROOTED=1
-  adb wait-for-device
-  pass "adb root"
+if [ "$ROOTED" = "1" ]; then
+  pass "adb root (shell uid 0)"
 else
-  echo "WARN: adb root unavailable, the surface config cannot be seeded"
+  # Counted as a failure, not a warning: without root the seed cannot be
+  # written, the surface is never enabled, and the surface checks below would
+  # report a failure that belongs to this script rather than to Android.
+  fail "adb root unavailable after 60s, the surface config cannot be seeded"
 fi
 
 # --------------------------------------------------------------- install ----
