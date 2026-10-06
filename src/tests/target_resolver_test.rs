@@ -14,7 +14,7 @@ use crate::channels::target_resolver::{
     ResolvedTarget, TargetDestination, TargetResolution, decode_segment, encode_segment,
     extract_session_target, resolve_target,
 };
-use crate::channels::telegram::session_resolve::GENERAL_TOPIC_ID;
+use crate::channels::GENERAL_TOPIC_ID;
 
 fn sess(id: Uuid, title: &str) -> crate::db::models::Session {
     let mut s = crate::db::models::Session {
