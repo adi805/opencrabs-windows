@@ -1079,7 +1079,14 @@ impl AgentService {
              You are creating a COMPREHENSIVE CONTINUATION DOCUMENT. After compaction, a fresh agent \
              instance will wake up with ONLY this summary as context. It must be able to continue \
              working immediately without asking the user what to do.\n\n\
-             Analyze the ENTIRE conversation chronologically and produce the following:\n\n\
+             Analyze the ENTIRE conversation chronologically and produce the following.\n\n\
+             OUTPUT ORDER — CRITICAL: write the sections below in THIS order, NOT in numeric \
+             order. The document can be CUT at the tail (the summariser may hit its output \
+             limit) and a cut removes whatever was written LAST — so the load-bearing blocks \
+             go FIRST: section 0 (obligation) -> the section 10 `context-manifest` fence -> \
+             section 7 (recovery playbook) -> section 8 (next step) -> sections 1-6 (the prose, \
+             compressed) -> section 9 (continuation message) LAST. Never place the manifest \
+             fence below the prose.\n\n\
              ## 0. IMMEDIATE TASK (CRITICAL — MOST IMPORTANT SECTION)\n\
              Look at the LAST 6-8 message pairs in the conversation. Extract EXACTLY:\n\
              - What was the user's LAST instruction or request? (quote their exact words)\n\
@@ -1102,6 +1109,57 @@ impl AgentService {
              Do NOT deviate to any other topic.\"\n\n\
              This is the MOST IMPORTANT section. If nothing else survives compaction, this must. \
              The fresh agent will read this section FIRST and act on it IMMEDIATELY.\n\n\
+             ## 10. Context Manifest (MANDATORY MACHINE-READABLE BLOCK)\n\
+             Write this block EARLY — immediately after section 0, ahead of all prose — NOT at the end: \
+             the document can be CUT at the tail, so this block must survive any cut. You MUST \
+             include a fenced YAML block labeled \
+             ` ```context-manifest `.\n\
+             This manifest directly instructs the harness which skills to keep active vs discard, \
+             and which lazy tools to pre-activate for turn 1.\n\n\
+             ### Current Context Inventory & Budgets:\n\
+             {}\n\n\
+             ### Manifest Rules:\n\
+             - `active_skills`: Skills that MUST remain active for pending work / ongoing tasks. \
+             You may specify the bare `<skill-slug>` (e.g. `opencrabs-dev`) or a specific in-skill document \
+             `<skill-slug>/<file.md>` (e.g. `opencrabs-dev/editor.md`, `opencrabs-dev/fleet-directives.md`) \
+             if only specific auxiliary procedures are needed.\n\
+             - `discard_skills`: Skills or specific auxiliary documents whose tasks are complete and should be pruned to save budget.\n\
+             - `required_tools`: Extended lazy tools (e.g. telegram_send, browser_navigate, cron_manage, pg_query) \
+             that the agent will need immediately on turn 1.\n\
+             - BUDGET: the retained set you list must fit {budget} tokens — {ratio:.0}% of the \
+             {window}-token context window. The harness MEASURES the rendered set once this compaction \
+             lands and, if it is still over budget, sheds it mechanically: auxiliary documents first, \
+             then whole skills, largest first, and never the last remaining entry. Shedding is what \
+             happens when this budget is ignored, so list only what the next turn actually needs.\n\n\
+             Format as YAML:\n\
+             ```context-manifest\n\
+             active_skills:\n\
+               - <skill-slug>\n\
+               - <skill-slug>/<file.md>\n\
+             discard_skills:\n\
+               - <skill-slug>\n\
+             required_tools:\n\
+               - <tool-name>\n\
+             ```\n\n\
+             ## 7. Recovery Playbook\n\
+             The fresh agent has these tools available to recover any missing context:\n\
+             - `session_search` — search past conversation messages in this session by keyword\n\
+             - `memory_search` — search daily memory logs and indexed knowledge\n\
+             - `load_brain_file` — reload brain files (SOUL.md, TOOLS.md, USER.md, etc.) for identity/preferences\n\
+             - `read_file` / `glob` / `grep` — read any file, search by pattern, search file contents\n\
+             - `bash` — run shell commands (git status, git log, git diff, etc.)\n\
+             - `ls` — list directory contents\n\
+             - `gh` — GitHub CLI for ALL GitHub operations (repos, releases, issues, PRs). \
+             NEVER use HTTP requests to GitHub — always use `gh` CLI.\n\n\
+             Write a SPECIFIC recovery plan: which tools to call with which arguments to get back \
+             up to speed. Example: \"Run `git status` and `git diff` to see uncommitted changes, \
+             then `read_file src/main.rs` to verify the current state of the fix, then \
+             `session_search 'vision fallback'` to recover details from the investigation.\"\n\
+             Be concrete — include actual file paths, search queries, and commands.\n\n\
+             ## 8. Next Step\n\
+             State the single most important thing the agent should do when it wakes up. \
+             If the task is clear, continue immediately. If ambiguous, ask the user ONE focused \
+             follow-up question.\n\n\
              ## 1. Chronological Analysis\n\
              Walk through every task the user requested, in order. For each task include:\n\
              - What was requested\n\
@@ -1136,25 +1194,6 @@ impl AgentService {
              - Tasks mentioned but not started\n\
              - Investigations in progress\n\
              - Next steps the user expects\n\n\
-             ## 7. Recovery Playbook\n\
-             The fresh agent has these tools available to recover any missing context:\n\
-             - `session_search` — search past conversation messages in this session by keyword\n\
-             - `memory_search` — search daily memory logs and indexed knowledge\n\
-             - `load_brain_file` — reload brain files (SOUL.md, TOOLS.md, USER.md, etc.) for identity/preferences\n\
-             - `read_file` / `glob` / `grep` — read any file, search by pattern, search file contents\n\
-             - `bash` — run shell commands (git status, git log, git diff, etc.)\n\
-             - `ls` — list directory contents\n\
-             - `gh` — GitHub CLI for ALL GitHub operations (repos, releases, issues, PRs). \
-             NEVER use HTTP requests to GitHub — always use `gh` CLI.\n\n\
-             Write a SPECIFIC recovery plan: which tools to call with which arguments to get back \
-             up to speed. Example: \"Run `git status` and `git diff` to see uncommitted changes, \
-             then `read_file src/main.rs` to verify the current state of the fix, then \
-             `session_search 'vision fallback'` to recover details from the investigation.\"\n\
-             Be concrete — include actual file paths, search queries, and commands.\n\n\
-             ## 8. Next Step\n\
-             State the single most important thing the agent should do when it wakes up. \
-             If the task is clear, continue immediately. If ambiguous, ask the user ONE focused \
-             follow-up question.\n\n\
              ## 9. Continuation Message\n\
              Write a SHORT, punchy message (2-4 sentences) that the agent will say to the user \
              right after waking up from compaction. This message MUST:\n\
