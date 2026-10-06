@@ -743,6 +743,7 @@ pub mod tui_panic_persistence_test;
 pub mod tui_plan_tests_test;
 pub mod tui_process_commands_test;
 pub mod tui_render_utils_test;
+pub mod tui_restore_test;
 pub mod tui_session_switch_state_test;
 pub mod tui_theme_background_test;
 pub mod tui_theme_cache_invalidation_test;

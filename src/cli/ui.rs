@@ -2089,9 +2089,10 @@ async fn cmd_chat_inner(
         // can see the error and pick an older version to roll back to.
         tracing::error!("TUI crashed: {}", e);
 
-        // Make sure raw mode is off and alternate screen is exited before showing dialog
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+        // #1964: full restore, not just raw mode + alt screen. The partial
+        // version left mouse capture enabled, so the crash dialog and shell
+        // were typed over with SGR escape garbage after every TUI death.
+        crate::tui::runner::force_restore_terminal();
 
         let error_msg = format!("{}", e);
         match super::crash_recovery::show_crash_recovery(&error_msg).await {
