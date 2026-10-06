@@ -169,25 +169,27 @@ async fn read_state(db: &Database) -> (Option<String>, Option<String>, i64, i64)
         .get()
         .await
         .unwrap()
-        .interact(move |conn| {
-            let id: Option<String> = conn
-                .query_row("SELECT id FROM turns", [], |r| r.get(0))
-                .optional()?;
-            let state: Option<String> = conn
-                .query_row("SELECT state FROM turns", [], |r| r.get(0))
-                .optional()?;
-            let pending: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM tool_executions WHERE committed_at IS NULL",
-                [],
-                |r| r.get(0),
-            )?;
-            let settled: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM tool_executions WHERE committed_at IS NOT NULL",
-                [],
-                |r| r.get(0),
-            )?;
-            Ok((id, state, pending, settled))
-        })
+        .interact(
+            move |conn| -> rusqlite::Result<(Option<String>, Option<String>, i64, i64)> {
+                let id: Option<String> = conn
+                    .query_row("SELECT id FROM turns", [], |r| r.get(0))
+                    .optional()?;
+                let state: Option<String> = conn
+                    .query_row("SELECT state FROM turns", [], |r| r.get(0))
+                    .optional()?;
+                let pending: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM tool_executions WHERE committed_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let settled: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM tool_executions WHERE committed_at IS NOT NULL",
+                    [],
+                    |r| r.get(0),
+                )?;
+                Ok((id, state, pending, settled))
+            },
+        )
         .await
         .unwrap()
         .unwrap()
