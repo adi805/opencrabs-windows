@@ -554,9 +554,13 @@ impl AgentService {
     ///
     /// #1649 frozen segments: delta-segment markers EXTEND the window (the
     /// earlier segments stay in force), so they are not boundaries. The
-    /// boundary is the LAST marker that does NOT carry the segment sentinel
-    /// — a full-window compaction, a hard truncate, a consolidation, the RSI
-    /// seal, a cron boundary or a user clear, all of which restart history.
+    /// boundary is the LAST marker whose banner does NOT carry the delta
+    /// sentinel — a full-window compaction, a hard truncate, a consolidation,
+    /// the RSI seal, a cron boundary or a user clear, all of which restart
+    /// history. The sentinel is matched ANCHORED at the row start, never as a
+    /// substring (#1928): a summary whose BODY quotes the sentinel is still a
+    /// boundary, or the reload would skip a real restart and anchor on the
+    /// newest segment instead.
     /// Result: `[boundary][segments…][tail]` reconstructs the live window
     /// exactly; a session with no segment markers reloads byte-identically
     /// to the classic last-marker behaviour.
@@ -576,16 +580,22 @@ impl AgentService {
     pub fn messages_from_last_compaction(
         all_messages: Vec<crate::db::models::Message>,
     ) -> Vec<crate::db::models::Message> {
-        use crate::brain::agent::context::SEGMENT_SENTINEL;
-        const COMPACTION_MARKER: &str = "[CONTEXT COMPACTION";
+        use crate::brain::agent::context::{COMPACTION_MARKER_PREFIX, SEGMENT_SENTINEL};
+
+        // The DELTA banner is the sentinel ANCHORED at the row start, not
+        // merely present anywhere in it (#1928). A full-window summary whose
+        // body quotes "DELTA SEGMENT." must still count as a boundary; a bare
+        // `contains` skipped it, so the reload anchored on the newest segment
+        // instead of the restart.
+        let delta_banner = format!("{COMPACTION_MARKER_PREFIX} — {SEGMENT_SENTINEL}");
 
         // Walk backward to the last marker that RESTARTS history. Segment
-        // markers (sentinel-tagged, #175 anchored prefix) are skipped: the
+        // markers (delta-bannered, #175 anchored prefix) are skipped: the
         // boundary they extend from is what the reload anchors on.
         let boundary_idx = all_messages.iter().rposition(|msg| {
             msg.role == "user"
-                && msg.content.starts_with(COMPACTION_MARKER)
-                && !msg.content.contains(SEGMENT_SENTINEL)
+                && msg.content.starts_with(COMPACTION_MARKER_PREFIX)
+                && !msg.content.starts_with(&delta_banner)
         });
 
         if let Some(idx) = boundary_idx {
