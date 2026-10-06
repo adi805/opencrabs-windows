@@ -67,7 +67,7 @@ impl SubmissionRepository {
             .get()
             .await
             .context("Failed to get connection")?
-            .interact(move |conn| {
+            .interact(move |conn| -> rusqlite::Result<(Submission, bool)> {
                 let tx = conn.transaction()?;
                 let created = tx.execute(
                     "INSERT OR IGNORE INTO submissions (request_id, session_id, state) \

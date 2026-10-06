@@ -35,7 +35,7 @@ impl SessionIdentityRepository {
             .get()
             .await
             .context("Failed to get connection")?
-            .interact(move |conn| {
+            .interact(move |conn| -> rusqlite::Result<String> {
                 let tx = conn.transaction()?;
                 tx.execute(
                     "INSERT OR IGNORE INTO session_identity (session_id, provider_session_id) \

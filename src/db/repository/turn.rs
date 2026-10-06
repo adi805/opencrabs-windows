@@ -127,7 +127,7 @@ impl TurnRepository {
             .get()
             .await
             .context("Failed to get connection")?
-            .interact(move |conn| {
+            .interact(move |conn| -> rusqlite::Result<Vec<TurnRow>> {
                 let tx = conn.transaction()?;
                 let rows: Vec<TurnRow> = {
                     let mut stmt = tx.prepare(

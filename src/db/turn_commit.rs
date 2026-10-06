@@ -62,7 +62,7 @@ pub async fn commit_turn(pool: &Pool, commit: TurnCommit<'_>) -> Result<()> {
         .get()
         .await
         .context("Failed to get connection")?
-        .interact(move |conn| {
+        .interact(move |conn| -> rusqlite::Result<bool> {
             let tx = conn.transaction()?;
 
             // 1. Finalise the assistant message's usage. COALESCE keeps any
