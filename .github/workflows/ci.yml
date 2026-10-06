@@ -516,11 +516,13 @@ jobs:
     name: Test
     needs: [lint, audit]
     runs-on: ubuntu-latest
-    # 60: fork PRs run this on hosted runners at roughly 3x self-hosted
+    # 90: fork PRs run this on hosted runners at roughly 3x self-hosted
     # speed, and the 30 cap killed cold-cache fork runs twice (runs
     # 36078125556 and 36069934718, both cancelled at ~30 while green code
-    # waited). Warm hosted fits in 20; 60 is the cold-cache ceiling.
-    timeout-minutes: 60
+    # waited). Warm hosted fits in 20. The 60 cap then killed a cold fork run
+    # too: on run 37417080584 Test ran 59m11s and was still compiling when the
+    # run was superseded, so 90 is the cold-cache ceiling.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
 
