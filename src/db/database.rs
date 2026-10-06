@@ -148,6 +148,11 @@ pub(crate) const MIGRATION_SQL: &[&str] = &[
     // CREATEs and the column adds are nullable, so the 648 MB live database
     // needs no backfill. Appended last per the list invariant.
     include_str!("../migrations/20261006000001_add_durability.sql"),
+    // Milestone 2 (fork), follow-up: `effect_key` was indexed non-uniquely, so
+    // the `INSERT OR IGNORE` in `record_intent` had no constraint to conflict
+    // on and a replayed effect opened a second row. Its own migration because
+    // the previous one has already run wherever the schema was applied.
+    include_str!("../migrations/20261006000002_unique_effect_key.sql"),
 ];
 
 pub(crate) fn build_migrations() -> Migrations<'static> {
@@ -242,9 +247,13 @@ pub struct Database {
 ///
 /// WAL mode, busy timeout, synchronous NORMAL, 64 MB page cache.
 fn apply_pragmas(conn: &rusqlite::Connection) -> std::result::Result<(), rusqlite::Error> {
+    // busy_timeout first. `journal_mode = WAL` needs a brief exclusive lock,
+    // and with the default timeout of 0 that switch fails immediately when any
+    // other connection holds the file. Setting the timeout first turns that
+    // fast-fail into a bounded wait (#55).
     conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA busy_timeout = 30000;
+        "PRAGMA busy_timeout = 30000;
+         PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
          PRAGMA cache_size = -65536;",
     )
@@ -295,6 +304,17 @@ impl Database {
             .builder(Runtime::Tokio1)
             .context("Failed to build pool config")?
             .max_size(16)
+            // Bound the ACQUIRE path. deadpool's default `Timeouts::new()` sets
+            // every timeout to `None`, so `pool.get()` waits forever when every
+            // slot is held: no error, no log, just a task that never returns.
+            // That is one of the mechanisms behind the `db_pre_migration_snapshot_test`
+            // stall, where four blocked tests consume all four runner threads and
+            // the whole suite goes silent for 71 minutes (#55). A visible timeout
+            // is a diagnosable failure; an unbounded wait is a mystery.
+            //
+            // 60s is deliberately far above the pool's normal hold time (a
+            // statement runs for milliseconds), so it only fires on a real stall.
+            .wait_timeout(Some(std::time::Duration::from_secs(60)))
             .post_create(Hook::async_fn(|conn, _| {
                 Box::pin(async move {
                     conn.interact(|conn| apply_pragmas(conn))
@@ -341,6 +361,11 @@ impl Database {
             .builder(Runtime::Tokio1)
             .context("Failed to build pool config")?
             .max_size(1)
+            // Bound the acquire path here too (#55). This pool is capped at a
+            // single connection, so an `interact` that never returns its slot
+            // makes every later `pool.get()` wait forever. That is the same
+            // unbounded wait as the file-backed pool above, with less headroom.
+            .wait_timeout(Some(std::time::Duration::from_secs(60)))
             .post_create(Hook::async_fn(|conn, _| {
                 Box::pin(async move {
                     conn.interact(|conn| apply_pragmas_in_memory(conn))

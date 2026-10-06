@@ -414,7 +414,7 @@ impl ToolExecutionRepository {
                     "SELECT id, turn_id, tool_name, status, effect_key, args_hash, \
                             result_preview, attempt, committed_at \
                      FROM tool_executions WHERE turn_id = ?1 AND status = 'pending' \
-                     ORDER BY created_at ASC",
+                     ORDER BY created_at ASC, rowid ASC",
                 )?
                 .query_map(params![tid], map_effect)?
                 .collect::<std::result::Result<Vec<_>, _>>()

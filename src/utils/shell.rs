@@ -1,8 +1,15 @@
 //! Platform shell selection for running a full command string.
 //!
 //! One source of truth for the (program, arg) pair that executes a
-//! shell-command string: `cmd /C` on Windows; on every other host a real
-//! `bash` where the host has one, and plain `sh` where it does not.
+//! shell-command string: a real `bash` where the host has one, `cmd /C` on
+//! Windows and plain `sh` elsewhere when it does not.
+//!
+//! Why Windows probes too (#7): the tool is NAMED `bash` on every platform and
+//! its description teaches bash idioms, so answering `cmd /C` unconditionally
+//! was the Windows mirror of #1704 — bash-only syntax fails with alien
+//! diagnostics instead of a clean "not supported on this shell". Git Bash is
+//! present on most Windows dev boxes but is not on `PATH`, so the candidates
+//! are probed by absolute path and the same behaviour test decides.
 //!
 //! Why bash and not `sh`: the tool that hands commands to this pair is
 //! NAMED `bash` and its description teaches bash idioms, so the model
@@ -32,7 +39,6 @@
 //! `cfg!(target_os = "windows")` — call these, so the platform decision
 //! cannot drift between sites again.
 
-#[cfg(not(windows))]
 use std::sync::OnceLock;
 
 /// Candidate paths for a real bash, tried in order.
@@ -50,6 +56,22 @@ pub(crate) const BASH_CANDIDATES: [&str; 4] = [
     "/opt/homebrew/bin/bash",
 ];
 
+/// Windows candidates, tried in order.
+///
+/// `bash.exe` first so a bash that IS on `PATH` (a CI image that added Git to
+/// it, WSL's `bash.exe`, a scoop/choco shim) wins without a path guess. The
+/// rest are the Git for Windows install roots; its `bin\bash.exe` is the
+/// launcher and `usr\bin\bash.exe` the real shell, and both answer the probe,
+/// so the order only decides which name gets logged.
+#[cfg(windows)]
+pub(crate) const BASH_CANDIDATES: [&str; 5] = [
+    "bash.exe",
+    r"C:\Program Files\Git\bin\bash.exe",
+    r"C:\Program Files (x86)\Git\bin\bash.exe",
+    r"C:\Program Files\Git\usr\bin\bash.exe",
+    r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
+];
+
 /// The question every candidate is asked before it is believed.
 ///
 /// `printf '%s' $'\t'` is the promise the tool makes to the model: ANSI-C
@@ -59,7 +81,6 @@ pub(crate) const BASH_CANDIDATES: [&str; 4] = [
 /// `BASH_VERSION` guard is there so a POSIX shell that grew ANSI-C quoting
 /// of its own (busybox ash can) is not mistaken for the rest of the bash
 /// surface the tool description teaches.
-#[cfg(not(windows))]
 const BASH_PROBE: &str = "test -n \"$BASH_VERSION\" && printf '%s' $'\\t'";
 
 /// Cached result of [`resolve_bash`]: the first candidate that behaved like
@@ -72,7 +93,6 @@ const BASH_PROBE: &str = "test -n \"$BASH_VERSION\" && printf '%s' $'\\t'";
 /// Crate-visible so the memoisation claim in the paragraph above is backed by
 /// a test (`the_probe_is_memoised_not_re_run_per_command`) instead of having
 /// to be taken on faith from a doc comment.
-#[cfg(not(windows))]
 pub(crate) static BASH: OnceLock<Option<&'static str>> = OnceLock::new();
 
 /// Does `candidate` actually behave like bash, or merely exist?
@@ -82,7 +102,6 @@ pub(crate) static BASH: OnceLock<Option<&'static str>> = OnceLock::new();
 /// candidate; nothing here trusts a filename. `output()` closes the child's
 /// stdin, so a candidate that reads (a login wrapper sourcing an rc) gets
 /// EOF rather than blocking the first command of the session.
-#[cfg(not(windows))]
 pub(crate) fn probes_as_bash(candidate: &str) -> bool {
     match std::process::Command::new(candidate)
         .arg("-c")
@@ -100,7 +119,6 @@ pub(crate) fn probes_as_bash(candidate: &str) -> bool {
 /// choose: a silent `sh` is what made #1704 a data-corruption bug instead of
 /// a bug report, and the one warn line is what turns the next occurrence
 /// into a two-second diagnosis.
-#[cfg(not(windows))]
 fn resolve_bash() -> Option<&'static str> {
     match BASH_CANDIDATES.into_iter().find(|c| probes_as_bash(c)) {
         Some(program) => {
@@ -108,12 +126,22 @@ fn resolve_bash() -> Option<&'static str> {
             Some(program)
         }
         None => {
-            tracing::warn!(
-                "no usable bash found on this host (checked {}); command strings fall back \
-                 to POSIX sh, where bash-only syntax ($'…', [[ ]], arrays, <<<, PIPESTATUS) \
-                 is NOT supported (#1704)",
-                BASH_CANDIDATES.join(", ")
-            );
+            if cfg!(target_os = "windows") {
+                tracing::warn!(
+                    "no bash found on this host (checked {}); command strings fall back to \
+                     cmd.exe, where the bash-only syntax ($'…', [[ ]], arrays) the tool \
+                     description teaches is NOT supported. Install Git for Windows to \
+                     restore it (#7)",
+                    BASH_CANDIDATES.join(", ")
+                );
+            } else {
+                tracing::warn!(
+                    "no usable bash found on this host (checked {}); command strings fall back \
+                     to POSIX sh, where bash-only syntax ($'…', [[ ]], arrays, <<<, PIPESTATUS) \
+                     is NOT supported (#1704)",
+                    BASH_CANDIDATES.join(", ")
+                );
+            }
             None
         }
     }
@@ -129,10 +157,32 @@ fn resolve_bash() -> Option<&'static str> {
 /// apart the way they did before this module existed.
 pub fn shell_pair() -> (&'static str, &'static str) {
     if cfg!(target_os = "windows") {
-        ("cmd", "/C")
+        windows_shell_pair()
     } else {
         unix_shell_pair()
     }
+}
+
+/// Windows half of [`shell_pair`].
+///
+/// Prefers a probed bash so the `bash` tool means what its name says; `cmd /C`
+/// stays as the explicit non-bash fallback for hosts without Git Bash, and the
+/// downgrade is logged once by [`resolve_bash`] rather than inferred from a
+/// confusing parse error.
+#[cfg(windows)]
+fn windows_shell_pair() -> (&'static str, &'static str) {
+    match BASH.get_or_init(resolve_bash) {
+        Some(program) => (*program, "-c"),
+        None => ("cmd", "/C"),
+    }
+}
+
+/// Never evaluated on Windows — `cfg!(target_os = "windows")` takes the other
+/// branch — but the call has to typecheck there. Same paired-`#[cfg]` shape as
+/// [`unix_shell_pair`] below.
+#[cfg(not(windows))]
+fn windows_shell_pair() -> (&'static str, &'static str) {
+    ("cmd", "/C")
 }
 
 /// Non-Windows half of [`shell_pair`].

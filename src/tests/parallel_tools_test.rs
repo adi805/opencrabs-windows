@@ -215,7 +215,7 @@ async fn parallel_batch_preserves_order_and_overlaps() {
     ]);
     let started = std::time::Instant::now();
     let out = service
-        .execute_tools_parallel(Uuid::new_v4(), uses, &ctx, None, None, Uuid::new_v4())
+        .execute_tools_parallel(Uuid::new_v4(), uses, &ctx, None, None, Uuid::new_v4(), None)
         .await;
     let elapsed = started.elapsed();
 
@@ -259,6 +259,7 @@ async fn pre_cancelled_token_aborts_the_batch() {
             Some(&token),
             None,
             Uuid::new_v4(),
+            None,
         )
         .await;
     assert!(out.cancelled);

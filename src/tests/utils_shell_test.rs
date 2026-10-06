@@ -11,9 +11,9 @@
 //! three literal characters `$`, `\`, `t` and exited 0 — corrupt data dressed
 //! as success, with no error to find.
 
-use crate::utils::shell::shell_pair;
 #[cfg(not(windows))]
-use crate::utils::shell::{BASH, BASH_CANDIDATES, probes_as_bash};
+use crate::utils::shell::BASH;
+use crate::utils::shell::{BASH_CANDIDATES, probes_as_bash, shell_pair};
 
 /// The pair must name a shell this platform can actually spawn, and must keep
 /// the platform flag. This replaced `shell_pair_matches_platform`, which
@@ -23,7 +23,14 @@ use crate::utils::shell::{BASH, BASH_CANDIDATES, probes_as_bash};
 fn shell_pair_names_a_spawnable_shell() {
     let (program, flag) = shell_pair();
     if cfg!(target_os = "windows") {
-        assert_eq!((program, flag), ("cmd", "/C"));
+        // #7: a probed bash wins when the host has one, because the tool is
+        // named `bash` and teaches bash idioms. `cmd /C` is the explicit
+        // non-bash fallback, not the default it used to be.
+        assert_eq!(flag, "-c", "Windows shell flag drifted");
+        assert!(
+            program == "cmd" || BASH_CANDIDATES.contains(&program),
+            "shell_pair returned {program:?}, which is neither cmd nor a candidate              bash — the dialect in force is now unpredictable"
+        );
     } else {
         assert_eq!(flag, "-c", "Unix shell flag drifted");
         #[cfg(not(windows))]
@@ -49,6 +56,26 @@ fn shell_pair_uses_sh_only_when_no_bash_exists() {
         None => assert_eq!(
             program, "sh",
             "no bash on this host, so the fallback must be plain sh, got {program:?}"
+        ),
+    }
+}
+
+/// #7, the Windows half of the same contract as the `sh` test above: a real
+/// bash is preferred, and `cmd /C` is only the answer when the host has none.
+#[cfg(windows)]
+#[test]
+fn shell_pair_uses_cmd_only_when_no_bash_exists() {
+    let (program, _) = shell_pair();
+    let available = BASH_CANDIDATES.iter().copied().find(|c| probes_as_bash(c));
+    match available {
+        Some(bash) => assert_eq!(
+            program, bash,
+            "a bash is installed at {bash:?} but command strings were routed to \
+             {program:?} (#7)"
+        ),
+        None => assert_eq!(
+            program, "cmd",
+            "no bash on this host, so the fallback must be cmd, got {program:?}"
         ),
     }
 }
