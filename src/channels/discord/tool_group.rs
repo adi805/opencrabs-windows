@@ -552,7 +552,9 @@ mod cap_tests {
                 .collect(),
             expanded,
             started_at: Instant::now(),
+            last_activity_at: Instant::now(),
             settled: Some(SettledStatus {
+                outcome: TurnOutcome::Finished,
                 elapsed: Duration::from_secs(3),
                 ctx: None,
             }),
