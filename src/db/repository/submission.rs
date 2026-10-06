@@ -150,7 +150,7 @@ impl SubmissionRepository {
             .interact(move |conn| {
                 conn.prepare(
                     "SELECT request_id, session_id, state, message_id, created_at, updated_at \
-                     FROM submissions WHERE session_id = ?1 ORDER BY created_at DESC",
+                     FROM submissions WHERE session_id = ?1 ORDER BY created_at DESC, rowid DESC",
                 )?
                 .query_map(params![sid], map_submission)?
                 .collect::<std::result::Result<Vec<_>, _>>()

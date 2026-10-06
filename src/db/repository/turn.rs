@@ -132,7 +132,7 @@ impl TurnRepository {
                 let rows: Vec<TurnRow> = {
                     let mut stmt = tx.prepare(
                         "SELECT id, session_id, state, started_at, committed_at, error \
-                         FROM turns WHERE state = ?1 ORDER BY started_at ASC",
+                         FROM turns WHERE state = ?1 ORDER BY started_at ASC, rowid ASC",
                     )?;
                     stmt.query_map(params![TURN_RUNNING], map_turn)?
                         .collect::<std::result::Result<Vec<_>, _>>()?
@@ -193,7 +193,7 @@ impl TurnRepository {
             .interact(move |conn| {
                 conn.query_row(
                     "SELECT id, session_id, state, started_at, committed_at, error \
-                     FROM turns WHERE session_id = ?1 ORDER BY started_at DESC LIMIT 1",
+                     FROM turns WHERE session_id = ?1 ORDER BY started_at DESC, rowid DESC LIMIT 1",
                     params![sid],
                     map_turn,
                 )

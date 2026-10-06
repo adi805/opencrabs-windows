@@ -102,6 +102,38 @@ async fn latest_turn_for_session_reads_the_newest() {
     assert_eq!(latest.state, TURN_RUNNING);
 }
 
+#[tokio::test]
+async fn latest_turn_breaks_a_same_second_tie_by_insertion_order() {
+    let db = make_db().await;
+    let repo = TurnRepository::new(db.pool().clone());
+    let sid = Uuid::new_v4();
+    let sid_sql = sid.to_string();
+    let first = Uuid::new_v4().to_string();
+    let second = Uuid::new_v4().to_string();
+
+    // `started_at` has one-second resolution, so two turns opened in the same
+    // second carry an identical stamp. Force that tie directly instead of
+    // hoping two fast `open` calls land in the same second: the newest row
+    // must still win, or a resumed session can pick a stale turn.
+    let conn = db.pool().get().await.expect("connection");
+    for id in [first.clone(), second.clone()] {
+        let sid_sql = sid_sql.clone();
+        conn.interact(move |c| {
+            c.execute(
+                "INSERT INTO turns (id, session_id, state, started_at) \
+                 VALUES (?1, ?2, 'running', 1700000000)",
+                rusqlite::params![id, sid_sql],
+            )
+        })
+        .await
+        .expect("interact should succeed")
+        .expect("insert should succeed");
+    }
+
+    let latest = repo.latest_for_session(sid).await.unwrap().expect("latest");
+    assert_eq!(latest.id, second, "the newest row wins a same-second tie");
+}
+
 // ── FR-004: idempotent submissions ──────────────────────────────────
 
 #[tokio::test]
