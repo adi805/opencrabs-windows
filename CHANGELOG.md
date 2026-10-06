@@ -303,7 +303,7 @@ An integration window: ACP server mode over stdio JSON-RPC so Zed and MonoCode d
 - `1947afcd` **telegram_send**: add create_topic and rename_topic actions (#161)
 - `4881e82c` **telegram**: dedup group history and prune reply quotes against live context (#133)
 - `530d7bbe` **plan**: mid-list task insertion and windowed show_plan
-- `9a0db943` **acp**: ACP server mode over stdio JSON-RPC for Zed/monocle (#1540)
+- `9a0db943` **acp**: ACP server mode over stdio JSON-RPC for Zed/MonoCode (#1540)
 - `8269270b` **tui**: log viewer in Mission Control, opened with L (#1528)
 - `16c7c9f4` **tui**: search the help screen with / (#1527)
 - `65773709` **channels/whatsapp**: try the native-flow path for interactive buttons (#1411)
