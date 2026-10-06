@@ -153,6 +153,29 @@ else
   pass "no loader or spawn error"
 fi
 
+# -------------------------------------------------------------- core log ----
+# The core's own log is the only place that records WHY the surface is or is
+# not up: the config it actually loaded, any bind refusal, and how far startup
+# got. Without it a failed run reports "surface did not answer" and nothing
+# else, which is how three emulator runs were spent guessing at the cause.
+# Dumped here, before the liveness probe, so the reason is on screen above the
+# verdict instead of buried in an artifact nobody opens.
+say "core home and log"
+adb shell "ls -la $HOME_DIR/.opencrabs" > "$OUT/core-home.txt" 2>&1 || true
+adb shell "ls -la $HOME_DIR/.opencrabs/logs" >> "$OUT/core-home.txt" 2>&1 || true
+cat "$OUT/core-home.txt"
+CORE_LOG="$(adb shell "ls -t $HOME_DIR/.opencrabs/logs/opencrabs.* 2>/dev/null | head -1" | tr -d '\r')"
+echo "core log: ${CORE_LOG:-<none>}"
+if [ -n "$CORE_LOG" ]; then
+  adb shell "cat $CORE_LOG" > "$OUT/core-log.txt" 2>&1 || true
+  echo "--- core log: config and surface lines ---"
+  grep -iE 'unknown keys|session_surface|surface|bind|listen|refus' "$OUT/core-log.txt" | tail -25 || true
+  echo "--- core log: last 30 lines ---"
+  tail -30 "$OUT/core-log.txt"
+else
+  echo "NOTE: no core log under $HOME_DIR/.opencrabs/logs - the core did not get far enough to write one"
+fi
+
 # ------------------------------------------------- surface liveness probe ----
 # Run before and after the RSS window. A single probe proves the socket opened;
 # two probes 60s apart are what distinguish "running" from "wedged".
@@ -210,7 +233,17 @@ if [ "$HEALTH_AFTER" = "1" ]; then
   pass "surface still answered at t=60s"
   cat "$OUT/health-after.json"
 else
-  fail "surface stopped answering within 60s (possible wedge)"
+  # Distinguish "never started" from "started then wedged". Both are failures
+  # but they are different bugs: a wedge means the surface answered once and
+  # then stopped (the #55 class of stall), while never answering at all means
+  # the surface was never reached or refused to bind, which the core log dumped
+  # above now explains. Calling the second one a "possible wedge" sends the
+  # reader hunting a deadlock that was never there.
+  if [ "$HEALTH_BEFORE" = "1" ]; then
+    fail "surface answered at t=0 then stopped within 60s (possible wedge)"
+  else
+    fail "surface never answered (see the core log above)"
+  fi
   cat "$OUT/curl-after.err" 2>/dev/null || true
 fi
 if [ -n "$CORE_PID_AFTER" ]; then
