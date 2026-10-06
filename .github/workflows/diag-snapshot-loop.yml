@@ -74,10 +74,15 @@ jobs:
           done_iters=0
           for i in $(seq 1 "$ITERATIONS"); do
             start=$(date -u +%H:%M:%S)
+            # `|| rc=$?` is load-bearing: Actions runs this step under `bash -e`,
+            # so a bare `timeout ...` that returns 124 aborts the script before
+            # the verdict is printed, and the stall reads as a plain step
+            # timeout with no attempt tail. The bound must be able to fire
+            # without killing the reporter.
+            rc=0
             timeout "$TIMEOUT_SECS" cargo test --locked --profile ci --all-features \
               --lib db_pre_migration_snapshot_test -- --test-threads=4 \
-              > /tmp/iter.log 2>&1
-            rc=$?
+              > /tmp/iter.log 2>&1 || rc=$?
             done_iters=$i
             if [ "$rc" -eq 0 ]; then
               echo "$start iter $i ok"
