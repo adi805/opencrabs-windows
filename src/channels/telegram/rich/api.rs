@@ -361,6 +361,7 @@ async fn post_rich(
                 "rich API",
                 std::time::Duration::from_secs(retry_after),
                 &format!(" (attempt {attempt}/{RICH_MAX_RETRIES})"),
+                Some(chat_id),
             )
             .await;
             continue;
@@ -648,6 +649,7 @@ async fn post_rich_multipart(
                 "rich API",
                 std::time::Duration::from_secs(retry_after),
                 &format!(" (attempt {attempt}/{RICH_MAX_RETRIES})"),
+                Some(chat_id),
             )
             .await;
             continue;

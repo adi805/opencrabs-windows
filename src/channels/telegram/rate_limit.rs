@@ -133,6 +133,18 @@ pub(crate) fn is_global_cooldown_active() -> bool {
     }
 }
 
+/// The raw process-wide 429 deadline, if one is set (#635).
+///
+/// Unlike [`is_global_cooldown_active`] this does NOT compare against the
+/// clock: it hands the instant out so the governor's single `Cooldown`
+/// accessor can decide "in force" once, against the same `now` it reads the
+/// per-chat pause with. Deciding twice — once here against `gate_now()`, once
+/// there — is how the global and per-chat halves drift apart by a call.
+pub(crate) fn global_cooldown_deadline() -> Option<Instant> {
+    let lock = GLOBAL_COOLDOWN.read().unwrap_or_else(|e| e.into_inner());
+    *lock
+}
+
 /// Whether a cosmetic reaction ack may hit the API right now (#1778).
 ///
 /// Ack reactions (the "👀" seen-marker) are pure cosmetics: during a global
@@ -183,8 +195,19 @@ pub(crate) fn reset_global_cooldown() {
 /// counter or message id into the line. The capped branch's wording is
 /// forensic, do not soften it: a window over the cap means the chat is
 /// flood-banned, not merely throttled (#1064).
-pub(crate) async fn wait_out(what: &str, window: Duration, extra: &str) {
-    record_global_429(window);
+///
+/// `chat` is the chat this 429 was learned on, when the caller knows it
+/// (#635). A 429 is never only about one chat: it is also evidence that THIS
+/// chat is throttled, which is what [`super::governor::note_429_pause`] arms
+/// so the same chat's own buckets stop handing out tokens for the window.
+/// `None` for callers with no chat in scope (the generic
+/// `send_retrying_rate_limit` ladder) — the process-wide deadline is still
+/// armed, only the per-chat half is skipped.
+pub(crate) async fn wait_out(what: &str, window: Duration, extra: &str, chat: Option<i64>) {
+    match chat {
+        Some(chat_id) => super::governor::note_429_pause(chat_id, window),
+        None => record_global_429(window),
+    }
     let (wait, capped) = clamp_inline_wait(window);
     if capped {
         tracing::warn!(

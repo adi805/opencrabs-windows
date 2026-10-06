@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use teloxide::types::ChatId;
 
 use crate::channels::telegram::governor::{
-    Bucket, Counters, EditClass, FinalDialect, ensure_bucket, format_summary,
-    is_permanent_edit_error,
+    Bucket, Counters, EditClass, FinalDialect, chat_paused_until, ensure_bucket, format_summary,
+    gate_now, is_permanent_edit_error, note_429_pause, test_support,
 };
 
 #[test]
@@ -57,6 +57,105 @@ fn ensure_bucket_rebuilds_on_shape_change_keeps_on_match() {
     assert!((fresh.tokens - 5.0).abs() < f64::EPSILON);
 }
 
+/// #635: a 429 pause freezes a bucket rather than emptying it — no refill for
+/// the window, and no burst handed back the instant it lifts.
+#[test]
+fn bucket_pause_freezes_refill_and_reports_the_remaining_window() {
+    let mut b = Bucket::new(3, 1.0);
+    let t0 = Instant::now();
+    for _ in 0..3 {
+        assert!(b.take(t0).is_ok());
+    }
+    // Empty, and the next token is a full refill interval away.
+    assert_eq!(b.take(t0).unwrap_err(), Duration::from_secs(1));
+
+    // Paused for 10s: the take now reports the whole pause, not the refill.
+    b.pause_arm(t0 + Duration::from_secs(10));
+    assert_eq!(b.take(t0).unwrap_err(), Duration::from_secs(10));
+
+    // Halfway through, the bucket has accrued nothing: a refill that ignored
+    // the pause would have handed back five tokens by now.
+    assert_eq!(
+        b.take(t0 + Duration::from_secs(5)).unwrap_err(),
+        Duration::from_secs(5)
+    );
+
+    // At the deadline the bucket is unfrozen but STILL EMPTY — the window is
+    // dead time, not a windfall to spend on expiry.
+    assert!(
+        b.take(t0 + Duration::from_secs(10)).is_err(),
+        "the pause must not refill the bucket the moment it expires"
+    );
+}
+
+/// #635: a pause is not part of a bucket's shape, so a capacity/rate rebuild
+/// (or replacing a `note_429_pause` placeholder) must carry it across.
+#[test]
+fn ensure_bucket_carries_a_live_pause_across_a_rebuild() {
+    let mut slot = None;
+    let t0 = Instant::now();
+    ensure_bucket(&mut slot, 10, 0.5).pause_arm(t0 + Duration::from_secs(30));
+    // Different shape: rebuilt fresh, but the pause is not shape state.
+    let rebuilt = ensure_bucket(&mut slot, 5, 1.0);
+    assert!((rebuilt.tokens - 5.0).abs() < f64::EPSILON);
+    assert_eq!(
+        rebuilt.take(t0).unwrap_err(),
+        Duration::from_secs(30),
+        "a rebuild must not hand a throttled chat its tokens back"
+    );
+}
+
+/// #635: `note_429_pause` arms BOTH halves — the process-wide deadline and the
+/// chat's own buckets — counts the arm, caps the window, and leaves DMs alone.
+#[tokio::test]
+async fn note_429_pause_arms_both_halves_caps_and_counts() {
+    let _guard = test_support::registry_guard().await;
+    let _cooldown = crate::tests::telegram_cooldown_lock::guard().await;
+    test_support::reset(0);
+    crate::channels::telegram::rate_limit::reset_global_cooldown();
+
+    let chat = ChatId(-100_777);
+    assert!(
+        !chat_paused_until(chat.0, gate_now()).is_any(),
+        "precondition: nothing holds this chat"
+    );
+
+    note_429_pause(chat.0, Duration::from_secs(9));
+    let cd = chat_paused_until(chat.0, gate_now());
+    assert!(cd.is_global(), "the process-wide deadline must be armed too");
+    assert!(cd.chat_until.is_some(), "the chat's own pause must be armed");
+    assert_eq!(
+        test_support::snapshot(chat)
+            .expect("note_429_pause creates the peer")
+            .pause_armed_429,
+        1,
+        "each armed pause is counted on the peer"
+    );
+
+    // A multi-hour window is capped: the pacer never parks a chat for hours.
+    // Read `now` ONCE — under the test clock `gate_now()` is real time plus an
+    // offset, so two reads straddle a microsecond and the exact comparison
+    // below would flake.
+    test_support::advance(60_000);
+    note_429_pause(chat.0, Duration::from_secs(3600));
+    let now = gate_now();
+    let capped = chat_paused_until(chat.0, now)
+        .chat_until
+        .expect("still paused")
+        .duration_since(now);
+    assert_eq!(capped, Duration::from_secs(47), "45s cap + 2s margin");
+
+    // DMs are ungoverned by construction: no peer state is created for them.
+    note_429_pause(777, Duration::from_secs(9));
+    assert!(test_support::snapshot(ChatId(777)).is_none());
+
+    // Once the capped window elapses the chat is free again.
+    test_support::advance(47_000);
+    assert!(!chat_paused_until(chat.0, gate_now()).chat_until.is_some());
+
+    crate::channels::telegram::rate_limit::reset_global_cooldown();
+}
+
 #[test]
 fn ladder_order_drops_clock_first_and_final_never_drops() {
     let ladder = [
@@ -92,6 +191,7 @@ fn ladder_order_drops_clock_first_and_final_never_drops() {
         throttled_send_ms: 2500,
         admitted_rich: 11,
         throttled_rich_ms: 3500,
+        pause_armed_429: 3,
     };
     let line = format_summary(-100123, &c, 2, None).expect("active peer must summarize");
     assert!(line.contains("chat=-100123"));
@@ -102,7 +202,21 @@ fn ladder_order_drops_clock_first_and_final_never_drops() {
         )
     );
     assert!(line.contains("finals{queued=7,superseded=8,delivered=9,failed=10,pending=2}"));
-    assert!(line.contains("throttled_ms{typing=1500,send=2500,rich=3500}"));
+    assert!(line.contains("throttled_ms{typing=1500,send=2500,ri}"));
+    assert!(line.contains("pause{pause_armed=3}"));
+}
+
+/// #635: a peer whose ONLY activity was a 429 pause still summarises — the
+/// pause counter is part of `all_zero`, so a chat that took a throttle is not
+/// silently omitted from the summary line.
+#[test]
+fn summary_reports_a_pause_only_peer() {
+    let c = Counters {
+        pause_armed_429: 1,
+        ..Counters::default()
+    };
+    let line = format_summary(-100123, &c, 0, None).expect("a paused peer must summarize");
+    assert!(line.contains("pause{pause_armed=1}"));
 }
 
 #[test]

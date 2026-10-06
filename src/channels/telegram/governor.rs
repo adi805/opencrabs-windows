@@ -575,6 +575,14 @@ pub(crate) struct Bucket {
     capacity: f64,
     refill_per_sec: f64,
     last_refill: Instant,
+    /// Deadline of a 429 pause armed on this bucket (#635), if any.
+    ///
+    /// A pause is not a spend: the bucket is FROZEN, not emptied. Refill stops
+    /// for the window and resumes where it left off, so a chat that took a 429
+    /// is not additionally punished with a cold bucket once the window closes.
+    /// Kept on the bucket rather than on [`Peer`] so all four gates honour it
+    /// through the one `take`/`next_token_in` path they already share.
+    pause_until: Option<Instant>,
 }
 
 impl Bucket {
@@ -584,10 +592,25 @@ impl Bucket {
             capacity: f64::from(capacity),
             refill_per_sec,
             last_refill: Instant::now(),
+            pause_until: None,
         }
     }
 
     fn refill(&mut self, now: Instant) {
+        if let Some(until) = self.pause_until {
+            if until > now {
+                // Frozen: a paused bucket accrues nothing, so the window is
+                // dead time rather than a windfall handed back on expiry.
+                return;
+            }
+            // The pause has just elapsed. Start the refill clock AT the
+            // deadline, not at the pre-pause `last_refill`: otherwise the
+            // whole window counts as elapsed and the bucket refills to
+            // capacity the instant it unfreezes, which is the burst the pause
+            // exists to prevent.
+            self.last_refill = until;
+            self.pause_until = None;
+        }
         let elapsed = now.saturating_duration_since(self.last_refill);
         self.last_refill = now;
         let gained = elapsed.as_secs_f64() * self.refill_per_sec;
@@ -605,14 +628,52 @@ impl Bucket {
         }
     }
 
-    /// Peek without consuming: when the next token becomes available.
+    /// Peek without consuming: when the next token becomes available — which,
+    /// while a 429 pause is in force, is when the pause lifts (#635). Folding
+    /// the pause in here rather than in `take` is what makes it reach all four
+    /// gates: `pace_send` and `pace_rich` decide on `next_token_in` and only
+    /// then call `take`, so a pause visible only to `take` would never stop
+    /// them.
     fn next_token_in(&mut self, now: Instant) -> Duration {
         self.refill(now);
-        if self.tokens >= 1.0 {
+        let pause = self.pause_remaining(now);
+        let refill = if self.tokens >= 1.0 {
             Duration::ZERO
         } else {
             Duration::from_secs_f64((1.0 - self.tokens) / self.refill_per_sec)
+        };
+        refill.max(pause)
+    }
+
+    /// Time left on the pause, without mutating it.
+    fn pause_remaining(&self, now: Instant) -> Duration {
+        match self.pause_until {
+            Some(until) if until > now => until.duration_since(now),
+            _ => Duration::ZERO,
         }
+    }
+
+    /// The pause in force for this bucket, clearing an expired one on read.
+    ///
+    /// The read side of the per-chat pause (#635): [`Peer::paused_until`] asks
+    /// every bucket and the peer reports the newest live deadline.
+    pub(crate) fn paused_until(&mut self, now: Instant) -> Option<Instant> {
+        match self.pause_until {
+            Some(until) if until > now => Some(until),
+            Some(_) => {
+                self.pause_until = None;
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// Arm a 429 pause on this bucket, never shortening a longer one.
+    pub(crate) fn pause_arm(&mut self, until: Instant) {
+        self.pause_until = Some(match self.pause_until {
+            Some(existing) if existing > until => existing,
+            _ => until,
+        });
     }
 }
 
@@ -632,7 +693,14 @@ pub(crate) fn ensure_bucket(
         None => true,
     };
     if stale {
-        *slot = Some(Bucket::new(capacity, refill_per_sec));
+        // A live 429 pause is not part of the bucket's SHAPE. Rebuilding for a
+        // capacity/rate change (or replacing a `note_429_pause` placeholder)
+        // must not hand the chat its tokens back while it is still being
+        // throttled (#635).
+        let carried = slot.as_ref().and_then(|b| b.pause_until);
+        let mut fresh = Bucket::new(capacity, refill_per_sec);
+        fresh.pause_until = carried;
+        *slot = Some(fresh);
     }
     slot.as_mut().expect("bucket was just built")
 }
@@ -867,6 +935,11 @@ pub(crate) struct Counters {
     pub(crate) throttled_typing_ms: u64,
     pub(crate) throttled_send_ms: u64,
     pub(crate) throttled_rich_ms: u64,
+    /// 429 pauses armed on this peer's buckets (#635). Counted on the peer
+    /// rather than in `rate_limit` because the pause is per-chat state: the
+    /// process-wide deadline is one number shared by every chat, while this
+    /// says how often THIS chat was the one that hit the wall.
+    pub(crate) pause_armed_429: u64,
 }
 
 impl Counters {
@@ -905,6 +978,7 @@ impl Counters {
             && self.failed_finals == 0
             && self.throttled_typing_ms == 0
             && self.throttled_send_ms == 0
+            && self.pause_armed_429 == 0
     }
 }
 
@@ -936,6 +1010,31 @@ struct Peer {
     recent: Recent,
 }
 
+impl Peer {
+    /// The newest 429 pause in force across this peer's surfaces, if any (#635).
+    ///
+    /// Every bucket carries the same deadline — [`note_429_pause`] arms them
+    /// all — so this is a max, not a merge: whichever bucket was armed for
+    /// longest speaks for the chat. Reading the pause out of the buckets is
+    /// what makes "is this chat paused" and "may this surface spend" the same
+    /// question instead of two that can disagree.
+    fn paused_until(&mut self, now: Instant) -> Option<Instant> {
+        let mut newest: Option<Instant> = None;
+        for slot in [
+            &mut self.typing,
+            &mut self.edits,
+            &mut self.sends_sec,
+            &mut self.sends_min,
+            &mut self.rich,
+        ] {
+            if let Some(until) = slot.as_mut().and_then(|b| b.paused_until(now)) {
+                newest = Some(newest.map_or(until, |n: Instant| n.max(until)));
+            }
+        }
+        newest
+    }
+}
+
 fn peers() -> &'static Mutex<HashMap<i64, Peer>> {
     static PEERS: OnceLock<Mutex<HashMap<i64, Peer>>> = OnceLock::new();
     PEERS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -949,6 +1048,113 @@ fn peers() -> &'static Mutex<HashMap<i64, Peer>> {
 /// recovery is written once instead of at each of the lock sites.
 fn peers_guard() -> MutexGuard<'static, HashMap<i64, Peer>> {
     peers().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Longest per-chat 429 pause any surface may be armed for (#635).
+///
+/// The process-wide deadline already caps its inline wait at
+/// [`super::rate_limit::MAX_INLINE_RATE_LIMIT_WAIT`]; this is the per-chat
+/// twin, and it is deliberately longer (45s against 30s) because the two answer
+/// different questions. The inline cap bounds how long ONE call parks the agent
+/// turn; a pause only stops the chat's own buckets from handing out tokens, and
+/// every caller still has its own hold budget above it. Past this the chat is
+/// flood-banned rather than throttled, and the reactive ladder — not the pacer
+/// — owns the outcome (#1064).
+const MAX_429_PAUSE: Duration = Duration::from_secs(45);
+
+/// Arm the per-chat 429 pause on every surface bucket (#635).
+///
+/// The process-wide cooldown answers "is the bot being throttled"; this answers
+/// "is THIS chat being throttled". Both are needed and neither replaces the
+/// other: the global deadline is one instant shared by every chat, so a single
+/// chat's 429 stalls the whole process, while a chat that keeps firing through
+/// its own window is what re-arms the penalty in the first place.
+///
+/// Always arms the global deadline too — one entry point for "a 429 was learned
+/// here", so a caller cannot record the chat and forget the process. DMs
+/// (positive ids) are skipped: they are ungoverned by construction, so a pause
+/// on one would be state no gate ever reads.
+///
+/// This does NOT set `forum_seen`. A 429 carries no certified topic id, and the
+/// #1708 contract is that only the session topic pipeline may certify a peer as
+/// governed. The consequence is bounded: a pause armed before the chat's first
+/// admitted call is inert until that call sets the flag, and every path that
+/// can learn a 429 has already been admitted at least once.
+pub(crate) fn note_429_pause(chat_id: i64, wait: Duration) {
+    super::rate_limit::record_global_429(wait);
+    if chat_id >= 0 {
+        return;
+    }
+    let wait = wait.min(MAX_429_PAUSE);
+    if wait.is_zero() {
+        return;
+    }
+    let until = gate_now() + wait + super::rate_limit::RETRY_MARGIN;
+    let mut map = peers_guard();
+    let peer = map.entry(chat_id).or_default();
+    // Buckets are built if absent: a chat can take its first 429 before any
+    // gate has admitted for it (a raw send path, a queued final), and the pause
+    // has to be in place by the time the gates do start admitting.
+    // `ensure_bucket` carries a live deadline across a shape rebuild, so a
+    // placeholder's pause survives the first real admission.
+    for slot in [
+        &mut peer.typing,
+        &mut peer.edits,
+        &mut peer.sends_sec,
+        &mut peer.sends_min,
+        &mut peer.rich,
+    ] {
+        let bucket = slot.get_or_insert_with(|| Bucket::new(1, 1.0));
+        bucket.pause_arm(until);
+    }
+    peer.counters.pause_armed_429 += 1;
+}
+
+/// The cooldown in force for one chat at one instant (#635).
+///
+/// Before this, "should this chat hold back right now" was answered in three
+/// places: the process-wide deadline, the per-chat pause armed by a 429 on the
+/// chat's own traffic, and the cosmetic fast-paths — which read the global flag
+/// directly and so could never see a per-chat pause. One struct, one read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Cooldown {
+    /// The process-wide 429 deadline, when one is in force.
+    pub(crate) global_until: Option<Instant>,
+    /// The newest per-chat pause, when one is in force.
+    pub(crate) chat_until: Option<Instant>,
+}
+
+impl Cooldown {
+    /// Whether the PROCESS-WIDE deadline is what holds this chat.
+    #[allow(dead_code)]
+    pub(crate) fn is_global(self) -> bool {
+        self.global_until.is_some()
+    }
+
+    /// Whether anything at all holds this chat — the process-wide deadline or
+    /// the chat's own pause.
+    pub(crate) fn is_any(self) -> bool {
+        self.global_until.is_some() || self.chat_until.is_some()
+    }
+}
+
+/// The one read of "is this chat cooled down right now" (#635).
+///
+/// `now` is passed in rather than taken here so both halves are judged against
+/// the SAME instant — the caller's, not two reads of a clock that can move
+/// between them.
+pub(crate) fn chat_paused_until(chat_id: i64, now: Instant) -> Cooldown {
+    let global_until = match super::rate_limit::global_cooldown_deadline() {
+        Some(deadline) if deadline > now => Some(deadline),
+        _ => None,
+    };
+    let chat_until = peers_guard()
+        .get_mut(&chat_id)
+        .and_then(|peer| peer.paused_until(now));
+    Cooldown {
+        global_until,
+        chat_until,
+    }
 }
 
 /// Format one peer's summary line. Pure so the field coverage is pinned by a
@@ -972,7 +1178,8 @@ pub(crate) fn format_summary(
          admitted{{typing={},edits={},sends={},rich={}}} \
          dropped{{clock={},brain_preview={},intermediary={},status={},typing={},spacing={}}} \
          finals{{queued={},superseded={},delivered={},failed={},pending={}}} \
-         throttled_ms{{typing={},send={},rich={}}}{recent_block}",
+         throttled_ms{{typing={},send={},rich={}}} \
+         pause{{pause_armed={}}}{recent_block}",
         c.admitted_typing,
         c.admitted_edits,
         c.admitted_sends,
@@ -991,6 +1198,7 @@ pub(crate) fn format_summary(
         c.throttled_typing_ms,
         c.throttled_send_ms,
         c.throttled_rich_ms,
+        c.pause_armed_429,
     ))
 }
 
@@ -1045,8 +1253,11 @@ fn ensure_summary_task() {
 /// still fits the hold budget sleeps for the refill window instead of
 /// retry-spinning into the same bucket, which is what amplified 429 storms.
 pub(crate) async fn admit_chat_action(chat: ChatId, thread_id: Option<i32>) -> bool {
-    // Fast-path: if a global 429 cooldown is active, drop cosmetic typing refreshes immediately
-    if super::rate_limit::is_global_cooldown_active() {
+    // Fast-path: a 429 in force — process-wide, or armed on this chat's own
+    // traffic — drops cosmetic typing refreshes immediately (#635). Read
+    // through the one `Cooldown` accessor so a per-chat pause counts here
+    // exactly as it does inside the engine.
+    if chat_paused_until(chat.0, gate_now()).is_any() {
         return false;
     }
 
@@ -1224,8 +1435,10 @@ pub(crate) async fn edit_admission_media_kb(
     reply_markup: Option<serde_json::Value>,
     dialect: FinalDialect,
 ) -> bool {
-    // Fast-path: if a global 429 cooldown is active, drop intermediate cosmetic edits immediately
-    if super::rate_limit::is_global_cooldown_active()
+    // Fast-path: a 429 in force — process-wide, or armed on this chat's own
+    // traffic — drops intermediate cosmetic edits immediately (#635), read
+    // through the same `Cooldown` accessor the typing fast-path uses.
+    if chat_paused_until(chat_id.0, gate_now()).is_any()
         && class != EditClass::Final
         && class != EditClass::Interactive
     {
@@ -1420,11 +1633,12 @@ async fn deliver_final(chat_id: i64, msg_id: i32, mut pending: PendingFinal) {
         Err(e) => super::rate_limit::parse_retry_after(e),
         Ok(()) => None,
     };
-    // A queued final that came back 429 is the same process-wide signal as any
-    // other: record it before the per-peer requeue maths, so other chats pause
-    // instead of walking into the same throttle.
+    // A queued final that came back 429 is the same signal as any other, and it
+    // is about THIS chat as much as the process: arm both before the per-peer
+    // requeue maths, so this chat's own buckets stop spending and other chats
+    // pause instead of walking into the same throttle (#635).
     if let Some(wait) = retry_after {
-        super::rate_limit::record_global_429(wait);
+        note_429_pause(chat_id, wait);
     }
     let verdict = {
         let mut map = peers_guard();
@@ -1854,6 +2068,7 @@ pub(crate) mod test_support {
         pub throttled_rich_ms: u64,
         pub throttled_send_ms: u64,
         pub finals_pending: usize,
+        pub pause_armed_429: u64,
     }
 
     /// Read [`Snap`] for `chat_id`; `None` when no gate has touched the peer.
@@ -1880,6 +2095,7 @@ pub(crate) mod test_support {
             throttled_rich_ms: p.counters.throttled_rich_ms,
             throttled_send_ms: p.counters.throttled_send_ms,
             finals_pending: p.finals.len(),
+            pause_armed_429: p.counters.pause_armed_429,
         })
     }
 }

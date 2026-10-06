@@ -359,10 +359,11 @@ pub(crate) async fn handle_edit_failure(
         return EditOutcome::Saved;
     }
     if let Some(wait) = super::rate_limit::parse_retry_after(error) {
-        // A 429 learned here is a process-wide fact, not a per-card one: the
-        // server is throttling this bot, and every other chat is about to hit
-        // the same wall. Suppressing card writes locally teaches them nothing.
-        super::rate_limit::record_global_429(wait);
+        // A 429 learned here is a process-wide fact AND a fact about this chat:
+        // the server is throttling this bot, and every other chat is about to
+        // hit the same wall — while THIS chat's own buckets must stop spending
+        // for the window (#635). `note_429_pause` arms both.
+        super::governor::note_429_pause(chat.0, wait);
         tracing::warn!(
             "Telegram plan card edit throttled for session {session_id}: {error} — \
              pausing card writes for {}s",
@@ -382,7 +383,10 @@ pub(crate) async fn handle_edit_failure(
 /// warns on other errors.
 pub(crate) async fn handle_create_failure(error: &str, state: &TelegramState, session_id: Uuid) {
     if let Some(wait) = super::rate_limit::parse_retry_after(error) {
-        // Same as the edit path: record it globally before suppressing locally.
+        // Global only, deliberately: this classifier is handed a session id and
+        // no chat, and a card CREATE is the first write for a session — the
+        // peer may not be governed yet, so a per-chat pause would have no gate
+        // to bind to. The edit path, which does know its chat, arms both (#635).
         super::rate_limit::record_global_429(wait);
         tracing::warn!(
             "Telegram plan card create throttled for session {session_id}: {error} — \
