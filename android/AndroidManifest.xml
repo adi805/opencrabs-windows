@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Minimal manifest for the Android client packaging proof.
+
+  Two attributes here are load-bearing, not decoration:
+
+  * android:extractNativeLibs="true" - the package manager must unpack
+    lib/arm64-v8a/*.so into the app's native library directory at install
+    time. Without extraction the files stay compressed inside the APK and
+    cannot be exec'd. This also means every native lib gets extracted, which
+    is why the APK carries exactly two of them.
+
+  * android:foregroundServiceType="specialUse" - Android 14 (API 34) requires
+    every foreground service to declare a type. The core is a long-running
+    local agent process, which is what specialUse is for; the property below
+    documents why for a store reviewer.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.opencrabs.mobile">
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:label="OpenCrabs"
+        android:allowBackup="false"
+        android:extractNativeLibs="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".CoreService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="local agent core process started by the user" />
+        </service>
+    </application>
+</manifest>
