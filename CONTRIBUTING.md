@@ -77,7 +77,7 @@ This lets you batch related fixes in one PR while keeping the issue tracker clea
 
 ### Issue Titles
 
-Issue titles use the same [Conventional Commits](https://www.conventionalcommits.org/) shape as commit messages: `<type>(<scope>): <what is wrong or wanted>`. The type is one of `fix`, `feat`, `docs`, `refactor`, `test`, `chore`, `ci`; the scope is the module or surface (`tui`, `provider`, `rsi`, `telegram`, `memory`).
+Issue titles use the same [Conventional Commits](https://www.conventionalcommits.org/) shape as commit messages: `<type>(<scope>): <what is wrong or wanted>`. The type is one of `fix`, `feat`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `revert`. There is no `chore`: dependency work is `build`, CI work is `ci`, formatting sweeps are `refactor`, and anything that fits no type gets a plain explanatory title instead. Mark breaking changes with `!` after the type (`feat!: remove /rebuild`) and describe what breaks in the body. The scope is the module or surface (`core`, `tui`, `provider`, `rsi`, `telegram`, `memory`).
 
 ```
 fix(tui): copy-to-clipboard notice shifts the chat history three rows
@@ -249,7 +249,7 @@ A test binary logs nowhere, so a leaking test silently rewrites the developer's 
 
 Repository-wide means the unit is the logical change, not the file. Every file a change touches lands in the same commit, so the tree builds and the tests pass at every commit and a revert or bisect can land on a single sha. Three unrelated edits in one file are three commits; one change spread across ten files is one commit. Each commit branches off `main` on a short-lived branch and lands as its own PR, or as one PR in a stack when later commits depend on earlier ones.
 
-- **Don't bundle** `cargo fmt` drift with feature work. Run fmt in its own commit (`chore: cargo fmt`).
+- **Don't bundle** `cargo fmt` drift with feature work. Run fmt in its own commit (`refactor: cargo fmt`).
 - **Don't bundle** rename / move / restructure with logic changes. The reviewer cannot tell what's mechanical and what's behavioural.
 - **Split test additions from production fixes only if the test would compile against the un-fixed code.** Otherwise commit them together so the test demonstrates the fix.
 - **Commit message body explains the WHY**, not the diff. The diff already shows what changed; the message should answer "why was that wrong?" and "what would break if we reverted this?".
