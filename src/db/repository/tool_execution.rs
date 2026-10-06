@@ -312,6 +312,7 @@ impl ToolExecutionRepository {
     /// Record a tool call's intent before its effect runs. `effect_key` is the
     /// idempotency key: resume treats a row already settled as landed and
     /// skips it.
+    #[allow(clippy::too_many_arguments)] // one INSERT: id, turn, message, session, tool, key, hash
     pub async fn record_intent(
         &self,
         id: &str,
