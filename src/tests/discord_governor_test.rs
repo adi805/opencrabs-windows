@@ -235,6 +235,65 @@ async fn zero_refill_rate_fails_open_instead_of_wedging() {
     );
 }
 
+/// FR-003: fail-open is decided PER CLASS. With only one budget at zero, the
+/// other class used to reach `(1 - tokens) / 0.0` (which is `inf`), and
+/// `Duration::from_secs_f64(inf)` panicked instead of admitting. The trigger is
+/// a spent bucket on the zero-rate class, so the burst has to run out first.
+#[tokio::test(start_paused = true)]
+async fn a_zero_create_budget_does_not_panic_the_create_class() {
+    let _guard = vclock::registry_guard().await;
+    vclock::reset(0);
+    rl_config!(
+        enabled: true,
+        create_burst: 1,
+        creates_per_5s: 0,
+        edit_burst: 1,
+        edits_per_5s: 5,
+        max_hold_secs: 1
+    );
+
+    // The second create finds the bucket spent. Before the fix that computed a
+    // wait of `1 / 0.0`; now the class fails open instead.
+    for _ in 0..3 {
+        assert_eq!(
+            governor::admit(CH, WriteClass::Create).await,
+            Admission::Admit
+        );
+    }
+    // A zero create budget must not leak into the bucket edits are charged to.
+    assert_eq!(
+        governor::admit(CH, WriteClass::Final).await,
+        Admission::Admit
+    );
+}
+
+/// The mirror: a zero EDIT budget must not panic the edit class (`Final` is
+/// charged there), and must not leak into creates.
+#[tokio::test(start_paused = true)]
+async fn a_zero_edit_budget_does_not_panic_the_edit_class() {
+    let _guard = vclock::registry_guard().await;
+    vclock::reset(0);
+    rl_config!(
+        enabled: true,
+        create_burst: 1,
+        creates_per_5s: 5,
+        edit_burst: 1,
+        edits_per_5s: 0,
+        max_hold_secs: 1
+    );
+
+    for _ in 0..3 {
+        assert_eq!(
+            governor::admit(CH, WriteClass::Final).await,
+            Admission::Admit
+        );
+    }
+    assert_eq!(
+        governor::admit(CH, WriteClass::Create).await,
+        Admission::Admit
+    );
+}
+
 #[test]
 fn parse_retry_after_reads_discord_payloads() {
     let payload = r#"{"message":"You are being rate limited.","retry_after":1.234,"global":false}"#;

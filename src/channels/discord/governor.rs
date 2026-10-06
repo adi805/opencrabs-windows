@@ -294,9 +294,17 @@ pub(crate) async fn admit(target: u64, class: WriteClass) -> Admission {
     if !lim.enabled {
         return Admission::Admit;
     }
-    // A non-positive refill rate can never produce a token: admit rather than
-    // hang. Fail open, never wedge.
-    if lim.create_refill_per_sec <= 0.0 && lim.edit_refill_per_sec <= 0.0 {
+    // A non-positive refill rate can never mint a token: admit rather than
+    // divide by zero in `Bucket::try_take`, where `(1 - tokens) / 0.0` is
+    // `inf` and `Duration::from_secs_f64(inf)` panics. The check is PER CLASS,
+    // because the bucket is charged per class: a zero create budget must not
+    // wedge edits, and a zero edit budget must not wedge creates. Fail open,
+    // never wedge.
+    let class_refill = match class {
+        WriteClass::Create => lim.create_refill_per_sec,
+        _ => lim.edit_refill_per_sec,
+    };
+    if class_refill <= 0.0 {
         return Admission::Admit;
     }
 
