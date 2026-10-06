@@ -144,7 +144,12 @@ jobs:
                   echo "=== stall dump: pid $pid at $(date -u +%H:%M:%S) ==="
                   echo "--- gdb: thread apply all bt ---"
                   if command -v gdb >/dev/null 2>&1; then
-                    timeout 60 gdb -p "$pid" -batch -ex 'thread apply all bt' 2>&1 | tail -250
+                    # `tail -250` cut the dump mid-backtrace, so the thread that
+                    # HOLDS the contended lock was dropped and the run could not
+                    # name it. Keep the whole dump: 7 threads with deep tokio
+                    # stacks is ~2k lines, and `info threads` makes the total
+                    # count explicit even if the cap is ever hit again.
+                    timeout 90 gdb -p "$pid" -batch -ex 'info threads' -ex 'thread apply all bt' 2>&1 | tail -3000
                   else
                     echo "(gdb not on PATH)"
                   fi
