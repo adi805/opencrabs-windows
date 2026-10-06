@@ -375,6 +375,39 @@ fn interrupted_message(row: &crate::db::BackgroundTaskRow) -> QueuedUserMessage 
 /// channels): there is nothing to flush TO, so parked reports keep waiting
 /// for a channel to claim their session instead of being handed to a
 /// destination that would discard them (#1206).
+/// Reconcile turns a dead process left in `running` (FR-002).
+///
+/// A `running` row at boot means the process that opened it never settled it,
+/// so the turn's writes never landed as one unit. Mark each `interrupted` so
+/// the session knows that turn did not complete, instead of waiting on it.
+/// Returns how many turns were reconciled.
+pub async fn reconcile_interrupted_turns() -> usize {
+    let Some(pool) = crate::db::global_pool() else {
+        return 0;
+    };
+    let repo = crate::db::repository::TurnRepository::new(pool.clone());
+    match repo.reconcile_running().await {
+        Ok(rows) => {
+            for row in &rows {
+                tracing::warn!(
+                    target: "background_task",
+                    "Turn {} for session {} was interrupted by a restart",
+                    row.id,
+                    row.session_id
+                );
+            }
+            rows.len()
+        }
+        Err(e) => {
+            tracing::error!(
+                target: "background_task",
+                "Failed to reconcile running turns: {e:#}"
+            );
+            0
+        }
+    }
+}
+
 pub async fn recover(local: Option<MessageEnqueueCallback>) -> usize {
     // Sub-agents first: they die with the process but their status files do
     // not, so every file still mid-flight is an agent that no longer exists.
@@ -405,6 +438,16 @@ pub async fn recover(local: Option<MessageEnqueueCallback>) -> usize {
 
     // Then detached commands, which keep their own table.
     reported += report_interrupted().await;
+
+    // Turns the previous process left `running` died with it: their writes
+    // never landed as one unit, so mark them interrupted (FR-002).
+    let reconciled_turns = reconcile_interrupted_turns().await;
+    if reconciled_turns > 0 {
+        tracing::warn!(
+            target: "background_task",
+            "Reconciled {reconciled_turns} turn(s) interrupted by a restart"
+        );
+    }
 
     // Finally the durable notify queue (#111): pushes parked in memory by a
     // process that died before their session claimed them. Re-offered AFTER
