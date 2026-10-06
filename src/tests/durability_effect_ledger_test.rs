@@ -233,3 +233,70 @@ async fn reconciling_a_turn_keeps_its_unknown_effects_visible() {
     );
     assert_eq!(unknown[0].tool_name, "git_push");
 }
+
+// ── the replay contract, end to end through the wiring ──────────────
+
+/// A replayed call must settle the row that EXISTS, not a fresh uuid.
+///
+/// `record_intent` is `INSERT OR IGNORE` against a unique `effect_key`, so the
+/// second open of one call leaves the original row in place. If the handler
+/// kept the uuid it generated for the replay, the settle would target a row
+/// that was never written, return 0 rows changed, and leave the effect that
+/// actually landed stuck `pending` forever: the ledger would then report an
+/// effect as unknown exactly when it is known, and a resume would re-issue a
+/// side effect that already happened.
+#[tokio::test]
+async fn a_replayed_open_returns_the_row_that_exists_so_its_settle_lands() {
+    use crate::brain::agent::service::effect_ledger::open_effect_with;
+    use crate::db::repository::ToolExecutionRepository;
+
+    let db = make_db().await;
+    let repo = ToolExecutionRepository::new(db.pool().clone());
+    let input = serde_json::json!({ "cmd": "git push" });
+
+    // First dispatch: the effect opens, then the process dies before settling.
+    let first = open_effect_with(
+        &repo, "turn-9", "msg-9", "sess-9", "git_push", "tu_abc", &input,
+    )
+    .await
+    .expect("the first open returns a row id");
+
+    // Resume: the provider re-issues the SAME tool-use id.
+    let replay = open_effect_with(
+        &repo, "turn-9", "msg-9", "sess-9", "git_push", "tu_abc", &input,
+    )
+    .await
+    .expect("the replayed open still returns a row id");
+
+    assert_eq!(
+        replay, first,
+        "the replay must resolve to the original row; a fresh uuid would settle nothing"
+    );
+
+    // The settle that follows the replayed open has to change the real row.
+    assert_eq!(
+        repo.settle(&replay, "success", Some("pushed"), Some(11))
+            .await
+            .unwrap(),
+        1,
+        "settling the resolved id must change exactly the row that exists"
+    );
+    let row = repo
+        .find_by_effect_key("turn-9:tu_abc")
+        .await
+        .unwrap()
+        .expect("the effect is readable by its key");
+    assert_eq!(row.status, "success");
+    assert_eq!(row.id, first, "the original row is the one that settled");
+
+    // A distinct call in the same turn is a distinct effect, not a replay.
+    let other = open_effect_with(
+        &repo, "turn-9", "msg-9", "sess-9", "git_push", "tu_xyz", &input,
+    )
+    .await
+    .expect("a different tool-use id opens its own row");
+    assert_ne!(
+        other, first,
+        "a different tool-use id must not collapse onto the first effect"
+    );
+}
