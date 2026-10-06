@@ -45,6 +45,11 @@ pub(crate) struct GroupState {
     /// later upsert. `elapsed` freezes at settle so toggling Expand later
     /// never grows the clock.
     pub settled: Option<SettledStatus>,
+    /// When the card last changed, stamped on every tool/note update
+    /// (FR-006). The live line compares it against the configured
+    /// silence threshold so a stalled turn says so instead of looking
+    /// frozen.
+    pub last_activity_at: Instant,
 }
 
 /// Frozen post-delivery chrome (#1841): the Discord twin of Slack's
@@ -53,8 +58,36 @@ pub(crate) struct GroupState {
 /// goes away in #1842, leaving the settled line as the single home).
 #[derive(Debug, Clone)]
 pub(crate) struct SettledStatus {
+    pub outcome: TurnOutcome,
     pub elapsed: Duration,
     pub ctx: Option<String>,
+}
+
+/// Terminal outcome of a turn, stamped on the group at settle (FR-005, #1880).
+/// The Discord twin of Slack's `TurnOutcome` and Telegram's `FlowOutcome`.
+///
+/// Without it the settled icon was derived from *tool* status, so a turn that
+/// timed out or was cancelled with no failing tool rendered a green check:
+/// a false success signal on the card the user is actually watching.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TurnOutcome {
+    Finished,
+    Failed,
+    TimedOut,
+    Cancelled,
+}
+
+impl TurnOutcome {
+    /// Icon + verb for the settled line. Mirrors Slack's `icon_verb` so the
+    /// three channels read the same.
+    fn icon_verb(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Finished => ("✅", "Finished"),
+            Self::Failed => ("❌", "Failed"),
+            Self::TimedOut => ("⏱", "Timed out"),
+            Self::Cancelled => ("❌", "Cancelled"),
+        }
+    }
 }
 
 /// Keep at most this many narration lines in the bubble (newest win).
@@ -99,7 +132,7 @@ fn entry_icon(status: Option<bool>) -> &'static str {
 /// `M:SS` elapsed clock (`H:MM:SS` past an hour), the Discord twin of
 /// Telegram's flow clock. The glyph lives with the caller so the live and
 /// settled segments can differ (`🕒` rolls, `⏱️` freezes at settle).
-fn clock(elapsed: Duration) -> String {
+fn format_clock(elapsed: Duration) -> String {
     let (h, m, s) = (
         elapsed.as_secs() / 3600,
         (elapsed.as_secs() % 3600) / 60,
@@ -110,6 +143,56 @@ fn clock(elapsed: Duration) -> String {
     } else {
         format!("{m}:{s:02}")
     }
+}
+
+/// Elapsed against the turn's thinking-loop budget (FR-011): `M:SS / M:SS`.
+/// The denominator is read from `[agent] thinking_loop_timeout_secs` at
+/// render time, never a literal (AC-013, AC-023). `None` (0 = guard
+/// disabled) keeps the bare elapsed clock.
+fn clock(elapsed: Duration, budget: Option<Duration>) -> String {
+    let elapsed = format_clock(elapsed);
+    match budget {
+        Some(b) => format!("{elapsed} / {}", format_clock(b)),
+        None => elapsed,
+    }
+}
+
+/// Thinking-loop budget for the clock denominator (FR-011), read from config.
+fn budget() -> Option<Duration> {
+    let secs = crate::config::Config::current()
+        .agent
+        .thinking_loop_timeout_secs;
+    (secs > 0).then(|| Duration::from_secs(secs))
+}
+
+/// Idle threshold for the "still working" line (FR-006), read from
+/// `[channels.discord.progress] silence_warning_secs`. `0` disables.
+fn silence_threshold() -> Option<Duration> {
+    let secs = crate::config::Config::current()
+        .channels
+        .discord
+        .progress
+        .silence_warning_secs;
+    (secs > 0).then(|| Duration::from_secs(secs))
+}
+
+/// The "still working" segment for a live turn that has gone quiet longer
+/// than the configured threshold (FR-006, AC-012). Names the last activity so
+/// a stalled card never reads as a hang. `None` while fresh, or once settled.
+fn silence_segment(group: &GroupState) -> Option<String> {
+    if group.settled.is_some() {
+        return None;
+    }
+    let threshold = silence_threshold()?;
+    let idle = group.last_activity_at.elapsed();
+    if idle < threshold {
+        return None;
+    }
+    let idle = format_clock(idle);
+    Some(match activity_segment(group) {
+        Some(activity) => format!("⚠️ still working · {activity} · no update for {idle}"),
+        None => format!("⚠️ still working · no update for {idle}"),
+    })
 }
 
 /// Longest activity segment in the live flow line (#1844). Display-only
@@ -179,22 +262,29 @@ fn summary_line(group: &GroupState) -> String {
     let counts = format!("**{n} tool call{}**", if n == 1 { "" } else { "s" });
     match &group.settled {
         Some(s) => {
-            // Settled chrome (#1841): frozen clock, ctx budget as the last
-            // word before it, mirroring the Telegram settled header order.
-            // A settled turn has no running tools: the icon reads final
-            // states only, ❌ when something failed, ✅ otherwise, never
-            // the live "N running" tail (an entry left statusless at
-            // settle is done, not running).
-            let (icon, tail) = if failed > 0 {
-                ("❌", format!(" · {failed} failed"))
+            // Settled chrome (#1841), outcome-honest since FR-005 (#1880):
+            // the icon and verb come from how the TURN ended, not from
+            // whether some tool happened to fail. A timeout or a cancel
+            // with all tools green used to render ✅ — a false success on
+            // the card the user is watching. The failure count stays as
+            // supporting detail, never as the primary signal.
+            let (icon, verb) = s.outcome.icon_verb();
+            let tail = if failed > 0 {
+                format!(" · {failed} failed")
             } else {
-                ("✅", String::new())
+                String::new()
             };
-            let mut line = format!("{icon} {counts}{tail}");
+            let mut line = format!("{icon} {verb} · {counts}{tail}");
+            // AC-010: a turn that did not finish cleanly must SAY so. The user
+            // is looking at a partial result and has no other signal that the
+            // work stopped early — the tool count alone cannot tell them.
+            if s.outcome != TurnOutcome::Finished {
+                line.push_str(" · result may be incomplete");
+            }
             if let Some(ctx) = &s.ctx {
                 line.push_str(&format!(" · {ctx}"));
             }
-            line.push_str(&format!(" · ⏱️ {}", clock(s.elapsed)));
+            line.push_str(&format!(" · ⏱️ {}", clock(s.elapsed, budget())));
             line
         }
         None => {
@@ -210,10 +300,14 @@ fn summary_line(group: &GroupState) -> String {
             } else {
                 ("✅", String::new())
             };
-            let clock = format!("🕒 {}", clock(group.started_at.elapsed()));
-            match activity_segment(group) {
+            let clock = format!("🕒 {}", clock(group.started_at.elapsed(), budget()));
+            let base = match activity_segment(group) {
                 Some(activity) => format!("{icon} {activity} · {counts}{tail} · {clock}"),
                 None => format!("{icon} {counts}{tail} · {clock}"),
+            };
+            match silence_segment(group) {
+                Some(silence) => format!("{base}\n{silence}"),
+                None => base,
             }
         }
     }
@@ -268,6 +362,18 @@ fn hard_clip(body: String) -> String {
     }
     let cut: String = body.chars().take(CONTENT_MAX_CHARS - 1).collect();
     format!("{cut}…")
+}
+
+/// Mechanical evidence footer for the turn's final answer (FR-007, #1880).
+///
+/// Built from the SAME `entries` the tool card renders, which are appended
+/// from `ProgressEvent::ToolStarted` — the tool loop's real executions. The
+/// model's prose never reaches this function, so the footer cannot claim a
+/// tool the turn did not run (NFR-003, AC-014/AC-015). Wording, dedup, and
+/// the cap live in [`crate::channels::evidence`], shared with Telegram so
+/// the two surfaces cannot drift (NFR-002).
+pub(crate) fn evidence_line(group: &GroupState) -> Option<String> {
+    crate::channels::evidence::evidence_line(group.entries.iter().map(|e| e.name.as_str()))
 }
 
 /// Message body for the group in its current display state.
@@ -370,6 +476,7 @@ impl DiscordState {
         let mut guard = self.tool_groups.lock().await;
         let (_, map) = &mut *guard;
         let group = map.get_mut(&message_id)?;
+        group.last_activity_at = Instant::now();
         group.notes.push(note);
         if group.notes.len() > NOTE_CAP {
             group.notes.remove(0);
@@ -377,14 +484,16 @@ impl DiscordState {
         Some(group.clone())
     }
 
-    /// Stamp the post-delivery status (#1841): freeze the clock at now and
-    /// record the ctx budget line for the settled chrome. A `None` ctx keeps
-    /// whatever a previous settle stamped, so a re-settle never clears the
-    /// budget. Returns the updated state, or None when the message has no
-    /// stored group (aged out of retention).
+    /// Stamp the post-delivery status (#1841, outcome-honest FR-005): freeze
+    /// the clock at now, record how the turn ENDED, and keep the ctx budget
+    /// line for the settled chrome. A `None` ctx keeps whatever a previous
+    /// settle stamped, so a re-settle never clears the budget. Returns the
+    /// updated state, or None when the message has no stored group (aged out
+    /// of retention).
     pub(crate) async fn settle_tool_group(
         &self,
         message_id: u64,
+        outcome: TurnOutcome,
         ctx: Option<String>,
     ) -> Option<GroupState> {
         let mut guard = self.tool_groups.lock().await;
@@ -392,6 +501,7 @@ impl DiscordState {
         let group = map.get_mut(&message_id)?;
         let prev_ctx = group.settled.as_ref().and_then(|s| s.ctx.clone());
         group.settled = Some(SettledStatus {
+            outcome,
             elapsed: group.started_at.elapsed(),
             ctx: ctx.or(prev_ctx),
         });

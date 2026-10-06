@@ -18,6 +18,8 @@ use serenity::model::application::ButtonStyle;
 use serenity::model::id::ChannelId;
 use uuid::Uuid;
 
+use super::writes::{self, Class};
+
 /// Callback-id prefix for a tapped follow-up suggestion: `followup:<id>:<idx>`.
 pub(crate) const FOLLOWUP_PREFIX: &str = "followup:";
 
@@ -71,14 +73,15 @@ pub(crate) async fn render_suggestions(
 
     state.register_select(followup_id, options).await;
 
-    if let Err(e) = ChannelId::new(channel_id)
-        .send_message(
-            http,
-            CreateMessage::new()
-                .content("\u{1f4a1} Suggested next:")
-                .components(rows),
-        )
-        .await
+    if let Err(e) = writes::send(
+        http,
+        ChannelId::new(channel_id),
+        CreateMessage::new()
+            .content("\u{1f4a1} Suggested next:")
+            .components(rows),
+        Class::Final,
+    )
+    .await
     {
         tracing::warn!("Discord suggest_options: send failed: {e}");
     }

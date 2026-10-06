@@ -5,6 +5,7 @@
 
 use super::DiscordState;
 use super::guard;
+use super::writes::{self, Class};
 use crate::brain::agent::AgentService;
 use crate::channels::group_history;
 use crate::config::{Config, RespondTo};
@@ -19,7 +20,7 @@ use std::time::Instant;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use serenity::builder::{CreateAttachment, CreateMessage};
+use serenity::builder::{CreateAttachment, CreateMessage, EditMessage};
 use serenity::http::Http;
 use serenity::model::channel::{Message, MessageFlags, MessageSnapshot};
 use serenity::model::id::ChannelId;
@@ -184,6 +185,12 @@ pub(super) fn spawn_flow_ticker(
             if born.elapsed() > FLOW_TICKER_CAP {
                 break;
             }
+            // Plan card (FR-008): advance the checklist on the same 4 s beat
+            // the flow group uses. The session is resolved from the channel so
+            // the ticker signature stays unchanged.
+            if let Some(sid) = dstate.session_owner_by_channel(channel.get()).await {
+                super::plan_card::refresh_plan_card(&http, channel, &dstate, sid).await;
+            }
             let Some(mid) = *group_mid.lock().await else {
                 // Group not born yet: the turn has not reached its first
                 // tool call. Keep waiting.
@@ -198,7 +205,7 @@ pub(super) fn spawn_flow_ticker(
             let edit = EditMessage::new()
                 .content(super::tool_group::render_content(&group))
                 .components(super::tool_group::render_components(&group, mid.get()));
-            if let Err(e) = channel.edit_message(&http, mid, edit).await {
+            if let Err(e) = writes::edit(&http, channel, mid, edit, Class::Edit).await {
                 tracing::warn!("Discord: flow ticker edit failed (mid={}): {e}", mid.get());
             }
             // Race guard: settle may have stamped and posted while this
@@ -209,7 +216,7 @@ pub(super) fn spawn_flow_ticker(
                     let edit = EditMessage::new()
                         .content(super::tool_group::render_content(&re))
                         .components(super::tool_group::render_components(&re, mid.get()));
-                    if let Err(e) = channel.edit_message(&http, mid, edit).await {
+                    if let Err(e) = writes::edit(&http, channel, mid, edit, Class::Edit).await {
                         tracing::warn!("Discord: flow ticker settle fixup failed: {e}");
                     }
                     break;
@@ -663,17 +670,17 @@ pub(crate) async fn handle_message(
             Ok(id) => id,
             Err(e) => {
                 tracing::error!("Discord: failed to resolve session: {e:#} (#442)");
-                if let Err(send_err) = msg
-                    .channel_id
-                    .say(
-                        &ctx.http,
-                        format!(
-                            "⚠️ Could not load this chat's session ({e}). Your history is \
+                if let Err(send_err) = writes::say(
+                    &ctx.http,
+                    msg.channel_id,
+                    format!(
+                        "⚠️ Could not load this chat's session ({e}). Your history is \
                              intact and this message was NOT processed. Try again, or send \
                              /new if you deliberately want a fresh session."
-                        ),
-                    )
-                    .await
+                    ),
+                    Class::Final,
+                )
+                .await
                 {
                     tracing::warn!(error = %send_err, "failed to send Discord session error message");
                 }
@@ -697,7 +704,14 @@ pub(crate) async fn handle_message(
     // applies to the next run, it does not drop current work (#266).
     if crate::utils::stop_intent::is_stop_command_or_intent(&msg.content) {
         discord_state.cancel_session(session_id).await;
-        if let Err(e) = msg.channel_id.say(&ctx.http, "Operation cancelled.").await {
+        if let Err(e) = writes::say(
+            &ctx.http,
+            msg.channel_id,
+            "Operation cancelled.",
+            Class::Final,
+        )
+        .await
+        {
             tracing::warn!(error = %e, "failed to send Discord message");
         }
         return;
@@ -724,7 +738,7 @@ pub(crate) async fn handle_message(
 
         // Handle simple text-response commands (Help, Usage, Evolve, Doctor, etc.)
         if let Some(reply) = commands::try_execute_text_command(&cmd).await {
-            if let Err(e) = msg.channel_id.say(&ctx.http, &reply).await {
+            if let Err(e) = writes::say(&ctx.http, msg.channel_id, &reply, Class::Final).await {
                 tracing::warn!(error = %e, "failed to send Discord message");
             }
             return;
@@ -776,7 +790,8 @@ pub(crate) async fn handle_message(
                 // Never silent (#1019): this IS the reply. A swallowed failure
                 // here is indistinguishable from the agent choosing not to
                 // answer, and the user has no way to tell or report it.
-                if let Err(e) = msg.channel_id.send_message(&ctx.http, builder).await {
+                if let Err(e) = writes::send(&ctx.http, msg.channel_id, builder, Class::Final).await
+                {
                     tracing::error!(
                         "Discord: reply with components failed in channel {}: {e}",
                         msg.channel_id
@@ -842,7 +857,9 @@ pub(crate) async fn handle_message(
                         let ctx_max = agent.context_limit_for_session(new_session.id);
                         let footer = crate::utils::format_ctx_footer(baseline, ctx_max, None);
                         let msg_text = format!("✅ New session started.\n\n{footer}");
-                        if let Err(e) = msg.channel_id.say(&ctx.http, &msg_text).await {
+                        if let Err(e) =
+                            writes::say(&ctx.http, msg.channel_id, &msg_text, Class::Final).await
+                        {
                             tracing::warn!(error = %e, "failed to send Discord message");
                         }
                         tracing::info!(
@@ -854,10 +871,13 @@ pub(crate) async fn handle_message(
                     }
                     Err(e) => {
                         tracing::error!("Discord: failed to create session: {}", e);
-                        if let Err(send_err) = msg
-                            .channel_id
-                            .say(&ctx.http, "Failed to create session.")
-                            .await
+                        if let Err(send_err) = writes::say(
+                            &ctx.http,
+                            msg.channel_id,
+                            "Failed to create session.",
+                            Class::Final,
+                        )
+                        .await
                         {
                             tracing::warn!(error = %send_err, "failed to send Discord session creation error");
                         }
@@ -899,7 +919,8 @@ pub(crate) async fn handle_message(
                 // Never silent (#1019): this IS the reply. A swallowed failure
                 // here is indistinguishable from the agent choosing not to
                 // answer, and the user has no way to tell or report it.
-                if let Err(e) = msg.channel_id.send_message(&ctx.http, builder).await {
+                if let Err(e) = writes::send(&ctx.http, msg.channel_id, builder, Class::Final).await
+                {
                     tracing::error!(
                         "Discord: reply with components failed in channel {}: {e}",
                         msg.channel_id
@@ -914,16 +935,19 @@ pub(crate) async fn handle_message(
                 } else {
                     "No operation in progress."
                 };
-                if let Err(e) = msg.channel_id.say(&ctx.http, reply).await {
+                if let Err(e) = writes::say(&ctx.http, msg.channel_id, reply, Class::Final).await {
                     tracing::warn!(error = %e, "failed to send Discord message");
                 }
                 return;
             }
             ChannelCommand::Compact => {
-                if let Err(e) = msg
-                    .channel_id
-                    .say(&ctx.http, "⏳ Compacting context...")
-                    .await
+                if let Err(e) = writes::say(
+                    &ctx.http,
+                    msg.channel_id,
+                    "⏳ Compacting context...",
+                    Class::Final,
+                )
+                .await
                 {
                     tracing::warn!(error = %e, "failed to send Discord compact notification");
                 }
@@ -940,7 +964,7 @@ pub(crate) async fn handle_message(
                         format!("/clear did nothing, the context is unchanged: {e}")
                     }
                 };
-                if let Err(e) = msg.channel_id.say(&ctx.http, reply).await {
+                if let Err(e) = writes::say(&ctx.http, msg.channel_id, reply, Class::Final).await {
                     tracing::warn!(error = %e, "failed to send Discord clear receipt");
                 }
                 return;
@@ -952,7 +976,9 @@ pub(crate) async fn handle_message(
             ChannelCommand::NotACommand => {}
             // Help, Usage, Evolve, Doctor, UserSystem handled by try_execute_text_command above
             ChannelCommand::Profiles(resp) => {
-                if let Err(e) = msg.channel_id.say(&ctx.http, &resp.text).await {
+                if let Err(e) =
+                    writes::say(&ctx.http, msg.channel_id, &resp.text, Class::Final).await
+                {
                     tracing::warn!(error = %e, "failed to send Discord message");
                 }
                 return;
@@ -1075,6 +1101,20 @@ pub(crate) async fn handle_message(
         .store_cancel_token(session_id, cancel_token.clone())
         .await;
 
+    // Acknowledge receipt before the first progress write (#1880 FR-010): a
+    // 👀 on the user's message so the turn never looks silently eaten.
+    // Best-effort: skipped while the channel is backing off from a 429,
+    // because the ack is transient and the reply itself is unaffected.
+    if super::governor::cooldown_remaining(msg.channel_id.get()).is_none() {
+        use serenity::model::channel::ReactionType;
+        if let Err(e) = msg
+            .react(&ctx.http, ReactionType::Unicode("👀".to_string()))
+            .await
+        {
+            tracing::warn!("Discord: ack reaction failed: {e}");
+        }
+    }
+
     // Sustained typing for the turn, continuing while the session has detached
     // work (#812). Discord had no turn-long pinger at all, so an ordinary turn
     // showed the dots briefly and a background command showed nothing: spawning
@@ -1192,6 +1232,7 @@ pub(crate) async fn handle_message(
                                     .upsert_tool_group(
                                         mid.get(),
                                         GroupState {
+                                            last_activity_at: Instant::now(),
                                             entries,
                                             notes: Vec::new(),
                                             expanded: false,
@@ -1206,12 +1247,15 @@ pub(crate) async fn handle_message(
                                         &group,
                                         mid.get(),
                                     ));
-                                if let Err(e) = channel.edit_message(&http, mid, edit).await {
+                                if let Err(e) =
+                                    writes::edit(&http, channel, mid, edit, Class::Edit).await
+                                {
                                     tracing::warn!("Discord: tool group edit failed (append): {e}");
                                 }
                             }
                             None => {
                                 let group = GroupState {
+                                    last_activity_at: Instant::now(),
                                     entries,
                                     notes: Vec::new(),
                                     expanded: false,
@@ -1219,20 +1263,21 @@ pub(crate) async fn handle_message(
                                     settled: None,
                                 };
                                 let content = super::tool_group::render_content(&group);
-                                match channel.say(&http, &content).await {
-                                    Ok(sent) => {
+                                match writes::say(&http, channel, &content, Class::Create).await {
+                                    Ok(Some(sent)) => {
                                         let comps = super::tool_group::render_components(
                                             &group,
                                             sent.id.get(),
                                         );
                                         if !comps.is_empty()
-                                            && let Err(e) = channel
-                                                .edit_message(
-                                                    &http,
-                                                    sent.id,
-                                                    EditMessage::new().components(comps),
-                                                )
-                                                .await
+                                            && let Err(e) = writes::edit(
+                                                &http,
+                                                channel,
+                                                sent.id,
+                                                EditMessage::new().components(comps),
+                                                Class::Edit,
+                                            )
+                                            .await
                                         {
                                             tracing::warn!(
                                                 "Discord: tool group component fixup failed: {e}"
@@ -1241,6 +1286,7 @@ pub(crate) async fn handle_message(
                                         dstate.upsert_tool_group(sent.id.get(), group).await;
                                         *mid_guard = Some(sent.id);
                                     }
+                                    Ok(None) => {}
                                     Err(e) => tracing::warn!(
                                         "Discord: failed to post tool group message: {e}"
                                     ),
@@ -1271,6 +1317,7 @@ pub(crate) async fn handle_message(
                                 .upsert_tool_group(
                                     mid.get(),
                                     GroupState {
+                                        last_activity_at: Instant::now(),
                                         entries,
                                         notes: Vec::new(),
                                         expanded: false,
@@ -1285,7 +1332,9 @@ pub(crate) async fn handle_message(
                                     &group,
                                     mid.get(),
                                 ));
-                            if let Err(e) = channel.edit_message(&http, mid, edit).await {
+                            if let Err(e) =
+                                writes::edit(&http, channel, mid, edit, Class::Edit).await
+                            {
                                 tracing::warn!("Discord: tool group edit failed (status): {e}");
                             }
                         }
@@ -1295,7 +1344,7 @@ pub(crate) async fn handle_message(
                     tokio::spawn(async move {
                         let text =
                             format!("🔧 {}", crate::utils::sanitize::normalize_dashes(&message));
-                        if let Err(e) = channel.say(&http, &text).await {
+                        if let Err(e) = writes::say(&http, channel, &text, Class::Create).await {
                             tracing::warn!(error = %e, "failed to send Discord message");
                         }
                     });
@@ -1344,7 +1393,9 @@ pub(crate) async fn handle_message(
                                     &group,
                                     mid.get(),
                                 ));
-                            if let Err(e) = channel.edit_message(&http, mid, edit).await {
+                            if let Err(e) =
+                                writes::edit(&http, channel, mid, edit, Class::Edit).await
+                            {
                                 tracing::debug!("Discord: trace note edit failed: {e}");
                             }
                         });
@@ -1368,7 +1419,8 @@ pub(crate) async fn handle_message(
                             prev.push(clean.clone());
                         }
                         for chunk in split_message(&clean, 2000) {
-                            if let Err(e) = channel.say(&http, &chunk).await {
+                            if let Err(e) = writes::say(&http, channel, &chunk, Class::Create).await
+                            {
                                 tracing::debug!("Discord: intermediate text send failed: {}", e)
                             }
                         }
@@ -1386,7 +1438,7 @@ pub(crate) async fn handle_message(
                     let channel = channel;
                     tokio::spawn(async move {
                         let text = format!("⏳ Retry {}/{} — {}", attempt, max, reason);
-                        if let Err(e) = channel.say(&http, &text).await {
+                        if let Err(e) = writes::say(&http, channel, &text, Class::Create).await {
                             tracing::warn!(error = %e, "failed to send Discord message");
                         }
                     });
@@ -1398,7 +1450,7 @@ pub(crate) async fn handle_message(
                     let channel = channel;
                     tokio::spawn(async move {
                         let text = format!("🔄 Now using {}/{}", to_name, to_model);
-                        if let Err(e) = channel.say(&http, &text).await {
+                        if let Err(e) = writes::say(&http, channel, &text, Class::Create).await {
                             tracing::warn!(error = %e, "failed to send Discord message");
                         }
                     });
@@ -1434,24 +1486,36 @@ pub(crate) async fn handle_message(
     // post failure the mid stays None and creation falls back to the first
     // tool call, the pre-#1845 behavior.
     let turn_shell = super::tool_group::GroupState {
+        last_activity_at: Instant::now(),
         entries: Vec::new(),
         notes: Vec::new(),
         expanded: false,
         started_at: Instant::now(),
         settled: None,
     };
-    match target
-        .say(&ctx.http, &super::tool_group::render_content(&turn_shell))
-        .await
+    match writes::say(
+        &ctx.http,
+        target,
+        &super::tool_group::render_content(&turn_shell),
+        Class::Create,
+    )
+    .await
     {
-        Ok(sent) => {
+        Ok(Some(sent)) => {
             discord_state
                 .upsert_tool_group(sent.id.get(), turn_shell)
                 .await;
             *turn_group_mid.lock().await = Some(sent.id);
         }
+        Ok(None) => {}
         Err(e) => tracing::warn!("Discord: turn-start group shell post failed: {e}"),
     }
+
+    // Plan card (FR-008): post or advance the session's checklist on the
+    // same turn-start beat as the flow shell, so an active plan is visible
+    // from the first tick. `refresh_plan_card` creates the card when none
+    // exists and removes it once the plan is gone.
+    super::plan_card::refresh_plan_card(&ctx.http, target, &discord_state, session_id).await;
 
     // Flow ticker (#1843): re-renders the bubble's clock every 4 s so the
     // timer does not freeze between tool events. Spawns after the turn-start
@@ -1576,7 +1640,7 @@ pub(crate) async fn handle_message(
                 let edit = serenity::builder::EditMessage::new()
                     .content(super::tool_group::render_content(&group))
                     .components(super::tool_group::render_components(&group, mid.get()));
-                if let Err(e) = target.edit_message(&ctx.http, mid, edit).await {
+                if let Err(e) = writes::edit(&ctx.http, target, mid, edit, Class::Edit).await {
                     tracing::debug!("Discord: trace mirror-note drop failed: {e}");
                 }
             }
@@ -1589,6 +1653,7 @@ pub(crate) async fn handle_message(
                 && let Some(group) = discord_state
                     .settle_tool_group(
                         mid.get(),
+                        super::tool_group::TurnOutcome::Finished,
                         if ctx_line.is_empty() {
                             None
                         } else {
@@ -1600,7 +1665,7 @@ pub(crate) async fn handle_message(
                 let edit = serenity::builder::EditMessage::new()
                     .content(super::tool_group::render_content(&group))
                     .components(super::tool_group::render_components(&group, mid.get()));
-                if let Err(e) = target.edit_message(&ctx.http, mid, edit).await {
+                if let Err(e) = writes::edit(&ctx.http, target, mid, edit, Class::Final).await {
                     tracing::debug!("Discord: settled status stamp failed: {e}");
                 }
             }
@@ -1655,22 +1720,81 @@ pub(crate) async fn handle_message(
                 for idx in batch {
                     message = message.add_file(attachments[*idx].clone());
                 }
-                if let Err(e) = target.send_message(&ctx.http, message).await {
+                if let Err(e) = writes::send(&ctx.http, target, message, Class::Final).await {
                     tracing::error!("Discord: failed to send media gallery batch: {}", e);
                 }
             }
+
+            // FR-007 (#1880): mechanical evidence footer for the answer.
+            //
+            // Source is the turn's tool group — the SAME `entries` the card
+            // renders, appended from real `ProgressEvent::ToolStarted` — so
+            // the line can never name a tool the turn did not run (NFR-003).
+            // Assembled HERE, at the channel layer, after the agent returned:
+            // the phantom gate inspects the model's output, so it never sees
+            // this line (AC-016). Appended to the WIRE text only — the
+            // channel_messages record below keeps the footerless body, so the
+            // next turn's group context is not fed a synthetic line.
+            let turn_mid: Option<u64> = (*turn_group_mid.lock().await).map(|m| m.get());
+            let send_text = match turn_mid {
+                Some(id) => match discord_state.tool_group_snapshot(id).await {
+                    Some(g) => match super::tool_group::evidence_line(&g) {
+                        Some(f) => format!("{text_only}\n\n{f}"),
+                        None => text_only.clone(),
+                    },
+                    None => text_only.clone(),
+                },
+                None => text_only.clone(),
+            };
 
             if skip_final_post {
                 // Answer already visible via the kept intermediate (#459's
                 // keep-intermediate outcome): skip the duplicate post. The
                 // settled flow group above carries the completion chrome.
             } else {
-                let chunks: Vec<String> = split_message(&text_only, 2000);
+                let chunks: Vec<String> = split_message(&send_text, super::long_answer::PAGE_CHARS);
+                // FR-009 (#1880): a long answer is a summary plus a pager,
+                // never a wall of consecutive messages (AC-020). Page 0 is
+                // posted in-channel; every later page answers EPHEMERALLY on
+                // press, so paging cannot re-bury the channel it exists to
+                // keep clean. Exactly one Action Row rides the message
+                // (AC-021).
+                let paged =
+                    if chunks.len() > 1 {
+                        let builder = CreateMessage::new().content(&chunks[0]);
+                        match writes::send(&ctx.http, target, builder, Class::Final).await {
+                            Ok(Some(sent)) => {
+                                let mid = sent.id.get();
+                                discord_state.store_long_answer(mid, chunks.clone()).await;
+                                let edit = EditMessage::new().components(vec![
+                                    super::long_answer::pager_row(mid, 0, chunks.len()),
+                                ]);
+                                if let Err(e) =
+                                    writes::edit(&ctx.http, target, sent.id, edit, Class::Edit)
+                                        .await
+                                {
+                                    tracing::warn!("Discord: pager attach failed: {e}");
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::warn!("Discord: long answer page 0 was dropped");
+                            }
+                            Err(e) => {
+                                tracing::error!("Discord: long answer page 0 failed: {e}");
+                            }
+                        }
+                        true
+                    } else {
+                        false
+                    };
                 // Auto-thread (opt-in): long answers post a short teaser in
                 // the channel and the full body in a thread anchored to the
                 // turn's bubble (or the user's message). The channel stays
                 // scannable; the deliverable stays whole.
-                let auto_thread = dc_cfg.auto_thread_min_chars > 0
+                // Mutually exclusive with the pager: an answer that already
+                // went out as page 0 must not also be threaded in full.
+                let auto_thread = !paged
+                    && dc_cfg.auto_thread_min_chars > 0
                     && text_only.chars().count() >= dc_cfg.auto_thread_min_chars;
                 if auto_thread {
                     let anchor = (*turn_group_mid.lock().await).unwrap_or(msg.id);
@@ -1682,18 +1806,22 @@ pub(crate) async fn handle_message(
                         .await
                     {
                         Ok(thread) => {
-                            let truncated = text_only.chars().count() > 280;
-                            let teaser: String = text_only.chars().take(280).collect();
+                            let truncated = send_text.chars().count() > 280;
+                            let teaser: String = send_text.chars().take(280).collect();
                             let teaser = format!(
                                 "{teaser}{}\n\n-# Full response in thread: <#{}>",
                                 if truncated { "…" } else { "" },
                                 thread.id
                             );
-                            if let Err(e) = target.say(&ctx.http, &teaser).await {
+                            if let Err(e) =
+                                writes::say(&ctx.http, target, &teaser, Class::Create).await
+                            {
                                 tracing::error!("Discord: auto-thread teaser failed: {e}");
                             }
                             for chunk in &chunks {
-                                if let Err(e) = thread.id.say(&ctx.http, chunk).await {
+                                if let Err(e) =
+                                    writes::say(&ctx.http, thread.id, chunk, Class::Final).await
+                                {
                                     tracing::error!("Discord: auto-thread body failed: {e}");
                                 }
                             }
@@ -1701,15 +1829,17 @@ pub(crate) async fn handle_message(
                         Err(e) => {
                             tracing::warn!("Discord: auto-thread failed, posting inline: {e}");
                             for chunk in &chunks {
-                                if let Err(e) = target.say(&ctx.http, chunk).await {
+                                if let Err(e) =
+                                    writes::say(&ctx.http, target, chunk, Class::Final).await
+                                {
                                     tracing::error!("Discord: failed to send reply: {}", e);
                                 }
                             }
                         }
                     }
-                } else {
+                } else if !paged {
                     for chunk in &chunks {
-                        if let Err(e) = target.say(&ctx.http, chunk).await {
+                        if let Err(e) = writes::say(&ctx.http, target, chunk, Class::Final).await {
                             tracing::error!("Discord: failed to send reply: {}", e);
                         }
                     }
@@ -1760,18 +1890,89 @@ pub(crate) async fn handle_message(
         }
         Err(ref e) if matches!(e, crate::brain::agent::AgentError::Cancelled) => {
             tracing::info!("Discord: agent call cancelled for session {}", session_id);
+            settle_outcome(
+                &ctx.http,
+                target,
+                &discord_state,
+                &turn_group_mid,
+                super::tool_group::TurnOutcome::Cancelled,
+                None,
+            )
+            .await;
         }
         Err(e) => {
             tracing::error!("Discord: agent error: {}", e);
+            settle_outcome(
+                &ctx.http,
+                target,
+                &discord_state,
+                &turn_group_mid,
+                classify_outcome(&e),
+                None,
+            )
+            .await;
             // Shared helper translates the raw error into something
             // the user can act on (5xx exhausted, rate limit, context
             // too large, stream broken, repetition loop). Same wording
             // as the TUI + Telegram + Slack + WhatsApp paths.
             let error_msg = format!("❌ Error\n\n{}", crate::brain::agent::format_user_error(&e));
-            if let Err(e) = target.say(&ctx.http, error_msg).await {
+            if let Err(e) = writes::say(&ctx.http, target, &error_msg, Class::Final).await {
                 tracing::warn!(error = %e, "failed to send Discord message");
             }
         }
+    }
+    // Plan board (FR-008, #1880): reconcile this session's plan card after the
+    // turn, so a plan created, approved, advanced or discarded mid-turn shows
+    // its new state. ONE message per session, edited in place; a rendering
+    // identical to what the chat already shows costs no API call.
+    super::plan_card::refresh_plan_card(&ctx.http, target, &discord_state, session_id).await;
+}
+
+/// Classify a turn error into the terminal outcome stamped on the flow card
+/// (FR-005, #1880). Mirrors Telegram's `FlowOutcome` split exactly: a
+/// deadline/timeout reads as `TimedOut`, anything else as `Failed`.
+/// Cancellation is matched on the error VARIANT by the caller, never here.
+pub(crate) fn classify_outcome(
+    err: &crate::brain::agent::AgentError,
+) -> super::tool_group::TurnOutcome {
+    let es = err.to_string().to_lowercase();
+    if es.contains("timed out") || es.contains("timeout") || es.contains("deadline") {
+        super::tool_group::TurnOutcome::TimedOut
+    } else {
+        super::tool_group::TurnOutcome::Failed
+    }
+}
+
+/// Settle the flow card with a terminal outcome and re-render it in place
+/// (FR-005, #1880).
+///
+/// Before this, settle ran ONLY on the `Ok` arm. A turn that failed, timed out
+/// or was cancelled left the card's `🕒` clock spinning forever — on screen
+/// indistinguishable from a turn still working — and the card's icon came from
+/// tool status, so a timeout with all tools green rendered a green check. The
+/// trace is never deleted: the card is edited to its final shape.
+pub(crate) async fn settle_outcome(
+    http: &Http,
+    channel: serenity::model::id::ChannelId,
+    discord_state: &DiscordState,
+    turn_group_mid: &Arc<Mutex<Option<serenity::model::id::MessageId>>>,
+    outcome: super::tool_group::TurnOutcome,
+    ctx: Option<String>,
+) {
+    let Some(mid) = *turn_group_mid.lock().await else {
+        return;
+    };
+    let Some(group) = discord_state
+        .settle_tool_group(mid.get(), outcome, ctx)
+        .await
+    else {
+        return;
+    };
+    let edit = serenity::builder::EditMessage::new()
+        .content(super::tool_group::render_content(&group))
+        .components(super::tool_group::render_components(&group, mid.get()));
+    if let Err(e) = writes::edit(http, channel, mid, edit, Class::Final).await {
+        tracing::debug!("Discord: settled status stamp failed: {e}");
     }
 }
 
@@ -1820,13 +2021,12 @@ pub(crate) fn plain_attachment_builder(audio: &[u8]) -> CreateMessage {
 /// uploader-supplied waveform is unverified against a live bot, and a TTS reply
 /// that silently vanishes is worse than one that renders as a file.
 pub(crate) async fn send_tts_voice(http: &Http, channel: ChannelId, audio: &[u8]) {
-    if let Err(e) = channel.send_message(http, voice_reply_builder(audio)).await {
+    if let Err(e) = writes::send(http, channel, voice_reply_builder(audio), Class::Final).await {
         tracing::warn!(
             "Discord: voice-flagged TTS send rejected ({e}); retrying as a plain attachment (#1849)"
         );
-        if let Err(e2) = channel
-            .send_message(http, plain_attachment_builder(audio))
-            .await
+        if let Err(e2) =
+            writes::send(http, channel, plain_attachment_builder(audio), Class::Final).await
         {
             tracing::error!("Discord: failed to send TTS voice: {e2}");
         }
@@ -1910,14 +2110,19 @@ pub(crate) fn make_approval_callback(
                 channel_id
             );
 
-            let mut sent_msg = match ChannelId::new(channel_id)
-                .send_message(
-                    &http,
-                    CreateMessage::new().content(&text).components(vec![row]),
-                )
-                .await
+            let mut sent_msg = match writes::send(
+                &http,
+                ChannelId::new(channel_id),
+                CreateMessage::new().content(&text).components(vec![row]),
+                Class::Final,
+            )
+            .await
             {
-                Ok(m) => m,
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    tracing::error!("Discord approval: governor refused the prompt send");
+                    return Ok((false, false));
+                }
                 Err(e) => {
                     tracing::error!("Discord approval: failed to send message: {}", e);
                     return Ok((false, false));

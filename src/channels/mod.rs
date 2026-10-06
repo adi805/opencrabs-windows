@@ -5,6 +5,8 @@
 
 pub mod bg_resume;
 pub mod commands;
+#[cfg(any(feature = "discord", feature = "telegram"))]
+pub(crate) mod evidence;
 mod factory;
 pub(crate) mod group_history;
 pub mod manager;

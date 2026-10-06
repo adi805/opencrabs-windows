@@ -182,10 +182,15 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
+      # No `save-if` restriction: this job only runs on PRs and
+      # workflow_dispatch (see its `if:` above), so a `refs/heads/main`-only
+      # save-if never fires, so the aarch64 cache stays cold forever and the
+      # build chronically rides the 40m timeout cap. Saving in the run's own
+      # scope lets the 2nd..Nth push of a PR hit warm artifacts.
+      # Mirrors the `test` job below, which already drops the restriction.
       - uses: swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build (macOS)
         env:
