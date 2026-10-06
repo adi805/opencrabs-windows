@@ -240,7 +240,7 @@ impl Limits {
 /// Whether a surface consults the shared cross-surface spacing floor (#676).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-enum SpacingPolicy {
+pub(crate) enum SpacingPolicy {
     /// G1 (typing): no spacing check at all.
     Exempt,
     /// G3 (sends): the floor delays the request; the gate waits, or fails open.
@@ -253,7 +253,7 @@ enum SpacingPolicy {
 /// status edits) when the surface cannot admit it right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-enum ChromeOnDry {
+pub(crate) enum ChromeOnDry {
     /// Discard it — G2 and G4 both drop droppable chrome on a dry bucket.
     Drop,
     /// The surface has no droppable class at all (G1 typing, G3 sends).
@@ -264,7 +264,7 @@ enum ChromeOnDry {
 /// surface cannot admit it right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-enum ContentOnDry {
+pub(crate) enum ContentOnDry {
     /// Discard it — G1's typing refresh has no queue and no wait.
     Drop,
     /// Queue it latest-wins, superseding whatever was queued before (G2).
@@ -277,7 +277,7 @@ enum ContentOnDry {
 /// and lives in [`Limits`]; this names which knob supplies it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-enum HoldBudget {
+pub(crate) enum HoldBudget {
     /// No wait loop at all — the gate answers in one shot (G2, G4).
     None,
     /// [`Limits::typing_max_hold`] (G1).
@@ -291,7 +291,7 @@ enum HoldBudget {
 /// delay-never-drop (#297), so its pacer has no drop path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-enum HoldExceeded {
+pub(crate) enum HoldExceeded {
     /// G1: the refresh is dropped once `typing_max_hold` elapses.
     DropTyping,
     /// G3: the send goes out anyway, still counted as admitted.
@@ -303,7 +303,7 @@ enum HoldExceeded {
 /// How a surface treats an active global 429 cooldown / permit refusal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-enum PermitPolicy {
+pub(crate) enum PermitPolicy {
     /// G1/G2: the global permit is not consulted at all.
     Ignore,
     /// G3: log and proceed — a send is delay-never-drop (#297).
