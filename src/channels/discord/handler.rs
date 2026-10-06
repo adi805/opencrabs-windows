@@ -1766,8 +1766,12 @@ pub(crate) async fn handle_message(
                             Ok(Some(sent)) => {
                                 let mid = sent.id.get();
                                 discord_state.store_long_answer(mid, chunks.clone()).await;
+                                // Page 0 is already in-channel, so the row must
+                                // open the first HIDDEN page (index 1). Pointing
+                                // it at page 0 made the button re-show the text
+                                // the reader was already looking at (FR-009).
                                 let edit = EditMessage::new().components(vec![
-                                    super::long_answer::pager_row(mid, 0, chunks.len()),
+                                    super::long_answer::pager_row(mid, 1, chunks.len()),
                                 ]);
                                 if let Err(e) =
                                     writes::edit(&ctx.http, target, sent.id, edit, Class::Edit)

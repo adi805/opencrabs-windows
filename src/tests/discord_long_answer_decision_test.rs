@@ -91,7 +91,7 @@ fn the_pages_are_stored_before_the_pager_row_is_attached() {
         .find("store_long_answer(mid,chunks.clone())")
         .expect("page 0 must be stored so the pager has something to serve (AC-020)");
     let attach = flat_src
-        .find("pager_row(mid,0,chunks.len())")
+        .find("pager_row(mid,1,chunks.len())")
         .expect("the pager row must be built from the stored message id (AC-020)");
     assert!(
         store < attach,
@@ -156,4 +156,30 @@ fn the_scan_sees_the_send_path_it_governs() {
              file that no longer owns the send path"
         );
     }
+}
+
+/// AC-020 from the reader's side. Page 0 posts in-channel, so the row attached
+/// to it has to open a page the reader cannot already see, and the ephemeral
+/// answer has to carry the row for the page after it. Without both halves the
+/// remainder is stored but unreachable: the button re-shows the summary and
+/// every later page is stranded. The tests above only pin that *a* row exists,
+/// so they cannot see this.
+#[test]
+fn the_pager_opens_a_hidden_page_and_carries_the_next_row_forward() {
+    let flat_handler = flat(&handler_src());
+    assert!(
+        flat_handler.contains("pager_row(mid,1,chunks.len())"),
+        "the row attached to page 0 no longer opens the first hidden page, so \
+         the button re-shows the summary the reader already has in-channel \
+         (AC-020)"
+    );
+
+    let agent_path = discord_dir().join("agent.rs");
+    let agent_src = std::fs::read_to_string(&agent_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", agent_path.display()));
+    assert!(
+        flat(&agent_src).contains("next_page_row("),
+        "the ephemeral answer no longer carries the row for the next page, so \
+         every page after the first press is stored but unreachable (AC-020)"
+    );
 }

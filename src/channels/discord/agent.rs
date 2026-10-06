@@ -713,22 +713,29 @@ impl EventHandler for Handler {
                 let mut parts = rest.splitn(2, ':');
                 let mid = parts.next().and_then(|s| s.parse::<u64>().ok());
                 let page = parts.next().and_then(|s| s.parse::<usize>().ok());
-                let body = match (mid, page) {
-                    (Some(mid), Some(page)) => self
-                        .discord_state
-                        .long_answer_pages(mid)
-                        .await
-                        .and_then(|pages| super::long_answer::page_body(&pages, page)),
-                    _ => None,
+                let pages = match mid {
+                    Some(mid) => self.discord_state.long_answer_pages(mid).await,
+                    None => None,
                 };
+                let body = pages.as_deref().and_then(|pages| {
+                    page.and_then(|page| super::long_answer::page_body(pages, page))
+                });
                 let content = body.unwrap_or_else(|| {
                     "That pager aged out. Ask me again and I will repost the answer.".to_string()
                 });
-                let resp = CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content(content)
-                        .ephemeral(true),
-                );
+                // Carry the pager forward: page 0 is in-channel and every later
+                // page is reachable only by press, so an answer that carried no
+                // row would strand the rest of the body behind this one press
+                // (FR-009).
+                let mut msg = CreateInteractionResponseMessage::new()
+                    .content(content)
+                    .ephemeral(true);
+                if let (Some(mid), Some(pages), Some(page)) = (mid, pages.as_ref(), page) {
+                    if let Some(row) = super::long_answer::next_page_row(mid, page, pages.len()) {
+                        msg = msg.components(vec![row]);
+                    }
+                }
+                let resp = CreateInteractionResponse::Message(msg);
                 if let Err(e) = comp.create_response(&ctx.http, resp).await {
                     tracing::warn!("Discord: long-answer page response failed: {e}");
                 }

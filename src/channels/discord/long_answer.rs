@@ -6,10 +6,12 @@
 //! button (AC-020).
 //!
 //! The turn's already-chunked body is stored against the id of the message
-//! that carries page 0, and a single pager row is attached to it. Each press
-//! answers **ephemerally** with the requested page: the pager is a read
-//! affordance, so it must not add more messages to the channel it exists to
-//! keep clean.
+//! that carries page 0, and a single pager row is attached to it. That row
+//! opens the first HIDDEN page (index 1), and every answer carries the row for
+//! the page after it, so the remainder stays reachable one press at a time.
+//! Each press answers **ephemerally** with the requested page: the pager is a
+//! read affordance, so it must not add more messages to the channel it exists
+//! to keep clean.
 //!
 //! ## Component budget (AC-021)
 //!
@@ -51,6 +53,22 @@ pub(crate) fn pager_row(message_id: u64, page: usize, total: usize) -> CreateAct
             .label(button_label(page, total))
             .style(ButtonStyle::Secondary),
     ])
+}
+
+/// The row that keeps the page after `page` reachable, or `None` once the last
+/// page has been shown.
+///
+/// Page 0 posts in-channel, so every later page is visible only through a
+/// press. A reply that carried no row would leave the pages after it stored but
+/// unreachable, which is what FR-009's "the remainder sits behind a button"
+/// forbids. The caller attaches this to the ephemeral answer for `page`, which
+/// walks the reader through the remainder one press at a time.
+pub(crate) fn next_page_row(message_id: u64, page: usize, total: usize) -> Option<CreateActionRow> {
+    if page + 1 < total {
+        Some(pager_row(message_id, page + 1, total))
+    } else {
+        None
+    }
 }
 
 /// Body shown when a pager press arrives.
@@ -157,5 +175,58 @@ mod tests {
             page_body(&pages, 1),
             Some("**Page 2 of 2**\n\nb".to_string())
         );
+    }
+
+    /// The `custom_id` of the row's single button, read off the wire shape.
+    fn row_custom_id(row: &CreateActionRow) -> String {
+        button_json(row)["custom_id"]
+            .as_str()
+            .expect("custom_id on the wire")
+            .to_string()
+    }
+
+    /// The page index a pager row opens.
+    fn row_page(row: &CreateActionRow) -> usize {
+        row_custom_id(row)
+            .strip_prefix(PAGER_PREFIX)
+            .expect("pager prefix")
+            .split_once(':')
+            .expect("two fields")
+            .1
+            .parse()
+            .expect("page parses")
+    }
+
+    /// FR-009: the row attached to page 0 opens the first HIDDEN page, and every
+    /// answer carries the row for the page after it. Without both halves the
+    /// pages after the first press are stored but unreachable, and the button
+    /// just re-shows the summary the reader already has in-channel.
+    #[test]
+    fn the_pager_chain_reaches_every_hidden_page() {
+        let total = 5;
+        let mut row = pager_row(7, 1, total);
+        let mut visited = Vec::new();
+        loop {
+            let page = row_page(&row);
+            visited.push(page);
+            match next_page_row(7, page, total) {
+                Some(next) => row = next,
+                None => break,
+            }
+        }
+        assert_eq!(
+            visited,
+            vec![1, 2, 3, 4],
+            "every page after the in-channel one is reachable"
+        );
+    }
+
+    /// The chain terminates: the last page carries no row, so a press cannot
+    /// open a page that was never stored.
+    #[test]
+    fn the_last_page_carries_no_next_row() {
+        assert!(next_page_row(7, 1, 2).is_none());
+        assert!(next_page_row(7, 0, 1).is_none());
+        assert!(next_page_row(7, 1, 3).is_some());
     }
 }
