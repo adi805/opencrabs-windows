@@ -148,6 +148,11 @@ pub(crate) const MIGRATION_SQL: &[&str] = &[
     // CREATEs and the column adds are nullable, so the 648 MB live database
     // needs no backfill. Appended last per the list invariant.
     include_str!("../migrations/20261006000001_add_durability.sql"),
+    // Milestone 2 (fork), follow-up: `effect_key` was indexed non-uniquely, so
+    // the `INSERT OR IGNORE` in `record_intent` had no constraint to conflict
+    // on and a replayed effect opened a second row. Its own migration because
+    // the previous one has already run wherever the schema was applied.
+    include_str!("../migrations/20261006000002_unique_effect_key.sql"),
 ];
 
 pub(crate) fn build_migrations() -> Migrations<'static> {
