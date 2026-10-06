@@ -170,3 +170,65 @@ fn every_execution_site_can_settle_the_effect_it_opened() {
         );
     }
 }
+
+// ── the resume contract (FR-008) ────────────────────────────────────
+
+/// Reconciling an interrupted turn must NOT clear its effect rows.
+///
+/// The `pending` row is the only record that a side effect's outcome is
+/// unknown. If boot reconciliation wiped them, a resume would see a clean
+/// slate and replay the call — the exact failure the ledger exists to
+/// prevent. The turn flips to `interrupted`; the effects stay visible.
+#[tokio::test]
+async fn reconciling_a_turn_keeps_its_unknown_effects_visible() {
+    use crate::db::repository::TurnRepository;
+
+    let db = make_db().await;
+    let turns = TurnRepository::new(db.pool().clone());
+    let effects = ToolExecutionRepository::new(db.pool().clone());
+    let sid = Uuid::new_v4();
+
+    let turn_id = turns.open(sid).await.unwrap();
+    effects
+        .record_intent(
+            "e1",
+            &turn_id,
+            "m",
+            &sid.to_string(),
+            "send_email",
+            "k1",
+            "h1",
+        )
+        .await
+        .unwrap();
+    effects
+        .record_intent(
+            "e2",
+            &turn_id,
+            "m",
+            &sid.to_string(),
+            "git_push",
+            "k2",
+            "h2",
+        )
+        .await
+        .unwrap();
+    // One landed before the process died.
+    effects
+        .settle("e1", "success", Some("sent"), Some(9))
+        .await
+        .unwrap();
+
+    // Boot: the process that owned the turn is gone.
+    let reconciled = turns.reconcile_running().await.unwrap();
+    assert_eq!(reconciled.len(), 1, "the open turn is reconciled");
+
+    let unknown = effects.pending_for_turn(&turn_id).await.unwrap();
+    assert_eq!(
+        unknown.len(),
+        1,
+        "reconciliation must not erase the unknown outcome; a resume has to be \
+         able to tell 'landed' from 'unknown'"
+    );
+    assert_eq!(unknown[0].tool_name, "git_push");
+}

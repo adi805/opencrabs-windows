@@ -360,6 +360,48 @@ fn interrupted_message(row: &crate::db::BackgroundTaskRow) -> QueuedUserMessage 
     }
 }
 
+/// Flag the effects an interrupted turn opened but never settled (FR-008).
+///
+/// A `pending` ledger row is the one state a resume must not guess at: the
+/// process died between committing the intent and recording the outcome, so
+/// whether the side effect landed is genuinely unknown. The contract is that
+/// these are SURFACED, never silently replayed (AC-015) — this is where they
+/// become visible, because nothing else reads them.
+///
+/// Not an error: an unknown effect is a fact about the last process, not a
+/// fault in this one.
+async fn report_pending_effects(rows: &[crate::db::repository::turn::TurnRow]) {
+    let Some(pool) = crate::db::global_pool() else {
+        return;
+    };
+    let repo = crate::db::repository::ToolExecutionRepository::new(pool.clone());
+    for row in rows {
+        match repo.pending_for_turn(&row.id).await {
+            Ok(effects) if !effects.is_empty() => {
+                let names: Vec<&str> = effects.iter().map(|e| e.tool_name.as_str()).collect();
+                tracing::warn!(
+                    target: "background_task",
+                    "Turn {} left {} effect(s) with an unknown outcome for session {}: {}. \
+                     Whether these landed is not recorded, so they are flagged rather than \
+                     replayed.",
+                    row.id,
+                    effects.len(),
+                    row.session_id,
+                    names.join(", ")
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!(
+                    target: "background_task",
+                    "Failed to read pending effects for turn {}: {e:#}",
+                    row.id
+                );
+            }
+        }
+    }
+}
+
 /// Account for everything a previous process was doing, and arrange for the
 /// reports to reach the right sessions.
 ///
@@ -396,6 +438,7 @@ pub async fn reconcile_interrupted_turns() -> usize {
                     row.session_id
                 );
             }
+            report_pending_effects(&rows).await;
             rows.len()
         }
         Err(e) => {
