@@ -24,6 +24,12 @@ on:
   push:
     branches:
       - diag/snapshot-loop
+      # Second entry point, same loop. The first branch has
+      # `cancel-in-progress: false`, so while an OLD-code sweep is running a new
+      # push to it only QUEUES. This branch gives the bumped-code sweep its own
+      # concurrency group so the fix test runs in parallel with a reproduction
+      # run instead of waiting behind it (#55).
+      - diag/snapshot-loop-bump
   workflow_dispatch:
     inputs:
       iterations:
