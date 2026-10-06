@@ -730,10 +730,10 @@ impl EventHandler for Handler {
                 let mut msg = CreateInteractionResponseMessage::new()
                     .content(content)
                     .ephemeral(true);
-                if let (Some(mid), Some(pages), Some(page)) = (mid, pages.as_ref(), page) {
-                    if let Some(row) = super::long_answer::next_page_row(mid, page, pages.len()) {
-                        msg = msg.components(vec![row]);
-                    }
+                if let (Some(mid), Some(pages), Some(page)) = (mid, pages.as_ref(), page)
+                    && let Some(row) = super::long_answer::next_page_row(mid, page, pages.len())
+                {
+                    msg = msg.components(vec![row]);
                 }
                 let resp = CreateInteractionResponse::Message(msg);
                 if let Err(e) = comp.create_response(&ctx.http, resp).await {
