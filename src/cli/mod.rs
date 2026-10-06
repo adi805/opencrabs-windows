@@ -17,9 +17,9 @@ pub(crate) mod migrate;
 // the whole test module out of the suite. Only `run_script` reaches the
 // process layer, and it early-returns off Windows. `dead_code` below is for
 // the Linux lint job: the only callers are the cfg(windows) arms in commands.
+pub(crate) mod resume_delivery;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod service_windows;
-pub(crate) mod resume_delivery;
 pub(crate) mod session_notify;
 pub(crate) mod session_resolve;
 pub(crate) mod session_set_model;
