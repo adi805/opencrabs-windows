@@ -43,6 +43,19 @@ impl AgentService {
             .prepare_message_context_with_display(session_id, user_message, display_text, model)
             .await?;
 
+        // FR-002: open the turn journal BEFORE the provider call. The journal
+        // is what makes the commit atomic further down: the transaction only
+        // lands while the turn is still `running`, so a process killed here
+        // leaves an interrupted turn rather than a half-written one.
+        let turn_repo = crate::db::TurnRepository::new(self.context.pool());
+        let turn_id = match turn_repo.open(session_id).await {
+            Ok(id) => Some(id),
+            Err(e) => {
+                tracing::warn!("could not open turn journal for {session_id}: {e}");
+                None
+            }
+        };
+
         // Send to provider — use session's provider so a concurrent
         // foreground swap on another pane can't hijack this turn.
         let provider = self.provider_for_session(session_id);
@@ -78,34 +91,64 @@ impl AgentService {
         // call, that number IS the bill — the table is a guess (#1707).
         let cost = response.usage.cost_usd.unwrap_or(cost);
 
-        // Update message with usage info, stashing the server-reported
-        // prompt token count so session reload reads it directly.
-        message_service
-            .update_message_usage(
-                assistant_db_msg.id,
-                crate::services::message::MessageUsage {
-                    token_count: total_tokens as i64,
-                    cost,
-                    input_tokens: Some(billable_input as i64),
-                    cache_creation_tokens: Some(response.usage.cache_creation_tokens as i64),
-                    cache_read_tokens: Some(response.usage.cache_read_tokens as i64),
-                    duration_secs: Some(turn_started_at.elapsed().as_secs() as i64),
-                },
-            )
-            .await
-            .map_err(AgentError::db)?;
-
-        // Update session token usage with the pair that served it (#807).
-        session_service
-            .update_session_usage(
-                session_id,
-                total_tokens as i64,
-                cost,
-                &self.provider_name_for_session(session_id),
-                &self.provider_model_for_session(session_id),
-            )
-            .await
-            .map_err(AgentError::db)?;
+        // FR-002: settle the whole turn in ONE transaction — the message's
+        // usage, the session's running totals, the cumulative ledger row and
+        // the journal. The provider pair is resolved here, not read back off
+        // the session row, so a fallback's spend is attributed to the provider
+        // that actually served it (#807). This replaces the two separate
+        // writes that could be torn apart by a crash between them.
+        match turn_id.as_deref() {
+            Some(turn_id) => {
+                crate::db::commit_turn(
+                    &self.context.pool(),
+                    crate::db::TurnCommit {
+                        turn_id,
+                        session_id,
+                        message_id: assistant_db_msg.id,
+                        token_count: total_tokens as i64,
+                        cost,
+                        input_tokens: Some(billable_input as i64),
+                        cache_creation_tokens: Some(response.usage.cache_creation_tokens as i64),
+                        cache_read_tokens: Some(response.usage.cache_read_tokens as i64),
+                        duration_secs: Some(turn_started_at.elapsed().as_secs() as i64),
+                        provider: &self.provider_name_for_session(session_id),
+                        model: &self.provider_model_for_session(session_id),
+                    },
+                )
+                .await
+                .map_err(AgentError::db)?;
+            }
+            None => {
+                // No journal (its open failed): keep the historical separate
+                // writes so the turn still records its usage.
+                message_service
+                    .update_message_usage(
+                        assistant_db_msg.id,
+                        crate::services::message::MessageUsage {
+                            token_count: total_tokens as i64,
+                            cost,
+                            input_tokens: Some(billable_input as i64),
+                            cache_creation_tokens: Some(
+                                response.usage.cache_creation_tokens as i64,
+                            ),
+                            cache_read_tokens: Some(response.usage.cache_read_tokens as i64),
+                            duration_secs: Some(turn_started_at.elapsed().as_secs() as i64),
+                        },
+                    )
+                    .await
+                    .map_err(AgentError::db)?;
+                session_service
+                    .update_session_usage(
+                        session_id,
+                        total_tokens as i64,
+                        cost,
+                        &self.provider_name_for_session(session_id),
+                        &self.provider_model_for_session(session_id),
+                    )
+                    .await
+                    .map_err(AgentError::db)?;
+            }
+        }
 
         Ok(AgentResponse {
             message_id: assistant_db_msg.id,
