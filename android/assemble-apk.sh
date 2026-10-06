@@ -124,8 +124,23 @@ done
 # --- 2. java -> dex ----------------------------------------------------------
 find "$ROOT/android/java" -name '*.java' > "$OUT/sources.txt"
 echo "java sources: $(wc -l < "$OUT/sources.txt")"
-javac -source 11 -target 11 -nowarn -classpath "$AJAR" \
-  -d "$OUT/classes" "@$OUT/sources.txt" 2>&1 | grep -v 'bootstrap class path' || true
+# --release, not -source/-target. Those two set the language level only, so
+# javac keeps java.lang from the JDK and compiles JDK-only methods without
+# complaint; they then throw NoSuchMethodError on the device. Process.pid() and
+# Process.isAlive() both got in that way and killed CoreService on every start.
+# --release 8 compiles against the Java 8 API surface, which is what an API 24
+# device actually offers, so the next such call fails the build instead.
+#
+# The exit status is captured rather than piped away. `javac ... | grep ... ||
+# true` reports grep's status, so a compile error was silently swallowed and
+# the build continued on a partial classes/ directory.
+if ! javac --release 8 -nowarn -classpath "$AJAR" \
+      -d "$OUT/classes" "@$OUT/sources.txt" > "$OUT/javac.log" 2>&1; then
+  grep -v 'bootstrap class path' "$OUT/javac.log" || true
+  echo "javac failed; see the errors above" >&2
+  exit 1
+fi
+grep -v 'bootstrap class path' "$OUT/javac.log" || true
 
 find "$OUT/classes" -name '*.class' > "$OUT/classes.txt"
 "$BT/d8" --lib "$AJAR" --min-api 24 --output "$OUT" "@$OUT/classes.txt"
