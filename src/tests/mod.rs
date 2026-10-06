@@ -320,6 +320,7 @@ pub mod docs_provider_timeout_witness_test;
 pub mod doctor_db_snapshot_test;
 pub mod doctor_fix_test;
 pub mod duplicate_submit_test;
+pub mod durability_effect_ledger_test;
 pub mod durability_foundation_test;
 pub mod edit_retry_test;
 pub mod em_dash_guard_test;

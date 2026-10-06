@@ -1,0 +1,172 @@
+//! FR-003 crash semantics and wiring discipline for the tool effect ledger.
+//!
+//! Two things have to hold for the ledger to be worth anything:
+//!
+//! 1. The storage layer must not be able to represent a replayed effect. A
+//!    resume that re-issues the same call has to find one row, not two, or the
+//!    idempotency key buys nothing.
+//! 2. The agent loop must actually commit the intent BEFORE the effect runs.
+//!    That is a rule about the shape of the source, and a doc comment cannot
+//!    fail a build, so the second half of this file reads the sources and turns
+//!    a missing wire into a build failure.
+//!
+//! Scope, stated so a later reader does not over-read it: these tests pin the
+//! ledger's contract and its call sites. They do NOT run a process that is
+//! killed mid-turn. That end-to-end harness is tracked separately, because a
+//! file-backed multi-process test joins the same class as the
+//! `db_pre_migration_snapshot_test` stall and would add flakiness rather than
+//! remove it.
+
+use crate::db::Database;
+use crate::db::repository::ToolExecutionRepository;
+use std::path::Path;
+
+async fn make_db() -> Database {
+    let db = Database::connect_in_memory().await.unwrap();
+    db.run_migrations().await.unwrap();
+    db
+}
+
+// ── the replay contract ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn replaying_the_same_effect_key_never_writes_a_second_row() {
+    let db = make_db().await;
+    let repo = ToolExecutionRepository::new(db.pool().clone());
+    // Same turn, same provider tool-use id: what a resume re-issues.
+    let key = "turn-9:toolu_abc";
+
+    repo.record_intent("eff-a", "turn-9", "msg-9", "sess-9", "git_push", key, "h1")
+        .await
+        .unwrap();
+    repo.record_intent("eff-b", "turn-9", "msg-9", "sess-9", "git_push", key, "h1")
+        .await
+        .unwrap();
+
+    let rows = repo.pending_for_turn("turn-9").await.unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "a replayed effect must not open a second row"
+    );
+    assert_eq!(rows[0].id, "eff-a", "the original row survives the replay");
+}
+
+#[tokio::test]
+async fn settling_the_original_row_leaves_the_replay_id_unknown() {
+    let db = make_db().await;
+    let repo = ToolExecutionRepository::new(db.pool().clone());
+    let key = "turn-9:toolu_abc";
+    repo.record_intent("eff-a", "turn-9", "msg-9", "sess-9", "git_push", key, "h1")
+        .await
+        .unwrap();
+    repo.record_intent("eff-b", "turn-9", "msg-9", "sess-9", "git_push", key, "h1")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.settle("eff-a", "success", Some("pushed"), Some(12))
+            .await
+            .unwrap(),
+        1,
+        "the surviving row is the one that settles"
+    );
+    assert_eq!(
+        repo.settle("eff-b", "success", None, None).await.unwrap(),
+        0,
+        "the replay's own id never existed, so it changes nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_crash_mid_batch_leaves_only_the_unfinished_effects_pending() {
+    let db = make_db().await;
+    let repo = ToolExecutionRepository::new(db.pool().clone());
+
+    repo.record_intent("e1", "t", "m", "s", "tool_a", "t:tu1", "h1")
+        .await
+        .unwrap();
+    repo.record_intent("e2", "t", "m", "s", "tool_b", "t:tu2", "h2")
+        .await
+        .unwrap();
+    // The first effect landed before the process died; the second never did.
+    repo.settle("e1", "success", Some("done"), Some(5))
+        .await
+        .unwrap();
+
+    let pending = repo.pending_for_turn("t").await.unwrap();
+    assert_eq!(
+        pending.len(),
+        1,
+        "only the effect that never settled reads as unknown"
+    );
+    assert_eq!(pending[0].effect_key.as_deref(), Some("t:tu2"));
+
+    let landed = repo
+        .find_by_effect_key("t:tu1")
+        .await
+        .unwrap()
+        .expect("the landed effect is readable by its key");
+    assert_eq!(landed.status, "success");
+    assert!(
+        landed.committed_at.is_some(),
+        "a landed effect carries its commit stamp"
+    );
+}
+
+// ── the wiring contract ─────────────────────────────────────────────
+
+const SERVICE_DIR: &str = "src/brain/agent/service";
+const LOOP_FILE: &str = "tool_loop.rs";
+const PARALLEL_FILE: &str = "parallel_tools.rs";
+
+/// A ledger intent committed before a tool runs.
+const OPEN_NEEDLE: &str = "effect_ledger::open_effect(";
+/// A ledger row settled after a tool returns.
+const SETTLE_NEEDLE: &str = "effect_ledger::settle_effect(";
+/// A tool actually being executed. Receiver-shaped, so it does not match the
+/// registry's own definitions or its approval/`halts_turn` lookups.
+const EXECUTE_NEEDLE: &str = "tool_registry.execute(&tool_name";
+
+/// One service source file with all whitespace removed, so a call split across
+/// lines still reads as one string.
+fn flat(name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(SERVICE_DIR)
+        .join(name);
+    let src =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    src.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+#[test]
+fn every_tool_execution_site_opens_an_effect_first() {
+    for name in [LOOP_FILE, PARALLEL_FILE] {
+        let src = flat(name);
+        let execs = src.matches(EXECUTE_NEEDLE).count();
+        let opens = src.matches(OPEN_NEEDLE).count();
+        assert!(
+            execs > 0,
+            "{name}: expected at least one tool execution site"
+        );
+        assert_eq!(
+            opens, execs,
+            "{name}: {execs} execution site(s) but {opens} ledger open(s); a tool can run \
+             without committing its intent first"
+        );
+    }
+}
+
+#[test]
+fn every_execution_site_can_settle_the_effect_it_opened() {
+    for name in [LOOP_FILE, PARALLEL_FILE] {
+        let src = flat(name);
+        let execs = src.matches(EXECUTE_NEEDLE).count();
+        let settles = src.matches(SETTLE_NEEDLE).count();
+        assert!(
+            settles >= execs,
+            "{name}: {execs} execution site(s) but only {settles} settle site(s); an effect \
+             would stay pending forever"
+        );
+    }
+}
