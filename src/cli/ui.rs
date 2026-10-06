@@ -2089,9 +2089,10 @@ async fn cmd_chat_inner(
         // can see the error and pick an older version to roll back to.
         tracing::error!("TUI crashed: {}", e);
 
-        // Make sure raw mode is off and alternate screen is exited before showing dialog
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+        // #1964: full restore, not just raw mode + alt screen. The partial
+        // version left mouse capture enabled, so the crash dialog and shell
+        // were typed over with SGR escape garbage after every TUI death.
+        crate::tui::runner::force_restore_terminal();
 
         let error_msg = format!("{}", e);
         match super::crash_recovery::show_crash_recovery(&error_msg).await {
@@ -2125,6 +2126,25 @@ async fn cmd_chat_inner(
 enum BannerKind {
     Start,
     Exit,
+}
+
+/// mtime of the running executable as "YYYY-MM-DD HH:MM" local time (#1965).
+/// None when the exe path or metadata is unavailable, so the banner degrades
+/// to the old line instead of guessing.
+fn build_stamp() -> Option<String> {
+    use chrono::{Local, TimeZone};
+    let when = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.metadata().ok())
+        .and_then(|m| m.modified().ok())?;
+    let secs = when.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+    Some(
+        Local
+            .timestamp_opt(secs, 0)
+            .single()?
+            .format("%Y-%m-%d %H:%M")
+            .to_string(),
+    )
 }
 
 /// Print the OpenCrabs banner (logo + tagline + version/provider/model +
@@ -2189,6 +2209,14 @@ fn print_terminal_banner(
        |_|";
 
     let version = env!("CARGO_PKG_VERSION");
+    // #1965: the version line cannot distinguish a fixed rebuild from the
+    // stale image still running hours later, which made a merged fix look
+    // like a lie. Stamp when this executable was built from its own mtime.
+    let built = build_stamp();
+    let built_part = match built.as_deref() {
+        Some(b) => format!("  {DIM}\u{b7}{RESET}  {CYAN}built {b}{RESET}"),
+        None => String::new(),
+    };
 
     println!();
     println!("{}{}{}{}", BOLD, ORANGE, logo, RESET);
@@ -2199,7 +2227,7 @@ fn print_terminal_banner(
     );
     println!();
     println!(
-        "  {bold}{orange}v{version}{reset}  {dim}·{reset}  {cyan}{provider}{reset}  {dim}·{reset}  {cyan}{model}{reset}",
+        "  {bold}{orange}v{version}{reset}{built_part}  {dim}·{reset}  {cyan}{provider}{reset}  {dim}·{reset}  {cyan}{model}{reset}",
         bold = BOLD,
         orange = ORANGE,
         cyan = CYAN,

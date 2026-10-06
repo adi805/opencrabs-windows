@@ -161,11 +161,18 @@ impl TrelloClient {
     }
 
     /// Add a comment to a card.
+    ///
+    /// Single outbound chokepoint for Trello card prose (#1970): both the
+    /// reply echo (`handler.rs`) and the proactive `add_comment` action
+    /// (`brain/tools/trello_send.rs`) land here, so the central
+    /// LLM-artifact boundary (#1745) covers Trello exactly like every other
+    /// channel. Idempotent for already-sanitized text.
     pub async fn add_comment_to_card(&self, card_id: &str, text: &str) -> Result<()> {
+        let clean = crate::utils::sanitize::strip_llm_artifacts(text);
         let path = format!("/cards/{}/actions/comments", card_id);
         let resp = self
             .authed_post(&path)
-            .form(&[("text", text)])
+            .form(&[("text", clean.as_str())])
             .send()
             .await?;
         if !resp.status().is_success() {
