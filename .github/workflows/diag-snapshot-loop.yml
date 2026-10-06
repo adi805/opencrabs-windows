@@ -77,6 +77,16 @@ jobs:
       # evidence about the stall (#55). Running the already-built binary keeps
       # cargo out of the timed region entirely.
       - name: Build the lib test binary once
+        # `gdb` is only as good as the symbols it can read. `[profile.ci]`
+        # inherits `release`, and `release` sets `strip = true`, so a dump
+        # from that build returns bare addresses no matter that gdb is
+        # installed: `wchan` would still say `futex_do_wait` and the frames
+        # that name the lock holder would be missing. Keep line tables and
+        # the symbol table for THIS build only. `debug = 1` is Cargo's
+        # `line-tables-only`, so the binary stays small enough to attach to.
+        env:
+          CARGO_PROFILE_CI_DEBUG: "1"
+          CARGO_PROFILE_CI_STRIP: "none"
         run: |
           cargo test --locked --profile ci --all-features --lib --no-run > /tmp/build.log 2>&1
           BIN=$(grep -oE 'target/ci/deps/opencrabs-[0-9a-f]+' /tmp/build.log | tail -1)
