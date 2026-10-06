@@ -1,0 +1,97 @@
+name: Diag snapshot loop
+
+# Dispatch-only diagnostic for issue #55.
+#
+# The lib test suite stalls on `db_pre_migration_snapshot_test` (the four tests
+# whose only heavy operation is `VACUUM INTO`) on a fraction of runs. Two
+# in-tree attempts to characterise it came back clean: a three-mode run at 4, 1
+# and 16 threads produced zero hang markers, and the affected tests each build
+# their own `Database` in their own tempdir, so no shared pool is contended.
+#
+# So the stall is rare, and one run is not a sample. This job gives the same
+# module many attempts on a single head, and bounds every attempt with a
+# wall-clock timeout so a stall is reported AS a stall instead of burning the
+# job cap in silence. Exit 124 from `timeout` is the signal; it is printed with
+# the iteration number and the tail of that attempt.
+#
+# Deliberately NOT a gate: no push or pull_request trigger. A clean sweep is
+# also a result, and it is recorded in the run summary either way.
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: How many times to repeat the snapshot module
+        required: false
+        default: "200"
+      timeout_secs:
+        description: Wall-clock bound per attempt, in seconds
+        required: false
+        default: "120"
+
+concurrency:
+  group: diag-snapshot-loop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          key: diag-snapshot-loop
+
+      - name: Build the lib test binary once
+        run: cargo test --locked --profile ci --all-features --lib --no-run
+
+      - name: Loop the snapshot module
+        env:
+          ITERATIONS: ${{ inputs.iterations }}
+          TIMEOUT_SECS: ${{ inputs.timeout_secs }}
+        run: |
+          set -u
+          verdict=CLEAN
+          done_iters=0
+          for i in $(seq 1 "$ITERATIONS"); do
+            start=$(date -u +%H:%M:%S)
+            timeout "$TIMEOUT_SECS" cargo test --locked --profile ci --all-features \
+              --lib db_pre_migration_snapshot_test -- --test-threads=4 \
+              > /tmp/iter.log 2>&1
+            rc=$?
+            done_iters=$i
+            if [ "$rc" -eq 0 ]; then
+              echo "$start iter $i ok"
+              continue
+            fi
+            echo "$start iter $i rc=$rc <-- NOT OK"
+            echo "----- tail of attempt $i -----"
+            tail -60 /tmp/iter.log
+            if [ "$rc" -eq 124 ]; then
+              verdict="STALL"
+            else
+              verdict="FAIL"
+            fi
+            break
+          done
+
+          echo "----- verdict -----"
+          echo "iterations_completed=$done_iters"
+          echo "per_attempt_timeout_secs=$TIMEOUT_SECS"
+          if [ "$verdict" = "CLEAN" ]; then
+            echo "RESULT=CLEAN_AFTER_${done_iters}_ITERATIONS"
+          else
+            echo "RESULT=${verdict}_AT_ITERATION_${done_iters}"
+          fi
+
+          # A stall is the thing this job exists to find, so it must not read as
+          # a green run. A plain failure is also non-green.
+          if [ "$verdict" != "CLEAN" ]; then
+            exit 1
+          fi
