@@ -18,6 +18,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.opencrabs.mobile">
 
+    <!-- Load-bearing: Android gates AF_INET socket creation on the AID_INET
+         group, which only the INTERNET permission grants. Without it the core's
+         TcpListener::bind("127.0.0.1:18792") fails with EACCES and the session
+         surface never comes up, even though the bind is loopback. The failure
+         is silent: the error goes to tracing, which has no sink by default. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
