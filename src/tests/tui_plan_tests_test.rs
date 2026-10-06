@@ -130,6 +130,35 @@ fn test_progress_percentage() {
     assert_eq!(plan.progress_percentage(), 50.0);
 }
 
+/// Regression: `Skipped` is a closed state (`is_complete` has always said so),
+/// but the progress count only looked at `Completed`. A plan with skipped rows
+/// then advertised a lower number than the checklist it mirrors, so the same
+/// plan read `3/15 done` on the card and `1/15 done` in the tool reply.
+#[test]
+fn test_closed_count_includes_skipped() {
+    let mut plan = create_test_plan(Uuid::new_v4());
+
+    for (order, title, status) in [
+        (1, "Task 1", TaskStatus::Completed),
+        (2, "Task 2", TaskStatus::Skipped),
+        (3, "Task 3", TaskStatus::Skipped),
+        (4, "Task 4", TaskStatus::Pending),
+    ] {
+        let mut task = create_test_task(order, title);
+        task.status = status;
+        plan.add_task(task);
+    }
+
+    assert_eq!(plan.count_by_status(TaskStatus::Skipped), 2);
+    assert_eq!(plan.closed_count(), 3, "skipped rows are closed");
+    assert_eq!(plan.progress_percentage(), 75.0);
+    assert!(!plan.is_complete(), "one pending row is still open");
+
+    plan.tasks[3].status = TaskStatus::Completed;
+    assert_eq!(plan.closed_count(), 4);
+    assert!(plan.is_complete());
+}
+
 #[test]
 fn test_is_complete() {
     let mut plan = create_test_plan(Uuid::new_v4());

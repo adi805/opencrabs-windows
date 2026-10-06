@@ -1222,19 +1222,10 @@ pub(crate) fn format_plan_reminder(plan: &crate::tui::plan::PlanDocument) -> Opt
     if total == 0 {
         return None;
     }
-    let done = plan
-        .tasks
-        .iter()
-        .filter(|t| matches!(t.status, TaskStatus::Completed))
-        .count();
+    let done = plan.closed_count();
     // Skipped tasks are intentionally resolved; once every task is done or
     // skipped there's nothing left to nag about.
-    let resolved = plan
-        .tasks
-        .iter()
-        .filter(|t| matches!(t.status, TaskStatus::Completed | TaskStatus::Skipped))
-        .count();
-    if resolved == total {
+    if done == total {
         return None;
     }
 

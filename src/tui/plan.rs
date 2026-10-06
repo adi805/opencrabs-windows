@@ -440,13 +440,29 @@ impl PlanDocument {
         self.tasks.iter().filter(|t| t.status == status).count()
     }
 
+    /// Tasks closed out: `Completed` or `Skipped`.
+    ///
+    /// The single rule for "how many rows are done", shared by the checklist
+    /// label, the plan-tool progress line and the archive check. Counting
+    /// only `Completed` made the tool reply disagree with the checklist it
+    /// was describing: a plan with two skipped rows renders `⏭` marks and
+    /// `(Active, 3/15 done)`, while the same turn's `start` reply said
+    /// `1/15 done`. `is_complete` has always treated `Skipped` as closed, so
+    /// the count has to as well.
+    pub fn closed_count(&self) -> usize {
+        self.tasks
+            .iter()
+            .filter(|t| matches!(t.status, TaskStatus::Completed | TaskStatus::Skipped))
+            .count()
+    }
+
     /// Get progress percentage (0-100)
     pub fn progress_percentage(&self) -> f32 {
         if self.tasks.is_empty() {
             return 0.0;
         }
-        let completed = self.count_by_status(TaskStatus::Completed);
-        (completed as f32 / self.tasks.len() as f32) * 100.0
+        let closed = self.closed_count();
+        (closed as f32 / self.tasks.len() as f32) * 100.0
     }
 
     /// Check if all tasks are completed

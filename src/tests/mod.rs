@@ -322,6 +322,7 @@ pub mod doctor_fix_test;
 pub mod duplicate_submit_test;
 pub mod durability_effect_ledger_test;
 pub mod durability_foundation_test;
+pub mod durability_kill_harness_test;
 pub mod edit_retry_test;
 pub mod em_dash_guard_test;
 pub mod empty_reasoning_stub_test;
@@ -466,6 +467,7 @@ pub mod session_search_empty_query_test;
 pub mod session_search_query_test;
 pub mod session_search_tail_test;
 pub mod session_search_tokenized_test;
+pub mod session_surface_test;
 pub mod shutdown_recovery_row_test;
 #[cfg(feature = "telegram")]
 #[cfg(feature = "telegram")]

@@ -377,16 +377,7 @@ pub fn format_active_checklist_windowed(
             plan.title
         );
     }
-    let done = plan
-        .tasks
-        .iter()
-        .filter(|t| {
-            matches!(
-                t.status,
-                crate::tui::plan::TaskStatus::Completed | crate::tui::plan::TaskStatus::Skipped
-            )
-        })
-        .count();
+    let done = plan.closed_count();
 
     let total = plan.tasks.len();
     if full || total <= 10 {

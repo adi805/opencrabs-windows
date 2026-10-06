@@ -940,6 +940,7 @@ impl Config {
             agent: overlay.agent,
             daemon: overlay.daemon,
             a2a: overlay.a2a,
+            session_surface: overlay.session_surface,
             image: overlay.image,
             cron: overlay.cron,
             doctor: overlay.doctor,

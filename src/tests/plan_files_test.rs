@@ -5,7 +5,7 @@
 //! scaffold, and the Editing markdown-to-description mirror.
 
 use crate::config::profile::{home_for_profile, with_profile_home_async};
-use crate::tui::plan::{PlanDocument, PlanStatus, PlanTask, TaskType};
+use crate::tui::plan::{PlanDocument, PlanStatus, PlanTask, TaskStatus, TaskType};
 use crate::utils::plan_files::{
     PlanModeState, archive_dir, create_design_md, discard_plan, is_plan_autonomy,
     is_pre_init_editing, load_plan, plan_json_path, plan_md_path, plan_mode_state,
@@ -462,6 +462,65 @@ async fn archive_roundtrip_latest_archived_plan_finds_writer_output() {
             );
         assert_eq!(doc.title, "Round trip");
         assert_eq!(doc.tasks.len(), 1);
+    })
+    .await;
+}
+
+/// The count a card renders as done: tasks whose status is `Completed`.
+fn completed_count(plan: &PlanDocument) -> usize {
+    plan.tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::Completed)
+        .count()
+}
+
+/// AC-020: a plan's task statuses survive a restart.
+///
+/// The durable store is the per-session JSON file, so "restart" means
+/// dropping every in-memory value and reading the file back off disk. The
+/// chat card is a pure function of the loaded document (its signature is a
+/// hash over the rendered body), so an identical document after reload is
+/// exactly what keeps the card matching reality. That is the property the
+/// old "card says 4/9 while the work is 9/9" complaint was about.
+///
+/// No SQLite copy of plan state is involved, by design: the plan-lifecycle
+/// redesign moved this state here and dropped the tables
+/// (`20260713000001_drop_orphaned_plans_tables.sql`). Asserting it here is
+/// what stops a later change from quietly reintroducing a second store.
+#[tokio::test]
+async fn plan_task_status_survives_a_restart() {
+    in_temp_home(async {
+        let sid = Uuid::new_v4();
+        let mut plan = PlanDocument::new(sid, "Restart plan".to_string());
+        for i in 0..4 {
+            plan.add_task(task(i + 1, &format!("t{}", i + 1)));
+        }
+        plan.tasks[0].status = TaskStatus::Completed;
+        plan.tasks[1].status = TaskStatus::Completed;
+        plan.tasks[2].status = TaskStatus::InProgress;
+        save_plan(&plan).await.unwrap();
+
+        // Restart: nothing the writer held in memory is reused.
+        let reloaded = load_plan(sid).await.expect("plan must load after restart");
+
+        assert_eq!(reloaded.tasks.len(), plan.tasks.len());
+        for (before, after) in plan.tasks.iter().zip(reloaded.tasks.iter()) {
+            assert_eq!(
+                after.status, before.status,
+                "task {} changed status across a restart",
+                before.order
+            );
+        }
+        assert_eq!(
+            completed_count(&reloaded),
+            completed_count(&plan),
+            "the completed count the card renders must match across a restart"
+        );
+        assert_eq!(
+            completed_count(&reloaded),
+            2,
+            "the fixture has exactly two completed tasks"
+        );
     })
     .await;
 }
