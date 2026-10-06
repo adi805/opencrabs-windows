@@ -128,11 +128,20 @@ jobs:
                 {
                   echo "=== stall dump: pid $pid at $(date -u +%H:%M:%S) ==="
                   echo "--- gdb: thread apply all bt ---"
-                  timeout 60 gdb -p "$pid" -batch -ex 'thread apply all bt' 2>&1 | tail -250
+                  if command -v gdb >/dev/null 2>&1; then
+                    timeout 60 gdb -p "$pid" -batch -ex 'thread apply all bt' 2>&1 | tail -250
+                  else
+                    echo "(gdb not on PATH)"
+                  fi
                   echo "--- /proc per-thread table ---"
                   for t in /proc/"$pid"/task/*; do
                     echo "## tid=$(basename "$t") comm=$(cat "$t/comm" 2>/dev/null) state=$(awk '/^State:/{print $2}' "$t/status" 2>/dev/null) wchan=$(cat "$t/wchan" 2>/dev/null)"
-                    sed 's/^/    /' "$t/stack" 2>/dev/null
+                    # `wchan` and `syscall` are same-user readable and already say
+                    # a lot (futex_wait vs pipe_read vs 0). The kernel stack is
+                    # NOT a ptrace read, so it needs CAP_SYS_ADMIN: the step runs
+                    # as `runner`, hence sudo. This only executes on a stall.
+                    echo "    syscall: $(cat "$t/syscall" 2>/dev/null)"
+                    sudo cat "$t/stack" 2>/dev/null | sed 's/^/    /'
                   done
                   echo "--- open fds ---"
                   ls -l /proc/"$pid"/fd 2>/dev/null | tail -40
