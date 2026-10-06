@@ -223,6 +223,11 @@ fi
 say "crash and ANR buffers"
 adb logcat -d -b crash > "$OUT/logcat-crash.txt" 2>&1 || true
 echo "crash buffer lines: $(wc -l < "$OUT/logcat-crash.txt")"
+# Print the buffer whole. The stack trace is the only thing that says WHY the
+# app died, and the grep below keeps just the header line, so a run that fails
+# here reports "FATAL EXCEPTION" and nothing else. Cost is a few dozen lines.
+echo "--- crash buffer (full) ---"
+cat "$OUT/logcat-crash.txt"
 adb logcat -d > "$OUT/logcat-full.txt" 2>&1 || true
 grep -iE 'ANR in|FATAL EXCEPTION|Force finishing' "$OUT/logcat-full.txt" > "$OUT/logcat-anr.txt" || true
 cat "$OUT/logcat-anr.txt"
