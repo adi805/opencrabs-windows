@@ -104,10 +104,46 @@ jobs:
             # timeout with no attempt tail. The bound must be able to fire
             # without killing the reporter.
             rc=0
+            rm -f /tmp/stall-dump.txt
             # The pre-built binary (see the build step), not `cargo test`: any
             # rebuild inside this bound turns the bound into a lie.
-            timeout "$TIMEOUT_SECS" "$BIN" db_pre_migration_snapshot_test \
-              --test-threads=4 > /tmp/iter.log 2>&1 || rc=$?
+            #
+            # Launched in the background under a watchdog rather than under bare
+            # `timeout`. A timeout only reports THAT the attempt hung, never
+            # WHERE; the 2026-10-06 run produced `STALL_AT_ITERATION_67` and the
+            # tail showed four tests wedged together, which is consistent with a
+            # process-wide block but cannot distinguish a deadlock from a slow
+            # query. The watchdog dumps every thread's kernel stack and state
+            # before killing the process, so the next stall names the operation
+            # instead of narrowing the suspect list by elimination.
+            "$BIN" db_pre_migration_snapshot_test --test-threads=4 > /tmp/iter.log 2>&1 &
+            pid=$!
+            (
+              sleep "$TIMEOUT_SECS"
+              if kill -0 "$pid" 2>/dev/null; then
+                # gdb attaches to a process it is not the parent of, which
+                # ptrace_scope=1 forbids. Best-effort: the /proc tables below
+                # still work as root if this fails.
+                sudo sysctl -w kernel.yama.ptrace_scope=0 >/dev/null 2>&1 || true
+                {
+                  echo "=== stall dump: pid $pid at $(date -u +%H:%M:%S) ==="
+                  echo "--- gdb: thread apply all bt ---"
+                  timeout 60 gdb -p "$pid" -batch -ex 'thread apply all bt' 2>&1 | tail -250
+                  echo "--- /proc per-thread table ---"
+                  for t in /proc/"$pid"/task/*; do
+                    echo "## tid=$(basename "$t") comm=$(cat "$t/comm" 2>/dev/null) state=$(awk '/^State:/{print $2}' "$t/status" 2>/dev/null) wchan=$(cat "$t/wchan" 2>/dev/null)"
+                    sed 's/^/    /' "$t/stack" 2>/dev/null
+                  done
+                  echo "--- open fds ---"
+                  ls -l /proc/"$pid"/fd 2>/dev/null | tail -40
+                } > /tmp/stall-dump.txt 2>&1
+                kill -9 "$pid" 2>/dev/null
+              fi
+            ) &
+            wpid=$!
+            wait "$pid"; rc=$?
+            kill "$wpid" 2>/dev/null
+            wait "$wpid" 2>/dev/null
             done_iters=$i
             if [ "$rc" -eq 0 ]; then
               echo "$start iter $i ok"
@@ -116,7 +152,11 @@ jobs:
             echo "$start iter $i rc=$rc <-- NOT OK"
             echo "----- tail of attempt $i -----"
             tail -60 /tmp/iter.log
-            if [ "$rc" -eq 124 ]; then
+            if [ -s /tmp/stall-dump.txt ]; then
+              echo "----- stall dump (where the threads were stuck) -----"
+              cat /tmp/stall-dump.txt
+              verdict="STALL"
+            elif [ "$rc" -eq 137 ]; then
               verdict="STALL"
             else
               verdict="FAIL"
