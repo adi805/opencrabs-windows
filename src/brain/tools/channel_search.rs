@@ -343,7 +343,7 @@ impl Tool for ChannelSearchTool {
                     .collect();
 
                 Ok(ToolResult::success(format!(
-                    "Recent messages in {} ({}, {}):\n{}",
+                    "Recent messages in {} ({}, {} messages):\n{}",
                     chat_id,
                     scope.label(inherited),
                     messages.len(),
@@ -416,7 +416,7 @@ impl Tool for ChannelSearchTool {
                     .collect();
 
                 Ok(ToolResult::success(format!(
-                    "Search results for \"{}\" ({}, {}):\n{}",
+                    "Search results for \"{}\" ({}, {} messages):\n{}",
                     query,
                     scope.label(inherited),
                     messages.len(),
@@ -482,7 +482,7 @@ impl Tool for ChannelSearchTool {
                     .collect();
 
                 Ok(ToolResult::success(format!(
-                    "Attachments in {} ({}, {}):\n{}",
+                    "Attachments in {} ({}, {} messages):\n{}",
                     chat_id,
                     scope.label(inherited),
                     attachments.len(),

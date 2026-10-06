@@ -699,7 +699,7 @@ mod tool {
         let input = serde_json::json!({"operation": "recent", "chat_id": "-100111", "n": 3});
         let result = tool.execute(input, &ctx()).await.unwrap();
         assert!(result.success);
-        assert!(result.output.contains("(3)"));
+        assert!(result.output.contains("(all topics inherited, 3 messages)"));
     }
 
     #[tokio::test]
@@ -737,7 +737,7 @@ mod tool {
         let input = serde_json::json!({"operation": "search", "query": "deploy"});
         let result = tool.execute(input, &ctx()).await.unwrap();
         assert!(result.success);
-        assert!(result.output.contains("(2)")); // 2 results
+        assert!(result.output.contains("(all topics inherited, 2 messages)")); // 2 results
         assert!(result.output.contains("Alice"));
         assert!(result.output.contains("Carol"));
     }
@@ -754,7 +754,7 @@ mod tool {
             serde_json::json!({"operation": "search", "query": "error", "channel": "telegram"});
         let result = tool.execute(input, &ctx()).await.unwrap();
         assert!(result.success);
-        assert!(result.output.contains("(1)"));
+        assert!(result.output.contains("(all topics inherited, 1 messages)"));
         assert!(result.output.contains("Alice"));
         assert!(!result.output.contains("Bob"));
     }
