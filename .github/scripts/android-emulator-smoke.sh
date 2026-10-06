@@ -96,8 +96,10 @@ else
 fi
 
 # ------------------------------------------------------------------ seed ----
-# Only the session surface is configured. Everything else is the core's own
-# default, so a failure here points at the surface, not at unrelated config.
+# The session surface is the thing under test; [agent] debug_logs is set only
+# so the core writes a log the dump below can read. Every other setting stays at
+# the core's own default, so a failure here still points at the surface, not at
+# unrelated config.
 if [ "$ROOTED" = "1" ]; then
   say "seed config (enable the session surface)"
   adb shell "mkdir -p $HOME_DIR/.opencrabs" > "$OUT/seed.txt" 2>&1 || true
@@ -107,6 +109,15 @@ if [ "$ROOTED" = "1" ]; then
 enabled = true
 bind = "127.0.0.1"
 port = 18792
+
+# The core logs nowhere by default: `logging.file` is None, the file layer is
+# gated per-event on `agent.debug_logs`, and the console layer writes to
+# io::sink unless `console_output` is set. So the core-log dump below reported
+# "the core did not get far enough to write one" on every run - a false
+# conclusion, since the core reaches its banner and simply had no sink. Turn
+# file logging on so the surface decision is actually recorded.
+[agent]
+debug_logs = true
 CFG
   # The commands above run as root, so everything they create is owned by root.
   # The core runs as the app uid and has to WRITE here (it creates opencrabs.db
@@ -189,7 +200,7 @@ if [ -n "$CORE_LOG" ]; then
   echo "--- core log: last 30 lines ---"
   tail -30 "$OUT/core-log.txt"
 else
-  echo "NOTE: no core log under $HOME_DIR/.opencrabs/logs - the core did not get far enough to write one"
+  echo "NOTE: no core log under $HOME_DIR/.opencrabs/logs. The seed sets [agent] debug_logs = true, so an empty dir means the core never loaded that config (or never reached logging init) - not that the surface was reached and refused."
 fi
 
 # ------------------------------------------------- surface liveness probe ----
