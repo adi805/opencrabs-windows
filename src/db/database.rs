@@ -352,6 +352,11 @@ impl Database {
             .builder(Runtime::Tokio1)
             .context("Failed to build pool config")?
             .max_size(1)
+            // Bound the acquire path here too (#55). This pool is capped at a
+            // single connection, so an `interact` that never returns its slot
+            // makes every later `pool.get()` wait forever. That is the same
+            // unbounded wait as the file-backed pool above, with less headroom.
+            .wait_timeout(Some(std::time::Duration::from_secs(60)))
             .post_create(Hook::async_fn(|conn, _| {
                 Box::pin(async move {
                     conn.interact(|conn| apply_pragmas_in_memory(conn))
