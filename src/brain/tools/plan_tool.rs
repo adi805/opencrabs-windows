@@ -2567,11 +2567,7 @@ impl Tool for PlanTool {
                             }
                         }
 
-                        let done = current_plan
-                            .tasks
-                            .iter()
-                            .filter(|t| matches!(t.status, TaskStatus::Completed))
-                            .count();
+                        let done = current_plan.closed_count();
                         let total = current_plan.tasks.len();
                         let task = current_plan.get_task_by_order(order).unwrap();
                         let details = render_task_details(current_plan, task);
@@ -3274,11 +3270,7 @@ pub(crate) fn report_after_worker(
             ),
         );
     };
-    let done = plan
-        .tasks
-        .iter()
-        .filter(|t| matches!(t.status, TaskStatus::Completed))
-        .count();
+    let done = plan.closed_count();
     let progress = format!("Progress: {done}/{} done.", plan.tasks.len());
     let record_hint = format!(
         "Record the verdict yourself: `complete` with task_order={order} and \

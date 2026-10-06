@@ -84,6 +84,28 @@ fn fully_resolved_plan_is_not_reminded() {
     assert!(format_plan_reminder(&plan).is_none());
 }
 
+/// Regression: the reminder counted only `Completed`, so a plan with skipped
+/// rows told the model a lower number than the checklist the model can see.
+/// Live case (15-task session, 2 skipped): the card rendered `(Active, 3/15
+/// done)` while this line said `1/15 done`, in the same turn.
+#[test]
+fn skipped_tasks_count_as_done_in_the_reminder() {
+    let plan = plan_with(
+        PlanStatus::Active,
+        vec![
+            ("done", TaskStatus::Completed),
+            ("obsolete", TaskStatus::Skipped),
+            ("dropped", TaskStatus::Skipped),
+            ("still to do", TaskStatus::Pending),
+        ],
+    );
+    let out = format_plan_reminder(&plan).expect("one pending task still needs doing");
+    assert!(
+        out.contains("3/4 done"),
+        "skipped rows are closed, so the count must include them; got: {out}"
+    );
+}
+
 #[test]
 fn legacy_active_statuses_map_to_active_and_are_reminded() {
     for legacy in ["Approved", "InProgress"] {
