@@ -115,8 +115,17 @@ public class CoreService extends Service {
         // library search path, so the directory has to be handed over
         // explicitly or the loader fails before main() runs.
         builder.environment().put("LD_LIBRARY_PATH", nativeDir(this));
-        builder.environment().put("OPENCRABS_HOME",
-                new File(getFilesDir(), "home").getAbsolutePath());
+        // The core resolves its home through dirs::home_dir(), which reads
+        // $HOME. It does not read OPENCRABS_HOME: that name appears only in
+        // the docs (GETTING_STARTED.md), never in the Rust source, so the
+        // config seeded at <filesDir>/home/.opencrabs was never picked up and
+        // the session surface stayed disabled. $HOME is what actually points
+        // the core at the seeded directory. OPENCRABS_HOME is kept as well so
+        // this keeps working if the core ever starts honouring it.
+        File coreHome = new File(getFilesDir(), "home");
+        coreHome.mkdirs();
+        builder.environment().put("HOME", coreHome.getAbsolutePath());
+        builder.environment().put("OPENCRABS_HOME", coreHome.getAbsolutePath());
 
         try {
             core = builder.start();
