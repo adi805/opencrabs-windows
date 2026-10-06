@@ -157,6 +157,196 @@ async fn a_correct_token_reaches_the_handler() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+// ── the whole path over a socket (FR-004, FR-006, AC-010) ───────────────────
+
+/// One live server on an ephemeral loopback port, one real session, and a stub
+/// provider: submit, stream and transcript all go over HTTP, with no key and no
+/// network. `MockProvider` answers without touching a provider, so the run
+/// reaches `done` and the transcript grows a real assistant row.
+#[tokio::test]
+async fn the_surface_serves_submit_stream_and_transcript_over_a_socket() {
+    use crate::a2a::test_helpers::helpers;
+    use crate::brain::agent::service::AgentService;
+    use crate::config::SessionSurfaceConfig;
+    use crate::db::models::{Message, Session};
+    use crate::db::repository::message::MessageRepository;
+    use crate::db::repository::session::SessionRepository;
+    use crate::db::repository::submission::SubmissionRepository;
+    use crate::tests::agent_service_mocks::MockProvider;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let ctx = helpers::placeholder_service_context().await;
+    let pool = ctx.pool();
+
+    let session = Session::new(Some("surface e2e".to_string()), None, None);
+    SessionRepository::new(pool.clone())
+        .create(&session)
+        .await
+        .expect("create session");
+    let seeded = Message::new(
+        session.id,
+        "user".to_string(),
+        "hello from the app".to_string(),
+        1,
+    );
+    MessageRepository::new(pool.clone())
+        .create(&seeded)
+        .await
+        .expect("seed one transcript row");
+
+    // The agent shares this pool, so the run it drives writes to the DB the
+    // surface reads back.
+    let agent = Arc::new(AgentService::new_for_test(Arc::new(MockProvider), ctx.clone()).await);
+
+    let config = SessionSurfaceConfig {
+        enabled: true,
+        bind: "127.0.0.1".to_string(),
+        // 0 asks the OS for a free port; the server reports what it bound.
+        port: 0,
+        allowed_origins: vec![],
+        api_key: Some("secret".to_string()),
+    };
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let _ = crate::session::surface::start_server(&config, agent, ctx, Some(ready_tx)).await;
+    });
+
+    let bound = tokio::time::timeout(Duration::from_secs(15), ready_rx)
+        .await
+        .expect("the server signals readiness within 15s")
+        .expect("the ready channel stays open")
+        .expect("the surface binds");
+
+    // AC: assert on the address the socket actually bound, not the one the
+    // config asked for, so `port = 0` cannot hide a non-loopback listener.
+    assert!(
+        bound.ip().is_loopback(),
+        "the surface must listen on loopback, bound {bound}"
+    );
+    assert_ne!(bound.port(), 0, "the OS assigned a real port: {bound}");
+
+    let base = format!("http://{bound}");
+    let client = reqwest::Client::new();
+    let submit_url = format!("{base}/surface/sessions/{}/submit", session.id);
+    let body = serde_json::json!({ "request_id": "e2e-req-1", "input": "ping" });
+
+    // ── one request id, submitted twice ─────────────────────────────────────
+    let first: serde_json::Value = client
+        .post(&submit_url)
+        .header("authorization", "Bearer secret")
+        .json(&body)
+        .send()
+        .await
+        .expect("first submit")
+        .json()
+        .await
+        .expect("first submit body");
+    assert_eq!(first["created"], serde_json::json!(true), "first: {first}");
+
+    let second: serde_json::Value = client
+        .post(&submit_url)
+        .header("authorization", "Bearer secret")
+        .json(&body)
+        .send()
+        .await
+        .expect("second submit")
+        .json()
+        .await
+        .expect("second submit body");
+    assert_eq!(
+        second["created"],
+        serde_json::json!(false),
+        "a retry of one request id must not claim a second run: {second}"
+    );
+    assert_eq!(
+        second["request_id"], first["request_id"],
+        "the retry reads back the original row"
+    );
+
+    // ── stream to completion ────────────────────────────────────────────────
+    let mut stream = client
+        .get(format!("{base}/surface/sessions/{}/events", session.id))
+        .header("authorization", "Bearer secret")
+        .send()
+        .await
+        .expect("events response");
+    assert_eq!(stream.status().as_u16(), 200, "the stream opens");
+
+    let mut seen = String::new();
+    let mut saw_done = false;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_secs(15), stream.chunk()).await {
+            Ok(Ok(Some(bytes))) => {
+                seen.push_str(&String::from_utf8_lossy(&bytes));
+                if seen.contains("event: done") {
+                    saw_done = true;
+                    break;
+                }
+            }
+            Ok(Ok(None)) => break,
+            Ok(Err(e)) => panic!("the event stream failed: {e}"),
+            Err(_) => panic!("the event stream went quiet for 15s; saw:\n{seen}"),
+        }
+    }
+    assert!(
+        saw_done,
+        "the stream ends with a done event once the run is terminal; saw:\n{seen}"
+    );
+    assert!(
+        seen.contains("event: submission"),
+        "the stream reports submission state; saw:\n{seen}"
+    );
+    assert!(
+        seen.contains("event: message"),
+        "the stream reports committed transcript rows; saw:\n{seen}"
+    );
+
+    // ── the transcript must be exactly what the DB holds ────────────────────
+    let api_rows: Vec<serde_json::Value> = client
+        .get(format!("{base}/surface/sessions/{}/transcript", session.id))
+        .header("authorization", "Bearer secret")
+        .send()
+        .await
+        .expect("transcript response")
+        .json()
+        .await
+        .expect("transcript body");
+    let db_rows = MessageRepository::new(pool.clone())
+        .list_by_session(session.id)
+        .await
+        .expect("read the transcript from the db");
+
+    assert_eq!(
+        api_rows.len(),
+        db_rows.len(),
+        "the endpoint and the DB must agree on how many rows exist"
+    );
+    for (api, db) in api_rows.iter().zip(db_rows.iter()) {
+        assert_eq!(api["id"], serde_json::json!(db.id.to_string()));
+        assert_eq!(api["role"], serde_json::json!(db.role.clone()));
+        assert_eq!(api["sequence"], serde_json::json!(db.sequence));
+    }
+    assert!(
+        api_rows
+            .iter()
+            .any(|row| row["id"] == serde_json::json!(seeded.id.to_string())),
+        "the seeded row is part of the transcript: {api_rows:?}"
+    );
+
+    // ── one request id, one submission row ──────────────────────────────────
+    let submissions = SubmissionRepository::new(pool.clone())
+        .list_for_session(&session.id.to_string())
+        .await
+        .expect("list submissions");
+    assert_eq!(
+        submissions.len(),
+        1,
+        "two submits of one request id leave exactly one row: {submissions:?}"
+    );
+}
+
 // ── FR-004: the submit path is idempotent on requestId ─────────────────────
 //
 // Milestone 2 part (c) shipped the storage contract with tests but had no
