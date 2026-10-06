@@ -493,6 +493,56 @@ mod repository {
             .unwrap();
         assert!(none.is_empty(), "nonexistent thread_id should return empty");
     }
+
+    /// #719: `search_general()` is `search()`'s General arm. General rows
+    /// persist as `thread_id IS NULL`, and `search(None)` cannot express
+    /// "General only" — it means "no thread filter" and matches every topic.
+    #[tokio::test]
+    async fn search_general_returns_only_null_thread_rows() {
+        let (_db, repo) = setup().await;
+        let chat = "-100718";
+
+        // Interleave General and topic rows so ordering cannot fake a pass.
+        repo.insert(&msg("telegram", chat, "Forum", "Alice", "needle general one"))
+            .await
+            .unwrap();
+        let mut topic_ten = msg("telegram", chat, "Forum", "Bob", "needle topic ten");
+        topic_ten.thread_id = Some("10".into());
+        repo.insert(&topic_ten).await.unwrap();
+        repo.insert(&msg("telegram", chat, "Forum", "Alice", "needle general two"))
+            .await
+            .unwrap();
+        let mut topic_twenty = msg("telegram", chat, "Forum", "Bob", "needle topic twenty");
+        topic_twenty.thread_id = Some("20".into());
+        repo.insert(&topic_twenty).await.unwrap();
+        // A different chat's General row must not leak in.
+        repo.insert(&msg("telegram", "other-chat", "Other", "Eve", "needle elsewhere"))
+            .await
+            .unwrap();
+
+        let general = repo
+            .search_general("telegram", chat, "needle", 30)
+            .await
+            .unwrap();
+        assert_eq!(general.len(), 2, "General must see exactly its own rows");
+        assert!(general.iter().all(|m| m.thread_id.is_none()));
+        assert!(general.iter().all(|m| !m.content.contains("topic")));
+        assert!(general.iter().all(|m| !m.content.contains("elsewhere")));
+
+        // Contrast: the unscoped search() returns all 4 rows of this chat.
+        let unscoped = repo
+            .search(Some("telegram"), Some(chat), "needle", 30, None)
+            .await
+            .unwrap();
+        assert_eq!(unscoped.len(), 4, "unscoped search spans every topic");
+
+        // And the LIKE term still bites.
+        let miss = repo
+            .search_general("telegram", chat, "haystack", 30)
+            .await
+            .unwrap();
+        assert!(miss.is_empty());
+    }
 }
 
 // --- ChannelSearchTool Tests ---
@@ -853,5 +903,374 @@ mod tool {
             "Bob's line should not have [msgid:], got: {}",
             bob_line
         );
+    }
+}
+
+// --- Topic scoping (#718/#719) ---
+
+mod topic_scope {
+    use crate::brain::tools::channel_search::ChannelSearchTool;
+    use crate::brain::tools::{OriginTarget, Tool, ToolExecutionContext};
+    use crate::channels::target_resolver::TargetResolution;
+    use crate::db::Database;
+    use crate::db::models::ChannelMessage;
+    use crate::db::repository::channel_message::ChannelMessageRepository;
+    use std::sync::Arc;
+
+    const CHAT: &str = "-1003936827469";
+
+    async fn setup() -> (Database, ChannelMessageRepository, ChannelSearchTool) {
+        let db = Database::connect_in_memory().await.unwrap();
+        db.run_migrations().await.unwrap();
+        let repo = ChannelMessageRepository::new(db.pool().clone());
+        let tool = ChannelSearchTool::new(repo.clone());
+        (db, repo, tool)
+    }
+
+    /// Stand-in for the live ChannelManager: only the forum evidence is used
+    /// by the resolver, and only for chats in `forums`.
+    struct FakeWorld {
+        forums: Vec<i64>,
+    }
+
+    #[async_trait::async_trait]
+    impl TargetResolution for FakeWorld {
+        async fn session_for_channel(
+            &self,
+            _channel: &str,
+            _chat_id: &str,
+            _thread: Option<i32>,
+        ) -> Option<uuid::Uuid> {
+            None
+        }
+        async fn binding_for_session(&self, _session: uuid::Uuid) -> Option<OriginTarget> {
+            None
+        }
+        async fn telegram_chat_topics(&self, chat_id: i64) -> anyhow::Result<Option<Vec<i32>>> {
+            if self.forums.contains(&chat_id) {
+                Ok(Some(vec![30129, 42360]))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    fn ctx_with(
+        chat_id: &str,
+        thread: Option<i32>,
+        world: Option<Arc<dyn TargetResolution + Send + Sync>>,
+    ) -> ToolExecutionContext {
+        let mut ctx = ToolExecutionContext::new(uuid::Uuid::new_v4());
+        ctx.origin_target = Some(Arc::new(OriginTarget {
+            channel: "telegram",
+            chat_id: chat_id.to_string(),
+            thread,
+        }));
+        ctx.world = world;
+        ctx
+    }
+
+    fn ctx() -> ToolExecutionContext {
+        ToolExecutionContext::new(uuid::Uuid::new_v4())
+    }
+
+    fn row(chat: &str, content: &str, thread: Option<&str>) -> ChannelMessage {
+        ChannelMessage::new(
+            "telegram".into(),
+            chat.into(),
+            Some("Forum".into()),
+            "u1".into(),
+            "Alice".into(),
+            content.into(),
+            "text".into(),
+            None,
+        )
+        .with_thread(thread.map(str::to_string), None)
+    }
+
+    /// The #718 leak, pinned: a session bound to topic 30129 omitting the
+    /// scope must NOT see other topics.
+    #[tokio::test]
+    async fn session_scope_reads_only_the_bound_topic() {
+        let (_db, repo, tool) = setup().await;
+        repo.insert(&row(CHAT, "mine", Some("30129"))).await.unwrap();
+        repo.insert(&row(CHAT, "theirs", Some("42360"))).await.unwrap();
+        repo.insert(&row(CHAT, "general talk", None)).await.unwrap();
+
+        let input = serde_json::json!({"operation": "recent", "chat_id": CHAT});
+        let out = tool.execute(input, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
+        assert!(out.success);
+        assert!(out.output.contains("mine"), "{}", out.output);
+        assert!(!out.output.contains("theirs"), "{}", out.output);
+        assert!(!out.output.contains("general talk"), "{}", out.output);
+        assert!(out.output.contains("topic 30129 inherited"), "{}", out.output);
+    }
+
+    /// Explicit `all` is the only way to a wide read, and it says so.
+    #[tokio::test]
+    async fn explicit_all_spans_topics_and_is_labelled() {
+        let (_db, repo, tool) = setup().await;
+        repo.insert(&row(CHAT, "mine", Some("30129"))).await.unwrap();
+        repo.insert(&row(CHAT, "theirs", Some("42360"))).await.unwrap();
+
+        let input = serde_json::json!({"operation": "recent", "chat_id": CHAT, "topic_scope": "all"});
+        let out = tool.execute(input, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
+        assert!(out.success);
+        assert!(out.output.contains("mine") && out.output.contains("theirs"), "{}", out.output);
+        assert!(out.output.contains("all topics"), "{}", out.output);
+        assert!(!out.output.contains("inherited"), "{}", out.output);
+    }
+
+    /// A General binding — the sentinel form — resolves to the NULL rows, and
+    /// must never match the legacy `'1'` rows (D3 store-encoding rule).
+    /// Telegram-only: the sentinel is a Telegram concept (#1220).
+    #[cfg(feature = "telegram")]
+    #[tokio::test]
+    async fn general_scope_reads_null_rows_only() {
+        let (_db, repo, tool) = setup().await;
+        repo.insert(&row(CHAT, "general talk", None)).await.unwrap();
+        repo.insert(&row(CHAT, "legacy sentinel", Some("1"))).await.unwrap();
+        repo.insert(&row(CHAT, "a topic", Some("30129"))).await.unwrap();
+
+        let input = serde_json::json!({"operation": "recent", "chat_id": CHAT});
+        let out = tool.execute(input, &ctx_with(CHAT, Some(1), None)).await.unwrap();
+        assert!(out.success);
+        assert!(out.output.contains("general talk"), "{}", out.output);
+        assert!(!out.output.contains("legacy sentinel"), "{}", out.output);
+        assert!(!out.output.contains("a topic"), "{}", out.output);
+        assert!(out.output.contains("General inherited"), "{}", out.output);
+    }
+
+    /// A legacy NULL-encoded binding on a known forum is still General —
+    /// forum evidence decides, not the absent thread.
+    #[tokio::test]
+    async fn null_binding_on_a_known_forum_is_general() {
+        let (_db, repo, tool) = setup().await;
+        repo.insert(&row(CHAT, "general talk", None)).await.unwrap();
+        repo.insert(&row(CHAT, "a topic", Some("30129"))).await.unwrap();
+
+        let world: Arc<dyn TargetResolution + Send + Sync> =
+            Arc::new(FakeWorld { forums: vec![CHAT.parse().unwrap()] });
+        let input = serde_json::json!({"operation": "recent", "chat_id": CHAT});
+        let out = tool.execute(input, &ctx_with(CHAT, None, Some(world))).await.unwrap();
+        assert!(out.success);
+        assert!(out.output.contains("general talk"), "{}", out.output);
+        assert!(!out.output.contains("a topic"), "{}", out.output);
+    }
+
+    /// A NULL binding on a NON-forum chat is a genuine DM: unfiltered.
+    #[tokio::test]
+    async fn null_binding_outside_a_forum_reads_everything() {
+        let (_db, repo, tool) = setup().await;
+        repo.insert(&row(CHAT, "first", None)).await.unwrap();
+        repo.insert(&row(CHAT, "second", Some("30129"))).await.unwrap();
+
+        let world: Arc<dyn TargetResolution + Send + Sync> =
+            Arc::new(FakeWorld { forums: vec![] });
+        let input = serde_json::json!({"operation": "recent", "chat_id": CHAT});
+        let out = tool.execute(input, &ctx_with(CHAT, None, Some(world))).await.unwrap();
+        assert!(out.success);
+        assert!(out.output.contains("first") && out.output.contains("second"), "{}", out.output);
+    }
+
+    /// No ambient binding (cron / CLI / sub-agent) → unfiltered, unchanged.
+    #[tokio::test]
+    async fn no_origin_binding_is_unfiltered() {
+        let (_db, repo, tool) = setup().await;
+        repo.insert(&row(CHAT, "first", None)).await.unwrap();
+        repo.insert(&row(CHAT, "second", Some("30129"))).await.unwrap();
+
+        let input = serde_json::json!({"operation": "recent", "chat_id": CHAT});
+        let out = tool.execute(input, &ctx()).await.unwrap();
+        assert!(out.success);
+        assert!(out.output.contains("first") && out.output.contains("second"), "{}", out.output);
+    }
+
+    /// A foreign chat_id must not inherit the session's topic (the decision
+    /// #718 defers to the fix — fall back to explicit-All, visible).
+    #[tokio::test]
+    async fn foreign_chat_does_not_inherit_the_topic() {
+        let (_db, repo, tool) = setup().await;
+        let other = "-100999";
+        repo.insert(&row(other, "other general", None)).await.unwrap();
+        repo.insert(&row(other, "other topic", Some("42360"))).await.unwrap();
+
+        let input = serde_json::json!({"operation": "recent", "chat_id": other});
+        let out = tool.execute(input, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
+        assert!(out.success);
+        assert!(out.output.contains("other general") && out.output.contains("other topic"), "{}", out.output);
+        assert!(out.output.contains("all topics inherited"), "{}", out.output);
+    }
+
+    /// Explicit values, including the deprecated alias, are honoured verbatim.
+    #[tokio::test]
+    async fn explicit_scopes_and_the_deprecated_alias() {
+        let (_db, repo, tool) = setup().await;
+        repo.insert(&row(CHAT, "general talk", None)).await.unwrap();
+        repo.insert(&row(CHAT, "topic five", Some("5"))).await.unwrap();
+
+        let general = serde_json::json!({"operation": "recent", "chat_id": CHAT, "topic_scope": "general"});
+        let out = tool.execute(general, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
+        assert!(out.output.contains("general talk") && !out.output.contains("topic five"), "{}", out.output);
+
+        let thread = serde_json::json!({"operation": "recent", "chat_id": CHAT, "topic_scope": "thread:5"});
+        let out = tool.execute(thread, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
+        assert!(out.output.contains("topic five") && !out.output.contains("general talk"), "{}", out.output);
+
+        let alias = serde_json::json!({"operation": "recent", "chat_id": CHAT, "thread_id": "5"});
+        let out = tool.execute(alias, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
+        assert!(out.output.contains("topic five") && !out.output.contains("general talk"), "{}", out.output);
+    }
+
+    /// An unknown scope is refused, never silently widened to `all`.
+    #[tokio::test]
+    async fn unknown_scope_is_refused() {
+        let (_db, _repo, tool) = setup().await;
+        let input = serde_json::json!({"operation": "recent", "chat_id": CHAT, "topic_scope": "everything"});
+        let err = tool.execute(input, &ctx_with(CHAT, Some(30129), None)).await.unwrap_err();
+        assert!(err.to_string().contains("unknown topic_scope"), "{err}");
+    }
+
+    /// `search` inherits the same scope — the operations cannot drift (D5).
+    #[tokio::test]
+    async fn search_also_inherits_the_session_topic() {
+        let (_db, repo, tool) = setup().await;
+        repo.insert(&row(CHAT, "needle mine", Some("30129"))).await.unwrap();
+        repo.insert(&row(CHAT, "needle theirs", Some("42360"))).await.unwrap();
+
+        let input = serde_json::json!({"operation": "search", "chat_id": CHAT, "query": "needle"});
+        let out = tool.execute(input, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
+        assert!(out.success);
+        assert!(out.output.contains("needle mine"), "{}", out.output);
+        assert!(!out.output.contains("needle theirs"), "{}", out.output);
+
+        // General arm of search uses search_general(), not search(None).
+        let general = serde_json::json!({"operation": "search", "chat_id": CHAT, "query": "needle", "topic_scope": "general"});
+        let out = tool.execute(general, &ctx_with(CHAT, Some(1), None)).await.unwrap();
+        assert!(out.success, "{}", out.output);
+    }
+
+    /// The schema advertises the new parameter and keeps the alias.
+    #[tokio::test]
+    async fn schema_exposes_topic_scope() {
+        let (_db, _repo, tool) = setup().await;
+        let schema = tool.input_schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("topic_scope"));
+        assert!(props.contains_key("thread_id"));
+        assert!(props["thread_id"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("DEPRECATED"));
+    }
+}
+
+// --- Cross-turn glue target lookup (#91) ---
+
+mod glue_target {
+    use crate::db::Database;
+    use crate::db::models::ChannelMessage;
+    use crate::db::repository::channel_message::ChannelMessageRepository;
+
+    async fn setup() -> (Database, ChannelMessageRepository) {
+        let db = Database::connect_in_memory()
+            .await
+            .expect("Failed to create database");
+        db.run_migrations().await.expect("Failed to run migrations");
+        let repo = ChannelMessageRepository::new(db.pool().clone());
+        (db, repo)
+    }
+
+    fn bot_row(
+        chat_id: &str,
+        thread: Option<&str>,
+        content: &str,
+        pmid: &str,
+        plane: Option<&str>,
+    ) -> ChannelMessage {
+        ChannelMessage::new(
+            "telegram".into(),
+            chat_id.into(),
+            Some("Kanban".into()),
+            "bot:opencrabs".into(),
+            "OpenCrabs".into(),
+            content.into(),
+            "text".into(),
+            Some(pmid.into()),
+        )
+        .with_thread(thread.map(|t| t.into()), None)
+        .with_ship_plane(plane.map(|p| p.into()))
+    }
+
+    #[tokio::test]
+    async fn returns_newest_rich_md_target() {
+        let (_db, repo) = setup().await;
+        for row in [
+            bot_row("-1001", Some("2"), "old answer", "100", Some("rich-md")),
+            bot_row("-1001", Some("2"), "newest answer", "200", Some("rich-md")),
+        ] {
+            repo.insert(&row).await.unwrap();
+        }
+        let got = repo
+            .last_bot_rich_md("telegram", "-1001", Some("2"), 900)
+            .await
+            .unwrap();
+        assert_eq!(
+            got,
+            Some(("200".into(), "newest answer".into())),
+            "newest rich-md row must win"
+        );
+    }
+
+    #[tokio::test]
+    async fn skips_classic_and_unmarked_rows() {
+        let (_db, repo) = setup().await;
+        // Classic-plane bot answer: authored by the bot, but no plane marker —
+        // its stored content is NOT a re-editable shipped body.
+        repo.insert(&bot_row("-1001", Some("2"), "classic answer", "100", None))
+            .await
+            .unwrap();
+        // User-authored row with a plane marker: the marker alone must not
+        // qualify a row — bot authorship is a hard filter.
+        let user_row = {
+            let mut r = bot_row("-1001", Some("2"), "user text", "101", Some("rich-md"));
+            r.sender_id = "user1".into();
+            r
+        };
+        repo.insert(&user_row).await.unwrap();
+        let got = repo
+            .last_bot_rich_md("telegram", "-1001", Some("2"), 900)
+            .await
+            .unwrap();
+        assert_eq!(
+            got, None,
+            "classic plane and non-bot rows are not glue targets"
+        );
+    }
+
+    #[tokio::test]
+    async fn staleness_window_and_thread_guards() {
+        let (_db, repo) = setup().await;
+        repo.insert(&bot_row(
+            "-1001",
+            Some("2"),
+            "answer",
+            "100",
+            Some("rich-md"),
+        ))
+        .await
+        .unwrap();
+        // Same row, but the caller's staleness window expired -> no target.
+        let got = repo
+            .last_bot_rich_md("telegram", "-1001", Some("2"), 0)
+            .await
+            .unwrap();
+        assert_eq!(got, None, "expired answers are not glue targets");
+        // Same row, but a different thread -> no target.
+        let got = repo
+            .last_bot_rich_md("telegram", "-1001", Some("3"), 900)
+            .await
+            .unwrap();
+        assert_eq!(got, None, "other threads are not glue targets");
     }
 }
