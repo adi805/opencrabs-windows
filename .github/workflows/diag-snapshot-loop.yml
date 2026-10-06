@@ -61,8 +61,27 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y libasound2-dev
 
+      # Build once, then hand the binary path to the loop.
+      #
+      # The loop must NOT call `cargo test` inside its timed region. On the
+      # 2026-10-06 run the pre-build reported `Finished ci profile in 25m 15s`
+      # and the very next `cargo test` still recompiled the whatsapp crates plus
+      # the crate itself, so the 120s bound was consumed by a rebuild and the
+      # harness printed `RESULT=STALL_AT_ITERATION_1` with `Compiling opencrabs`
+      # in the attempt tail. That verdict was an artefact of the probe, not
+      # evidence about the stall (#55). Running the already-built binary keeps
+      # cargo out of the timed region entirely.
       - name: Build the lib test binary once
-        run: cargo test --locked --profile ci --all-features --lib --no-run
+        run: |
+          cargo test --locked --profile ci --all-features --lib --no-run > /tmp/build.log 2>&1
+          BIN=$(grep -oE 'target/ci/deps/opencrabs-[0-9a-f]+' /tmp/build.log | tail -1)
+          if [ ! -x "$BIN" ]; then
+            echo "BUILD_BIN_NOT_FOUND (grep found '${BIN:-nothing}')"
+            tail -20 /tmp/build.log
+            exit 1
+          fi
+          echo "BIN=$BIN" >> "$GITHUB_ENV"
+          echo "test binary: $BIN"
 
       - name: Loop the snapshot module
         env:
@@ -85,9 +104,10 @@ jobs:
             # timeout with no attempt tail. The bound must be able to fire
             # without killing the reporter.
             rc=0
-            timeout "$TIMEOUT_SECS" cargo test --locked --profile ci --all-features \
-              --lib db_pre_migration_snapshot_test -- --test-threads=4 \
-              > /tmp/iter.log 2>&1 || rc=$?
+            # The pre-built binary (see the build step), not `cargo test`: any
+            # rebuild inside this bound turns the bound into a lie.
+            timeout "$TIMEOUT_SECS" "$BIN" db_pre_migration_snapshot_test \
+              --test-threads=4 > /tmp/iter.log 2>&1 || rc=$?
             done_iters=$i
             if [ "$rc" -eq 0 ]; then
               echo "$start iter $i ok"
