@@ -615,6 +615,20 @@ impl AgentService {
             tracing::warn!("Failed to track pending request: {}", e);
         }
 
+        // FR-002: open the turn journal for this user turn. One row spans the
+        // whole turn, provider-chain rotations included; the finalization
+        // settles it in the same transaction as the usage writes. A process
+        // killed mid-turn leaves the row `running`, and the next boot
+        // reconciles it to `interrupted`.
+        let turn_repo = crate::db::TurnRepository::new(self.context.pool());
+        let turn_id = match turn_repo.open(session_id).await {
+            Ok(id) => Some(id),
+            Err(e) => {
+                tracing::warn!("Failed to open turn journal (continuing without it): {}", e);
+                None
+            }
+        };
+
         // Per-call effective callbacks (override wins over service-level).
         // Track whether an explicit per-call override was provided so we can honour
         // channel approval callbacks even when the factory set auto_approve_tools=true.
@@ -681,6 +695,7 @@ impl AgentService {
                     approval_callback.clone(),
                     has_progress_override,
                     progress_callback.clone(),
+                    turn_id.as_deref(),
                 )
                 .await;
 
@@ -741,6 +756,26 @@ impl AgentService {
             && let Err(e) = pending_repo.delete(request_id).await
         {
             tracing::warn!("Failed to clean up pending request: {}", e);
+        }
+
+        // FR-002: settle the journal on EVERY outcome. The finalization inside
+        // the loop already commits it on the success path, where this is a
+        // no-op (commit only moves running -> committed); it matters for the
+        // early-return and error paths, which would otherwise leave the row
+        // `running` until the next boot.
+        if let Some(turn_id) = turn_id.as_deref() {
+            match &result {
+                Ok(_) => {
+                    if let Err(e) = turn_repo.commit(turn_id).await {
+                        tracing::warn!("Failed to commit turn journal: {}", e);
+                    }
+                }
+                Err(e) => {
+                    if let Err(e2) = turn_repo.fail(turn_id, &e.to_string()).await {
+                        tracing::warn!("Failed to fail turn journal: {}", e2);
+                    }
+                }
+            }
         }
 
         result
@@ -837,6 +872,7 @@ impl AgentService {
         approval_callback: Option<ApprovalCallback>,
         has_progress_override: bool,
         progress_callback: Option<ProgressCallback>,
+        turn_id: Option<&str>,
     ) -> Result<AgentResponse> {
         // Restore the directory `/cd` persisted for this session BEFORE anything
         // else in this function (#1810). Everything below (context build, brain
@@ -8049,34 +8085,64 @@ impl AgentService {
             let overhead = self.base_context_tokens();
             (context.token_count.saturating_add(overhead as usize)) as i64
         };
-        message_service
-            .update_message_usage(
-                assistant_db_msg.id,
-                crate::services::message::MessageUsage {
-                    token_count: total_tokens as i64,
-                    cost,
-                    input_tokens: Some(stored_input_tokens),
-                    cache_creation_tokens: Some(total_cache_creation as i64),
-                    cache_read_tokens: Some(total_cache_read as i64),
-                    duration_secs: Some(turn_started_at.elapsed().as_secs() as i64),
-                },
-            )
-            .await
-            .map_err(AgentError::db)?;
-
-        // Update session token usage. The pair is resolved here, not read back
+        // FR-002: settle the whole turn in ONE transaction — the message's
+        // usage, the session's running totals, the cumulative ledger row and
+        // the turn journal. The provider pair is resolved here, not read back
         // off the session row, so a fallback's spend is attributed to the
-        // provider that actually served it (#807).
-        session_service
-            .update_session_usage(
-                session_id,
-                total_tokens as i64,
-                cost,
-                &self.provider_name_for_session(session_id),
-                &self.provider_model_for_session(session_id),
-            )
-            .await
-            .map_err(AgentError::db)?;
+        // provider that actually served it (#807). Nothing is written when
+        // the journal is no longer `running`, so a turn boot reconciled as
+        // interrupted can never be committed late.
+        let commit_pool = self.context.pool();
+        match turn_id {
+            Some(turn_id) => {
+                crate::db::commit_turn(
+                    &commit_pool,
+                    crate::db::TurnCommit {
+                        turn_id,
+                        session_id,
+                        message_id: assistant_db_msg.id,
+                        token_count: total_tokens as i64,
+                        cost,
+                        input_tokens: Some(stored_input_tokens),
+                        cache_creation_tokens: Some(total_cache_creation as i64),
+                        cache_read_tokens: Some(total_cache_read as i64),
+                        duration_secs: Some(turn_started_at.elapsed().as_secs() as i64),
+                        provider: &self.provider_name_for_session(session_id),
+                        model: &self.provider_model_for_session(session_id),
+                    },
+                )
+                .await
+                .map_err(AgentError::db)?;
+            }
+            None => {
+                // No journal (its open failed): keep the historical separate
+                // writes so the turn still records its usage.
+                message_service
+                    .update_message_usage(
+                        assistant_db_msg.id,
+                        crate::services::message::MessageUsage {
+                            token_count: total_tokens as i64,
+                            cost,
+                            input_tokens: Some(stored_input_tokens),
+                            cache_creation_tokens: Some(total_cache_creation as i64),
+                            cache_read_tokens: Some(total_cache_read as i64),
+                            duration_secs: Some(turn_started_at.elapsed().as_secs() as i64),
+                        },
+                    )
+                    .await
+                    .map_err(AgentError::db)?;
+                session_service
+                    .update_session_usage(
+                        session_id,
+                        total_tokens as i64,
+                        cost,
+                        &self.provider_name_for_session(session_id),
+                        &self.provider_model_for_session(session_id),
+                    )
+                    .await
+                    .map_err(AgentError::db)?;
+            }
+        }
 
         // Notify the TUI that this session was updated (enables live refresh when
         // a remote channel — Telegram, WhatsApp, Discord, Slack — processes a message).

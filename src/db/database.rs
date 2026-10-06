@@ -142,6 +142,12 @@ pub(crate) const MIGRATION_SQL: &[&str] = &[
     // that moves every job's `next_run_at`, so a spent one-shot reads
     // `enabled = 0` instead of parking armed until the same date next year.
     include_str!("../migrations/20260927000001_add_cron_run_once.sql"),
+    // Milestone 2 (fork): durability foundation. turns (FR-002 turn journal),
+    // tool_executions effect-ledger columns (FR-003), submissions (FR-004) and
+    // session_identity (FR-005). Additive only: new tables are idempotent
+    // CREATEs and the column adds are nullable, so the 648 MB live database
+    // needs no backfill. Appended last per the list invariant.
+    include_str!("../migrations/20261006000001_add_durability.sql"),
 ];
 
 pub(crate) fn build_migrations() -> Migrations<'static> {

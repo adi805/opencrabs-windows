@@ -6,7 +6,7 @@
 use crate::db::Pool;
 use crate::db::database::interact_err;
 use anyhow::{Context, Result};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 /// Aggregated tool usage stats
 #[derive(Debug, Clone)]
@@ -22,6 +22,36 @@ pub struct ToolFailureStats {
     pub tool_name: String,
     pub total: i64,
     pub failures: i64,
+}
+
+/// One row of the effect ledger (FR-003). `status` is `pending` before the
+/// effect runs and the tool's outcome after; `effect_key` is the idempotency
+/// key resume checks before replaying anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectRow {
+    pub id: String,
+    pub turn_id: Option<String>,
+    pub tool_name: String,
+    pub status: String,
+    pub effect_key: Option<String>,
+    pub args_hash: Option<String>,
+    pub result_preview: Option<String>,
+    pub attempt: i64,
+    pub committed_at: Option<i64>,
+}
+
+fn map_effect(row: &rusqlite::Row<'_>) -> rusqlite::Result<EffectRow> {
+    Ok(EffectRow {
+        id: row.get("id")?,
+        turn_id: row.get("turn_id")?,
+        tool_name: row.get("tool_name")?,
+        status: row.get("status")?,
+        effect_key: row.get("effect_key")?,
+        args_hash: row.get("args_hash")?,
+        result_preview: row.get("result_preview")?,
+        attempt: row.get("attempt")?,
+        committed_at: row.get("committed_at")?,
+    })
 }
 
 /// Repository for tool execution tracking
@@ -270,5 +300,127 @@ impl ToolExecutionRepository {
             .await
             .map_err(interact_err)?
             .context("Failed to query tool failure stats")
+    }
+
+    // ── Effect ledger (FR-003) ─────────────────────────────────────────
+    //
+    // The analytics rows above are written once, after the fact. The ledger is
+    // two-phase: the intent is recorded BEFORE the effect runs and settled
+    // AFTER, so a resumed turn can tell "already landed" from "not yet" and
+    // never replay a side effect that already happened.
+
+    /// Record a tool call's intent before its effect runs. `effect_key` is the
+    /// idempotency key: resume treats a row already settled as landed and
+    /// skips it.
+    #[allow(clippy::too_many_arguments)] // one INSERT: id, turn, message, session, tool, key, hash
+    pub async fn record_intent(
+        &self,
+        id: &str,
+        turn_id: &str,
+        message_id: &str,
+        session_id: &str,
+        tool_name: &str,
+        effect_key: &str,
+        args_hash: &str,
+    ) -> Result<()> {
+        let id = id.to_string();
+        let turn_id = turn_id.to_string();
+        let message_id = message_id.to_string();
+        let session_id = session_id.to_string();
+        let tool_name = tool_name.to_string();
+        let effect_key = effect_key.to_string();
+        let args_hash = args_hash.to_string();
+        self.pool
+            .get()
+            .await
+            .context("Failed to get connection")?
+            .interact(move |conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO tool_executions \
+                     (id, message_id, session_id, tool_name, status, turn_id, effect_key, args_hash) \
+                     VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7)",
+                    params![id, message_id, session_id, tool_name, turn_id, effect_key, args_hash],
+                )
+            })
+            .await
+            .map_err(interact_err)?
+            .context("Failed to record effect intent")?;
+        Ok(())
+    }
+
+    /// Settle an effect opened by [`Self::record_intent`]. Returns the number
+    /// of rows changed: `0` means the row was already settled (or never
+    /// opened), so the caller must not treat the effect as newly done.
+    pub async fn settle(
+        &self,
+        id: &str,
+        status: &str,
+        result_preview: Option<&str>,
+        duration_ms: Option<i64>,
+    ) -> Result<usize> {
+        let id = id.to_string();
+        let status = status.to_string();
+        let preview = result_preview.map(|s| s.to_string());
+        self.pool
+            .get()
+            .await
+            .context("Failed to get connection")?
+            .interact(move |conn| {
+                conn.execute(
+                    "UPDATE tool_executions \
+                     SET status = ?2, result_preview = ?3, duration_ms = ?4, \
+                         committed_at = strftime('%s', 'now') \
+                     WHERE id = ?1 AND status = 'pending'",
+                    params![id, status, preview, duration_ms],
+                )
+            })
+            .await
+            .map_err(interact_err)?
+            .context("Failed to settle effect")
+    }
+
+    /// The ledger row for an idempotency key, or `None` when the key is new.
+    pub async fn find_by_effect_key(&self, effect_key: &str) -> Result<Option<EffectRow>> {
+        let key = effect_key.to_string();
+        self.pool
+            .get()
+            .await
+            .context("Failed to get connection")?
+            .interact(move |conn| {
+                conn.query_row(
+                    "SELECT id, turn_id, tool_name, status, effect_key, args_hash, \
+                            result_preview, attempt, committed_at \
+                     FROM tool_executions WHERE effect_key = ?1 LIMIT 1",
+                    params![key],
+                    map_effect,
+                )
+                .optional()
+            })
+            .await
+            .map_err(interact_err)?
+            .context("Failed to read effect by key")
+    }
+
+    /// Effects a turn opened that never settled. Resume uses this to decide
+    /// what is unknown rather than replaying everything.
+    pub async fn pending_for_turn(&self, turn_id: &str) -> Result<Vec<EffectRow>> {
+        let tid = turn_id.to_string();
+        self.pool
+            .get()
+            .await
+            .context("Failed to get connection")?
+            .interact(move |conn| {
+                conn.prepare(
+                    "SELECT id, turn_id, tool_name, status, effect_key, args_hash, \
+                            result_preview, attempt, committed_at \
+                     FROM tool_executions WHERE turn_id = ?1 AND status = 'pending' \
+                     ORDER BY created_at ASC",
+                )?
+                .query_map(params![tid], map_effect)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+            })
+            .await
+            .map_err(interact_err)?
+            .context("Failed to list pending effects")
     }
 }
