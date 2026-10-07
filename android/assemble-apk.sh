@@ -19,6 +19,11 @@
 # emulator leg. An arm64-only APK cannot be installed on an x86_64 AVD, and
 # leaning on the API 35 ARM-translation layer to run it would be a community
 # claim, not a contract this repo can verify.
+#
+# Signing: android/debug.keystore is committed on purpose so successive
+# builds share one certificate and `adb install -r` upgrades in place.
+# Override with ANDROID_KEYSTORE_B64 (+ _PASS/_ALIAS/_KEY_PASS) to sign
+# with a release key.
 set -euo pipefail
 
 # minSdk 26 is a product contract, not a build detail: the PRD pins it in
@@ -183,17 +188,46 @@ cp "$OUT/classes.dex" "$OUT/stage/classes.dex"
 # --- 5. align, sign ----------------------------------------------------------
 "$BT/zipalign" -f -p 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
-keytool -genkeypair -v \
-  -keystore "$OUT/debug.keystore" \
-  -alias androiddebugkey \
-  -storepass android -keypass android \
-  -dname "CN=Android Debug,O=Android,C=US" \
-  -keyalg RSA -keysize 2048 -validity 10000 >/dev/null 2>&1
+# The signing key must be STABLE across builds. Generating a fresh keypair per
+# build gives every APK a different signature, so `adb install -r` fails with
+# INSTALL_FAILED_UPDATE_INCOMPATIBLE and the user has to uninstall first, which
+# discards the app's config and database. Two sources, in order:
+#
+#   1. ANDROID_KEYSTORE_B64 (+ _PASS / _ALIAS / _KEY_PASS): a base64 keystore
+#      from CI secrets. Use this for anything handed to a user.
+#   2. android/debug.keystore: committed on purpose. It is the standard Android
+#      debug key - password "android", publicly known, zero secret value - and
+#      it is here so CI builds are reproducible instead of random.
+#
+# A debug-signed build cannot be upgraded in place by a release-signed one:
+# Android treats a different certificate as a different app, so that switch
+# needs one uninstall. Keeping the debug key stable at least means our own
+# successive builds upgrade in place.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -n "${ANDROID_KEYSTORE_B64:-}" ]; then
+  KS="$OUT/signing.keystore"
+  printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$KS"
+  : "${ANDROID_KEYSTORE_PASS:?ANDROID_KEYSTORE_B64 is set but ANDROID_KEYSTORE_PASS is not}"
+  : "${ANDROID_KEY_ALIAS:?ANDROID_KEYSTORE_B64 is set but ANDROID_KEY_ALIAS is not}"
+  KS_PASS="$ANDROID_KEYSTORE_PASS"
+  KS_ALIAS="$ANDROID_KEY_ALIAS"
+  KEY_PASS="${ANDROID_KEY_PASS:-$ANDROID_KEYSTORE_PASS}"
+else
+  KS="$SCRIPT_DIR/debug.keystore"
+  if [ ! -f "$KS" ]; then
+    echo "no signing key: set ANDROID_KEYSTORE_B64, or restore android/debug.keystore" >&2
+    exit 1
+  fi
+  KS_PASS="android"
+  KS_ALIAS="androiddebugkey"
+  KEY_PASS="android"
+fi
 
 "$BT/apksigner" sign \
-  --ks "$OUT/debug.keystore" \
-  --ks-pass pass:android \
-  --key-pass pass:android \
+  --ks "$KS" \
+  --ks-key-alias "$KS_ALIAS" \
+  --ks-pass "pass:$KS_PASS" \
+  --key-pass "pass:$KEY_PASS" \
   --out "$OUT/opencrabs-debug.apk" \
   "$OUT/aligned.apk"
 
