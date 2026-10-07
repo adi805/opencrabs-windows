@@ -528,7 +528,12 @@ jobs:
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
-        run: cargo test --locked --profile ci --all-features --verbose
+        # #1936: the suite can freeze with every test-thread slot blocked;
+        # before, the job just burned timeout-minutes and died with no
+        # verdict. The wrapper detects the silence, dumps thread stacks of
+        # cargo and its test children, kills the tree, and fails in ~5
+        # minutes instead of 60. The command it runs is unchanged.
+        run: bash scripts/test-stall-watchdog.sh cargo test --locked --profile ci --all-features --verbose
 
   # ── Stage 1b: Security (fast gate — runs alongside lint, before build/test)
   # cargo-audit only scans Cargo.lock; it needs no compile, so it runs in
