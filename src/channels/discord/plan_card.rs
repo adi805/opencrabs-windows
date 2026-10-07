@@ -16,6 +16,7 @@
 use serenity::builder::{CreateActionRow, CreateButton};
 use serenity::model::application::ButtonStyle;
 
+use crate::channels::telegram::flow_chrome::ProseSection;
 use crate::tui::plan::{PlanDocument, PlanStatus, status_mark};
 
 /// Callback data. The `plan:` prefix is deliberate and mirrors Telegram: it
@@ -51,41 +52,143 @@ impl PlanKb {
     }
 }
 
-/// Discord markdown body for a plan: title, checklist rows, acceptance
-/// criteria count.
+/// Discord's hard cap on a message body. A card that exceeds it is rejected by
+/// the API outright, so every assembled body must fit.
+const DISCORD_MESSAGE_CAP: usize = 2000;
+
+/// Upper bound for the plan-prose excerpt on an Editing card. Well under the
+/// message cap so the checklist below it always keeps room.
+const PROSE_EXCERPT_BUDGET: usize = 900;
+
+/// Below this the excerpt cannot say anything useful, so it is dropped rather
+/// than rendered as a two-line stub.
+const MIN_PROSE_BUDGET: usize = 80;
+
+/// True for the section that carries the plan's steps — the one thing a user
+/// must be able to read before approving. Matched case-insensitively on the
+/// heading text.
+fn is_steps_heading(heading: Option<&str>) -> bool {
+    let Some(h) = heading else {
+        return false;
+    };
+    let h = h.to_lowercase();
+    h.contains("implementation") || h.contains("step")
+}
+
+/// How many characters the prose excerpt may spend, given what the title and
+/// checklist already claim of the message cap.
+fn prose_budget(head: &str, checklist: &str) -> usize {
+    let used = head.chars().count() + checklist.chars().count() + 1;
+    DISCORD_MESSAGE_CAP
+        .saturating_sub(used)
+        .min(PROSE_EXCERPT_BUDGET)
+}
+
+/// Render the plan `.md` prose as a bounded Discord excerpt.
+///
+/// The implementation-steps section leads (that is what the user is approving)
+/// and the remaining sections follow if budget is left. Truncation is
+/// character-safe and marked with an ellipsis so a cut excerpt reads as
+/// incomplete rather than as the whole plan.
+fn render_prose_excerpt(sections: &[ProseSection], max_chars: usize) -> String {
+    if max_chars < MIN_PROSE_BUDGET {
+        return String::new();
+    }
+    // Stable sort: the steps section first, everything else in file order.
+    let mut ordered: Vec<&ProseSection> = sections.iter().collect();
+    ordered.sort_by_key(|s| !is_steps_heading(s.heading.as_deref()));
+
+    let mut out = String::new();
+    for sec in ordered {
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        if let Some(h) = &sec.heading {
+            out.push_str("**");
+            out.push_str(h);
+            out.push_str("**\n");
+        }
+        out.push_str(sec.body.trim());
+    }
+
+    let trimmed = out.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let kept = crate::utils::truncate_chars(trimmed, max_chars.saturating_sub(1));
+    format!("{}…", kept.trim_end())
+}
+
+/// Discord markdown body for a plan: title, prose excerpt while Editing,
+/// checklist rows, acceptance criteria count.
 ///
 /// Returns an empty string for a plan with nothing renderable, so callers
 /// can treat empty as "no card" without a second predicate (mirrors the
 /// Telegram renderer, which returns `Option`).
 ///
 /// Discord has no collapsible markup and a 2000-char message cap, so the
-/// Telegram card's expandable prose sections have no equivalent here. Prose
-/// is deliberately omitted rather than inlined: a design plan's body can run
-/// to thousands of characters, and truncating it mid-sentence reads worse
-/// than the checklist alone. The `.md` stays available via the plan file.
-pub(crate) fn render_plan_card(plan: &PlanDocument) -> String {
-    let mut out = String::new();
+/// Telegram card's expandable prose sections cannot be inlined whole. While
+/// the plan is **Editing** the card carries a bounded excerpt of the design
+/// prose (`#103`): at that point `tasks[]` is still empty — the checklist is
+/// seeded from the `.md` only after approval — so a title-only card asked the
+/// user to approve a plan whose contents they could not read. The excerpt is
+/// capped ([`PROSE_EXCERPT_BUDGET`]) and character-safe-truncated, and the
+/// steps section leads it. While the plan is **Active** the checklist is the
+/// content and prose is omitted, keeping the executing card lean.
+pub(crate) fn render_plan_card(plan: &PlanDocument, prose: Option<&[ProseSection]>) -> String {
+    let mut head = String::new();
 
     let title = plan.title.trim();
     if !title.is_empty() {
-        out.push_str("📋 **");
-        out.push_str(title);
-        out.push_str("**\n");
+        head.push_str("📋 **");
+        head.push_str(title);
+        head.push_str("**\n");
     }
 
+    let mut checklist = String::new();
     for task in &plan.tasks {
         let mark = status_mark(&task.status);
-        out.push_str(&format!("{mark} **{}. {}**", task.order, task.title));
+        checklist.push_str(&format!("{mark} **{}. {}**", task.order, task.title));
         if !task.acceptance_criteria.is_empty() {
-            out.push_str(&format!(
+            checklist.push_str(&format!(
                 " _({} acceptance criteria)_",
                 task.acceptance_criteria.len()
             ));
         }
-        out.push('\n');
+        checklist.push('\n');
     }
+    let checklist = checklist.trim_end();
 
-    out.trim_end().to_string()
+    let prose_block = if plan.status == PlanStatus::Editing {
+        let budget = prose_budget(&head, checklist);
+        prose
+            .filter(|sections| !sections.is_empty())
+            .map(|sections| render_prose_excerpt(sections, budget))
+            .filter(|block| !block.is_empty())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let mut out = head;
+    if !prose_block.is_empty() {
+        out.push_str(&prose_block);
+        if !checklist.is_empty() {
+            out.push('\n');
+        }
+    }
+    out.push_str(checklist);
+
+    let out = out.trim_end();
+    // Safety net: a plan with very many tasks can overflow the cap on the
+    // checklist alone, before any prose is considered. Discord rejects an
+    // over-long body outright, which would leave the user with no card at
+    // all, so truncate instead of failing to send.
+    if out.chars().count() <= DISCORD_MESSAGE_CAP {
+        return out.to_string();
+    }
+    let kept = crate::utils::truncate_chars(out, DISCORD_MESSAGE_CAP - 1);
+    format!("{}…", kept.trim_end())
 }
 
 /// Buttons for this state. Both plan states warrant an action, so unlike
@@ -150,7 +253,12 @@ pub(crate) async fn refresh_plan_card(
         return;
     };
 
-    let body = render_plan_card(&plan);
+    // Design prose lives in the session plan `.md`, not the JSON sidecar
+    // (`tasks[]` is empty until approval), so an Editing card reads it from
+    // the file. Reuses the Telegram loader so both surfaces see the same
+    // sections and the same unfilled-scaffold filtering (#103).
+    let prose = crate::channels::telegram::flow_chrome::load_plan_prose(session_id).await;
+    let body = render_plan_card(&plan, prose.as_deref());
     if body.is_empty() {
         remove_plan_card_locked(http, channel, state, session_id).await;
         return;
