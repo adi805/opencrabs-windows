@@ -125,9 +125,28 @@ impl Tool for MemorySearchTool {
         // patterns — is the security boundary.
         let external_blocked = crate::memory::is_session_shared(context.session_id)
             && !crate::memory::external_allowed_in_shared();
+        // Internal gate (#1957): the prompt has always said MEMORY.md is
+        // main-session-only ("never in shared/group chats"), but the code
+        // enforced it for `external` alone. The scopes below carry the actual
+        // personal context, so they get the same default-deny.
+        let internal_blocked = crate::memory::internal_content_blocked(context.session_id);
+        let refuse_internal = |scope: &str| {
+            ToolResult::error(format!(
+                "scope=\"{scope}\" is not available in this shared/group session. \
+                 Brain and memory scopes carry the owner's personal context \
+                 (MEMORY.md, USER.md, daily logs) and are main-session-only by \
+                 default (#1957). Set [memory] internal_allowed_in_shared = true \
+                 in config.toml to allow them here."
+            ))
+        };
 
         let searched = match scope {
-            "brain" => crate::memory::search_brain(store, &query, n).await,
+            "brain" => {
+                if internal_blocked {
+                    return Ok(refuse_internal("brain"));
+                }
+                crate::memory::search_brain(store, &query, n).await
+            }
             "external" => {
                 if external_blocked {
                     return Ok(ToolResult::error(
@@ -140,32 +159,53 @@ impl Tool for MemorySearchTool {
                 }
                 crate::memory::search_external(store, &query, n, offset).await
             }
-            "all" => match crate::memory::search_brain(store, &query, n).await {
-                Ok(mut brain) => match crate::memory::search_memory(store, &query, n).await {
-                    // Brain hits lead: a rule outranks a note mentioning it.
-                    Ok(mem) => {
-                        brain.extend(mem);
-                        if external_blocked {
-                            Ok(brain)
-                        } else {
-                            match crate::memory::search_external(store, &query, n, offset).await {
-                                // External hits land last: brain > memory > external (Q10).
-                                Ok(ext) => {
-                                    brain.extend(ext);
-                                    Ok(brain)
-                                }
-                                Err(e) => Err(e),
-                            }
-                        }
+            "all" => {
+                if internal_blocked {
+                    if external_blocked {
+                        return Ok(refuse_internal("all"));
                     }
-                    Err(e) => Err(e),
-                },
-                Err(e) => Err(e),
-            },
+                    // The internal halves drop out; external alone remains
+                    // under its own (#1051) gate (#1957).
+                    crate::memory::search_external(store, &query, n, offset).await
+                } else {
+                    match crate::memory::search_brain(store, &query, n).await {
+                        Ok(mut brain) => match crate::memory::search_memory(store, &query, n).await
+                        {
+                            // Brain hits lead: a rule outranks a note mentioning it.
+                            Ok(mem) => {
+                                brain.extend(mem);
+                                if external_blocked {
+                                    Ok(brain)
+                                } else {
+                                    match crate::memory::search_external(store, &query, n, offset)
+                                        .await
+                                    {
+                                        // External hits land last: brain > memory > external (Q10).
+                                        Ok(ext) => {
+                                            brain.extend(ext);
+                                            Ok(brain)
+                                        }
+                                        Err(e) => Err(e),
+                                    }
+                                }
+                            }
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    }
+                }
+            }
             // Default "memory" searches the memory corpus only (#1051):
             // external content never leaks into the default scope, and rules
             // live in scope="brain" (the empty-result hint below says so).
-            _ => crate::memory::search_memory(store, &query, n).await,
+            _ => {
+                // Default scope is personal daily-log memory: gated like
+                // brain (#1957).
+                if internal_blocked {
+                    return Ok(refuse_internal("memory"));
+                }
+                crate::memory::search_memory(store, &query, n).await
+            }
         };
 
         match searched {

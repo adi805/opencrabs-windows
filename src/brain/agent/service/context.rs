@@ -59,7 +59,12 @@ impl AgentService {
         // written constantly and read almost never; #800 made reading cheap,
         // but a cheap read still has to be chosen, and the model cannot decide
         // to recall a correction it has forgotten exists.
-        if let Some(recall) = crate::brain::memory_recall::recall_for(user_message).await {
+        // #1957: MEMORY.md is the owner's personal context and this recall
+        // rides into transcripts a shared/group session can read, so shared
+        // sessions skip it like the search surfaces do.
+        if !crate::memory::internal_content_blocked(session_id)
+            && let Some(recall) = crate::brain::memory_recall::recall_for(user_message).await
+        {
             tracing::info!(
                 "Recalled {} chars from MEMORY.md for session {session_id}",
                 recall.len()

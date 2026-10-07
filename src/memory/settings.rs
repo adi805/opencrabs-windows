@@ -66,6 +66,21 @@ pub(crate) fn external_allowed_in_shared() -> bool {
     read_memory_config().external_allowed_in_shared
 }
 
+/// Whether the internal memory surfaces may answer in shared/group sessions
+/// (#1957). Default-deny, mirroring `external_allowed_in_shared`.
+pub(crate) fn internal_allowed_in_shared() -> bool {
+    read_memory_config().internal_allowed_in_shared
+}
+
+/// The single shared-session decision for every surface that can return the
+/// owner's personal context: brain/memory search scopes, personal brain
+/// files via `load_brain_file`, and the per-turn MEMORY.md recall (#1957).
+/// The prompt always promised main-session-only; this is where the code
+/// starts keeping that promise.
+pub fn internal_content_blocked(session_id: uuid::Uuid) -> bool {
+    crate::memory::is_session_shared(session_id) && !internal_allowed_in_shared()
+}
+
 /// Seconds between external freshness sweeps (#1051).
 pub(crate) fn sweep_interval_secs() -> u64 {
     read_memory_config().sweep_interval_secs
