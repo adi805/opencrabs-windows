@@ -9,7 +9,7 @@ use std::fs;
 
 use tempfile::TempDir;
 
-use crate::brain::tools::project_runner::{ProjectKind, detect, fallback_commands};
+use crate::brain::tools::project_runner::{ProjectKind, detect, detect_within, fallback_commands};
 
 fn project_with(marker: &str) -> TempDir {
     let dir = TempDir::new().expect("tempdir");
@@ -109,4 +109,54 @@ fn the_nearest_manifest_wins_inside_a_monorepo() {
 
     assert_eq!(detect(&inner), Some(ProjectKind::Flutter));
     assert_eq!(detect(outer.path()), Some(ProjectKind::Rust));
+}
+
+#[test]
+fn a_manifest_in_the_home_directory_is_not_adopted() {
+    // The reported case (#107): the session was parked in a folder with no
+    // manifest of its own, the walk reached $HOME, and a stray package.json
+    // there made a Rust repository verify with `npm test`.
+    let home = TempDir::new().unwrap();
+    fs::write(home.path().join("package.json"), "{}").unwrap();
+    let session = home.path().join("forktest");
+    fs::create_dir_all(&session).unwrap();
+
+    assert_eq!(detect_within(&session, Some(home.path())), None);
+}
+
+#[test]
+fn a_session_parked_directly_in_home_verifies_nothing() {
+    // The home directory is where a session lands by default, so it is the one
+    // place a manifest must never be read as "the project".
+    let home = TempDir::new().unwrap();
+    fs::write(home.path().join("package.json"), "{}").unwrap();
+
+    assert_eq!(detect_within(home.path(), Some(home.path())), None);
+}
+
+#[test]
+fn a_manifest_below_the_home_directory_is_still_found() {
+    // Stopping at $HOME must not undo the ancestor walk that exists so a
+    // session parked in a subdirectory still finds its project.
+    let home = TempDir::new().unwrap();
+    let project = home.path().join("repos").join("widget");
+    let nested = project.join("src").join("core");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(project.join("Cargo.toml"), "").unwrap();
+
+    assert_eq!(
+        detect_within(&nested, Some(home.path())),
+        Some(ProjectKind::Rust)
+    );
+}
+
+#[test]
+fn without_a_known_home_the_walk_is_unchanged() {
+    // If the home directory cannot be resolved the boundary is simply absent;
+    // the walk must not start refusing manifests it used to accept.
+    let dir = project_with("build.zig");
+    let nested = dir.path().join("src");
+    fs::create_dir_all(&nested).unwrap();
+
+    assert_eq!(detect_within(&nested, None), Some(ProjectKind::Zig));
 }
