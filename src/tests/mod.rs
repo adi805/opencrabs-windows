@@ -905,6 +905,7 @@ pub mod subagent_tool_description_test;
 pub mod subagent_worktree_test;
 pub mod suggest_leak_recovery_test;
 pub mod suggest_options_test;
+pub mod telegram_copy_message_test;
 pub mod telegram_ephemeral_test;
 pub mod telegram_inline_query_test;
 #[cfg(feature = "telegram")]

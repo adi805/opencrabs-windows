@@ -24,7 +24,7 @@ use teloxide::types::{
 };
 use uuid::Uuid;
 
-/// Tool for comprehensive Telegram bot control (19 actions).
+/// Tool for comprehensive Telegram bot control (24 actions).
 pub struct TelegramSendTool {
     telegram_state: Arc<TelegramState>,
 }
@@ -416,7 +416,7 @@ impl Tool for TelegramSendTool {
     }
 
     fn description(&self) -> &str {
-        "Full Telegram control: send messages, reply, edit, delete, pin/unpin, forward, \
+        "Full Telegram control: send messages, reply, edit, delete, pin/unpin, forward, copy, \
          send photos/documents/locations/polls, inline buttons, get chat info, list admins, \
          check member count/status, ban/unban users, and set emoji reactions. \
          Always use telegram_send instead of http_request — credentials handled securely. \
@@ -431,7 +431,7 @@ impl Tool for TelegramSendTool {
                     "type": "string",
                     "enum": [
                         "send", "reply", "edit", "delete", "pin", "unpin",
-                        "forward", "send_photo", "send_document", "send_location",
+                        "forward", "copy_message", "send_photo", "send_document", "send_location",
                         "send_poll", "send_buttons", "get_chat",
                         "get_chat_administrators", "get_chat_member_count", "get_chat_member",
                         "ban_user", "unban_user", "set_reaction", "list_topics",
@@ -586,6 +586,7 @@ impl Tool for TelegramSendTool {
             "pin" => self.action_pin(&bot, input, context).await,
             "unpin" => self.action_unpin(&bot, input, context).await,
             "forward" => self.action_forward(&bot, input, context).await,
+            "copy_message" => self.action_copy_message(&bot, input, context).await,
             "send_photo" => self.action_send_photo(&bot, input, context).await,
             "send_document" => self.action_send_document(&bot, input, context).await,
             "send_location" => self.action_send_location(&bot, input, context).await,
@@ -1024,6 +1025,69 @@ impl TelegramSendTool {
                     &e.to_string(),
                 );
                 Ok(ToolResult::error(format!("Failed to forward: {e}")))
+            }
+        }
+    }
+
+    /// `copy_message` — copy a message into a (possibly forum) chat. Unlike
+    /// `forward` the copy keeps the original's formatting and media but drops
+    /// the link back to the source message (#100). A deliberate, user-invoked
+    /// move: nothing in a turn calls it on its own.
+    async fn action_copy_message(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let NewTarget {
+            chat_id: to_chat,
+            thread_id,
+        } = pget!(resolve_new_target(input, context.session_id, &self.telegram_state).await);
+        let from_chat = pget!(get_id(input, "from_chat_id"));
+        let message_id = pget!(get_id(input, "message_id"));
+        match send_retrying_rate_limit("telegram_send copy_message", || {
+            crate::channels::telegram::send::copy_in_thread(
+                bot,
+                ChatId(to_chat),
+                ChatId(from_chat),
+                MessageId(message_id as i32),
+                thread_id,
+            )
+        })
+        .await
+        {
+            Ok(sent) => {
+                log_send_success(
+                    "tool",
+                    "copy_message",
+                    "copy_message",
+                    &context.session_id.to_string(),
+                    "action",
+                    to_chat,
+                    thread_id.map(|t| t.0.0),
+                    sent.0,
+                    0,
+                    "-",
+                );
+                Ok(ToolResult::success(format!(
+                    "Message {message_id} copied from chat {from_chat} to {to_chat}.{}",
+                    landing_echo(to_chat, thread_id).await
+                )))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "copy_message",
+                    "copy_message",
+                    &context.session_id.to_string(),
+                    "action",
+                    to_chat,
+                    thread_id.map(|t| t.0.0),
+                    0,
+                    "-",
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to copy message: {e}")))
             }
         }
     }

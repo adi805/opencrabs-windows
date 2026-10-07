@@ -15,6 +15,7 @@
 //! everywhere even in non-topic chats.
 
 use teloxide::Bot;
+use teloxide::payloads::CopyMessageSetters;
 use teloxide::payloads::ForwardMessageSetters;
 use teloxide::payloads::SendChatActionSetters;
 use teloxide::payloads::SendDocumentSetters;
@@ -285,6 +286,31 @@ where
     C: Into<ChatId>,
 {
     let req = bot.send_poll(chat_id.into(), question, options);
+    match thread_id {
+        Some(t) => req.message_thread_id(t),
+        None => req,
+    }
+}
+
+/// `bot.copy_message(to_chat, from_chat, message_id)` with optional
+/// `message_thread_id` (#100): a deliberate move, not an automatic one. The
+/// copy carries the original's formatting and media but no forward
+/// attribution, which is the point of choosing it over `forward_message`.
+///
+/// Unlike `forward_in_thread` this returns teloxide's `MessageId` (the Bot
+/// API answers `copyMessage` with the new message id), so the caller reads
+/// `.0` off the resolved id rather than off a `Message`.
+pub fn copy_in_thread<C>(
+    bot: &Bot,
+    to_chat_id: C,
+    from_chat_id: ChatId,
+    message_id: MessageId,
+    thread_id: Option<ThreadId>,
+) -> JsonRequest<teloxide::payloads::CopyMessage>
+where
+    C: Into<ChatId>,
+{
+    let req = bot.copy_message(to_chat_id.into(), from_chat_id, message_id);
     match thread_id {
         Some(t) => req.message_thread_id(t),
         None => req,
