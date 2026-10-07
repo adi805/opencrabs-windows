@@ -53,11 +53,12 @@ pub(crate) use embedding_config::{
 pub use index::{BRAIN_FILES, index_file, index_file_fts_only, reindex};
 pub use search::{RrfResult, hybrid_search_rrf, search, search_brain};
 pub(crate) use search::{search_external, search_memory};
+pub use settings::internal_content_blocked;
 pub(crate) use settings::{
     external_allowed_in_shared, external_excludes, extra_paths_config, internal_allowed_in_shared,
     read_memory_config, sweep_interval_secs, vector_enabled,
 };
-pub use shared_sessions::{is_session_shared, mark_session_shared};
+pub use shared_sessions::{is_personal_brain_file, is_session_shared, mark_session_shared};
 pub use store::get_store;
 pub use types::MemoryResult;
 pub(crate) use types::{COLLECTION_BRAIN, COLLECTION_EXTERNAL, COLLECTION_MEMORY};

@@ -75,22 +75,6 @@ impl Tool for LoadBrainFileTool {
             .unwrap_or("")
             .trim();
 
-        // #1957: this tool exists to load the owner's context files (USER.md,
-        // MEMORY.md, daily logs, TOOLS.md with its peer keys). In a shared or
-        // group session that is a leak surface, so it is default-deny exactly
-        // like the internal memory_search scopes.
-        if crate::memory::is_session_shared(ctx.session_id)
-            && !crate::memory::internal_allowed_in_shared()
-        {
-            return Ok(ToolResult::error(
-                "load_brain_file is not available in this shared/group session: brain files \
-                 hold the owner's personal context and stay private to the owner's sessions by \
-                 default (#1957). Set [memory] internal_allowed_in_shared = true to allow it \
-                 here."
-                    .to_string(),
-            ));
-        }
-
         // Skill-slug form (issue #131): a bare skill name (no `.md`, no
         // separators) resolves through the skill registry — same rules as
         // slash invocation — and returns the prompt body. This gives
@@ -171,6 +155,21 @@ impl Tool for LoadBrainFileTool {
             }));
         }
 
+        // Shared-session boundary for personal context (#1957): the prompt
+        // always said MEMORY.md and USER.md are main-session-only; the skill
+        // forms above are public and stay reachable. Below this line,
+        // everything reads the owner's home dir.
+        let internal_blocked = crate::memory::internal_content_blocked(ctx.session_id);
+        if internal_blocked && name != "all" && crate::memory::is_personal_brain_file(name) {
+            return Ok(ToolResult::error(format!(
+                "\"{name}\" is the owner's personal brain content and is \
+                 main-session-only (#1957). Shared/group sessions can load the \
+                 generic files (SOUL.md, AGENTS.md, TOOLS.md, CODE.md, \
+                 SECURITY.md, BOOT.md). Set [memory] internal_allowed_in_shared \
+                 = true in config.toml to allow more here."
+            )));
+        }
+
         // Read-time empty-section stripping. Default on; opt out via
         // `[brain] strip_empty_sections = false` in config.toml.
         // Disk stays authoritative — writes never run through this.
@@ -219,11 +218,18 @@ impl Tool for LoadBrainFileTool {
         if name == "all" {
             let mut out = String::new();
             let mut stripped_all: Vec<String> = Vec::new();
+            let mut omitted: Vec<&'static str> = Vec::new();
             let mut seen = std::collections::HashSet::new();
 
             // Known contextual files first (stable order)
             for (fname, label) in CONTEXTUAL_BRAIN_FILES {
                 seen.insert(fname.to_lowercase());
+                // #1957: personal-context files are named here but never
+                // read into a shared/group reply; the note below says so.
+                if internal_blocked && crate::memory::is_personal_brain_file(fname) {
+                    omitted.push(fname);
+                    continue;
+                }
                 let path = home.join(fname);
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     let (filtered, stripped) = apply_filter(content);
@@ -241,8 +247,10 @@ impl Tool for LoadBrainFileTool {
                 }
             }
 
-            // User-created .md files not in the known list
-            if let Ok(entries) = std::fs::read_dir(&home) {
+            // User-created .md files not in the known list. Anything the
+            // owner added is personal context (#1957): skipped wholesale in
+            // shared sessions.
+            if !internal_blocked && let Ok(entries) = std::fs::read_dir(&home) {
                 let mut extras: Vec<_> = entries
                     .filter_map(|e| e.ok())
                     .filter(|e| {
@@ -271,8 +279,10 @@ impl Tool for LoadBrainFileTool {
                 }
             }
 
-            // Project-only brain files (no profile counterpart) still ride ON TOP.
-            if let Some((_, dir)) = &project_overlay
+            // Project-only brain files (no profile counterpart) still ride
+            // ON TOP, but they are still the owner's content (#1957).
+            if !internal_blocked
+                && let Some((_, dir)) = &project_overlay
                 && let Ok(entries) = std::fs::read_dir(dir)
             {
                 let mut extras: Vec<_> = entries
@@ -298,6 +308,15 @@ impl Tool for LoadBrainFileTool {
                     stripped_all.len(),
                     stripped_all
                 );
+            }
+
+            if !omitted.is_empty() {
+                out.push_str(&format!(
+                    "\n(omitted main-session-only brain files in this shared/group \
+                     session: {}; [memory] internal_allowed_in_shared = true in \
+                     config.toml changes that, #1957)\n",
+                    omitted.join(", ")
+                ));
             }
 
             return if out.is_empty() {
