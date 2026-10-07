@@ -1,4 +1,4 @@
-//! Ephemeral group replies: Bot API 10.2 (`receiver_user_id`), 2026-07-14.
+//! Ephemeral group replies: Bot API 10.3 (`ephemeral_message_parameters`), 2026-08-24.
 //!
 //! Telegram can deliver a group message to a single member: nobody else in
 //! the chat ever sees it. Every OpenCrabs slash command is owner-gated, so
@@ -7,14 +7,15 @@
 //!
 //! teloxide 0.17 / teloxide-core 0.13 has no binding for the parameter, so
 //! this calls `sendMessage` directly over HTTP, mirroring [`super::rich::api`].
-//! Whether `sendRichMessage` also accepts the parameter is settled at runtime
-//! rather than assumed: see [`try_send_rich`]. Scoped replies fall back to
-//! HTML only once the server has actually refused the rich variant.
+//! `sendRichMessage` takes the parameter too as of 10.3, but the request is
+//! still probed at runtime: a Bot API server may predate 10.3, and
+//! [`try_send_rich`] turns that into a one-call answer rather than a
+//! permanently assumed one.
 //!
 //! Nothing here returns an error. A send that does not land reports how much
 //! was delivered and the caller finishes the job on its normal public path,
-//! which is exactly the pre-10.2 behaviour. That covers both a Bot API server
-//! older than 10.2 and a future rename of the parameter.
+//! which is the path as it was before scoping existed. That covers a Bot API
+//! server that does not understand the parameter, and a future rename of it.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use teloxide::Bot;
@@ -46,7 +47,9 @@ pub(crate) fn build_body(
     let mut body = serde_json::json!({
         "chat_id": chat_id,
         "text": text,
-        "receiver_user_id": receiver_user_id,
+        "ephemeral_message_parameters": {
+            "receiver_user_id": receiver_user_id,
+        },
     });
     if parse_html {
         body["parse_mode"] = serde_json::json!("HTML");
@@ -59,7 +62,7 @@ pub(crate) fn build_body(
 }
 
 /// Deliver one ephemeral reply. `true` when it landed; `false` means the
-/// caller must send `text` publicly as it did before 10.2.
+/// caller must send `text` publicly, as it did before scoping existed.
 pub(crate) async fn send_one(
     token: &str,
     chat_id: i64,
@@ -82,12 +85,14 @@ pub(crate) fn build_rich_body(
     markdown: &str,
 ) -> serde_json::Value {
     let mut body = super::rich::api::build_body(chat_id, thread_id, markdown, None);
-    body["receiver_user_id"] = serde_json::json!(receiver_user_id);
+    body["ephemeral_message_parameters"] = serde_json::json!({
+        "receiver_user_id": receiver_user_id,
+    });
     body
 }
 
-/// Whether `sendRichMessage` accepts `receiver_user_id`, as answered by the
-/// server rather than assumed here. See [`try_send_rich`].
+/// Whether `sendRichMessage` accepts `ephemeral_message_parameters`, as
+/// answered by the server rather than assumed here. See [`try_send_rich`].
 static RICH_SCOPING: AtomicU8 = AtomicU8::new(RICH_UNKNOWN);
 const RICH_UNKNOWN: u8 = 0;
 const RICH_SUPPORTED: u8 = 1;
@@ -97,12 +102,10 @@ const RICH_UNSUPPORTED: u8 = 2;
 /// so a table or heading keeps its real Telegram rendering while staying
 /// private. `true` when it landed.
 ///
-/// The 10.2 changelog enumerates the methods that gained `receiver_user_id`
-/// (`sendMessage` and the media senders) and `sendRichMessage` is not among
-/// them, but that method's own parameter table was never available to confirm
-/// the omission. So this asks the server instead of hard-coding the guess: the
-/// first group reply attempts it, and the answer is remembered for the life of
-/// the process. If the API does support it, every later reply gets native rich
+/// 10.3 documents the parameter on this method, but a server may still
+/// predate that, so the answer is asked rather than assumed: the first group
+/// reply attempts it, and the result is remembered for the life of the
+/// process. If the API does support it, every later reply gets native rich
 /// blocks *and* privacy; if not, exactly one call is wasted before the HTML
 /// path takes over for good.
 ///
@@ -124,7 +127,7 @@ pub(crate) async fn try_send_rich(
         Outcome::Sent => {
             if RICH_SCOPING.swap(RICH_SUPPORTED, Ordering::Relaxed) == RICH_UNKNOWN {
                 tracing::info!(
-                    "Telegram: sendRichMessage accepts receiver_user_id, \
+                    "Telegram: sendRichMessage accepts ephemeral_message_parameters, \
                      scoped command replies keep native rich rendering"
                 );
             }
@@ -133,7 +136,7 @@ pub(crate) async fn try_send_rich(
         Outcome::Rejected => {
             RICH_SCOPING.store(RICH_UNSUPPORTED, Ordering::Relaxed);
             tracing::info!(
-                "Telegram: sendRichMessage does not accept receiver_user_id, \
+                "Telegram: sendRichMessage does not accept ephemeral_message_parameters, \
                  scoped command replies will render as HTML from here on"
             );
             false
@@ -206,7 +209,7 @@ enum Outcome {
 
 /// POST an ephemeral send to `method`, logging why it did not land.
 ///
-/// A 400 here is the expected shape of "this server predates 10.2" or "the
+/// A 400 here is the expected shape of "this server predates the parameter" or "the
 /// bot may not scope messages in this chat", so it is a warning and the
 /// caller recovers, but it is never swallowed, because a silent failure
 /// looks identical to the feature working while every reply stays public.

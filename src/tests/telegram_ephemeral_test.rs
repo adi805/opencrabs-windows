@@ -1,4 +1,4 @@
-//! Ephemeral group replies: Bot API 10.2 `receiver_user_id` (#756).
+//! Ephemeral group replies: Bot API 10.3 `ephemeral_message_parameters` (#756).
 //!
 //! Covers the two pure pieces: who a reply is scoped to, and the request
 //! shape sent to `sendMessage`. The transport itself needs a live bot.
@@ -19,11 +19,27 @@ fn group_scopes_the_reply_to_the_invoker() {
 }
 
 #[test]
-fn body_carries_receiver_user_id() {
+fn body_carries_ephemeral_message_parameters() {
     let body = build_body(-100200, None, 12345, "hello", false);
     assert_eq!(body["chat_id"], -100200);
     assert_eq!(body["text"], "hello");
-    assert_eq!(body["receiver_user_id"], 12345);
+    assert_eq!(
+        body["ephemeral_message_parameters"]["receiver_user_id"],
+        12345
+    );
+}
+
+#[test]
+fn scoping_field_is_never_sent_flat() {
+    // Bot API 10.3 replaced the top-level `receiver_user_id` with the
+    // `ephemeral_message_parameters` object. The flat field is the pre-10.3
+    // shape and the current API does not document it, so it must not come
+    // back: a regression here degrades every group reply to public without
+    // raising an error anywhere.
+    let plain = build_body(-100200, None, 12345, "hi", false);
+    let rich = build_rich_body(-100200, None, 12345, "# hi");
+    assert!(plain.get("receiver_user_id").is_none());
+    assert!(rich.get("receiver_user_id").is_none());
 }
 
 #[test]
@@ -48,14 +64,20 @@ fn rich_body_is_the_public_body_plus_the_receiver() {
     let scoped = build_rich_body(-100200, None, 12345, "# hi");
     assert_eq!(scoped["rich_message"], public["rich_message"]);
     assert_eq!(scoped["chat_id"], public["chat_id"]);
-    assert_eq!(scoped["receiver_user_id"], 12345);
+    assert_eq!(
+        scoped["ephemeral_message_parameters"]["receiver_user_id"],
+        12345
+    );
 }
 
 #[test]
 fn rich_body_keeps_the_forum_topic() {
     let body = build_rich_body(-100200, Some(ThreadId(MessageId(77))), 12345, "# hi");
     assert_eq!(body["message_thread_id"], 77);
-    assert_eq!(body["receiver_user_id"], 12345);
+    assert_eq!(
+        body["ephemeral_message_parameters"]["receiver_user_id"],
+        12345
+    );
 }
 
 #[test]
