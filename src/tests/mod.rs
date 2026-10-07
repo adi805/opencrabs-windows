@@ -492,9 +492,9 @@ pub mod telegram_infer_table_separator_test;
 #[cfg(feature = "telegram")]
 pub mod telegram_intermediate_status_report_test;
 #[cfg(feature = "telegram")]
-pub mod telegram_mentions_other_bot_test;
-#[cfg(feature = "telegram")]
 pub mod telegram_media_group_test;
+#[cfg(feature = "telegram")]
+pub mod telegram_mentions_other_bot_test;
 #[cfg(feature = "telegram")]
 pub mod telegram_menu_scope_test;
 #[cfg(feature = "telegram")]
@@ -907,9 +907,9 @@ pub mod suggest_leak_recovery_test;
 pub mod suggest_options_test;
 pub mod telegram_copy_message_test;
 pub mod telegram_ephemeral_test;
-pub mod telegram_inline_query_test;
 #[cfg(feature = "telegram")]
 pub mod telegram_folded_reclaim_suppression_test;
+pub mod telegram_inline_query_test;
 pub mod telegram_menu_budget_test;
 #[cfg(feature = "telegram")]
 pub mod telegram_newest_msg_id_test;
@@ -1040,6 +1040,7 @@ pub mod subagent_notify_test;
 pub mod target_resolver_test;
 mod telegram_ack_cooldown_gate_test;
 mod telegram_acl_test;
+pub mod telegram_allowed_updates_test;
 mod telegram_attachment_tmp_name_test;
 mod telegram_atx_heading_agreement_test;
 pub mod telegram_bg_ack_fold_test;
@@ -1105,7 +1106,6 @@ pub mod telegram_thread_id_lookup_test;
 pub mod telegram_tool_group_test;
 pub mod telegram_topic_actions_test;
 pub mod telegram_topic_listing_test;
-pub mod telegram_allowed_updates_test;
 pub mod telegram_unknown_content_keys_test;
 pub mod text_complete_test;
 pub mod theme_catalog_converter_test;

@@ -257,9 +257,17 @@ pub(crate) async fn send_one(
     text: &str,
     parse_html: bool,
 ) -> bool {
-    send_one_scoped(token, chat_id, thread_id, receiver_user_id, text, parse_html, None)
-        .await
-        .landed
+    send_one_scoped(
+        token,
+        chat_id,
+        thread_id,
+        receiver_user_id,
+        text,
+        parse_html,
+        None,
+    )
+    .await
+    .landed
 }
 
 /// Body for `editEphemeralMessageText`, the only way to change a scoped reply
@@ -329,11 +337,7 @@ pub(crate) async fn edit_reply_markup(
 
 /// Remove a scoped reply. Used when the command it belonged to is done, so a
 /// finished picker does not linger in the chat it was scoped to.
-pub(crate) async fn delete_message(
-    token: &str,
-    chat_id: i64,
-    ephemeral_message_id: i64,
-) -> bool {
+pub(crate) async fn delete_message(token: &str, chat_id: i64, ephemeral_message_id: i64) -> bool {
     let body = build_delete_body(chat_id, ephemeral_message_id);
     post(token, "deleteEphemeralMessage", &body).await == Outcome::Sent
 }

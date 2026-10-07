@@ -68,9 +68,7 @@ fn linked_urls(text: &str) -> std::collections::HashSet<String> {
     let re = Regex::new(r#"https?://[^\s<>"')\]]+"#).expect("valid url regex");
     re.find_iter(text)
         .map(|m| {
-            let raw = m
-                .as_str()
-                .trim_end_matches(['.', ',', ';', ':']);
+            let raw = m.as_str().trim_end_matches(['.', ',', ';', ':']);
             normalize_url(raw)
         })
         .filter(|u| u.len() > "https://".len())

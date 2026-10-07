@@ -6766,9 +6766,7 @@ impl AgentService {
                     // Search results feed the deterministic Sources footer
                     // (#1883); only successful runs contribute links.
                     for (name, (success, out)) in batch.names.iter().zip(batch.outputs.iter()) {
-                        if *success
-                            && crate::brain::tools::sources_footer::is_search_tool(name)
-                        {
+                        if *success && crate::brain::tools::sources_footer::is_search_tool(name) {
                             turn_search_outputs.push(out.clone());
                         }
                     }

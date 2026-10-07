@@ -2124,9 +2124,12 @@ impl TelegramAgent {
                             .channels
                             .telegram
                             .is_owner(&user_id.to_string());
-                        let answered =
-                            super::inline::answer_query(bot.token(), &query.id.to_string(), is_owner)
-                                .await;
+                        let answered = super::inline::answer_query(
+                            bot.token(),
+                            &query.id.to_string(),
+                            is_owner,
+                        )
+                        .await;
                         tracing::info!(
                             "Telegram: inline query from user {user_id} owner={is_owner} \
                              answered={answered}"

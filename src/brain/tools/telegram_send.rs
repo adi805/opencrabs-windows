@@ -1109,19 +1109,21 @@ impl TelegramSendTool {
             .and_then(|v| v.as_str())
             .map(str::to_string);
         let album = references.len() > 1;
-        let action = if album { "send_media_group" } else { "send_photo" };
+        let action = if album {
+            "send_media_group"
+        } else {
+            "send_photo"
+        };
         // Collapse an identical photo+caption re-sent to the same chat
         // within the dedup window (#721) — model repeats or post-timeout
         // retries otherwise land the same media twice back-to-back. The
         // whole set is the signature, so dropping one photo from the album
         // is a different send, not a duplicate.
         let dedup_key = references.join("\n");
-        if !self.telegram_state.claim_media_send(
-            action,
-            chat_id,
-            &dedup_key,
-            caption.as_deref(),
-        ) {
+        if !self
+            .telegram_state
+            .claim_media_send(action, chat_id, &dedup_key, caption.as_deref())
+        {
             tracing::info!(
                 "telegram_send: suppressed duplicate {action} to chat {chat_id} ({} photos)",
                 references.len()
@@ -1205,7 +1207,11 @@ impl TelegramSendTool {
             let chunk: Vec<InputFile> = files[offset..offset + size].to_vec();
             // Telegram shows one caption per album, so only the first chunk
             // carries it: repeating it on every chunk reads as duplicate text.
-            let chunk_caption = if offset == 0 { caption.as_deref() } else { None };
+            let chunk_caption = if offset == 0 {
+                caption.as_deref()
+            } else {
+                None
+            };
             let hash8 = content_hash8(&references[offset..offset + size].join("\n"));
             match send_retrying_rate_limit("telegram_send send_media_group", || {
                 crate::channels::telegram::send::media_group_in_thread(

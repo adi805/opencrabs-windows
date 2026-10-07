@@ -8,8 +8,8 @@
 //! to the destination guard, because a copy that silently routed into an
 //! unconfigured chat would be the same leak `cron_send_scope` exists to stop.
 
-use crate::brain::tools::r#trait::{Tool, ToolResult};
 use crate::brain::tools::telegram_send::{TelegramSendTool, resolve_new_target};
+use crate::brain::tools::r#trait::{Tool, ToolResult};
 use crate::channels::telegram::TelegramState;
 use crate::cron::send_scope::with_send_target;
 use serde_json::json;

@@ -9,7 +9,7 @@
 //! `KNOWN_CONTENT_KEYS` next to pins, joins and topic events.
 
 use crate::channels::telegram::raw_updates::synthesize_unknown_content;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// A message shaped like a real update: envelope plus exactly one content key.
 fn message_with(key: &str, payload: Value) -> Value {
@@ -33,7 +33,10 @@ fn assert_untouched(key: &str) {
         m.get("text").is_none(),
         "{key} is a service event: it must not be rewritten into agent text, got {m}"
     );
-    assert!(m.get(key).is_some(), "{key} must survive untouched, got {m}");
+    assert!(
+        m.get(key).is_some(),
+        "{key} must survive untouched, got {m}"
+    );
 }
 
 #[test]
@@ -57,7 +60,10 @@ fn purchased_paid_media_is_not_synthesized_into_text() {
 fn genuinely_unknown_content_is_still_synthesized() {
     let mut m = message_with("brand_new_content_key_from_the_future", json!({"a": 1}));
     synthesize_unknown_content(&mut m);
-    assert!(m.get("text").is_some(), "unknown content must still be synthesized");
+    assert!(
+        m.get("text").is_some(),
+        "unknown content must still be synthesized"
+    );
     assert!(
         m.get("brand_new_content_key_from_the_future").is_none(),
         "the unknown key is dropped once it is rewritten, got {m}"
