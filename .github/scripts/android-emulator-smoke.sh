@@ -16,7 +16,11 @@
 #   3. Does the daemon survive, and at what RSS? A phone kills processes under
 #      memory pressure; this is the number that decides whether that happens.
 #   4. Does the process wedge? The #55 stall was a userspace deadlock, so
-#      liveness is sampled twice, 60s apart, not assumed from one probe.
+#      liveness is sampled twice, a soak window apart, not from one probe.
+#   5. Does it burn CPU or grow while idle? A busy loop or a leak is what
+#      drains a battery and heats a phone, and neither shows up in a single RSS
+#      reading - so CPU jiffies, RSS and thread count are trended across the
+#      whole soak window instead of sampled once.
 #
 # Deliberately does NOT use `set -e`: a failure in one check must not hide the
 # evidence from the others. Failures are counted and the exit code reflects
@@ -34,6 +38,13 @@ HOME_DIR="/data/data/$PKG/files/home"
 
 mkdir -p "$OUT"
 FAILURES=0
+
+# Soak window. 60s proved the surface binds, but it is too short to separate
+# "settled" from "slow leak", and it never looked at CPU at all - a busy loop
+# is what drains a battery and heats a phone, and it is invisible in an
+# RSS-only sample. 300s at 10s intervals gives 30 samples to trend.
+SOAK_SECONDS="${SOAK_SECONDS:-300}"
+SAMPLE_INTERVAL=10
 
 say() { printf '\n=== %s ===\n' "$1"; }
 fail() {
@@ -282,22 +293,118 @@ fi
 # Sampled, not read once: a growing RSS is the signal that matters for the
 # "will this get killed on a phone" question, and a single reading cannot show
 # growth. 6 samples x 10s = 60s.
-say "rss samples (60s)"
-: > "$OUT/rss.txt"
-for i in 1 2 3 4 5 6; do
-  if [ -n "$CORE_PID" ]; then
-    {
-      printf 't=%02ds ' "$((i * 10))"
-      adb shell "grep -E 'VmRSS|VmSize|Threads' /proc/$CORE_PID/status" 2>/dev/null \
-        | tr -d '\r' | tr '\n' ' '
-      printf '\n'
-    } | tee -a "$OUT/rss.txt"
-  fi
-  sleep 10
-done
-cat "$OUT/rss.txt"
+say "storage before soak"
+adb shell "du -sk /data/data/$PKG 2>/dev/null" | tr -d '\r' > "$OUT/storage-before.txt" || true
+cat "$OUT/storage-before.txt"
 
-say "surface (t=60s)"
+say "soak (${SOAK_SECONDS}s, ${SAMPLE_INTERVAL}s interval)"
+# Total CPU jiffies (utime+stime) for a pid. /proc/<pid>/stat names the comm in
+# parens and comm may itself contain spaces or parens, so cut to the LAST ')'
+# instead of splitting on whitespace; after that the fields shift by two and
+# utime/stime land on $12/$13 rather than $14/$15.
+core_jiffies() {
+  adb shell "cat /proc/$1/stat 2>/dev/null" 2>/dev/null | tr -d '\r' | sed 's/.*) //' | awk '{ if (NF > 12) print $12 + $13 }'
+}
+CLK_TCK="$(adb shell getconf CLK_TCK 2>/dev/null | tr -d '\r')"
+case "$CLK_TCK" in ''|*[!0-9]*) CLK_TCK=100 ;; esac
+echo "clk_tck  : $CLK_TCK"
+: > "$OUT/soak.txt"
+FIRST_JIFFIES="$(core_jiffies "$CORE_PID")"
+PREV_JIFFIES="$FIRST_JIFFIES"
+FIRST_RSS=""; LAST_RSS=""; FIRST_THREADS=""; LAST_THREADS=""; PEAK_CPU_PCT=0
+SAMPLES=$((SOAK_SECONDS / SAMPLE_INTERVAL))
+i=0
+while [ "$i" -lt "$SAMPLES" ]; do
+  i=$((i + 1))
+  RSS_KB="$(adb shell "grep -E '^VmRSS' /proc/$CORE_PID/status 2>/dev/null" | tr -d '\r' | awk '{print $2}')"
+  VMSIZE_KB="$(adb shell "grep -E '^VmSize' /proc/$CORE_PID/status 2>/dev/null" | tr -d '\r' | awk '{print $2}')"
+  THREADS="$(adb shell "grep -E '^Threads' /proc/$CORE_PID/status 2>/dev/null" | tr -d '\r' | awk '{print $2}')"
+  NOW_JIFFIES="$(core_jiffies "$CORE_PID")"
+  CPU_PCT="?"
+  if [ -n "$NOW_JIFFIES" ] && [ -n "$PREV_JIFFIES" ]; then
+    CPU_PCT="$(awk -v a="$NOW_JIFFIES" -v b="$PREV_JIFFIES" -v c="$CLK_TCK" -v s="$SAMPLE_INTERVAL" 'BEGIN { d = a - b; if (d < 0) d = 0; printf "%.1f", (d / (c * s)) * 100 }')"
+  fi
+  PREV_JIFFIES="$NOW_JIFFIES"
+  if [ -n "$RSS_KB" ]; then
+    [ -z "$FIRST_RSS" ] && FIRST_RSS="$RSS_KB"
+    LAST_RSS="$RSS_KB"
+  fi
+  if [ -n "$THREADS" ]; then
+    [ -z "$FIRST_THREADS" ] && FIRST_THREADS="$THREADS"
+    LAST_THREADS="$THREADS"
+  fi
+  printf 't=%03ds rss=%skB vsz=%skB threads=%s cpu=%s%%\n' "$((i * SAMPLE_INTERVAL))" "${RSS_KB:-?}" "${VMSIZE_KB:-?}" "${THREADS:-?}" "$CPU_PCT" | tee -a "$OUT/soak.txt"
+  if [ "$CPU_PCT" != "?" ]; then
+    PEAK_CPU_PCT="$(awk -v a="$CPU_PCT" -v b="$PEAK_CPU_PCT" 'BEGIN { print (a > b) ? a : b }')"
+  fi
+  if [ "$i" -lt "$SAMPLES" ]; then sleep "$SAMPLE_INTERVAL"; fi
+done
+
+# --- soak verdicts ----------------------------------------------------------
+# Growth is judged first-vs-last, not peak: a process that starts at 12 MB and
+# settles there is healthy even if it touched 20 MB during startup.
+if [ -n "$FIRST_RSS" ] && [ -n "$LAST_RSS" ]; then
+  RSS_DELTA=$((LAST_RSS - FIRST_RSS))
+  printf 'rss     : first=%skB last=%skB delta=%+dkB\n' "$FIRST_RSS" "$LAST_RSS" "$RSS_DELTA"
+  # Half again as much over the window is the alarm line. A real leak on a
+  # 5-minute window is far past it; startup settling is far below it.
+  if [ "$FIRST_RSS" -gt 0 ] && [ "$RSS_DELTA" -gt $((FIRST_RSS / 2)) ]; then
+    fail "core RSS grew ${RSS_DELTA}kB over ${SOAK_SECONDS}s (>50% of ${FIRST_RSS}kB)"
+  else
+    pass "core RSS stable over ${SOAK_SECONDS}s (delta ${RSS_DELTA}kB)"
+  fi
+else
+  echo "NOTE: RSS trend not measured (unreadable /proc/<pid>/status)"
+fi
+
+if [ -n "$FIRST_THREADS" ] && [ -n "$LAST_THREADS" ]; then
+  THREAD_DELTA=$((LAST_THREADS - FIRST_THREADS))
+  printf 'threads : first=%s last=%s delta=%+d\n' "$FIRST_THREADS" "$LAST_THREADS" "$THREAD_DELTA"
+  if [ "$THREAD_DELTA" -gt 10 ]; then
+    fail "thread count grew by ${THREAD_DELTA} over ${SOAK_SECONDS}s (leak?)"
+  else
+    pass "thread count stable over ${SOAK_SECONDS}s (delta ${THREAD_DELTA})"
+  fi
+else
+  echo "NOTE: thread trend not measured (unreadable /proc/<pid>/status)"
+fi
+
+# CPU while idle. A daemon with nothing to do should sit near zero. A busy loop
+# pins a core, heats the phone and flattens the battery - which is the failure
+# the user actually asks about. Threshold is deliberately generous: an idle
+# daemon that touches a timer stays far below it, a spin loop sits at 100%.
+if [ -n "$FIRST_JIFFIES" ] && [ -n "$PREV_JIFFIES" ]; then
+  TOTAL_JIFFIES=$((PREV_JIFFIES - FIRST_JIFFIES))
+  AVG_CPU_PCT="$(awk -v d="$TOTAL_JIFFIES" -v c="$CLK_TCK" -v s="$SOAK_SECONDS" 'BEGIN { printf "%.1f", (d / (c * s)) * 100 }')"
+  printf 'cpu     : avg=%s%% peak_interval=%s%% over %ss\n' "$AVG_CPU_PCT" "$PEAK_CPU_PCT" "$SOAK_SECONDS"
+  if awk -v a="$AVG_CPU_PCT" 'BEGIN { exit !(a > 25) }'; then
+    fail "core averaged ${AVG_CPU_PCT}% CPU while idle over ${SOAK_SECONDS}s (busy loop?)"
+  else
+    pass "core idled at ${AVG_CPU_PCT}% CPU (peak interval ${PEAK_CPU_PCT}%) - no busy loop"
+  fi
+else
+  echo "NOTE: CPU trend not measured (unreadable /proc/<pid>/stat)"
+fi
+
+# Wake locks. A PARTIAL_WAKE_LOCK held by the app is the classic way a
+# background service drains a phone: it keeps the CPU awake after the screen
+# goes off. The Android shell contains no wake-lock code at all, so "none
+# held" is the correct answer - asserted rather than assumed, because that is
+# a property of the shipped app, not of this script.
+say "wake locks"
+adb shell dumpsys power 2>/dev/null | tr -d '\r' | sed -n '/Wake Locks/,/^$/p' > "$OUT/wakelocks.txt" || true
+cat "$OUT/wakelocks.txt"
+if grep -qi "$PKG" "$OUT/wakelocks.txt" 2>/dev/null; then
+  fail "$PKG holds a wake lock (battery drain while idle)"
+else
+  pass "no wake lock held by $PKG"
+fi
+
+say "battery"
+adb shell dumpsys battery 2>/dev/null | tr -d '\r' | grep -iE 'level|temperature|status' > "$OUT/battery.txt" || true
+cat "$OUT/battery.txt"
+
+say "surface (t=${SOAK_SECONDS}s)"
 HEALTH_AFTER=0
 for _ in $(seq 1 10); do
   if curl -sS --max-time 5 "http://127.0.0.1:$PORT/surface/health" \
@@ -308,9 +415,9 @@ for _ in $(seq 1 10); do
   sleep 4
 done
 CORE_PID_AFTER="$(adb shell pidof libopencrabs.so 2>/dev/null | tr -d '\r')"
-echo "core pid after 60s : ${CORE_PID_AFTER:-<none>}"
+echo "core pid after ${SOAK_SECONDS}s : ${CORE_PID_AFTER:-<none>}"
 if [ "$HEALTH_AFTER" = "1" ]; then
-  pass "surface still answered at t=60s"
+  pass "surface still answered at t=${SOAK_SECONDS}s"
   cat "$OUT/health-after.json"
 else
   # Distinguish "never started" from "started then wedged". Both are failures
@@ -320,16 +427,110 @@ else
   # above now explains. Calling the second one a "possible wedge" sends the
   # reader hunting a deadlock that was never there.
   if [ "$HEALTH_BEFORE" = "1" ]; then
-    fail "surface answered at t=0 then stopped within 60s (possible wedge)"
+    fail "surface answered at t=0 then stopped within ${SOAK_SECONDS}s (possible wedge)"
   else
     fail "surface never answered (see the core log above)"
   fi
   cat "$OUT/curl-after.err" 2>/dev/null || true
 fi
 if [ -n "$CORE_PID_AFTER" ]; then
-  pass "core survived the 60s window"
+  pass "core survived the ${SOAK_SECONDS}s window"
 else
-  fail "core process is gone after 60s"
+  fail "core process is gone after ${SOAK_SECONDS}s"
+fi
+
+# ------------------------------------------------------- phone reality -------
+# Everything above runs with the app in the foreground. A phone spends its life
+# with the app backgrounded, the screen off and the task swiped away, so these
+# are the states that decide whether this is a usable phone daemon rather than
+# a demo that only works while you are looking at it.
+
+say "storage (data dir)"
+adb shell "du -sk /data/data/$PKG 2>/dev/null" | tr -d '\r' > "$OUT/storage-after.txt" || true
+cat "$OUT/storage-after.txt"
+BEFORE_KB="$(awk '{print $1}' "$OUT/storage-before.txt" 2>/dev/null)"
+AFTER_KB="$(awk '{print $1}' "$OUT/storage-after.txt" 2>/dev/null)"
+case "${BEFORE_KB:-x}${AFTER_KB:-x}" in
+  *[!0-9]*|"")
+    echo "NOTE: storage growth not measured (du unreadable)"
+    ;;
+  *)
+    DELTA_KB=$((AFTER_KB - BEFORE_KB))
+    printf 'storage : before=%skB after=%skB delta=%+dkB\n' "$BEFORE_KB" "$AFTER_KB" "$DELTA_KB"
+    # The core writes a SQLite DB, its WAL and a log. A few MB across the soak
+    # is normal; 50 MB is not a log, it is a runaway writer, and on a phone that
+    # ends with the user clearing data or the system killing the app.
+    if [ "$DELTA_KB" -gt 51200 ]; then
+      fail "data dir grew ${DELTA_KB}kB during the soak (>50MB)"
+    else
+      pass "data dir grew ${DELTA_KB}kB during the soak"
+    fi
+    ;;
+esac
+
+say "notification (foreground service visibility)"
+# POST_NOTIFICATIONS is a RUNTIME permission from API 33, and targetSdk here is
+# 35, so declaring it in the manifest is not enough: an app that never asks for
+# it shows no notification at all. The operator then starts the core and sees
+# nothing - no indicator that it is running, and no way to stop it.
+NOTIF_LINE="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | head -1)"
+echo "  ${NOTIF_LINE:-<no POST_NOTIFICATIONS row>}"
+case "$NOTIF_LINE" in
+  *granted=true*) pass "POST_NOTIFICATIONS granted at runtime" ;;
+  *) fail "POST_NOTIFICATIONS not granted: the foreground notification is suppressed on API 33+" ;;
+esac
+adb shell dumpsys notification --noredact 2>/dev/null | tr -d '\r' > "$OUT/notifications.txt" 2>&1 || true
+if grep -q "$PKG" "$OUT/notifications.txt" 2>/dev/null; then
+  pass "a notification is posted for $PKG"
+else
+  fail "no notification posted for $PKG"
+fi
+
+say "background survival (HOME)"
+# The real phone case: the user presses home and the screen locks. A foreground
+# service must keep the core alive through that, and the surface must keep
+# answering, or the client is useless the moment it is not on screen.
+adb shell input keyevent KEYCODE_HOME >/dev/null 2>&1 || true
+sleep 15
+BG_PID="$(adb shell pidof libopencrabs.so 2>/dev/null | tr -d '\r')"
+echo "core pid after HOME : ${BG_PID:-<none>}"
+BG_HEALTH=0
+for _ in $(seq 1 5); do
+  if curl -sS --max-time 5 "http://127.0.0.1:$PORT/surface/health" \
+      -o "$OUT/health-bg.json" 2> "$OUT/curl-bg.err"; then
+    BG_HEALTH=1
+    break
+  fi
+  sleep 3
+done
+if [ -z "$BG_PID" ]; then
+  fail "core died when the app was backgrounded"
+elif [ "$BG_HEALTH" = "1" ]; then
+  pass "core and surface survived the app being backgrounded"
+  cat "$OUT/health-bg.json"
+else
+  fail "surface stopped answering after the app was backgrounded"
+  cat "$OUT/curl-bg.err" 2>/dev/null || true
+fi
+
+say "restart (no duplicate core)"
+# The platform kills foreground services under memory pressure and START_STICKY
+# asks it to bring the service back. A restart that spawns a SECOND core leaves
+# two processes competing for the same port and doubles the footprint, so the
+# COUNT is asserted - "something is running" would miss exactly that bug.
+adb shell am force-stop "$PKG" >/dev/null 2>&1 || true
+sleep 3
+adb shell am start -n "$PKG/.MainActivity" >/dev/null 2>&1 || true
+sleep 20
+RESTART_PIDS="$(adb shell pidof libopencrabs.so 2>/dev/null | tr -d '\r')"
+RESTART_COUNT="$(printf '%s\n' $RESTART_PIDS | grep -c '[0-9]')"
+echo "core pids after restart : ${RESTART_PIDS:-<none>} (count=$RESTART_COUNT)"
+if [ "$RESTART_COUNT" = "0" ]; then
+  fail "no core running after the app was restarted"
+elif [ "$RESTART_COUNT" -gt 1 ]; then
+  fail "$RESTART_COUNT cores running at once (duplicate spawn on restart)"
+else
+  pass "exactly one core after restart"
 fi
 
 # ------------------------------------------------------------- crash logs ----

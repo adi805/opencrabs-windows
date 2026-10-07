@@ -133,7 +133,7 @@ jobs:
             arm64-v8a=apk-input/aarch64-linux-android/ci/opencrabs \
             x86_64=apk-input/x86_64-linux-android/ci/opencrabs
 
-      - name: Assert the APK honours the PRD minSdk floor (NFR-005 / AC-026)
+      - name: Assert the APK honours the PRD minSdk floor (NFR-005 / AC-026 / AC-030)
         # The floor is a product contract, and it silently read 24 for a while
         # because the value lived as two separate literals. Fail here, before
         # the emulator leg, so a regression costs seconds instead of 30 minutes.
@@ -150,6 +150,22 @@ jobs:
             exit 1
           fi
           echo "minSdk $GOT >= 26: ok"
+
+          # AC-030: the floor must also exist in the source manifest. The flag
+          # alone is what let the value drift from 26 to 24 unnoticed.
+          TLINE="$("$AAPT2" dump badging "$APK" | grep -m1 '^targetSdkVersion:' || true)"
+          TGOT="${TLINE#targetSdkVersion:}"; TGOT="${TGOT//\'/}"
+          if [ -z "${TGOT:-}" ]; then
+            echo "::error::APK carries no targetSdkVersion; aapt2 writes it only from the flag, and an unset target drops the app into legacy compatibility mode"
+            exit 1
+          fi
+          echo "targetSdk $TGOT: ok"
+
+          if ! grep -q '<uses-sdk' android/AndroidManifest.xml; then
+            echo "::error::android/AndroidManifest.xml declares no <uses-sdk>, so minSdk exists only as a build flag (AC-030)"
+            exit 1
+          fi
+          echo "source manifest declares <uses-sdk>: ok"
 
       - name: Upload the APK
         uses: actions/upload-artifact@v4
