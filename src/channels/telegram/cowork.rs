@@ -187,19 +187,41 @@ pub async fn handle_cowork_command(
 
     let deep_link = build_cowork_deep_link(&bot_username, &session_id);
 
-    let keyboard = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::url(
-        "🦀 Add to Group".to_string(),
-        deep_link.parse().unwrap(),
-    )]]);
-
     let text = "Tap below to add me to a Telegram group.\n\n\
         After joining, I'll check if I have admin access. \
         If not, I'll send you instructions to promote me.";
 
-    message_in_thread(bot, ChatId(chat_id), thread_id, text)
-        .reply_markup(keyboard)
-        .await?;
+    match cowork_keyboard(&deep_link) {
+        Some(keyboard) => {
+            message_in_thread(bot, ChatId(chat_id), thread_id, text)
+                .reply_markup(keyboard)
+                .await?;
+        }
+        None => {
+            message_in_thread(bot, ChatId(chat_id), thread_id, text).await?;
+        }
+    }
     Ok(())
+}
+
+/// The "Add to Group" button for `deep_link`, or `None` when it is not a URL.
+///
+/// The link is built from the bot username the API returned, so parsing it can
+/// fail in principle. A malformed link must degrade to a text-only prompt:
+/// panicking here would take the whole DM handler down for a cosmetic button.
+pub(crate) fn cowork_keyboard(deep_link: &str) -> Option<InlineKeyboardMarkup> {
+    match deep_link.parse() {
+        Ok(url) => Some(InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::url("🦀 Add to Group".to_string(), url),
+        ]])),
+        Err(e) => {
+            tracing::warn!(
+                "cowork: deep link {deep_link:?} is not a valid URL ({e}), \
+                 sending the instructions without the button"
+            );
+            None
+        }
+    }
 }
 
 /// Handle the bot being added to a group via `?startgroup=cowork_<id>`.
