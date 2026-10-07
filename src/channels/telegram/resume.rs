@@ -281,6 +281,7 @@ pub(crate) fn build_enqueue_callback(
                                     "bg-resume echo",
                                     secs.duration(),
                                     " on first delivery, retrying once",
+                                    Some(chat_id),
                                 )
                                 .await;
                                 let mut retry = bot

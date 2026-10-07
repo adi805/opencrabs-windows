@@ -69,6 +69,24 @@ pub(crate) fn alert_due(
     }
 }
 
+/// Map a supervised tick result (#1963). A `JoinError::Panic` means the
+/// tick task panicked: converted to an ordinary error so the scheduler's
+/// failure accounting and alerting (#1893) treats it like any other tick
+/// failure instead of the whole scheduler task dying silently.
+pub(crate) fn supervise_tick_result(
+    joined: Result<Result<(), anyhow::Error>, tokio::task::JoinError>,
+) -> Result<(), anyhow::Error> {
+    match joined {
+        Ok(result) => result,
+        Err(e) if e.is_panic() => Err(anyhow::anyhow!(
+            "cron tick panicked (isolated by supervisor; scheduler keeps running): {e:#}"
+        )),
+        Err(e) => Err(anyhow::anyhow!(
+            "cron tick task cancelled (isolated by supervisor; scheduler keeps running): {e:#}"
+        )),
+    }
+}
+
 /// Background cron scheduler that polls the database and executes due jobs.
 pub struct CronScheduler {
     repo: CronJobRepository,
@@ -109,10 +127,11 @@ impl CronScheduler {
     /// setup (cron session, config reads) resolves to that profile's home.
     /// `spawn()` is the thin wrapper for callers that just want it backgrounded.
     pub async fn run(self) {
+        let me = Arc::new(self);
         tracing::info!(
             "Cron scheduler started — polling every 60s (shared Cron session, compaction-isolated)"
         );
-        if let Err(e) = self.backfill_missing_next_run().await {
+        if let Err(e) = me.backfill_missing_next_run().await {
             tracing::error!("Failed to backfill missing next_run_at on startup: {e:#}");
         }
 
@@ -124,7 +143,13 @@ impl CronScheduler {
         let mut last_alert: Option<std::time::Duration> = None;
 
         loop {
-            match self.tick().await {
+            // #1963: a panicking tick used to take the scheduler task down
+            // with it: `spawn()` discards the JoinHandle, so the schedule
+            // died silently. Each tick now runs as its own supervised task
+            // and a panic lands in the #1893 failure path as a logged error.
+            let s = Arc::clone(&me);
+            let outcome = supervise_tick_result(tokio::spawn(async move { s.tick().await }).await);
+            match outcome {
                 Ok(()) => {
                     failures = 0;
                     last_alert = None;
@@ -135,7 +160,7 @@ impl CronScheduler {
                     let uptime = started.elapsed();
                     if alert_due(failures, last_alert, uptime) {
                         last_alert = Some(uptime);
-                        self.alert_tick_failure(failures, &e).await;
+                        me.alert_tick_failure(failures, &e).await;
                     }
                 }
             }
@@ -269,7 +294,8 @@ impl CronScheduler {
                 let run_repo = self.run_repo.clone();
                 let job_name = job.name.clone();
                 let job_id = job.id;
-                tokio::spawn(
+                let report_name = job_name.clone();
+                let job_task = tokio::spawn(
                     async move {
                         // For foreign-profile jobs, wrap the ENTIRE execution in a
                         // task-local profile home scope. This means every tool call
@@ -400,6 +426,16 @@ impl CronScheduler {
                     }
                     .instrument(tracing::info_span!("job", name = %job_name, id = %job_id)),
                 );
+                // #1963: the job handle used to be dropped, so a panicking
+                // job vanished with one line in nobody's log. Await it and
+                // report loudly; the scheduler and other jobs are unaffected.
+                tokio::spawn(async move {
+                    if let Err(e) = job_task.await {
+                        tracing::error!(
+                            "Cron job {report_name} task failed (isolated; scheduler keeps running): {e:#}"
+                        );
+                    }
+                });
             }
         }
 

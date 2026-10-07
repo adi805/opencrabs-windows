@@ -333,6 +333,11 @@ where
                         what,
                         requested,
                         &format!(" (attempt {attempt}/{MAX_RETRIES})"),
+                        // No chat in scope: this ladder is generic over the send
+                        // closure, and its ~20 callers pass only a label. The
+                        // process-wide deadline is armed; the per-chat pause is
+                        // armed by the callers that do know their chat (#635).
+                        None,
                     )
                     .await;
                 } else {

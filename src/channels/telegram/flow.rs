@@ -193,7 +193,7 @@ pub(crate) struct StreamingState {
     /// Message IDs of every voice note delivered to Telegram via `send_voice`
     /// (TTS responses to voice-input turns). This field exists purely as a
     /// load-bearing invariant: voice-reply IDs live here and MUST NEVER be
-    /// iterated for deletion by any cleanup/cancellation/rebuild path. If a
+    /// iterated for deletion by any cleanup, cancellation, or rebuild path. If a
     /// future contributor adds a bulk cleanup over message IDs they have to
     /// consciously skip this field. The user's TTS voice note is the most
     /// expensive artefact to reproduce — it's a real synthesis call, not a
@@ -1377,6 +1377,7 @@ pub(crate) async fn refresh_flow_html(
                 "refresh_flow",
                 secs.duration(),
                 &format!(" for mid={mid:?}, then retrying"),
+                Some(chat.0),
             )
             .await;
             let retry_html = {
@@ -1870,11 +1871,35 @@ pub(crate) async fn restick_flow_if_buried(
         }
     };
     if relocated {
+        // #721 E1: one line per request — the two arms are mutually
+        // exclusive, so each carries its own target id.
+        super::telemetry::log_request(
+            "system",
+            "flow restick old block",
+            "-",
+            "delete",
+            "deleteMessage",
+            chat.0,
+            None,
+            Some(i64::from(old_mid.0)),
+        );
         if let Err(e) = bot.delete_message(chat, old_mid).await {
             tracing::warn!("Telegram: restick could not delete old block mid={old_mid:?}: {e}");
         }
-    } else if let Err(e) = bot.delete_message(chat, new_mid).await {
-        tracing::warn!("Telegram: restick could not delete stray duplicate: {e}");
+    } else {
+        super::telemetry::log_request(
+            "system",
+            "flow restick stray duplicate",
+            "-",
+            "delete",
+            "deleteMessage",
+            chat.0,
+            None,
+            Some(i64::from(new_mid.0)),
+        );
+        if let Err(e) = bot.delete_message(chat, new_mid).await {
+            tracing::warn!("Telegram: restick could not delete stray duplicate: {e}");
+        }
     }
     // The plan Approve/Discard keyboard rides the persistent plan card, not the
     // flow block (#580), so a relocated block re-posts bare — nothing to
