@@ -1,12 +1,13 @@
 name: Release (fork)
 
-# Why this file exists: release.yml carries `publish-crate` (a live crates.io
-# push against the crate name `opencrabs`) and gates `create-release` on that
-# publish succeeding. On a fork the publish can never succeed — the crate name
-# belongs to upstream — so `create-release` never runs and the fork publishes no
-# tagged release at all. That leaves the updater with nothing to find: it asks
-# for `releases/latest`, gets the fork's rolling `nightly` pre-release, which is
-# not semver, and stops.
+# Why this file exists: release.yml carries `publish-crate`, a live crates.io
+# push against the crate name `opencrabs`, and gates `create-release` on that
+# publish succeeding. On a fork the publish can never succeed, because the crate
+# name belongs to upstream, so `create-release` never runs and the fork
+# publishes no tagged release at all. That leaves the updater with nothing to
+# find: `releases/latest` currently resolves to `win-desktop-preview`, whose tag
+# is not semver, so the version comparison never sees anything newer and every
+# check reports "already on latest".
 #
 # This is the fork's own release path. It builds the Linux binaries, names each
 # archive exactly as the updater expects
@@ -47,7 +48,7 @@ jobs:
   # The updater compares the release tag against the version the running binary
   # reports, and the binary reports CARGO_PKG_VERSION. A release tagged v0.5.6
   # whose binary says 0.5.5 is an update that can never apply: every host
-  # downloads it, swaps it in, restarts, and still reports 0.5.5 — so the next
+  # downloads it, swaps it in, restarts, and still reports 0.5.5, so the next
   # check offers the same update again. Fail before spending two build legs.
   # ---------------------------------------------------------------------------
   preflight:
@@ -69,7 +70,7 @@ jobs:
             *) echo "::error::tag '$tag' must start with 'v' (e.g. v0.5.5)"; exit 1 ;;
           esac
           if [ "v${cargo_version}" != "$tag" ]; then
-            echo "::error::tag $tag does not match Cargo.toml version $cargo_version — bump Cargo.toml first, or tag the commit that has it"
+            echo "::error::tag $tag does not match Cargo.toml version $cargo_version: bump Cargo.toml first, or tag the commit that has it"
             exit 1
           fi
 
@@ -202,7 +203,7 @@ jobs:
           # Idempotent: a re-run of the same tag replaces the assets instead of
           # failing on "release already exists".
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "release $tag exists — uploading assets with --clobber"
+            echo "release $tag exists, uploading assets with --clobber"
             gh release upload "$tag" release-assets/* --clobber
           else
             gh release create "$tag" release-assets/* \
