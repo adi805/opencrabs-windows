@@ -22,6 +22,13 @@ jobs:
   # gates happen; main is protected by branch protection requiring PR merge.
   wait-for-ci:
     name: Verify main branch
+    # Fork guard: this pipeline belongs to upstream. `publish-crate` pushes the
+    # crate named `opencrabs` to crates.io, which only the upstream org can do,
+    # so on a fork the release can never be created from here. Without this
+    # guard a tag push still spends five platform builds and finishes red,
+    # running next to the fork's own release-fork.yml for the same tag.
+    # Skipping this job cascades: every other job in this file needs it.
+    if: github.repository == 'opencrabs/opencrabs'
     runs-on: ubuntu-latest
     steps:
       - name: Confirm commit is on main

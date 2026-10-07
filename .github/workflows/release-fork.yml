@@ -1,0 +1,234 @@
+name: Release (fork)
+
+# Why this file exists: release.yml carries `publish-crate`, a live crates.io
+# push against the crate name `opencrabs`, and gates `create-release` on that
+# publish succeeding. On a fork the publish can never succeed, because the crate
+# name belongs to upstream, so `create-release` never runs and the fork
+# publishes no tagged release at all. That leaves the updater with nothing to
+# find: `releases/latest` currently resolves to `win-desktop-preview`, whose tag
+# is not semver, so the version comparison never sees anything newer and every
+# check reports "already on latest".
+#
+# This is the fork's own release path. It builds the Linux binaries, names each
+# archive exactly as the updater expects
+# (`opencrabs-<tag>-<platform>.tar.gz`), writes SHA256SUMS beside them, and
+# publishes the release. No crates.io, no upstream.
+#
+# Linux only, deliberately: linux-arm64 is what the fork's own hosts run (an
+# aarch64 set-top box, an x86_64 VPS). macOS and Windows legs stay in
+# prerelease.yml for people who build from source; add them here if the fork
+# ever needs to auto-update those platforms.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.5.5). The tag must already exist."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-fork-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # A tag push carries the tag in ref_name; a manual dispatch carries it in the
+  # input, because there ref_name is the branch the workflow ran from.
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Guard: the tag and Cargo.toml must agree.
+  #
+  # The updater compares the release tag against the version the running binary
+  # reports, and the binary reports CARGO_PKG_VERSION. A release tagged v0.5.6
+  # whose binary says 0.5.5 is an update that can never apply: every host
+  # downloads it, swaps it in, restarts, and still reports 0.5.5, so the next
+  # check offers the same update again. Fail before spending two build legs.
+  # ---------------------------------------------------------------------------
+  preflight:
+    name: Preflight (tag matches Cargo.toml)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Check tag against Cargo.toml version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          cargo_version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "tag=$tag cargo_version=$cargo_version"
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::tag '$tag' must start with 'v' (e.g. v0.5.5)"; exit 1 ;;
+          esac
+          if [ "v${cargo_version}" != "$tag" ]; then
+            echo "::error::tag $tag does not match Cargo.toml version $cargo_version: bump Cargo.toml first, or tag the commit that has it"
+            exit 1
+          fi
+
+  build-linux:
+    name: Build ${{ matrix.asset_suffix }}
+    needs: [preflight]
+    runs-on: ${{ matrix.os }}
+    # A cold --all-features build (llama's cmake C++ plus the thin-LTO link) is
+    # the long pole; warm from rust-cache it lands far lower.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            asset_suffix: linux-amd64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset_suffix: linux-arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }} --all-features
+
+      - name: Download RTK
+        shell: bash
+        run: |
+          RTK_VERSION="0.40.0"
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-gnu) RTK_ASSET="rtk-x86_64-unknown-linux-musl.tar.gz" ;;
+            aarch64-unknown-linux-gnu) RTK_ASSET="rtk-aarch64-unknown-linux-gnu.tar.gz" ;;
+          esac
+          curl -sL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/${RTK_ASSET}" -o "/tmp/${RTK_ASSET}"
+          mkdir -p /tmp/rtk-extract && tar xzf "/tmp/${RTK_ASSET}" -C /tmp/rtk-extract
+          RTK_BIN=$(find /tmp/rtk-extract -name "rtk" | head -1)
+          cp "$RTK_BIN" "target/${{ matrix.target }}/release/"
+          chmod +x "target/${{ matrix.target }}/release/rtk"
+
+      - name: Strip
+        run: strip target/${{ matrix.target }}/release/opencrabs
+
+      # Execute it before shipping it. `--version` returns from argument parsing
+      # before profile setup and logging init run, so it cannot catch an
+      # init-time failure, but it does prove the binary is runnable on the
+      # target and carries the expected version.
+      - name: Smoke
+        shell: bash
+        run: |
+          set +e
+          ver=$(./target/${{ matrix.target }}/release/opencrabs --version 2>&1)
+          status=$?
+          set -e
+          echo "exit=$status version=$ver"
+          [ "$status" -eq 0 ] || exit 1
+          echo "$ver" | grep -qi opencrabs
+          echo "$ver" | grep -q "${RELEASE_TAG#v}"
+
+      # The archive name is a contract, not a label: the updater builds
+      # `opencrabs-{tag_name}-{platform_suffix}.tar.gz` from the release's
+      # tag_name, which still carries the leading `v`. Rename this and updates
+      # break with "no binary found for this platform".
+      - name: Create archive
+        shell: bash
+        run: |
+          ARCHIVE="opencrabs-${RELEASE_TAG}-${{ matrix.asset_suffix }}"
+          cd "target/${{ matrix.target }}/release"
+          tar czf "../../../${ARCHIVE}.tar.gz" opencrabs rtk
+          echo "archive: ${ARCHIVE}.tar.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.asset_suffix }}
+          path: opencrabs-${{ env.RELEASE_TAG }}-${{ matrix.asset_suffix }}.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-release:
+    name: Publish release
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      # SHA256SUMS is what the updater verifies the download against, and it
+      # fails closed: a release without an entry for the asset name is refused
+      # outright rather than swapped in unverified. It must be generated here,
+      # from the exact bytes being published, and uploaded in the same release.
+      - name: Collect and checksum
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -name '*.tar.gz' -exec cp {} release-assets/ \;
+          cd release-assets
+          sha256sum -- * > SHA256SUMS
+          ls -la
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          # Idempotent: a re-run of the same tag replaces the assets instead of
+          # failing on "release already exists".
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag exists, uploading assets with --clobber"
+            gh release upload "$tag" release-assets/* --clobber
+          else
+            gh release create "$tag" release-assets/* \
+              --title "$tag" \
+              --generate-notes
+          fi
+
+      # Read back from the API what was actually published. An upload that
+      # exits 0 is not proof the assets landed, and this is the same surface the
+      # updater reads.
+      - name: Verify published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          echo "--- assets on $tag ---"
+          gh release view "$tag" --json assets --jq '.assets[].name' | sort
+          for want in "opencrabs-${tag}-linux-arm64.tar.gz" \
+                      "opencrabs-${tag}-linux-amd64.tar.gz" \
+                      "SHA256SUMS"; do
+            if ! gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx "$want"; then
+              echo "::error::expected asset missing from $tag: $want"
+              exit 1
+            fi
+          done
+          echo "all expected assets present"
