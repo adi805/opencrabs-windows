@@ -168,14 +168,19 @@ jobs:
             echo "::error::aapt2 produced no badging output for $APK"
             exit 1
           fi
-          LINE="$(printf '%s\n' "$BADGING" | grep -m1 '^sdkVersion:' || true)"
+          # The field name is version-dependent: build-tools 34.0.0 prints
+          # sdkVersion:, build-tools 37.0.0 prints minSdkVersion:. Grepping
+          # only the old spelling reported a valid APK as broken. Match case
+          # insensitively, then take the value after the colon: that part is
+          # identical in both spellings, so no prefix stripping is needed.
+          LINE="$(printf '%s\n' "$BADGING" | grep -m1 -iE '^(min)?sdkversion:' || true)"
           if [ -z "${LINE:-}" ]; then
-            echo "::error::aapt2 badging carries no sdkVersion line"
+            echo "::error::aapt2 badging carries neither sdkVersion nor minSdkVersion (the field name varies by build-tools version)"
             printf '%s\n' "$BADGING" | head -20
             exit 1
           fi
           echo "manifest: $LINE"
-          GOT="${LINE#sdkVersion:}"; GOT="${GOT//\'/}"
+          GOT="${LINE##*:}"; GOT="${GOT//\'/}"
           if [ "${GOT:-0}" -lt 26 ]; then
             echo "::error::APK declares minSdk $GOT, but the PRD pins 26 (NFR-005, verified by AC-026)"
             exit 1
@@ -184,8 +189,8 @@ jobs:
 
           # AC-030: the floor must also exist in the source manifest. The flag
           # alone is what let the value drift from 26 to 24 unnoticed.
-          TLINE="$(printf '%s\n' "$BADGING" | grep -m1 '^targetSdkVersion:' || true)"
-          TGOT="${TLINE#targetSdkVersion:}"; TGOT="${TGOT//\'/}"
+          TLINE="$(printf '%s\n' "$BADGING" | grep -m1 -iE '^targetsdkversion:' || true)"
+          TGOT="${TLINE##*:}"; TGOT="${TGOT//\'/}"
           if [ -z "${TGOT:-}" ]; then
             echo "::error::APK carries no targetSdkVersion; aapt2 writes it only from the flag, and an unset target drops the app into legacy compatibility mode"
             exit 1
