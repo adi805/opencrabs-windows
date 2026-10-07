@@ -113,6 +113,40 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --lib --bins --tests --examples --all-features -- -D warnings
 
+  # ── Stage 1b: Governance policy lint (#1934) ─────────────────────────────
+  # The machine-decidable half of AGENTS.md / CONTRIBUTING.md. `governance.toml`
+  # at the repo root is the source of truth; scripts/policy-lint.py reads it and
+  # this job runs the script. Prose review keeps everything that needs
+  # judgement — tone, scope creep, "is this one problem?".
+  #
+  # Runs on PRs only: on a main push there is no base to diff against, and the
+  # PR run is what gates the merge. Deliberately no rust toolchain and no
+  # caching — it is pure git + tomllib, ~10s.
+  #
+  # The --self-test step comes first on purpose. A linter whose regexes quietly
+  # stopped matching would otherwise report "no violations" on every PR and
+  # look identical to a clean repo; the self-test fails the job in that case.
+  policy-lint:
+    name: Policy lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history: the checks walk commit messages between the merge
+          # base and the head, and a shallow clone has neither.
+          fetch-depth: 0
+
+      - name: Prove the checks bite
+        run: python3 scripts/policy-lint.py --self-test
+
+      - name: Lint commits and PR size
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 scripts/policy-lint.py \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}"
+
   # ── Stage 2: Build verification (parallel, gated on lint + audit) ────────
   # Cross-platform BUILD on macOS confirms target compatibility without
   # running tests there (tests run on Linux only — see `test` below).
@@ -503,6 +537,34 @@ jobs:
       - name: Scan for duplicate top-level declarations
         run: python3 scripts/check-duplicate-decls.py --root src
 
+  # ── Workflow policy (governance.toml) ─────────────────────────────────────
+  # #1934: rules that live only in prose get violated and then counted in the
+  # ledger. This job reads governance.toml and fails on the ones a machine can
+  # decide without judgement. PRs only — a push to main has no base to diff
+  # against, and the rules describe what a PR must look like.
+  policy-lint:
+    name: Policy lint
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The lint walks base..head, so both ends must be present.
+          fetch-depth: 0
+
+      # Same shape as the two Python linters above: the rule set proves it
+      # still bites before it is trusted to judge a PR. A regex that silently
+      # stopped matching would otherwise pass every PR forever.
+      - name: Policy linter proves its own teeth
+        run: python3 scripts/policy-lint.py --self-test
+
+      - name: Lint the pull request
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/policy-lint.py --base "$BASE_SHA" --head "$HEAD_SHA"
+
   # ── Stage 3: Test on Linux (gated on lint + audit, parallel with build) ──
   # Tests run on Linux only — macOS gets build verification via
   # the `build` job above. ZeroClaw uses the same split because the
@@ -793,7 +855,7 @@ jobs:
     # Price of this line: for Windows-relevant PRs the gate now waits on the
     # longer of the macOS build (~40m) and a cold Windows build (~50m); warm
     # rust-cache runs land near 10m.
-    needs: [lint, build, test, audit, windows-footguns, windows-build]
+    needs: [lint, build, test, audit, windows-footguns, windows-build, policy-lint]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
