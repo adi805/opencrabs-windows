@@ -199,33 +199,31 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         name: "/onboard",
         description: "Run setup wizard",
     },
+    // Single-step setup (#1981). The legacy `/onboard:<step>` spellings
+    // still resolve but are deliberately not offered here.
     SlashCommand {
-        name: "/onboard:provider",
-        description: "Jump to AI provider setup",
+        name: "/workspace",
+        description: "Workspace settings",
     },
     SlashCommand {
-        name: "/onboard:workspace",
-        description: "Jump to workspace settings",
-    },
-    SlashCommand {
-        name: "/onboard:channels",
+        name: "/channels",
         description: "Setup Telegram, Slack, Discord, WhatsApp, Trello",
     },
     SlashCommand {
-        name: "/onboard:voice",
-        description: "Jump to voice STT/TTS setup",
+        name: "/voice",
+        description: "Voice STT/TTS setup",
     },
     SlashCommand {
-        name: "/onboard:image",
-        description: "Jump to image handling setup (vision + generation)",
+        name: "/image",
+        description: "Image handling setup (vision + generation)",
     },
     SlashCommand {
-        name: "/onboard:daemon",
-        description: "Jump to background service (always-on) setup",
+        name: "/daemon",
+        description: "Background service (always-on) setup",
     },
     SlashCommand {
-        name: "/onboard:brain",
-        description: "Jump to brain/persona setup",
+        name: "/brain",
+        description: "Brain/persona setup",
     },
     SlashCommand {
         name: "/doctor",

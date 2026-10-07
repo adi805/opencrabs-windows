@@ -833,11 +833,13 @@ impl App {
                 self.push_system_message(reply);
                 true
             }
-            s if s.starts_with("/onboard") || s == "/doctor" || s == "/models" => {
+            s if s.starts_with("/onboard")
+                || crate::tui::onboarding::deep_link::is_setup_command(s) =>
+            {
                 use crate::tui::onboarding::OnboardingStep;
                 use crate::tui::onboarding::deep_link::{self, DeepLink};
                 // Resolution reads the full input, not just the first word, so
-                // arguments like `/onboard:channels whatsapp` survive: `cmd`
+                // arguments like `/channels whatsapp` survive: `cmd`
                 // holds only the first word, which drops the channel name and
                 // sends the deep-link back to the menu.
                 let (link, channel_arg) = deep_link::resolve(s, input);
