@@ -50,10 +50,32 @@ pick_latest() {
   # sort -V then take the last line: handles android-34 vs android-35 and
   # build-tools 34.0.0 vs 35.0.0 without hardcoding a version that the runner
   # image might not ship.
-  ls -d "$1" 2>/dev/null | sort -V | tail -1
+  # "$@" and not "$1": the caller globs, so the versions arrive as separate
+  # arguments. Reading only $1 returned the FIRST match (34.0.0) while the
+  # comment claimed "latest", which made sort -V dead code and pinned the
+  # build to the oldest build-tools on the image.
+  ls -d "$@" 2>/dev/null | sort -V | tail -1
 }
 
-BT="$(pick_latest "$SDK/build-tools/"*)"
+pick_build_tools() {
+  # Newest build-tools that actually ships every binary this script calls.
+  # Newest alone is not enough: a version dir can exist without the tools, and
+  # the runner image gains versions over time. Fall back rather than fail.
+  for d in $(ls -d "$SDK"/build-tools/*/ 2>/dev/null | sort -Vr); do
+    if [ -x "${d}aapt2" ] && [ -x "${d}d8" ] \
+      && [ -x "${d}zipalign" ] && [ -x "${d}apksigner" ]; then
+      printf '%s\n' "${d%/}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+BT="$(pick_build_tools)"
+if [ -z "$BT" ]; then
+  echo "no build-tools under $SDK ships aapt2+d8+zipalign+apksigner" >&2
+  exit 2
+fi
 PLATFORM="$(pick_latest "$SDK/platforms/android-"*)"
 AJAR="$PLATFORM/android.jar"
 for p in "$BT" "$AJAR"; do
