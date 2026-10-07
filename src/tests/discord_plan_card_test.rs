@@ -248,7 +248,7 @@ fn active_card_omits_prose() {
         !body.contains("design rationale"),
         "prose leaked into an Active card: {body}"
     );
-    assert!(body.contains("☐ **1. run it**"), "checklist: {body}");
+    assert!(body.contains("▶ **1. run it**"), "checklist: {body}");
 }
 
 /// The steps section is what the user is approving, so it must survive
