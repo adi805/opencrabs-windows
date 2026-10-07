@@ -3,8 +3,13 @@
 
 use crate::utils::install::{InstallMethod, platform_suffix};
 
-pub(super) const GITHUB_API: &str =
-    "https://api.github.com/repos/opencrabs/opencrabs/releases/latest";
+/// `releases/latest` endpoint for the repository this build updates from.
+///
+/// Resolved through [`crate::utils::update_source`] so a fork build polls the
+/// fork instead of upstream.
+pub(super) fn github_api() -> &'static str {
+    crate::utils::update_source::releases_latest_api()
+}
 
 /// Build an honest, status-aware error string for a non-success
 /// response from `releases/latest`. Replaces the prior hardcoded
@@ -64,7 +69,7 @@ pub async fn check_for_update() -> Option<String> {
     let current_version = crate::VERSION;
     let client = reqwest::Client::new();
     let resp = match client
-        .get(GITHUB_API)
+        .get(github_api())
         .header("User-Agent", format!("opencrabs/{}", current_version))
         .header("Accept", "application/vnd.github+json")
         .send()
@@ -74,7 +79,7 @@ pub async fn check_for_update() -> Option<String> {
         Err(e) => {
             tracing::warn!(
                 target: "evolve",
-                url = GITHUB_API,
+                url = github_api(),
                 error = %e,
                 "background update check failed to reach GitHub"
             );
@@ -87,7 +92,7 @@ pub async fn check_for_update() -> Option<String> {
         let body_excerpt: String = body.chars().take(300).collect();
         tracing::warn!(
             target: "evolve",
-            url = GITHUB_API,
+            url = github_api(),
             %status,
             body_excerpt,
             "background update check: releases/latest returned non-2xx"
@@ -99,7 +104,7 @@ pub async fn check_for_update() -> Option<String> {
         Err(e) => {
             tracing::warn!(
                 target: "evolve",
-                url = GITHUB_API,
+                url = github_api(),
                 error = %e,
                 "background update check: failed to parse releases/latest JSON"
             );

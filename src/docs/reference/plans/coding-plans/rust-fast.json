@@ -45,7 +45,7 @@
     {
       "order": 4,
       "title": "Push + PR",
-      "description": "Verify branch is NEW: `git branch -r | grep <branch-name>`. If it already exists on any remote, pick a different name (e.g. `-v2`). Never push to an existing branch unless you specifically mean to update it.\n\nPush branch to upstream (NOT origin): `git push upstream <branch>`.\n\nCreate PR: `gh pr create --repo opencrabs/opencrabs --head leshchenko1979:<branch>`\n\nVerify PR diff: `gh pr diff --name-only` should match expected files. If it doesn't, close the PR and fix.",
+      "description": "Verify branch is NEW: `git branch -r | grep <branch-name>`. If it already exists on any remote, pick a different name (e.g. `-v2`). Never push to an existing branch unless you specifically mean to update it.\n\nPush branch to upstream (NOT origin): `git push upstream <branch>`.\n\nCreate PR: `gh pr create --repo adi805/opencrabs-windows --head adi805:<branch>`\n\nVerify PR diff: `gh pr diff --name-only` should match expected files. If it doesn't, close the PR and fix.",
       "task_type": "Configuration",
       "complexity": 1,
       "dependencies": [

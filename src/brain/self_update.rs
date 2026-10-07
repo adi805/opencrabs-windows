@@ -12,7 +12,9 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 /// GitHub repo URL for auto-cloning when source is not available locally.
-const REPO_URL: &str = "https://github.com/opencrabs/opencrabs.git";
+fn repo_url() -> &'static str {
+    crate::utils::update_source::clone_url()
+}
 
 /// Resolve the running executable's real on-disk path.
 ///
@@ -161,7 +163,7 @@ impl SelfUpdater {
                 "clone",
                 "--depth",
                 "1",
-                REPO_URL,
+                repo_url(),
                 &self.project_root.to_string_lossy(),
             ])
             .output()

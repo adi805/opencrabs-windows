@@ -77,7 +77,7 @@
     {
       "order": 6,
       "title": "Push + PR",
-      "description": "Verify diff is clean BEFORE pushing: `git diff origin/main --stat`. If it shows hundreds of files, you're based on the wrong branch. Start over:\n```\ngit checkout origin/main -b fix/your-fix-v2\n```\nDo not try to fix a dirty branch by rebasing — start fresh.\n\nPush to upstream (NOT origin): `git push upstream <branch>`\n\nCreate PR: `gh pr create --repo opencrabs/opencrabs --head leshchenko1979:<branch>`\n\nImmediately verify PR diff: `gh pr diff --name-only` should match expected files. If it doesn't, close the PR and start over from origin/main.",
+      "description": "Verify diff is clean BEFORE pushing: `git diff origin/main --stat`. If it shows hundreds of files, you're based on the wrong branch. Start over:\n```\ngit checkout origin/main -b fix/your-fix-v2\n```\nDo not try to fix a dirty branch by rebasing — start fresh.\n\nPush to upstream (NOT origin): `git push upstream <branch>`\n\nCreate PR: `gh pr create --repo adi805/opencrabs-windows --head adi805:<branch>`\n\nImmediately verify PR diff: `gh pr diff --name-only` should match expected files. If it doesn't, close the PR and start over from origin/main.",
       "task_type": "Configuration",
       "complexity": 1,
       "dependencies": [

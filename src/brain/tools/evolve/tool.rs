@@ -5,7 +5,7 @@
 
 use super::super::error::Result;
 use super::super::r#trait::{Tool, ToolCapability, ToolExecutionContext, ToolResult};
-use super::release_check::{GITHUB_API, diagnose_releases_latest_status, has_platform_asset};
+use super::release_check::{diagnose_releases_latest_status, github_api, has_platform_asset};
 use crate::brain::agent::{ProgressCallback, ProgressEvent};
 use crate::utils::install::InstallMethod;
 use async_trait::async_trait;
@@ -136,7 +136,7 @@ impl Tool for EvolveTool {
         let client = reqwest::Client::new();
         tracing::info!(
             target: "evolve",
-            url = GITHUB_API,
+            url = github_api(),
             current_version,
             install_method = install_method.description(),
             os = std::env::consts::OS,
@@ -146,7 +146,7 @@ impl Tool for EvolveTool {
             "evolve: fetching releases/latest"
         );
         let resp = match client
-            .get(GITHUB_API)
+            .get(github_api())
             .header("User-Agent", format!("opencrabs/{}", current_version))
             .header("Accept", "application/vnd.github+json")
             .send()
@@ -156,13 +156,14 @@ impl Tool for EvolveTool {
             Err(e) => {
                 tracing::warn!(
                     target: "evolve",
-                    url = GITHUB_API,
+                    url = github_api(),
                     error = %e,
                     session_id = %sid,
                     "evolve: network error reaching GitHub"
                 );
                 return Ok(ToolResult::error(format!(
-                    "Failed to reach GitHub ({GITHUB_API}): {e}"
+                    "Failed to reach GitHub ({}): {e}",
+                    github_api()
                 )));
             }
         };
@@ -183,13 +184,14 @@ impl Tool for EvolveTool {
                 Err(e) => {
                     tracing::warn!(
                         target: "evolve",
-                        url = GITHUB_API,
+                        url = github_api(),
                         error = %e,
                         session_id = %sid,
                         "evolve: 200 response but JSON parse failed"
                     );
                     return Ok(ToolResult::error(format!(
-                        "Failed to parse release info from {GITHUB_API}: {e}"
+                        "Failed to parse release info from {}: {e}",
+                        github_api()
                     )));
                 }
             }
@@ -198,7 +200,7 @@ impl Tool for EvolveTool {
             let body_excerpt: String = body.chars().take(300).collect();
             tracing::warn!(
                 target: "evolve",
-                url = GITHUB_API,
+                url = github_api(),
                 %status,
                 ratelimit_remaining = ratelimit_remaining.as_deref().unwrap_or("-"),
                 ratelimit_reset = ratelimit_reset.as_deref().unwrap_or("-"),

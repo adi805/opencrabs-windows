@@ -11,7 +11,10 @@ use std::path::Path;
 
 use crate::utils::install::{InstallMethod, binary_name, platform_suffix};
 
-const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/opencrabs/opencrabs/releases";
+/// Full releases endpoint for the repository this build updates from.
+fn github_releases_api() -> &'static str {
+    crate::utils::update_source::releases_api()
+}
 
 /// A single release entry from GitHub.
 #[derive(Debug)]
@@ -30,7 +33,7 @@ async fn fetch_available_versions() -> Result<Vec<ReleaseEntry>> {
 
     let client = reqwest::Client::new();
     let releases: Vec<serde_json::Value> = client
-        .get(GITHUB_RELEASES_API)
+        .get(github_releases_api())
         .query(&[("per_page", "15")])
         .header("User-Agent", format!("opencrabs/{}", crate::VERSION))
         .header("Accept", "application/vnd.github+json")

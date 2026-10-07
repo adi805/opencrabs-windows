@@ -408,7 +408,7 @@ This applies everywhere: API request bodies, struct field definitions, query par
 The v0.3.11 format is the ONLY correct reference. v0.3.12 and later entries were incorrectly formatted as tables — DO NOT copy them.
 
 **Before writing ANY changelog entry:**
-1. `head -100 /Users/adolfousierstudio/srv/rs/opencrabs/CHANGELOG.md`
+1. `head -100 CHANGELOG.md`
 2. Find the v0.3.11 entry specifically
 3. Match that format exactly — plain text with bullet points, no tables
 4. The v0.3.12+ table entries are WRONG. They must be fixed to match v0.3.11 style.

@@ -5,7 +5,7 @@
 **Do not open a public issue for a security vulnerability.**
 
 Report it through GitHub's private vulnerability reporting: go to the
-[Security tab](https://github.com/opencrabs/opencrabs/security/advisories/new)
+[Security tab](https://github.com/adi805/opencrabs-windows/security/advisories/new)
 and open a draft advisory. That channel is private to the maintainers and
 lets us work on a fix before anything is public.
 
