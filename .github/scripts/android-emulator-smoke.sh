@@ -152,6 +152,29 @@ CFG
   fi
 fi
 
+# ------------------------------------------------- notification permission ---
+# POST_NOTIFICATIONS became a RUNTIME permission in API 33 and targetSdk here is
+# 35. The app asks for it (see MainActivity), but a CI run has nobody to tap the
+# dialog, so it would stay denied and the foreground notification would be
+# suppressed. The assertion further down would then fail for a harness reason
+# while looking like an app defect. Grant it as root (adb root already ran) so
+# that check measures the app's ability to post a notification.
+say "grant POST_NOTIFICATIONS (runtime permission on API 33+)"
+NOTIF_ROW="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | head -1)"
+case "$NOTIF_ROW" in
+  "")
+    echo "  NOTE: $PKG does not declare POST_NOTIFICATIONS on this image - nothing to grant"
+    ;;
+  *)
+    adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS > "$OUT/pm-grant.txt" 2>&1 || true
+    NOTIF_AFTER="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | head -1)"
+    case "$NOTIF_AFTER" in
+      *granted=true*) pass "POST_NOTIFICATIONS granted for the run" ;;
+      *) cat "$OUT/pm-grant.txt"; fail "POST_NOTIFICATIONS declared but could not be granted" ;;
+    esac
+    ;;
+esac
+
 # ---------------------------------------------------------------- launch ----
 say "launch"
 adb logcat -c > /dev/null 2>&1 || true
