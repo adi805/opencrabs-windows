@@ -11,8 +11,10 @@ name: Android binary (artifact)
 # runs. Same rationale as linux-artifact.yml and windows-artifact.yml.
 #
 # Scope: core only (--no-default-features --features rtk,code-graph). Channels
-# are excluded on purpose (Android PRD decision, 2026-10-06 05:25): the app
-# runs the TUI on-device and carries no bot tokens. Dropping them also drops
+# are excluded on purpose (Android PRD decision, 2026-10-06 05:25). The shell
+# spawns `opencrabs daemon`, not the TUI, so the premise that decision rested on
+# ("the app runs the TUI on-device") does not describe what actually ships.
+# Channels stay excluded here. Dropping them also drops
 # teloxide, serenity, whatsapp-rust, chromey, pdfium and the ALSA-backed voice
 # features, none of which cross-compile to Android without extra native libs.
 #
@@ -22,7 +24,20 @@ name: Android binary (artifact)
 on:
   workflow_dispatch:
   push:
-    branches: [feat/android-artifact, feat/android-apk]
+    # main is included so the downloadable artifact tracks the branch that
+    # ships. Without it the APK stays whatever the last feat-branch run
+    # produced, and a user can install a build that predates a fix already on
+    # main: that happened on 2026-10-06, when the APK on disk was built before
+    # the Process.pid() crash fix merged.
+    #
+    # Path-filtered because this job builds two Rust targets and stages an APK
+    # (~30 min), so it must not fire on changes that cannot affect the Android
+    # client. Same filter android-emulator-smoke.yml uses.
+    branches: [main, feat/android-artifact, feat/android-apk]
+    paths:
+      - 'android/**'
+      - '.github/scripts/android-emulator-smoke.sh'
+      - '.github/workflows/android-artifact.yml'
 
 jobs:
   android-arm64:
