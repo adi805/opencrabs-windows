@@ -45,6 +45,20 @@ pub(crate) fn take_raw_message(chat_id: i64, message_id: i32) -> Option<Value> {
     q.remove(idx).map(|(_, v)| v)
 }
 
+/// Read a stashed payload WITHOUT consuming it.
+///
+/// `take_raw_message` is the recovery path: the no-typed-content branch in
+/// `inbound_media` removes the entry because it is the only reader. A second
+/// reader that only wants to *inspect* the payload (the ephemeral check in
+/// `handler`, which must not steal the entry from that branch) needs the
+/// clone-instead-of-remove variant.
+pub(crate) fn peek_raw_message(chat_id: i64, message_id: i32) -> Option<Value> {
+    let q = RAW_STASH.lock().unwrap_or_else(|e| e.into_inner());
+    q.iter()
+        .find(|((c, m), _)| *c == chat_id && *m == message_id)
+        .map(|(_, v)| v.clone())
+}
+
 /// Forward origin from a RAW message payload — works even when teloxide's
 /// typed parse dropped it along with the unknown content type.
 pub(crate) fn raw_forward_origin(raw: &Value) -> Option<String> {
@@ -202,8 +216,31 @@ async fn poll_once(st: &mut RawPollState) {
     );
 }
 
+/// Update kinds the poll loop subscribes to.
+///
+/// `allowed_updates` is an explicit allowlist: Telegram delivers nothing
+/// outside it, so a kind missing here is unreachable no matter what the
+/// dispatcher can handle. Four places have to agree for a kind to work: this
+/// list, an `Update::filter_*` branch in `agent.rs`, a name in
+/// `update_kind_name` below, and (for inline mode) an answer path in
+/// `inline.rs`. A kind added here with no branch only adds traffic the
+/// dispatcher drops; one added with no name logs as "other".
+///
+/// `inline_query` is the one kind whose handler answers a query instead of
+/// serving a chat, so it is also the one kind that can arrive from a chat the
+/// bot was never added to. See [`super::inline`] for the owner gate and the
+/// bounded result set that keeps it from becoming a second agent loop.
+pub(crate) const ALLOWED_UPDATES: &[&str] = &[
+    "message",
+    "edited_message",
+    "callback_query",
+    "message_reaction",
+    "my_chat_member",
+    "inline_query",
+];
+
 /// One getUpdates long-poll: stash raw message payloads, queue the typed
-/// updates. Errors are logged and absorbed with a short backoff — the outer
+/// updates. Errors are logged and absorbed with a short backoff, the outer
 /// dispatcher retry loop still guards against total failure. Returns the
 /// number of updates the batch carried (0 on every failure shape; each
 /// failure shape logs its own distinct line).
@@ -212,13 +249,7 @@ async fn poll_once_inner(st: &mut RawPollState) -> usize {
     let body = serde_json::json!({
         "timeout": 30,
         "offset": st.offset,
-        "allowed_updates": [
-            "message",
-            "edited_message",
-            "callback_query",
-            "message_reaction",
-            "my_chat_member",
-        ],
+        "allowed_updates": ALLOWED_UPDATES,
     });
     let resp = st
         .http
@@ -412,13 +443,28 @@ const KNOWN_CONTENT_KEYS: &[&str] = &[
     "paid_message_price_changed",
     "general_forum_topic_hidden",
     "general_forum_topic_unhidden",
+    // Service events the Bot API shipped after teloxide-core 0.13's serde
+    // definitions (verified against the official docs). They carry no user
+    // content, so they must keep the normal (ignored) handling instead of
+    // being rewritten into agent-visible text by `synthesize_unknown_content`:
+    //   community_chat_joined  (10.3) "Service message: chat was joined by a
+    //                                 user from a Community"
+    //   community_chat_removed (10.2) "Service message: chat or bot removed
+    //                                 from a Community"
+    //   purchased_paid_media          "A user purchased paid media with a
+    //                                 non-empty payload sent by the bot in a
+    //                                 non-channel chat", the paid-media
+    //                                 sibling of successful_payment.
+    "community_chat_joined",
+    "community_chat_removed",
+    "purchased_paid_media",
 ];
 
 /// If the raw message carries NONE of the known content keys, rewrite it in
 /// place into a plain text message whose text is the raw content payload
 /// (plus forward provenance), and drop the unknown keys so the typed parse
 /// lands on a normal text message.
-fn synthesize_unknown_content(m: &mut Value) {
+pub(crate) fn synthesize_unknown_content(m: &mut Value) {
     let Some(obj) = m.as_object_mut() else { return };
     if KNOWN_CONTENT_KEYS.iter().any(|k| obj.contains_key(*k)) {
         return;
@@ -502,9 +548,41 @@ fn update_kind_name(u: &Update) -> &'static str {
         UpdateKind::EditedMessage(_) => "edited_message",
         UpdateKind::CallbackQuery(_) => "callback_query",
         UpdateKind::MessageReaction(_) => "message_reaction",
+        UpdateKind::MyChatMember(_) => "my_chat_member",
+        UpdateKind::InlineQuery(_) => "inline_query",
         UpdateKind::Error(_) => "ERROR(unparsed)",
         _ => "other",
     }
+}
+
+/// What an incoming message says about ephemeral scoping, read from the raw
+/// payload because teloxide-core 0.13 has no field for either.
+///
+/// Bot API 10.2 gives an ephemeral message `message_id: 0` plus an
+/// `ephemeral_message_id`, and names the one member who can see it in
+/// `receiver_user`. Both matter: the id is what `editEphemeralMessage*` and
+/// `deleteEphemeralMessage` take, and `receiver_user` is the only way to know
+/// a group message was scoped to one person rather than posted publicly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EphemeralMeta {
+    /// The id the edit and delete methods take. Never 0 when present.
+    pub ephemeral_message_id: i64,
+    /// The member the message was scoped to, when the server names one.
+    pub receiver_user_id: Option<i64>,
+}
+
+/// Read [`EphemeralMeta`] off a raw message payload, or `None` when the
+/// message is an ordinary one.
+pub(crate) fn ephemeral_meta(raw: &Value) -> Option<EphemeralMeta> {
+    let ephemeral_message_id = raw.get("ephemeral_message_id")?.as_i64()?;
+    let receiver_user_id = raw
+        .get("receiver_user")
+        .and_then(|u| u.get("id"))
+        .and_then(Value::as_i64);
+    Some(EphemeralMeta {
+        ephemeral_message_id,
+        receiver_user_id,
+    })
 }
 
 /// Stream of typed updates driven by the raw poll loop. A named fn (rather

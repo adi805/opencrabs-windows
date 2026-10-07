@@ -15,6 +15,7 @@ pub(crate) mod governor;
 pub(crate) mod group_name;
 pub(crate) mod handler;
 pub(crate) mod inbound_media;
+pub(crate) mod inline;
 pub(crate) mod intermediates;
 pub(crate) mod keyboards;
 pub(crate) mod markdown;

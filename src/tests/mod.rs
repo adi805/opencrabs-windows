@@ -904,6 +904,7 @@ pub mod subagent_worktree_test;
 pub mod suggest_leak_recovery_test;
 pub mod suggest_options_test;
 pub mod telegram_ephemeral_test;
+pub mod telegram_inline_query_test;
 #[cfg(feature = "telegram")]
 pub mod telegram_folded_reclaim_suppression_test;
 pub mod telegram_menu_budget_test;
@@ -1101,6 +1102,8 @@ pub mod telegram_thread_id_lookup_test;
 pub mod telegram_tool_group_test;
 pub mod telegram_topic_actions_test;
 pub mod telegram_topic_listing_test;
+pub mod telegram_allowed_updates_test;
+pub mod telegram_unknown_content_keys_test;
 pub mod text_complete_test;
 pub mod theme_catalog_converter_test;
 pub mod theme_pack_test;

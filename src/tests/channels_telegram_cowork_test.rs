@@ -75,3 +75,38 @@ fn invite_qr_generation() {
     // Cleanup
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn cowork_keyboard_forms_for_a_valid_deep_link() {
+    let link = build_cowork_deep_link("team_crab_bot", "xyz");
+    let kb = cowork_keyboard(&link).expect("a valid deep link must still produce the button");
+
+    // Serialise instead of reaching into teloxide's internals: this is the
+    // payload the API receives, so it proves both the label and the link.
+    let json = serde_json::to_string(&kb).expect("keyboard serialises");
+    assert!(json.contains("Add to Group"), "button label missing: {json}");
+    assert!(
+        json.contains("t.me/team_crab_bot?startgroup=cowork_xyz"),
+        "deep link missing from the button: {json}"
+    );
+}
+
+#[test]
+fn cowork_keyboard_is_none_when_the_link_is_not_a_url() {
+    // The username comes from the API, so a link that does not parse is
+    // possible in principle. The handler must degrade to a text-only prompt
+    // instead of panicking on a cosmetic button.
+    assert!(cowork_keyboard("").is_none(), "empty link must not panic");
+    assert!(
+        cowork_keyboard("t.me/no-scheme?startgroup=cowork_x").is_none(),
+        "a link without a scheme must not panic"
+    );
+}
+
+#[test]
+fn cowork_keyboard_is_not_a_telegram_link_validator() {
+    // Near miss: the helper only checks that the link parses, it does not
+    // check that it points at Telegram. Tightening it into a validator would
+    // silently drop the button for links this test still expects to work.
+    assert!(cowork_keyboard("https://example.com/not-telegram").is_some());
+}
