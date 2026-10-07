@@ -473,6 +473,44 @@ impl OnboardingStep {
         6
     }
 
+    /// The steps a flow walks through, in order, excluding Complete. The
+    /// onboarding timeline draws exactly these, so they must line up with
+    /// `number()` / `quick_number()` and the two totals above.
+    pub fn flow_steps(mode: WizardMode) -> &'static [OnboardingStep] {
+        const QUICK: [OnboardingStep; 6] = [
+            OnboardingStep::ModeSelect,
+            OnboardingStep::Workspace,
+            OnboardingStep::ProviderAuth,
+            OnboardingStep::Daemon,
+            OnboardingStep::HealthCheck,
+            OnboardingStep::BrainSetup,
+        ];
+        const ADVANCED: [OnboardingStep; 9] = [
+            OnboardingStep::ModeSelect,
+            OnboardingStep::Workspace,
+            OnboardingStep::ProviderAuth,
+            OnboardingStep::Channels,
+            OnboardingStep::VoiceSetup,
+            OnboardingStep::ImageSetup,
+            OnboardingStep::Daemon,
+            OnboardingStep::HealthCheck,
+            OnboardingStep::BrainSetup,
+        ];
+        match mode {
+            WizardMode::QuickStart => &QUICK,
+            WizardMode::Advanced => &ADVANCED,
+        }
+    }
+
+    /// 1-based position of this step in `mode`'s flow, the same numbering the
+    /// progress counter uses (channel sub-steps count as Channels).
+    pub fn flow_number(&self, mode: WizardMode) -> usize {
+        match mode {
+            WizardMode::QuickStart => self.quick_number(),
+            WizardMode::Advanced => self.number(),
+        }
+    }
+
     /// Step title
     pub fn title(&self) -> &'static str {
         match self {
