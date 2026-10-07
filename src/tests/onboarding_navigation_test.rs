@@ -37,6 +37,8 @@ fn provider_auth_to_channels_in_advanced() {
         w.step = OnboardingStep::ProviderAuth;
         w.mode = WizardMode::Advanced;
         w.ps.api_key_input = "sk-test-key".to_string();
+        // ProviderAuth requires a model as well as a key (#1973).
+        w.ps.model_filter = "test-model".to_string();
         w.next_step();
         assert_eq!(w.step, OnboardingStep::Channels);
     });
@@ -137,6 +139,8 @@ fn quickstart_provider_auth_skips_channels_to_daemon() {
         w.mode = WizardMode::QuickStart;
         w.step = OnboardingStep::ProviderAuth;
         w.ps.api_key_input = "key".to_string();
+        // ProviderAuth requires a model as well as a key (#1973).
+        w.ps.model_filter = "test-model".to_string();
         w.next_step();
         assert_eq!(w.step, OnboardingStep::Daemon);
     });

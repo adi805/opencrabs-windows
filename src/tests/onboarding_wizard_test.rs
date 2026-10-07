@@ -24,6 +24,8 @@ fn test_wizard_creation() {
 fn test_step_navigation() {
     let mut wizard = OnboardingWizard::new();
     wizard.ps.api_key_input = "test-key".to_string();
+    // ProviderAuth requires a model as well as a key (#1973).
+    wizard.ps.model_filter = "test-model".to_string();
 
     assert_eq!(wizard.step, OnboardingStep::ModeSelect);
     wizard.next_step(); // ModeSelect -> Workspace
@@ -41,6 +43,8 @@ fn test_advanced_mode_all_steps() {
         wizard.next_step(); // Workspace -> ProviderAuth (detect_existing_key clears api_key_input)
         assert_eq!(wizard.step, OnboardingStep::ProviderAuth);
         wizard.ps.api_key_input = "test-key".to_string(); // set key AFTER reaching ProviderAuth
+        // ProviderAuth requires a model as well as a key (#1973).
+        wizard.ps.model_filter = "test-model".to_string();
         wizard.next_step(); // ProviderAuth -> Channels
         assert_eq!(wizard.step, OnboardingStep::Channels);
         wizard.next_step(); // Channels -> VoiceSetup
@@ -89,6 +93,8 @@ fn test_channels_whatsapp_skips_to_voice() {
         wizard.next_step(); // ModeSelect -> Workspace
         wizard.next_step(); // Workspace -> ProviderAuth
         wizard.ps.api_key_input = "test-key".to_string();
+        // ProviderAuth requires a model as well as a key (#1973).
+        wizard.ps.model_filter = "test-model".to_string();
         wizard.next_step(); // ProviderAuth -> Channels
 
         // Enable WhatsApp only (no token sub-step)
@@ -265,6 +271,43 @@ fn test_handle_key_escape_from_step1_cancels() {
 }
 
 #[test]
+fn test_handle_key_escape_from_step1_quits_on_first_run() {
+    // A first run has no provider to land on, so leaving step 1 quits the
+    // app instead of dropping into an unconfigured chat.
+    let mut wizard = OnboardingWizard::new();
+    wizard.is_first_time = true;
+    let action = wizard.handle_key(key(KeyCode::Esc));
+    assert_eq!(action, WizardAction::Quit);
+}
+
+#[test]
+fn test_provider_auth_requires_a_model() {
+    let mut wizard = clean_wizard();
+    wizard.step = OnboardingStep::ProviderAuth;
+    wizard.ps.api_key_input = "sk-test".to_string();
+    wizard.ps.models.clear();
+    wizard.ps.config_models.clear();
+    wizard.ps.model_filter.clear();
+    // Pick a provider whose static list is empty so nothing is selectable.
+    wizard.ps.selected_provider = PROVIDERS
+        .iter()
+        .position(|p| p.models.is_empty() && !p.key_label.is_empty())
+        .expect("a keyed provider with a fetched-only model list");
+    wizard.next_step();
+    assert_eq!(wizard.step, OnboardingStep::ProviderAuth);
+    assert!(
+        wizard
+            .error_message
+            .as_deref()
+            .is_some_and(|e| e.contains("model"))
+    );
+
+    // Typing a name into the Model field satisfies it.
+    wizard.ps.model_filter = "some-model".to_string();
+    assert_eq!(wizard.ps.selected_model_name(), "some-model");
+}
+
+#[test]
 fn test_handle_key_escape_from_step2_goes_back() {
     let mut wizard = OnboardingWizard::new();
     wizard.handle_key(key(KeyCode::Enter)); // ModeSelect -> Workspace
@@ -381,6 +424,8 @@ fn test_quickstart_skips_channels_voice() {
         wizard.next_step(); // Workspace -> ProviderAuth
         assert_eq!(wizard.step, OnboardingStep::ProviderAuth);
         wizard.ps.api_key_input = "test-key".to_string();
+        // ProviderAuth requires a model as well as a key (#1973).
+        wizard.ps.model_filter = "test-model".to_string();
         wizard.next_step(); // ProviderAuth -> Daemon (QuickStart skips Channels & Voice)
         assert_eq!(wizard.step, OnboardingStep::Daemon);
     });

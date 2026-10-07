@@ -19,6 +19,12 @@ impl OnboardingWizard {
                 return WizardAction::None;
             }
             if self.prev_step() {
+                // A first run has nothing to fall back to: dropping into chat
+                // would leave the user talking to no provider. Quit instead;
+                // `is_first_time()` reopens the wizard on the next launch.
+                if self.is_first_time {
+                    return WizardAction::Quit;
+                }
                 return WizardAction::Cancel;
             }
             return WizardAction::None;

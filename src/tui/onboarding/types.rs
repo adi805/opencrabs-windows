@@ -794,6 +794,9 @@ pub enum WizardAction {
     None,
     /// User cancelled the wizard (Esc from step 1)
     Cancel,
+    /// User left a first-run wizard (Esc from step 1). There is no configured
+    /// provider to land on, so the app quits; the next launch reopens setup.
+    Quit,
     /// Wizard completed successfully
     Complete,
     /// Trigger async AI generation of brain files

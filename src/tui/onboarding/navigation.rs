@@ -88,6 +88,14 @@ impl OnboardingWizard {
                     );
                     return;
                 }
+                // A provider without a model can't answer anything, and an
+                // empty fetched list used to let this step pass with "" (the
+                // custom branch above already demands one).
+                if !self.ps.is_custom() && self.ps.selected_model_name().trim().is_empty() {
+                    self.error_message =
+                        Some("Select a model, or type its name in the Model field".to_string());
+                    return;
+                }
                 // QuickStart: skip channels, go straight to daemon
                 if self.mode == WizardMode::QuickStart {
                     self.step = OnboardingStep::Daemon;

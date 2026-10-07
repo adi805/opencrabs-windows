@@ -7,15 +7,57 @@ use crate::brain::provider::{ContentBlock, LLMRequest};
 use anyhow::Result;
 use std::path::PathBuf;
 
+/// Shown after the first Ctrl+C inside the wizard; a second one quits.
+const QUIT_HINT: &str = "Press Ctrl+C again to quit";
+
 impl App {
+    /// Leave the app from inside the wizard. Whatever was typed is saved
+    /// first, like a cancel; an unfinished first run reopens on next launch
+    /// because completion is only recorded on `Complete`.
+    fn quit_from_onboarding(&mut self) {
+        if let Some(ref wizard) = self.onboarding
+            && let Err(e) = wizard.apply_config()
+        {
+            tracing::warn!("Wizard quit: partial save failed: {}", e);
+        }
+        self.should_quit = true;
+    }
+
     /// Handle keys in onboarding wizard mode
     pub(crate) async fn handle_onboarding_key(
         &mut self,
         event: crossterm::event::KeyEvent,
     ) -> Result<()> {
+        // Ctrl+C twice quits from any wizard step, matching chat. The wizard
+        // owns the whole screen, so without this there was no way out of a
+        // first run short of killing the terminal.
+        if super::events::keys::is_quit(&event) {
+            if self
+                .ctrl_c_pending_at
+                .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3))
+            {
+                self.quit_from_onboarding();
+                return Ok(());
+            }
+            self.ctrl_c_pending_at = Some(std::time::Instant::now());
+            if let Some(ref mut wizard) = self.onboarding {
+                wizard.error_message = Some(QUIT_HINT.to_string());
+            }
+            return Ok(());
+        }
+        if self.ctrl_c_pending_at.take().is_some()
+            && let Some(ref mut wizard) = self.onboarding
+            && wizard.error_message.as_deref() == Some(QUIT_HINT)
+        {
+            wizard.error_message = None;
+        }
+
         if let Some(ref mut wizard) = self.onboarding {
             let action = wizard.handle_key(event);
             match action {
+                WizardAction::Quit => {
+                    self.quit_from_onboarding();
+                }
                 WizardAction::Cancel => {
                     // Persist whatever the user entered before dropping the wizard.
                     // Without this, going back from channel setup loses all typed values.
