@@ -1822,3 +1822,36 @@ fn resolve_creation_ticks_falls_back_to_the_newest_claim() {
     );
     assert_eq!(resolve_creation_ticks(None, &[None, None]), None);
 }
+
+#[test]
+fn seed_brain_templates_seeds_ralph_loop_gate() {
+    // #1902: the Ralph verification gate read as Disabled on every fresh
+    // install because nothing ever seeded safety/ralph_loop.toml, so plan
+    // completions passed unverified with only a DEBUG line as signal.
+    // The bundled template must land at seed time, enabled, and never
+    // clobber a user's own file.
+    let dir = tempfile::TempDir::new().unwrap();
+    let profile_dir = dir.path();
+    crate::config::profile::seed_brain_templates(profile_dir);
+
+    let ralph = profile_dir.join("safety").join("ralph_loop.toml");
+    assert!(
+        ralph.exists(),
+        "the safety seed must create ralph_loop.toml alongside brain_verify.toml"
+    );
+    let body = std::fs::read_to_string(&ralph).unwrap();
+    let parsed: toml::Value = toml::from_str(&body).expect("seeded file parses as TOML");
+    assert!(
+        parsed["verification"]["enabled"].as_bool().unwrap_or(false),
+        "the seeded gate must be enabled: seeding a disabled file repeats #872",
+    );
+
+    // Idempotence: a user's customized file is never overwritten.
+    std::fs::write(&ralph, "[verification]\nenabled = false\n").unwrap();
+    crate::config::profile::seed_brain_templates(profile_dir);
+    assert_eq!(
+        std::fs::read_to_string(&ralph).unwrap(),
+        "[verification]\nenabled = false\n",
+        "seeding must not clobber a user's ralph_loop.toml",
+    );
+}

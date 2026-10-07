@@ -459,6 +459,29 @@ pub(crate) fn seed_brain_templates(profile_dir: &Path) {
             );
         }
     }
+
+    // Seed the Ralph verification gate (#1902, shipping what #872 claimed):
+    // without a file at safety/ralph_loop.toml the gate silently resolved to
+    // Disabled, so every completion outside a project with its own copy
+    // passed unverified with only a DEBUG line as signal. Idempotent the
+    // same way: a user's customized file is never touched.
+    let ralph_path = safety_dir.join("ralph_loop.toml");
+    if !ralph_path.exists() {
+        if let Err(e) = fs::create_dir_all(&safety_dir) {
+            tracing::warn!(
+                "seed_brain_templates: failed to create safety dir {}: {e}",
+                safety_dir.display()
+            );
+        } else if let Err(e) = fs::write(
+            &ralph_path,
+            include_str!("../docs/reference/templates/ralph_loop.toml"),
+        ) {
+            tracing::warn!(
+                "seed_brain_templates: failed to seed {}: {e}",
+                ralph_path.display()
+            );
+        }
+    }
 }
 
 /// Ensure the active profile's home carries the full set of brain-file
