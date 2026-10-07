@@ -125,7 +125,7 @@ fn redact_secrets_multiple_keys() {
 
 #[test]
 fn redact_secrets_stripe_live_key() {
-    let text = "stripe key: sk_live_FAKE00TEST00KEY00EXAMPLE00VAL";
+    let text = "stripe key: sk_live_FAKE00TEST00KEY00EXAMPLE00VAL"; // nosemgrep: generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key
     let out = redact_secrets(text);
     assert!(out.contains("sk_live_[REDACTED]"), "got: {out}");
     assert!(!out.contains("FAKE00TEST"), "secret leaked: {out}");
@@ -148,7 +148,7 @@ fn redact_secrets_sendgrid_key() {
 
 #[test]
 fn redact_secrets_jwt_token() {
-    let text = "token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N";
+    let text = "token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N"; // nosemgrep: generic.secrets.security.detected-jwt-token.detected-jwt-token
     let out = redact_secrets(text);
     assert!(out.contains("eyJ[REDACTED]"), "got: {out}");
 }
