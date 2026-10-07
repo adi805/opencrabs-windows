@@ -363,12 +363,44 @@ impl EventHandler for Handler {
             } else {
                 format!("{user_name}: {invocation}")
             };
-            let _ack = command
+            // #1888: Acknowledge serializes to callback type 6
+            // (DEFERRED_UPDATE_MESSAGE), a component-only ack: an
+            // application command acked with it is never marked resolved,
+            // so Discord paints "didn't respond in time" over a call whose
+            // answer actually landed in the channel. Type 5
+            // (DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE) is the deferred ack
+            // for commands and enters the loading state the moment
+            // Discord accepts it. The answer keeps flowing through the
+            // normal channel delivery that route_followup_turn drives, so
+            // the placeholder is deleted once the ack is accepted instead
+            // of edited into the reply, and a refused ack is logged rather
+            // than swallowed like the old `let _ack`.
+            let ack = command
                 .create_response(
                     &ctx.http,
-                    serenity::builder::CreateInteractionResponse::Acknowledge,
+                    serenity::builder::CreateInteractionResponse::Defer(
+                        serenity::builder::CreateInteractionResponseMessage::new().ephemeral(true),
+                    ),
                 )
                 .await;
+            if let Err(e) = &ack {
+                tracing::warn!(
+                    "Discord: deferred ack for /{} refused: {e}",
+                    command.data.name
+                );
+            } else if let Err(e) = ctx
+                .http
+                .delete_original_interaction_response(&command.token)
+                .await
+            {
+                // Cosmetic only: the placeholder is ephemeral, so at worst
+                // the invoker's own spinner ages out while the real reply
+                // still arrives in the channel.
+                tracing::debug!(
+                    "Discord: could not clear /{} loading placeholder: {e}",
+                    command.data.name
+                );
+            }
             let agent = self.agent.clone();
             let session_svc = self.session_svc.clone();
             let discord_state = self.discord_state.clone();
