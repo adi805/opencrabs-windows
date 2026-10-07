@@ -605,6 +605,7 @@ pub mod onboarding_endpoint_seed_test;
 pub mod onboarding_field_nav_test;
 pub mod onboarding_key_field_test;
 pub mod onboarding_keys_test;
+pub mod onboarding_layout_test;
 pub mod onboarding_navigation_test;
 pub mod onboarding_no_silent_commit_test;
 pub mod onboarding_step_save_test;
