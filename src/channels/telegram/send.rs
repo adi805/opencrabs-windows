@@ -19,13 +19,17 @@ use teloxide::payloads::ForwardMessageSetters;
 use teloxide::payloads::SendChatActionSetters;
 use teloxide::payloads::SendDocumentSetters;
 use teloxide::payloads::SendLocationSetters;
+use teloxide::payloads::SendMediaGroupSetters;
 use teloxide::payloads::SendMessageSetters;
 use teloxide::payloads::SendPhotoSetters;
 use teloxide::payloads::SendPollSetters;
 use teloxide::payloads::SendVoiceSetters;
 use teloxide::prelude::Requester;
 use teloxide::requests::JsonRequest;
-use teloxide::types::{ChatAction, ChatId, InlineKeyboardMarkup, InputFile, MessageId, ThreadId};
+use teloxide::types::{
+    ChatAction, ChatId, InlineKeyboardMarkup, InputFile, InputMedia, InputMediaPhoto, MessageId,
+    ReplyParameters, ThreadId,
+};
 
 /// Look up the thread_id of the most recent Telegram message stored for
 /// `chat_id` in `channel_messages`. Returns `None` when no row exists,
@@ -138,6 +142,79 @@ where
         Some(t) => req.message_thread_id(t),
         None => req,
     }
+}
+
+/// Telegram refuses an album of fewer than 2 or more than 10 items, so the
+/// split has to be decided before the request is built.
+pub const MAX_ALBUM_SIZE: usize = 10;
+
+/// Split `count` photos into album sizes: one entry per `send_media_group`
+/// call, each entry between 2 and [`MAX_ALBUM_SIZE`] items, summing to
+/// `count`. A lone photo yields a single group of 1, which the caller sends
+/// with `send_photo` because the Bot API refuses an album of one.
+///
+/// More than 10 photos are chunked into full albums and the remainder is
+/// padded up out of the last album so no chunk is left holding a single item
+/// (#97): 11 -> [9, 2], 12 -> [10, 2], 21 -> [10, 9, 2].
+pub fn album_plan(count: usize) -> Vec<usize> {
+    if count == 0 {
+        return Vec::new();
+    }
+    if count <= MAX_ALBUM_SIZE {
+        return vec![count];
+    }
+    let mut plan = Vec::with_capacity(count / MAX_ALBUM_SIZE + 1);
+    let mut remaining = count;
+    while remaining > MAX_ALBUM_SIZE {
+        plan.push(MAX_ALBUM_SIZE);
+        remaining -= MAX_ALBUM_SIZE;
+    }
+    // `remaining` is 1..=10 here. Exactly one leftover photo has to be
+    // pulled up into the album before it, since a 1-item album is refused.
+    if remaining == 1 && let Some(last) = plan.last_mut() {
+        *last -= 1;
+        remaining += 1;
+    }
+    plan.push(remaining);
+    plan
+}
+
+/// `bot.send_media_group(chat_id, media)` with optional `message_thread_id`.
+/// The photos land as one album, so a set of images raises a single
+/// notification instead of one per image (#97).
+pub fn media_group_in_thread<C>(
+    bot: &Bot,
+    chat_id: C,
+    thread_id: Option<ThreadId>,
+    photos: Vec<InputFile>,
+    caption: Option<&str>,
+    reply_to: Option<MessageId>,
+) -> teloxide::requests::MultipartRequest<teloxide::payloads::SendMediaGroup>
+where
+    C: Into<ChatId>,
+{
+    let media: Vec<InputMedia> = photos
+        .into_iter()
+        .enumerate()
+        .map(|(idx, file)| {
+            let item = InputMediaPhoto::new(file);
+            // Telegram renders one caption per album, so keep it on the
+            // first photo: the album then reads like a single photo send.
+            let item = match (idx, caption) {
+                (0, Some(c)) => item.caption(c.to_string()),
+                _ => item,
+            };
+            InputMedia::Photo(item)
+        })
+        .collect();
+    let mut req = bot.send_media_group(chat_id.into(), media);
+    if let Some(t) = thread_id {
+        req = req.message_thread_id(t);
+    }
+    if let Some(mid) = reply_to {
+        req = req.reply_parameters(ReplyParameters::new(mid));
+    }
+    req
 }
 
 /// `bot.send_document(chat_id, document)` with optional `message_thread_id`.
