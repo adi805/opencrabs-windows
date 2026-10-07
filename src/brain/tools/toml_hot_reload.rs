@@ -69,7 +69,24 @@ impl<T: DeserializeOwned> HotToml<T> {
 
     fn load(&self) -> Option<Arc<T>> {
         if !self.path.exists() {
-            tracing::debug!("No {} at {}", self.label, self.path.display());
+            // Absent config is normal for optional surfaces, but a missing
+            // safety file silently disables a gate (#1902: the Ralph
+            // verification gate read as Disabled everywhere on fresh
+            // installs, visible only at DEBUG). Say it once per label at
+            // INFO, keep the repetition at DEBUG.
+            use std::sync::OnceLock;
+            static ANNOUNCED: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+                OnceLock::new();
+            let seen = ANNOUNCED.get_or_init(Default::default);
+            let first = seen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(self.label.to_string());
+            if first {
+                tracing::info!("No {} at {}", self.label, self.path.display());
+            } else {
+                tracing::debug!("No {} at {}", self.label, self.path.display());
+            }
             return None;
         }
         let content = match std::fs::read_to_string(&self.path) {

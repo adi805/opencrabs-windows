@@ -765,7 +765,8 @@ const TELEGRAM_CHANNEL_CAPABILITIES_BODY: &str = "\
 - Mermaid diagrams: native rendering; prefer vertical layouts (tag the fence exactly ```mermaid, no suffix, then open the body with flowchart TD or sequenceDiagram for multi-actor flows).
 - Markdown tables: GFM tables rendered natively as rich Telegram tables (header on own line, blank line before, delimiter row).
 - HTML glyphs / formatting: rich HTML entities, blockquotes (<blockquote>), code, and emoji styling.
-- Image includes: Markdown syntax (![alt](path/or/url)) for local/remote image rendering.";
+- Image includes: Markdown syntax (![alt](path/or/url)) for local/remote image rendering.
+- Renderer condition: the lines above describe the native rich plane, gated on [channels.telegram] rich_messages (default true). With it off, replies fall to the HTML plane: bold, code and links still style and tables reflow as aligned monospace grids, but there are no native Telegram tables, no blockquote blocks and no inline diagram rendering; check the flag before promising native formatting.";
 
 /// The #1773 file-delivery directive, shared by both capability blocks: a
 /// channel user has no filesystem access, so "tell the user the path"

@@ -168,6 +168,10 @@ impl CronJobRepository {
         Ok(())
     }
 
+    /// Every job, skipping rows that fail to decode instead of failing the
+    /// whole read (#1924). One unreadable row used to empty every cron
+    /// listing — `cron list`, the `/cron` surface, the TUI panel — the same
+    /// class of atomic failure #1893 fixed for the scheduler's `list_enabled()`.
     pub async fn list_all(&self) -> Result<Vec<CronJob>> {
         // Retry once after 100ms if the query fails (handles brief DB contention
         // from scheduler updates). Timeout after 5s to prevent hangs (#665).
@@ -194,8 +198,26 @@ impl CronJobRepository {
                         })
                     })?;
                     let mut out = Vec::new();
+                    let mut skipped = 0usize;
                     for row in rows {
-                        out.push(row.context("cron_jobs row decode failed")?);
+                        match row {
+                            Ok(job) => out.push(job),
+                            Err(e) => {
+                                // One unreadable row must not empty the whole
+                                // listing (#1924) — the atomic shape #1893
+                                // already fixed for list_enabled(). The id is
+                                // embedded in the error by the mapper above.
+                                skipped += 1;
+                                tracing::warn!(
+                                    "list_all: skipping unreadable cron_jobs row: {e:#}"
+                                );
+                            }
+                        }
+                    }
+                    if skipped > 0 {
+                        tracing::warn!(
+                            "list_all: {skipped} cron_jobs row(s) unreadable and skipped (#1924)"
+                        );
                     }
                     Ok(out)
                 })

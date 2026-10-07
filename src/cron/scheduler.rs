@@ -283,9 +283,34 @@ impl CronScheduler {
                 // #544: a one-shot retires in this same statement — the
                 // schedule has already moved to next year by the time the job
                 // body runs, so retiring here is the consistent read.
-                self.repo
+                //
+                // #1917: one failed write must not abort the whole tick. The
+                // `?` here used to return Err to the tick loop, skipping every
+                // remaining due job THIS turn as collateral damage. Skipping
+                // only the un-persistable job is safe in both directions:
+                // because the advance failed, the job stays due and refires
+                // next tick (no lost run), and a job whose storage is broken
+                // is precisely the one that should not fire now anyway. The
+                // old `?` escalated via the tick failure counter; that
+                // escalation no longer sees this case, which is the
+                // deliberate trade: collateral damage to every other due job
+                // was the worse failure. The warn line is the signal.
+                if let Err(e) = self
+                    .repo
                     .update_last_run(&job.id.to_string(), next_run_str.as_deref(), job.run_once)
-                    .await?;
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        job_id = %job.id,
+                        "Cron tick: failed to advance schedule for '{}' ({}) this tick; \
+                         other due jobs proceed, this one stays due and refires next tick \
+                         (#1917)",
+                        job.name,
+                        job.id
+                    );
+                    continue;
+                }
 
                 // Execute in background so we don't block other jobs
                 let job = job.clone();

@@ -1584,6 +1584,18 @@ pub struct AgentConfig {
     #[serde(default = "default_plan_auto_start")]
     pub plan_auto_start: bool,
 
+    /// #1903: how many hours an Active plan may sit untouched (its file's
+    /// `updated_at`) before the harness stops injecting the full
+    /// "[ACTIVE PLAN REMINDER]" execution nag into every user turn. The
+    /// reminder is written for in-flight plans; a dead one is permanent
+    /// prompt overhead the model cannot clear by itself, especially under
+    /// CLI providers that bring their own toolset and have no native `plan`
+    /// tool. Past the cutoff the block shrinks to a one-line stale note
+    /// naming the human exits (`plan discard`, `plan start`). Set 0 to
+    /// disable the cutoff and remind forever.
+    #[serde(default = "default_plan_reminder_max_age_hours")]
+    pub plan_reminder_max_age_hours: u64,
+
     /// Gate plan approval on an explicit human signal (#20). Default TRUE:
     /// `approval_policy = "auto-always"` does NOT satisfy the plan approval
     /// gate — plans stay Editing until the user Approves (plan-card button,
@@ -1955,6 +1967,12 @@ fn default_plan_auto_start() -> bool {
     false
 }
 
+fn default_plan_reminder_max_age_hours() -> u64 {
+    // #1903: one day without movement on the plan file and the full
+    // execution nag stops riding every turn.
+    24
+}
+
 fn default_plan_require_approval() -> bool {
     // #20: the plan approval gate is never satisfied by the tool
     // auto-approve policy unless the operator explicitly opts out.
@@ -1980,6 +1998,7 @@ impl Default for AgentConfig {
             execute_model: None,
             plan_isolated_execution: default_plan_isolated_execution(),
             plan_auto_start: default_plan_auto_start(),
+            plan_reminder_max_age_hours: default_plan_reminder_max_age_hours(),
             plan_require_approval: default_plan_require_approval(),
             plan_worker_allow_nested: false,
             plan_worker_allow_write: false,

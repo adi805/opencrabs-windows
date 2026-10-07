@@ -382,7 +382,18 @@ impl EventHandler for Handler {
             // 3-second window AND keeps the interaction alive, so the turn's
             // answer can replace this very message instead of landing as an
             // orphaned second reply (FR-002, AC-004).
-            let _ack = command
+            //
+            // The ack result is BOUND, never discarded: a refused
+            // acknowledgement used to vanish into a discard binding, which hid
+            // exactly the failure this branch exists to fix.
+            //
+            // The placeholder is deliberately non-ephemeral and is NOT deleted
+            // afterwards. `route_followup_turn` edits this very message in
+            // place with the turn's answer (FR-002/AC-004); an ephemeral defer
+            // can only ever be edited into another ephemeral message, and
+            // deleting it would make that edit 404 and silently demote the
+            // answer to a plain follow-up.
+            let ack = command
                 .create_response(
                     &ctx.http,
                     serenity::builder::CreateInteractionResponse::Defer(
@@ -390,8 +401,11 @@ impl EventHandler for Handler {
                     ),
                 )
                 .await;
-            if let Err(e) = _ack {
-                tracing::warn!("Discord: could not defer {invocation}: {e}");
+            if let Err(e) = &ack {
+                tracing::warn!(
+                    "Discord: deferred ack for /{} refused: {e}",
+                    command.data.name
+                );
             }
             // FR-002: hand the turn the token so its answer can replace the
             // deferred message instead of arriving as a second reply.

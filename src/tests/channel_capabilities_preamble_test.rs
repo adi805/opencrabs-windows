@@ -49,6 +49,13 @@ fn test_inject_telegram_channel_capabilities_explicit() {
     assert!(injected.contains("- Markdown tables: GFM tables rendered natively"));
     assert!(injected.contains("- HTML glyphs / formatting"));
     assert!(injected.contains("- Image includes: Markdown syntax"));
+    // #1940: the renderer facts are true on the native rich plane only, and
+    // that plane is gated on channels.telegram.rich_messages. The block must
+    // say so, or an agent promises native tables to a richtext-off chat.
+    assert!(
+        telegram_channel_capabilities().contains("rich_messages"),
+        "the telegram capabilities block must disclose the rich_messages gate"
+    );
     // #1773: the file-delivery directive rides the block.
     assert!(injected.contains("- Report/research files:"));
 
