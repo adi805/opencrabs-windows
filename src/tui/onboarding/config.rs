@@ -1301,7 +1301,7 @@ fn install_daemon_service() -> Result<(), String> {
 /// to disk. `OOMPolicy=continue` keeps a single child's OOM kill from
 /// terminating the whole daemon: the daemon is the parent of every tool and
 /// cron child, and systemd's default policy (`stop`) would tear the unit down.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn build_onboarding_systemd_unit(exe_path: &str) -> String {
     format!(
         r#"[Unit]
