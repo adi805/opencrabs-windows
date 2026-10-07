@@ -1029,6 +1029,15 @@ async fn cmd_chat_inner(
     // Shared Discord state for proactive messaging
     #[cfg(feature = "discord")]
     let discord_state = Arc::new(crate::channels::discord::DiscordState::new());
+    // Durable plan-card tracking (#104): mirrors Telegram's #809 wiring. Without
+    // it a restart loses which message carries the card, so the card can be
+    // neither edited nor removed and strands in the channel.
+    #[cfg(feature = "discord")]
+    discord_state
+        .set_plan_card_store(crate::db::repository::PlanCardRepository::new(
+            db.pool().clone(),
+        ))
+        .await;
 
     // Register Discord connect tool (agent-callable bot setup)
     #[cfg(feature = "discord")]

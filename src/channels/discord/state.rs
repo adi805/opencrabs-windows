@@ -63,12 +63,17 @@ pub struct DiscordState {
     pub(super) tool_groups: Mutex<(Vec<u64>, HashMap<u64, tool_group::GroupState>)>,
     /// Plan cards: session_id → (channel_id, message_id, signature).
     ///
-    /// In-memory cache only; `db::repository::PlanCardRepository` is the
-    /// durable backing and the same rows Telegram reads and writes
-    /// (FR-008 / AC-019: no third state mechanism). The signature is the
-    /// rendered body plus its keyboard state, so an unchanged plan costs no
-    /// API call.
+    /// Process-local cache; [`Self::plan_card_store`] is the durable backing
+    /// and the same rows Telegram reads and writes (FR-008 / AC-019: no third
+    /// state mechanism). The signature is the rendered body plus its keyboard
+    /// state, so an unchanged plan costs no API call.
     pub(super) plan_cards: Mutex<HashMap<Uuid, (u64, u64, String)>>,
+    /// Durable backing for [`Self::plan_cards`] (#104). The map alone is
+    /// process-local, so a restart lost which message carried the card — it
+    /// could then be neither edited (no tracked id) nor removed, stranding a
+    /// stale checklist in the channel. Same table and repository Telegram uses
+    /// (#809); wired at startup next to `DiscordState::new()`.
+    pub(super) plan_card_store: Mutex<Option<crate::db::repository::PlanCardRepository>>,
     /// Per-session lock serialising plan-card writes, mirroring Telegram's
     /// `plan_card_locks` (#822). Without it two concurrent refreshes both
     /// see no card, both post one, and the second id overwrites the first —
@@ -106,13 +111,43 @@ impl DiscordState {
             long_answers: Mutex::new((Vec::new(), HashMap::new())),
             tool_groups: Mutex::new((Vec::new(), HashMap::new())),
             plan_cards: Mutex::new(HashMap::new()),
+            plan_card_store: Mutex::new(None),
             plan_card_locks: Mutex::new(HashMap::new()),
         }
     }
 
     /// Tracked plan card for a session: `(channel_id, message_id, signature)`.
     pub(crate) async fn plan_card(&self, session_id: Uuid) -> Option<(u64, u64, String)> {
-        self.plan_cards.lock().await.get(&session_id).cloned()
+        if let Some(hit) = self.plan_cards.lock().await.get(&session_id).cloned() {
+            return Some(hit);
+        }
+        // Miss: either no card, or this process just started and the map is
+        // empty. Rehydrate here rather than scanning every session at boot, so
+        // the cost is paid once, only for sessions that actually ask (#104).
+        let stored = {
+            let guard = self.plan_card_store.lock().await;
+            let repo = guard.as_ref()?;
+            match repo.get(&session_id.to_string()).await {
+                Ok(row) => row?,
+                Err(e) => {
+                    tracing::warn!("Discord plan-card lookup failed for session {session_id}: {e}");
+                    return None;
+                }
+            }
+        };
+        // Snowflakes round-trip through i64 unchanged; the column types are
+        // shared with Telegram's chat / thread ids.
+        let card = (
+            stored.chat_id as u64,
+            stored.message_id as u64,
+            stored.signature,
+        );
+        self.plan_cards
+            .lock()
+            .await
+            .insert(session_id, card.clone());
+        tracing::info!("Recovered Discord plan card for session {session_id} after restart");
+        Some(card)
     }
 
     /// Record the card currently on screen for a session. Called after a
@@ -128,12 +163,45 @@ impl DiscordState {
         self.plan_cards
             .lock()
             .await
-            .insert(session_id, (channel_id, message_id, signature));
+            .insert(session_id, (channel_id, message_id, signature.clone()));
+        // Persist alongside, so a restart can still find and update THIS
+        // message instead of posting a second card below the stale one (#104).
+        let guard = self.plan_card_store.lock().await;
+        if let Some(repo) = guard.as_ref()
+            && let Err(e) = repo
+                .set(crate::db::repository::PlanCard {
+                    session_id: session_id.to_string(),
+                    chat_id: channel_id as i64,
+                    thread_id: None,
+                    message_id: message_id as i64,
+                    signature,
+                })
+                .await
+        {
+            tracing::warn!("Failed to persist Discord plan card for session {session_id}: {e}");
+        }
     }
 
-    /// Forget a session's card (deleted, or the plan is gone).
+    /// Forget a session's card (deleted, or the plan is gone). Drops the
+    /// durable row too, so a restart does not resurrect a card the chat no
+    /// longer shows (#104).
     pub(crate) async fn clear_plan_card(&self, session_id: Uuid) {
         self.plan_cards.lock().await.remove(&session_id);
+        let guard = self.plan_card_store.lock().await;
+        if let Some(repo) = guard.as_ref()
+            && let Err(e) = repo.delete(&session_id.to_string()).await
+        {
+            tracing::warn!("Failed to clear Discord plan card for session {session_id}: {e}");
+        }
+    }
+
+    /// Give the plan-card map durable backing (#104). Called at startup,
+    /// mirroring Telegram's `set_plan_card_store` (#809).
+    pub(crate) async fn set_plan_card_store(
+        &self,
+        repo: crate::db::repository::PlanCardRepository,
+    ) {
+        *self.plan_card_store.lock().await = Some(repo);
     }
 
     /// Per-session write lock, created on first use.

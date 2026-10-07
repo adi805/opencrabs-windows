@@ -984,6 +984,7 @@ pub mod discord_interaction_ack_test;
 pub mod discord_long_answer_decision_test;
 pub mod discord_mention_only_test;
 pub mod discord_norm_key_test;
+pub mod discord_plan_card_persist_test;
 pub mod discord_plan_card_test;
 pub mod discord_resume_chunk_test;
 pub mod discord_settle_outcome_test;
