@@ -167,7 +167,10 @@ case "$NOTIF_ROW" in
     ;;
   *)
     adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS > "$OUT/pm-grant.txt" 2>&1 || true
-    NOTIF_AFTER="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | head -1)"
+    # dumpsys prints this permission twice: bare under "requested permissions",
+    # and with ": granted=true" under the granted sections. head -1 took the bare
+    # row, so a successful pm grant still read as "could not be granted".
+    NOTIF_AFTER="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | grep -m1 'granted=true' || true)"
     case "$NOTIF_AFTER" in
       *granted=true*) pass "POST_NOTIFICATIONS granted for the run" ;;
       *) cat "$OUT/pm-grant.txt"; fail "POST_NOTIFICATIONS declared but could not be granted" ;;
@@ -191,7 +194,10 @@ say "POST_NOTIFICATIONS (the app must ask, API 33+)"
 # it the way a user would (a headless emulator cannot tap the dialog) and
 # restart, so the foreground notification is posted with the permission
 # already in place. Granting it after the service started does not re-post.
-ASKED="$(adb logcat -d -s OpenCrabsApp:V 2>/dev/null | tr -d '\r' | grep -m1 'POST_NOTIFICATIONS requesting')"
+# The app logs "requesting" only when it has to ask. When the permission is
+# already granted it logs "already granted" instead - demanding "requesting"
+# turns a working app into a failure.
+ASKED="$(adb logcat -d -s OpenCrabsApp:V 2>/dev/null | tr -d '\r' | grep -m1 -E 'POST_NOTIFICATIONS (requesting|already granted)' || true)"
 echo "  ${ASKED:-<no POST_NOTIFICATIONS request marker in logcat>}"
 if [ -n "$ASKED" ]; then
   pass "the app requested POST_NOTIFICATIONS at runtime"
@@ -519,7 +525,7 @@ say "notification (foreground service visibility)"
 # 35, so declaring it in the manifest is not enough: an app that never asks for
 # it shows no notification at all. The operator then starts the core and sees
 # nothing - no indicator that it is running, and no way to stop it.
-NOTIF_LINE="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | head -1)"
+NOTIF_LINE="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | grep -m1 'granted=true' || true)"
 echo "  ${NOTIF_LINE:-<no POST_NOTIFICATIONS row>}"
 case "$NOTIF_LINE" in
   *granted=true*) pass "POST_NOTIFICATIONS granted at runtime" ;;
