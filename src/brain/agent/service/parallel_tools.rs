@@ -41,6 +41,10 @@ pub(crate) struct ParallelBatchOutcome {
     pub results: Vec<ContentBlock>,
     pub descriptions: Vec<String>,
     pub outputs: Vec<(bool, String)>,
+    /// Tool name for each entry of `outputs`, same order and length. Lets the
+    /// caller attribute an output to the tool that produced it (e.g. harvest
+    /// source URLs from search-tool results only, #1883).
+    pub names: Vec<String>,
     /// Count of successful tool runs (drives the phantom-detection counters).
     pub successes: usize,
     /// The cancel token fired mid-batch; later tools did not run.
@@ -280,6 +284,7 @@ impl super::AgentService {
             results: Vec::new(),
             descriptions: Vec::new(),
             outputs: Vec::new(),
+            names: Vec::new(),
             successes: 0,
             cancelled,
         };
@@ -406,6 +411,7 @@ impl super::AgentService {
             }
             let output_summary: String = strip_ansi_output(&o.content).chars().take(2000).collect();
             out.outputs.push((o.success, output_summary));
+            out.names.push(o.tool_name.clone());
             out.results.push(ContentBlock::ToolResult {
                 tool_use_id: o.tool_id,
                 content: o.content,

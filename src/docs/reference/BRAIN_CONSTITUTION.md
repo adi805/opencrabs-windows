@@ -126,6 +126,8 @@ Compiled into the binary as Rust `Tool` trait implementations. Registered in the
 
 The agent calls `tool_search("send a telegram photo")` to discover and activate an extended tool. The tool's schema is then included in all subsequent requests for that session. This mirrors how contextual brain files work: core tools are always available, extended tools are loaded on demand.
 
+**Deterministic Sources footer (#1883).** Search tools already carry source URLs into the tool output the model sees, but the *delivered* answer used to cite them only when the model chose to. The tool loop now harvests the turn's search-tool outputs (`web_search`, `exa_search`, `brave_search`, `serper_search`) and appends a bounded `Sources:` list to the final answer: cross-engine dedup, capped at 5, dropping any URL the answer already links, and a no-op byte-for-byte for turns that ran no search tool. Implementation: `src/brain/tools/sources_footer.rs`, wired at the tool-loop composition point (`src/brain/agent/service/tool_loop.rs`).
+
 #### 2.6.2 Dynamic Tools (`tools.toml`)
 
 | Source | Location | Format |

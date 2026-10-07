@@ -1572,6 +1572,10 @@ impl AgentService {
         // checked against what actually ran rather than inferred from its
         // wording (#789).
         let mut turn_tool_input: Vec<String> = Vec::new();
+        // Search-tool outputs this turn, in call order, feeding the
+        // deterministic Sources footer (#1883). Kept separate from
+        // `turn_tool_output` so only search results contribute links.
+        let mut turn_search_outputs: Vec<String> = Vec::new();
         // One-shot nudge budget for the empty-analysis case: model ran
         // tool calls (e.g. `gh pr view`) on a user request whose verb
         // signals analysis ("audit the PR") but ended with
@@ -6747,6 +6751,15 @@ impl AgentService {
                     phantom_retries_used = 0;
                     tool_calls_completed_this_turn += batch.successes;
                     turn_tool_output.extend(batch.outputs.iter().map(|(_, out)| out.clone()));
+                    // Search results feed the deterministic Sources footer
+                    // (#1883); only successful runs contribute links.
+                    for (name, (success, out)) in batch.names.iter().zip(batch.outputs.iter()) {
+                        if *success
+                            && crate::brain::tools::sources_footer::is_search_tool(name)
+                        {
+                            turn_search_outputs.push(out.clone());
+                        }
+                    }
                 }
                 tool_results = batch.results;
                 tool_descriptions = batch.descriptions;
@@ -7348,6 +7361,11 @@ impl AgentService {
                             // Keep the real output so a later iteration's
                             // quoted "evidence" can be checked against it.
                             turn_tool_output.push(result_output_for_evidence.clone());
+                            // Search results also feed the deterministic
+                            // Sources footer (#1883).
+                            if crate::brain::tools::sources_footer::is_search_tool(&tool_name) {
+                                turn_search_outputs.push(result_output_for_evidence.clone());
+                            }
                             // Persist the touched path (same rationale as the
                             // approval-path branch above).
                             if let Some(p) = extract_path_for_recent_buffer(
@@ -8333,6 +8351,15 @@ impl AgentService {
                 cb(session_id, ProgressEvent::SuggestedOptions(items));
             }
         }
+
+        // Deterministic Sources footer (#1883): when this turn ran any search
+        // tool, append the harvested source links to the delivered answer so
+        // the reader can check them even when the model cited nothing. A turn
+        // with no search tool output is returned byte-for-byte unchanged.
+        let final_text = crate::brain::tools::sources_footer::append_sources_footer(
+            &final_text,
+            &turn_search_outputs,
+        );
 
         Ok(AgentResponse {
             message_id: assistant_db_msg.id,
