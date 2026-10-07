@@ -625,6 +625,9 @@ allowed_channels = ["channel_id"]       # Where the bot operates (empty = all ch
 # bot_owner = [123456789012345]         # Owner ID(s) for owner-only commands. Auto-seeded from the first
                                         # allowed_users entry on first run; set explicitly to pin the owner.
 # respond_to = "all"                    # "all" | "dm_only" | "mention"
+# ignore_mentions = [123456789012345]   # A message that @mentions one of these IDs is left to
+                                        # them: dropped before respond_to, so a second bot in the
+                                        # channel can answer without this one double-answering.
 # session_idle_hours = 24.0             # Archive inactive non-owner sessions after N hours (default: never)
 # trace_narration = true                # Fold intermediate narration (model text between tool
                                         # calls) into the turn's tool-group bubble as dim subtext
