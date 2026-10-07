@@ -475,9 +475,11 @@ impl PlanDocument {
     /// the turn actually delivered a final response.
     ///
     /// Conservative: acts ONLY when every task before the last is already
-    /// `Completed`/`Skipped` and the last task is `Pending`. A `Pending` task
-    /// anywhere but the end, or a `Failed`/`Blocked` last task, is a genuine
-    /// gap and is left untouched. Returns whether a task was completed.
+    /// `Completed`/`Skipped`, the last task is `Pending`, and that last task
+    /// declares NO acceptance criteria (#1932). A `Pending` task anywhere
+    /// but the end, a `Failed`/`Blocked` last task, or a last task carrying
+    /// a criteria contract is a genuine gap and is left untouched. Returns
+    /// whether a task was completed.
     pub fn complete_trailing_delivery_task(&mut self) -> bool {
         let Some(last) = self.tasks.len().checked_sub(1) else {
             return false;
@@ -486,6 +488,20 @@ impl PlanDocument {
             .iter()
             .all(|t| matches!(t.status, TaskStatus::Completed | TaskStatus::Skipped));
         if head_resolved && matches!(self.tasks[last].status, TaskStatus::Pending) {
+            // #1932: the auto-complete is for the DELIVERY shape only, and
+            // delivery-shaped means the task declared no verifiable
+            // contract. A trailing task with acceptance criteria says "this
+            // box means the listed commands ran and their outcomes were
+            // seen"; a turn that merely settled proves none of that. Before
+            // this gate, a trailing "verify the publisher end to end" task
+            // whose criterion awaited an external deploy was completed and
+            // ARCHIVED as done on any turn's final text, fabricating the
+            // record and making multi-turn plans structurally impossible.
+            // Such tasks now stay Pending until their criteria are met by
+            // an actual `complete`.
+            if !self.tasks[last].acceptance_criteria.is_empty() {
+                return false;
+            }
             self.tasks[last].complete(Some(
                 "Auto-completed at turn settle: the turn delivered its final response (#737)."
                     .to_string(),
