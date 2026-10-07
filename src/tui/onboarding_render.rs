@@ -544,8 +544,13 @@ fn render_mode_select(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizard)
                 }),
         ),
     ]));
+    // Counts come from the same totals as the progress counter, so the
+    // promise on this screen matches the "n/N" in the header (#1977).
     lines.push(Line::from(Span::styled(
-        "       Sensible defaults, 4 steps",
+        format!(
+            "       Sensible defaults, {} steps",
+            OnboardingStep::quick_total()
+        ),
         Style::default().fg(theme::role(Role::Gray)),
     )));
     lines.push(Line::from(""));
@@ -580,7 +585,7 @@ fn render_mode_select(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizard)
         ),
     ]));
     lines.push(Line::from(Span::styled(
-        "       Full control, all 7 steps",
+        format!("       Full control, all {} steps", OnboardingStep::total()),
         Style::default().fg(theme::role(Role::Gray)),
     )));
 }

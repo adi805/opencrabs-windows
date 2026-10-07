@@ -145,3 +145,14 @@ fn scroll_offset_follows_focus_and_clamps() {
     // Page Down adds on top, still clamped.
     assert_eq!(scroll_offset(0, 50, 20, 100), 30);
 }
+
+#[test]
+fn mode_select_step_counts_match_the_progress_counter() {
+    let mut wizard = OnboardingWizard::new();
+    wizard.resume_notice = None;
+    let text = screen_text(&wizard, 100, 30);
+    let quick = format!("Sensible defaults, {} steps", OnboardingStep::quick_total());
+    let full = format!("Full control, all {} steps", OnboardingStep::total());
+    assert!(text.contains(&quick), "missing {quick:?}\n{text}");
+    assert!(text.contains(&full), "missing {full:?}\n{text}");
+}
