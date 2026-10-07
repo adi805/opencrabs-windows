@@ -6,6 +6,7 @@ use ratatui::{
     style::Style,
     text::{Line, Span},
 };
+use unicode_bidi::{BidiClass, BidiInfo};
 use unicode_width::UnicodeWidthStr;
 
 /// Pre-wrap a Line's text content to fit within max_width, preserving the style
@@ -124,4 +125,72 @@ pub(super) fn format_token_count_raw(tokens: i64) -> String {
     } else {
         "0".to_string()
     }
+}
+
+// ── RTL rendering (#1897) ────────────────────────────────────────────────────
+
+/// True when `ch` is a strong right-to-left character: Arabic letter (`AL`)
+/// or any other RTL letter (`R`). This is the fast-path trigger for
+/// [`apply_rtl`]: text without these characters renders unchanged.
+pub(crate) fn is_rtl_char(ch: char) -> bool {
+    matches!(unicode_bidi::bidi_class(ch), BidiClass::AL | BidiClass::R)
+}
+
+/// True when `ch` belongs to an Arabic script block (main, supplement,
+/// extended A/B and the presentation forms the reshaper emits). Used to skip
+/// the joining stage for Hebrew, which needs none.
+pub(crate) fn is_arabic_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0600}'..='\u{06FF}'
+            | '\u{0750}'..='\u{077F}'
+            | '\u{08A0}'..='\u{08FF}'
+            | '\u{FB50}'..='\u{FDFF}'
+            | '\u{FE70}'..='\u{FEFF}'
+            | '\u{10EC0}'..='\u{10EFA}'
+    )
+}
+
+/// Shape and reorder a run of text into terminal visual order (#1897).
+///
+/// Terminals lay out cells left-to-right, so logical-order Arabic/Hebrew
+/// reaches the screen mirrored and disconnected. Returns `None` when the text
+/// carries no strong RTL characters (Latin fast path, zero cost, zero change);
+/// otherwise returns the reordered string.
+///
+/// Ordering matters: joining runs first, on logical order, because the
+/// reshaper's context windows are defined by adjacency; the Unicode
+/// Bidirectional Algorithm runs last, on the shaped text (presentation forms
+/// keep their `AL` bidi class, so paragraph detection is unaffected).
+pub(crate) fn apply_rtl(text: &str) -> Option<String> {
+    if !text.chars().any(is_rtl_char) {
+        return None;
+    }
+    let shaped = if text.chars().any(is_arabic_char) {
+        arabic_reshaper::arabic_reshape(text)
+    } else {
+        text.to_string()
+    };
+    let bidi = BidiInfo::new(&shaped, None);
+    if !bidi.has_rtl() {
+        return Some(shaped);
+    }
+    let mut visual = String::with_capacity(shaped.len());
+    for paragraph in &bidi.paragraphs {
+        visual.push_str(&bidi.reorder_line(paragraph, paragraph.range.clone()));
+    }
+    Some(visual)
+}
+
+/// Apply [`apply_rtl`] to every span of every line, in place, preserving
+/// each span's style. Untouched lines keep their borrowed allocations.
+pub(crate) fn apply_rtl_lines(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    for line in &mut lines {
+        for span in &mut line.spans {
+            if let Some(visual) = apply_rtl(span.content.as_ref()) {
+                *span = Span::styled(visual, span.style);
+            }
+        }
+    }
+    lines
 }

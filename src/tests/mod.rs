@@ -716,6 +716,7 @@ pub mod tree_view_test;
 pub mod truncation_join_test;
 pub mod tui_app_state_test;
 pub mod tui_attachment_router_test;
+pub mod tui_bidi_test;
 pub mod tui_cancel_indicator_test;
 pub mod tui_cd_arg_test;
 pub mod tui_clickable_test;

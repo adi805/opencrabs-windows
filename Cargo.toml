@@ -209,6 +209,8 @@ rust_xlsxwriter = "0.96.0"
 docx-rs = "0.4.20"
 printpdf = { version = "0.12.7", features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
 rpassword = { version = "7.5.4", optional = true }
+unicode-bidi = "0.3.18"
+arabic_reshaper = "0.4.2"
 
 [dev-dependencies]
 rstest = "0.25"

@@ -253,6 +253,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arabic_reshaper"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb963411bc62b3888e69ad0d821ac03a3176ec7d74c2096bb5555a4cc419545b"
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5423,6 +5429,7 @@ name = "opencrabs"
 version = "0.5.4"
 dependencies = [
  "anyhow",
+ "arabic_reshaper",
  "async-trait",
  "axum",
  "base64 0.22.1",
@@ -5511,6 +5518,7 @@ dependencies = [
  "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-rust",
+ "unicode-bidi",
  "unicode-normalization",
  "unicode-segmentation",
  "unicode-width",
