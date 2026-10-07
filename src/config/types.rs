@@ -915,6 +915,12 @@ pub struct DiscordConfig {
     /// When the bot should respond: "all", "dm_only", or "mention" (default)
     #[serde(default)]
     pub respond_to: RespondTo,
+    /// User IDs whose @mention marks a guild message as addressed to someone
+    /// else. Such a message is dropped before `respond_to` is evaluated, so a
+    /// second bot sharing the channel can answer without this one
+    /// double-answering. Empty (default) disables the check.
+    #[serde(default, deserialize_with = "deser_users_compat")]
+    pub ignore_mentions: Vec<String>,
     /// Idle session timeout in hours for non-owner sessions.
     #[serde(default)]
     pub session_idle_hours: Option<f64>,
@@ -1077,6 +1083,7 @@ impl Default for DiscordConfig {
             allowed_roles: Vec::new(),
             component_ttl_hours: default_component_ttl_hours(),
             respond_to: RespondTo::default(),
+            ignore_mentions: Vec::new(),
             session_idle_hours: None,
             bot_owner: Vec::new(),
             trace_narration: default_true(),

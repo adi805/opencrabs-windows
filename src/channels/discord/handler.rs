@@ -323,6 +323,24 @@ async fn resolve_replied_folded(ctx: &Context, msg: &Message) -> Option<String> 
     }
 }
 
+/// True when `mentioned_ids` contains an ID listed in `ignore_mentions`.
+///
+/// Lets the handler drop a guild message that @mentions another bot (or any
+/// listed user) before `respond_to` runs; otherwise `respond_to = "all"` in a
+/// channel shared with a second bot answers every message twice.
+pub(crate) fn mentions_ignored_user(
+    mentioned_ids: impl Iterator<Item = u64>,
+    ignore_mentions: &[String],
+) -> bool {
+    if ignore_mentions.is_empty() {
+        return false;
+    }
+    mentioned_ids.into_iter().any(|id| {
+        let id = id.to_string();
+        ignore_mentions.iter().any(|ig| ig == &id)
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_message(
     ctx: &Context,
@@ -450,6 +468,18 @@ pub(crate) async fn handle_message(
                 store_channel_msg(msg.content.clone()).await;
                 return;
             }
+        }
+
+        // A message that @mentions an ignored user is addressed to them, not
+        // to us: drop it before `respond_to` so `all` does not double-answer
+        // a message aimed at a second bot in the same channel.
+        if mentions_ignored_user(
+            msg.mentions.iter().map(|u| u.id.get()),
+            &dc_cfg.ignore_mentions,
+        ) {
+            tracing::debug!("Discord: message mentions an ignored user, ignoring");
+            store_channel_msg(msg.content.clone()).await;
+            return;
         }
 
         match respond_to {
@@ -2233,4 +2263,38 @@ pub(crate) fn thread_title(raw: &str) -> String {
         out.push('…');
     }
     format!("🧵 {out}")
+}
+
+#[cfg(test)]
+mod ignore_mentions_tests {
+    use super::mentions_ignored_user;
+
+    const OTHER_BOT: u64 = 1555416978988998696;
+
+    #[test]
+    fn drops_a_message_that_mentions_a_listed_id() {
+        let ignore = vec![OTHER_BOT.to_string()];
+        assert!(mentions_ignored_user([OTHER_BOT].into_iter(), &ignore));
+    }
+
+    #[test]
+    fn keeps_a_message_that_mentions_someone_else() {
+        let ignore = vec![OTHER_BOT.to_string()];
+        assert!(!mentions_ignored_user([42u64].into_iter(), &ignore));
+        assert!(!mentions_ignored_user(std::iter::empty::<u64>(), &ignore));
+    }
+
+    #[test]
+    fn empty_list_disables_the_check() {
+        assert!(!mentions_ignored_user([OTHER_BOT].into_iter(), &[]));
+    }
+
+    #[test]
+    fn string_and_integer_forms_both_match() {
+        // `deser_users_compat` accepts a TOML integer array, so a config that
+        // lists the id unquoted must behave the same as a quoted one.
+        let ignore = vec![OTHER_BOT.to_string()];
+        assert!(mentions_ignored_user([OTHER_BOT].into_iter(), &ignore));
+        assert!(!mentions_ignored_user([OTHER_BOT + 1].into_iter(), &ignore));
+    }
 }
