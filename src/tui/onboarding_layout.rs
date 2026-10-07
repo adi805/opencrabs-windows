@@ -71,7 +71,8 @@ pub fn node_state(index: usize, current: usize) -> NodeState {
 
 /// How the timeline spends the rows it has: a connector row between nodes
 /// when there is room, nodes only when not, nothing when even that is too
-/// tall (the header dots take over). Two rows are kept for the heading.
+/// tall (the header dots take over). Three rows are kept for the heading:
+/// the brand line, the step counter and a blank row (#1980).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimelineFit {
     Spacious,
@@ -79,13 +80,16 @@ pub enum TimelineFit {
     Hidden,
 }
 
+/// Rows above the first timeline node: brand, step counter, blank.
+const TIMELINE_HEADING_ROWS: usize = 3;
+
 pub fn timeline_fit(steps: usize, rows: u16) -> TimelineFit {
     let rows = rows as usize;
     if steps == 0 {
         TimelineFit::Hidden
-    } else if 2 + steps * 2 - 1 <= rows {
+    } else if TIMELINE_HEADING_ROWS + steps * 2 - 1 <= rows {
         TimelineFit::Spacious
-    } else if 2 + steps <= rows {
+    } else if TIMELINE_HEADING_ROWS + steps <= rows {
         TimelineFit::Compact
     } else {
         TimelineFit::Hidden
@@ -106,6 +110,12 @@ pub struct BandPadding {
 pub const BAND_FULL_PADDING_HEIGHT: u16 = 30;
 /// Terminal height below which the bands get no padding at all.
 pub const BAND_EDGE_PADDING_HEIGHT: u16 = 20;
+
+/// Whether the header puts a blank row between its lines (#1980). Same
+/// threshold as the full band padding: below it every row goes to the form.
+pub fn header_spacing(area_height: u16) -> bool {
+    area_height >= BAND_FULL_PADDING_HEIGHT
+}
 
 pub fn band_padding(area_height: u16) -> BandPadding {
     if area_height >= BAND_FULL_PADDING_HEIGHT {
