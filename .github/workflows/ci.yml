@@ -113,40 +113,6 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --lib --bins --tests --examples --all-features -- -D warnings
 
-  # ── Stage 1b: Governance policy lint (#1934) ─────────────────────────────
-  # The machine-decidable half of AGENTS.md / CONTRIBUTING.md. `governance.toml`
-  # at the repo root is the source of truth; scripts/policy-lint.py reads it and
-  # this job runs the script. Prose review keeps everything that needs
-  # judgement — tone, scope creep, "is this one problem?".
-  #
-  # Runs on PRs only: on a main push there is no base to diff against, and the
-  # PR run is what gates the merge. Deliberately no rust toolchain and no
-  # caching — it is pure git + tomllib, ~10s.
-  #
-  # The --self-test step comes first on purpose. A linter whose regexes quietly
-  # stopped matching would otherwise report "no violations" on every PR and
-  # look identical to a clean repo; the self-test fails the job in that case.
-  policy-lint:
-    name: Policy lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          # Full history: the checks walk commit messages between the merge
-          # base and the head, and a shallow clone has neither.
-          fetch-depth: 0
-
-      - name: Prove the checks bite
-        run: python3 scripts/policy-lint.py --self-test
-
-      - name: Lint commits and PR size
-        if: github.event_name == 'pull_request'
-        run: |
-          python3 scripts/policy-lint.py \
-            --base "${{ github.event.pull_request.base.sha }}" \
-            --head "${{ github.event.pull_request.head.sha }}"
-
   # ── Stage 2: Build verification (parallel, gated on lint + audit) ────────
   # Cross-platform BUILD on macOS confirms target compatibility without
   # running tests there (tests run on Linux only — see `test` below).

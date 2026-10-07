@@ -124,6 +124,10 @@ def changed_files(base: str, head: str) -> list[str]:
 def lint(policy: dict, base: str, head: str) -> int:
     commits_cfg = policy.get("commits", {})
     prs_cfg = policy.get("prs", {})
+    # The PR event carries the base branch's *current* tip, which moves while
+    # the PR is open. Resolve the fork point first so the walk sees this PR's
+    # own commits and not everything that landed on main after it branched.
+    base = merge_base(base, head)
     commits = commits_between(base, head)
     failures: list[str] = []
 
