@@ -152,12 +152,58 @@ CFG
   fi
 fi
 
+# ------------------------------------------------- notification permission ---
+# POST_NOTIFICATIONS became a RUNTIME permission in API 33 and targetSdk here is
+# 35. The app asks for it (see MainActivity), but a CI run has nobody to tap the
+# dialog, so it would stay denied and the foreground notification would be
+# suppressed. The assertion further down would then fail for a harness reason
+# while looking like an app defect. Grant it as root (adb root already ran) so
+# that check measures the app's ability to post a notification.
+say "grant POST_NOTIFICATIONS (runtime permission on API 33+)"
+NOTIF_ROW="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | head -1)"
+case "$NOTIF_ROW" in
+  "")
+    echo "  NOTE: $PKG does not declare POST_NOTIFICATIONS on this image - nothing to grant"
+    ;;
+  *)
+    adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS > "$OUT/pm-grant.txt" 2>&1 || true
+    NOTIF_AFTER="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | head -1)"
+    case "$NOTIF_AFTER" in
+      *granted=true*) pass "POST_NOTIFICATIONS granted for the run" ;;
+      *) cat "$OUT/pm-grant.txt"; fail "POST_NOTIFICATIONS declared but could not be granted" ;;
+    esac
+    ;;
+esac
+
 # ---------------------------------------------------------------- launch ----
 say "launch"
 adb logcat -c > /dev/null 2>&1 || true
 adb shell am start -n "$ACTIVITY" > "$OUT/am-start.txt" 2>&1 || true
 cat "$OUT/am-start.txt"
 sleep 20
+
+# ------------------------------------------------- POST_NOTIFICATIONS ----
+say "POST_NOTIFICATIONS (the app must ask, API 33+)"
+# targetSdk here is 35, so POST_NOTIFICATIONS is a RUNTIME permission: an app
+# that only declares it in the manifest shows no notification at all. The
+# operator then starts the core and sees no indicator that it is running, and
+# no way to stop it from the shade. Assert the app actually asked, then grant
+# it the way a user would (a headless emulator cannot tap the dialog) and
+# restart, so the foreground notification is posted with the permission
+# already in place. Granting it after the service started does not re-post.
+ASKED="$(adb logcat -d -s OpenCrabsApp:V 2>/dev/null | tr -d '\r' | grep -m1 'POST_NOTIFICATIONS requesting')"
+echo "  ${ASKED:-<no POST_NOTIFICATIONS request marker in logcat>}"
+if [ -n "$ASKED" ]; then
+  pass "the app requested POST_NOTIFICATIONS at runtime"
+else
+  fail "the app never requested POST_NOTIFICATIONS: on API 33+ its foreground notification is suppressed, so the operator sees nothing and cannot stop the core"
+fi
+adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS > "$OUT/notif-grant.txt" 2>&1 || true
+cat "$OUT/notif-grant.txt" 2>/dev/null || true
+adb shell am force-stop "$PKG" >/dev/null 2>&1 || true
+sleep 3
+adb shell am start -n "$ACTIVITY" >/dev/null 2>&1 || true
+sleep 15
 
 # ------------------------------------------------------------- processes ----
 say "processes"
@@ -202,7 +248,7 @@ fi
 
 # ---------------------------------------------------------------- logcat ----
 say "logcat (OpenCrabsCore)"
-adb logcat -d -s OpenCrabsCore:V > "$OUT/logcat-core.txt" 2>&1 || true
+adb logcat -d -s OpenCrabsCore:V OpenCrabsApp:V > "$OUT/logcat-core.txt" 2>&1 || true
 head -60 "$OUT/logcat-core.txt"
 if grep -q "core started, pid=" "$OUT/logcat-core.txt"; then
   pass "CoreService reported a spawned core"
