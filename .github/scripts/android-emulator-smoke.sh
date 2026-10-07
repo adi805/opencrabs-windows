@@ -152,28 +152,14 @@ CFG
   fi
 fi
 
-# ------------------------------------------------- notification permission ---
+# ------------------------------------- notification permission (ordering) ---
 # POST_NOTIFICATIONS became a RUNTIME permission in API 33 and targetSdk here is
-# 35. The app asks for it (see MainActivity), but a CI run has nobody to tap the
-# dialog, so it would stay denied and the foreground notification would be
-# suppressed. The assertion further down would then fail for a harness reason
-# while looking like an app defect. Grant it as root (adb root already ran) so
-# that check measures the app's ability to post a notification.
-say "grant POST_NOTIFICATIONS (runtime permission on API 33+)"
-NOTIF_ROW="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | head -1)"
-case "$NOTIF_ROW" in
-  "")
-    echo "  NOTE: $PKG does not declare POST_NOTIFICATIONS on this image - nothing to grant"
-    ;;
-  *)
-    adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS > "$OUT/pm-grant.txt" 2>&1 || true
-    NOTIF_AFTER="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | head -1)"
-    case "$NOTIF_AFTER" in
-      *granted=true*) pass "POST_NOTIFICATIONS granted for the run" ;;
-      *) cat "$OUT/pm-grant.txt"; fail "POST_NOTIFICATIONS declared but could not be granted" ;;
-    esac
-    ;;
-esac
+# 35, so the app must ask for it. Do NOT grant it here, before launch: an earlier
+# revision did, and because the app only asks when the permission is absent it
+# logged "already granted" and never emitted the request marker, so the ask
+# assertion further down could not pass no matter what the app did. The grant
+# belongs after that assertion, where a user would tap Allow. See the block that
+# follows it.
 
 # ---------------------------------------------------------------- launch ----
 say "launch"
@@ -519,7 +505,7 @@ say "notification (foreground service visibility)"
 # 35, so declaring it in the manifest is not enough: an app that never asks for
 # it shows no notification at all. The operator then starts the core and sees
 # nothing - no indicator that it is running, and no way to stop it.
-NOTIF_LINE="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | head -1)"
+NOTIF_LINE="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep -m1 'android.permission.POST_NOTIFICATIONS: granted=')"
 echo "  ${NOTIF_LINE:-<no POST_NOTIFICATIONS row>}"
 case "$NOTIF_LINE" in
   *granted=true*) pass "POST_NOTIFICATIONS granted at runtime" ;;
