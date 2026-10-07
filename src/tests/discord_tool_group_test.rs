@@ -80,6 +80,8 @@ fn live_summary_carries_the_rolling_clock_settled_freezes_it() {
     done_group.settled = Some(SettledStatus {
         elapsed: Duration::from_secs(90),
         ctx: Some("ctx: 84K/200K 42%".into()),
+        waiting: None,
+        terminal: None,
     });
     let settled = render_content(&done_group);
     assert!(settled.contains("⏱️ 1:30"));
@@ -94,7 +96,7 @@ async fn settle_freezes_elapsed_and_stamps_ctx() {
     g.started_at = Instant::now() - Duration::from_secs(90);
     state.upsert_tool_group(77, g).await;
     let stamped = state
-        .settle_tool_group(77, Some("ctx: 1K/2K 50%".into()))
+        .settle_tool_group(77, Some("ctx: 1K/2K 50%".into()), None, None)
         .await
         .expect("group exists");
     let s = stamped.settled.as_ref().expect("stamped at settle");
@@ -110,7 +112,9 @@ async fn upsert_preserves_started_at_and_settled() {
     let mut g = group(1, false, false);
     g.started_at = Instant::now() - Duration::from_secs(30);
     state.upsert_tool_group(88, g).await;
-    state.settle_tool_group(88, Some("ctx: A".into())).await;
+    state
+        .settle_tool_group(88, Some("ctx: A".into()), None, None)
+        .await;
     // A late progress update must not restart the clock or clear the stamp.
     let stored = state.upsert_tool_group(88, group(1, true, false)).await;
     assert!(stored.started_at.elapsed().as_secs() >= 29);
@@ -121,9 +125,11 @@ async fn upsert_preserves_started_at_and_settled() {
 async fn resettle_with_no_ctx_keeps_the_stamped_budget() {
     let state = DiscordState::new();
     state.upsert_tool_group(99, group(1, true, false)).await;
-    state.settle_tool_group(99, Some("ctx: B".into())).await;
+    state
+        .settle_tool_group(99, Some("ctx: B".into()), None, None)
+        .await;
     let again = state
-        .settle_tool_group(99, None)
+        .settle_tool_group(99, None, None, None)
         .await
         .expect("group exists");
     assert_eq!(
@@ -135,4 +141,119 @@ async fn resettle_with_no_ctx_keeps_the_stamped_budget() {
             .as_deref(),
         Some("ctx: B")
     );
+}
+
+// #1987: the waiting state, the terminal stamp, the flip, and the registry.
+
+#[test]
+fn waiting_verb_replaces_the_check_and_keeps_the_frozen_clock() {
+    let mut g = group(2, true, false);
+    g.settled = Some(SettledStatus {
+        elapsed: Duration::from_secs(60),
+        ctx: Some("ctx: 84K/200K 42%".into()),
+        waiting: Some("waiting for 2 background tasks".into()),
+        terminal: None,
+    });
+    let line = render_content(&g);
+    assert!(line.contains("⏳ waiting for 2 background tasks"));
+    assert!(!line.contains("✅"));
+    assert!(!line.contains("🕒"));
+    assert!(line.contains("⏱️ 1:00"));
+}
+
+#[test]
+fn terminal_word_settles_the_group_with_a_cross() {
+    let mut g = group(2, true, false);
+    g.settled = Some(SettledStatus {
+        elapsed: Duration::from_secs(12),
+        ctx: None,
+        waiting: None,
+        terminal: Some("Cancelled"),
+    });
+    let line = render_content(&g);
+    assert!(line.contains("❌ Cancelled"));
+    assert!(!line.contains("✅"));
+    assert!(!line.contains("🕒"));
+}
+
+#[tokio::test]
+async fn settle_stamps_waiting_and_the_terminal_word() {
+    let state = DiscordState::new();
+    state.upsert_tool_group(120, group(2, true, false)).await;
+    let stamped = state
+        .settle_tool_group(
+            120,
+            None,
+            Some("waiting for 1 background task".into()),
+            None,
+        )
+        .await
+        .expect("group exists");
+    let s = stamped.settled.as_ref().expect("stamped at settle");
+    assert_eq!(s.waiting.as_deref(), Some("waiting for 1 background task"));
+    assert!(s.terminal.is_none());
+    state.upsert_tool_group(121, group(1, true, false)).await;
+    let dead = state
+        .settle_tool_group(121, None, None, Some("Error"))
+        .await
+        .expect("group exists");
+    assert_eq!(
+        dead.settled.as_ref().expect("stamped").terminal,
+        Some("Error")
+    );
+    assert!(render_content(&dead).contains("❌ Error"));
+}
+
+#[tokio::test]
+async fn refresh_waiting_line_narrows_then_flips_to_finished() {
+    let state = DiscordState::new();
+    let mut g = group(2, true, false);
+    g.started_at = Instant::now() - Duration::from_secs(60);
+    state.upsert_tool_group(130, g).await;
+    let settled = state
+        .settle_tool_group(
+            130,
+            None,
+            Some("waiting for 3 background tasks".into()),
+            None,
+        )
+        .await
+        .expect("group exists");
+    assert!(render_content(&settled).contains("⏳ waiting for 3 background tasks"));
+    // A completion narrows the verb; the frozen clock must survive the edit.
+    let narrowed = state
+        .refresh_waiting_line(130, Some("waiting for 1 background task".into()))
+        .await
+        .expect("group exists");
+    let line = render_content(&narrowed);
+    assert!(line.contains("⏳ waiting for 1 background task"));
+    assert!(line.contains("⏱️ 1:00"));
+    // Drained: the line flips to the plain finished check, no hourglass left.
+    let done = state
+        .refresh_waiting_line(130, None)
+        .await
+        .expect("group exists");
+    let line = render_content(&done);
+    assert!(line.contains("✅"));
+    assert!(!line.contains("⏳"));
+    // An unsettled group has no waiting line to refresh...
+    state.upsert_tool_group(131, group(1, false, false)).await;
+    assert!(state.refresh_waiting_line(131, None).await.is_none());
+    // ...and an aged-out message id reports None so the caller can drop its
+    // registration instead of pinning the slot forever.
+    assert!(state.refresh_waiting_line(9999, None).await.is_none());
+}
+
+#[tokio::test]
+async fn waiting_group_registry_roundtrips() {
+    let state = DiscordState::new();
+    let session = uuid::Uuid::new_v4();
+    assert!(state.waiting_group_for(session).await.is_none());
+    state.register_waiting_group(session, 4242).await;
+    assert_eq!(state.waiting_group_for(session).await, Some(4242));
+    // A newer waiting settle overwrites the stale registration.
+    state.register_waiting_group(session, 5151).await;
+    assert_eq!(state.waiting_group_for(session).await, Some(5151));
+    assert_eq!(state.clear_waiting_group(session).await, Some(5151));
+    assert!(state.waiting_group_for(session).await.is_none());
 }

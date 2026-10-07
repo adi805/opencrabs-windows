@@ -5,6 +5,7 @@
 
 use super::DiscordState;
 use crate::brain::agent::AgentService;
+use crate::channels::background_work::{bg_indicator_for, subagent_counts_for, waiting_verb};
 use crate::channels::group_history;
 use crate::config::{Config, RespondTo};
 use crate::db::ChannelMessageRepository;
@@ -1585,6 +1586,14 @@ pub(crate) async fn handle_message(
             // ctx budget into the flow group, the Discord twin of Telegram's
             // settled flow header. Runs on every delivery outcome so the
             // chrome ends as the last word regardless of the answer path.
+            // #1987: a turn that ends with detached work still alive settles
+            // to the shared waiting verb instead of a green check, folding
+            // both registries (shell tasks + working sub-agents) through
+            // `background_work`, the Discord twin of Telegram's override.
+            let waiting = {
+                let (_, bg_count) = bg_indicator_for(&agent, session_id);
+                waiting_verb(bg_count, subagent_counts_for(&agent, session_id))
+            };
             if let Some(mid) = *turn_group_mid.lock().await
                 && let Some(group) = discord_state
                     .settle_tool_group(
@@ -1594,9 +1603,19 @@ pub(crate) async fn handle_message(
                         } else {
                             Some(ctx_line.clone())
                         },
+                        waiting.clone(),
+                        None,
                     )
                     .await
             {
+                if waiting.is_some() {
+                    // #1987: keep the mid so the background-completion path
+                    // in resume.rs can find this ⏳ line after the turn is
+                    // gone and flip it once both registries drain.
+                    discord_state
+                        .register_waiting_group(session_id, mid.get())
+                        .await;
+                }
                 let edit = serenity::builder::EditMessage::new()
                     .content(super::tool_group::render_content(&group))
                     .components(super::tool_group::render_components(&group, mid.get()));
@@ -1735,6 +1754,21 @@ pub(crate) async fn handle_message(
         }
         Err(ref e) if matches!(e, crate::brain::agent::AgentError::Cancelled) => {
             tracing::info!("Discord: agent call cancelled for session {}", session_id);
+            // #1987: an unsettled group keeps editing its 🕒 line until the
+            // 30-minute orphan cap; stamp the terminal ❌ word so the clock
+            // ends with the cancelled turn.
+            if let Some(mid) = *turn_group_mid.lock().await
+                && let Some(group) = discord_state
+                    .settle_tool_group(mid.get(), None, None, Some("Cancelled"))
+                    .await
+            {
+                let edit = serenity::builder::EditMessage::new()
+                    .content(super::tool_group::render_content(&group))
+                    .components(super::tool_group::render_components(&group, mid.get()));
+                if let Err(e) = target.edit_message(&ctx.http, mid, edit).await {
+                    tracing::debug!("Discord: cancelled settle stamp failed: {e}");
+                }
+            }
         }
         Err(e) => {
             tracing::error!("Discord: agent error: {}", e);
@@ -1745,6 +1779,20 @@ pub(crate) async fn handle_message(
             let error_msg = format!("❌ Error\n\n{}", crate::brain::agent::format_user_error(&e));
             if let Err(e) = target.say(&ctx.http, error_msg).await {
                 tracing::warn!(error = %e, "failed to send Discord message");
+            }
+            // #1987: a failed turn must settle its group too, or the flow
+            // ticker keeps editing 🕒 on a bubble whose turn is gone.
+            if let Some(mid) = *turn_group_mid.lock().await
+                && let Some(group) = discord_state
+                    .settle_tool_group(mid.get(), None, None, Some("Error"))
+                    .await
+            {
+                let edit = serenity::builder::EditMessage::new()
+                    .content(super::tool_group::render_content(&group))
+                    .components(super::tool_group::render_components(&group, mid.get()));
+                if let Err(e) = target.edit_message(&ctx.http, mid, edit).await {
+                    tracing::debug!("Discord: error settle stamp failed: {e}");
+                }
             }
         }
     }

@@ -13,6 +13,7 @@
 use serenity::builder::{CreateActionRow, CreateButton};
 use serenity::model::application::ButtonStyle;
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 use super::DiscordState;
 
@@ -55,6 +56,16 @@ pub(crate) struct GroupState {
 pub(crate) struct SettledStatus {
     pub elapsed: Duration,
     pub ctx: Option<String>,
+    /// Turn ended with background work still alive (#1987): the settled line
+    /// reads `⏳ {verb}` instead of the finished icon. The completion path
+    /// narrows this as work drains and clears it (flip to finished) once
+    /// both registries are empty.
+    pub waiting: Option<String>,
+    /// Forced failure chrome from the Cancelled/Err delivery arms (#1987):
+    /// the line reads `❌ {word}` so the group stops claiming success and
+    /// the flow ticker's clock ends with the turn instead of running to its
+    /// 30-minute orphan cap.
+    pub terminal: Option<&'static str>,
 }
 
 /// Keep at most this many narration lines in the bubble (newest win).
@@ -184,13 +195,19 @@ fn summary_line(group: &GroupState) -> String {
             // A settled turn has no running tools: the icon reads final
             // states only, ❌ when something failed, ✅ otherwise, never
             // the live "N running" tail (an entry left statusless at
-            // settle is done, not running).
-            let (icon, tail) = if failed > 0 {
-                ("❌", format!(" · {failed} failed"))
+            // settle is done, not running). #1987 puts two overrides ahead
+            // of that default: a waiting verb (⏳, the turn ended with
+            // background work alive) and a forced failure word (❌, the
+            // Cancelled/Err arms settle the group so its clock stops).
+            let mut line = if let Some(verb) = &s.waiting {
+                format!("⏳ {verb} · {counts}")
+            } else if let Some(word) = s.terminal {
+                format!("❌ {word} · {counts}")
+            } else if failed > 0 {
+                format!("❌ {counts} · {failed} failed")
             } else {
-                ("✅", String::new())
+                format!("✅ {counts}")
             };
-            let mut line = format!("{icon} {counts}{tail}");
             if let Some(ctx) = &s.ctx {
                 line.push_str(&format!(" · {ctx}"));
             }
@@ -272,7 +289,12 @@ fn hard_clip(body: String) -> String {
 
 /// Message body for the group in its current display state.
 pub(crate) fn render_content(group: &GroupState) -> String {
-    let tools_part = if group.entries.len() == 1 && !group.expanded {
+    // The bare entry line is a LIVE-only shortcut. Once settled, the
+    // final-state chrome (⏳ waiting verb, ❌ terminal word, ✅/❌ counts,
+    // ctx, frozen clock) must render even for single-tool turns. #1987:
+    // a lone aborted call otherwise kept showing a plain entry row and
+    // hid the Cancelled/Error/Waiting state from the user entirely.
+    let tools_part = if group.entries.len() == 1 && !group.expanded && group.settled.is_none() {
         let e = &group.entries[0];
         format!("{} **{}**{}", entry_icon(e.status), e.name, e.context)
     } else if group.expanded {
@@ -380,12 +402,18 @@ impl DiscordState {
     /// Stamp the post-delivery status (#1841): freeze the clock at now and
     /// record the ctx budget line for the settled chrome. A `None` ctx keeps
     /// whatever a previous settle stamped, so a re-settle never clears the
-    /// budget. Returns the updated state, or None when the message has no
-    /// stored group (aged out of retention).
+    /// budget. `waiting` (Some verb, #1987) settles the line to the ⏳ form
+    /// because the turn ended with background work alive; `terminal` (a
+    /// forced failure word like "Cancelled") settles the line to ❌ from the
+    /// Cancelled/Err delivery arms so the ticker's clock ends with the turn.
+    /// Returns the updated state, or None when the message has no stored
+    /// group (aged out of retention).
     pub(crate) async fn settle_tool_group(
         &self,
         message_id: u64,
         ctx: Option<String>,
+        waiting: Option<String>,
+        terminal: Option<&'static str>,
     ) -> Option<GroupState> {
         let mut guard = self.tool_groups.lock().await;
         let (_, map) = &mut *guard;
@@ -394,8 +422,48 @@ impl DiscordState {
         group.settled = Some(SettledStatus {
             elapsed: group.started_at.elapsed(),
             ctx: ctx.or(prev_ctx),
+            waiting,
+            terminal,
         });
         Some(group.clone())
+    }
+
+    /// Narrow or clear the waiting line of a settled group (#1987): the
+    /// background-completion path recomputes both registries and either
+    /// replaces the verb (some work left) or clears it (flip to finished).
+    /// The frozen clock and ctx budget are untouched. Returns the updated
+    /// state, or None when the group aged out of retention.
+    pub(crate) async fn refresh_waiting_line(
+        &self,
+        message_id: u64,
+        waiting: Option<String>,
+    ) -> Option<GroupState> {
+        let mut guard = self.tool_groups.lock().await;
+        let (_, map) = &mut *guard;
+        let group = map.get_mut(&message_id)?;
+        group.settled.as_mut()?.waiting = waiting;
+        Some(group.clone())
+    }
+
+    /// Remember that this session's turn settled with live background work
+    /// (#1987), so the completion path can find the group after the turn's
+    /// closures are gone. One group per session; the newest settle wins.
+    pub(crate) async fn register_waiting_group(&self, session_id: Uuid, message_id: u64) {
+        self.waiting_groups
+            .lock()
+            .await
+            .insert(session_id, message_id);
+    }
+
+    /// The message id of a session's waiting group, if one is registered.
+    pub(crate) async fn waiting_group_for(&self, session_id: Uuid) -> Option<u64> {
+        self.waiting_groups.lock().await.get(&session_id).copied()
+    }
+
+    /// Drop a session's waiting-group registration (flipped to finished or
+    /// the group aged out).
+    pub(crate) async fn clear_waiting_group(&self, session_id: Uuid) -> Option<u64> {
+        self.waiting_groups.lock().await.remove(&session_id)
     }
 
     /// Clone the live or settled group for out-of-loop renderers (#1843):
@@ -445,6 +513,8 @@ mod cap_tests {
             settled: Some(SettledStatus {
                 elapsed: Duration::from_secs(3),
                 ctx: None,
+                waiting: None,
+                terminal: None,
             }),
         }
     }

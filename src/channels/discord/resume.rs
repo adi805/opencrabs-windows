@@ -7,6 +7,7 @@
 
 use super::DiscordState;
 use crate::brain::agent::service::MessageEnqueueCallback;
+use crate::channels::background_work::{bg_indicator_for, subagent_counts_for, waiting_verb};
 use crate::channels::bg_resume::{self, AgentHolder};
 use std::sync::Arc;
 
@@ -54,6 +55,29 @@ pub(crate) fn build_enqueue_callback(
                 tracing::warn!("[bg-resume] discord: agent gone; dropping resume");
                 return;
             };
+            // #1987: a completion just landed. If this session's turn settled
+            // to a ⏳ waiting line, re-fold the verb from both registries and
+            // re-render: the line narrows as work drains and flips to the
+            // plain finished check when it empties. Sessions with no waiting
+            // group are untouched; an aged-out group drops its registration.
+            if let Some(gmid) = state.waiting_group_for(session_id).await {
+                let (_, bg_count) = bg_indicator_for(&agent, session_id);
+                let verb = waiting_verb(bg_count, subagent_counts_for(&agent, session_id));
+                if let Some(group) = state.refresh_waiting_line(gmid, verb).await {
+                    let edit = serenity::builder::EditMessage::new()
+                        .content(super::tool_group::render_content(&group))
+                        .components(super::tool_group::render_components(&group, gmid));
+                    let flip_mid = serenity::model::id::MessageId::new(gmid);
+                    if let Err(e) = serenity::model::id::ChannelId::new(channel_id)
+                        .edit_message(&http, flip_mid, edit)
+                        .await
+                    {
+                        tracing::debug!("[bg-resume] discord: waiting-line flip edit failed: {e}");
+                    }
+                } else {
+                    state.clear_waiting_group(session_id).await;
+                }
+            }
             let target = channel_id.to_string();
             if let Some(content) =
                 bg_resume::run_resume_turn(agent, session_id, msg.context_text, "discord", &target)

@@ -57,6 +57,11 @@ pub struct DiscordState {
     /// interaction can re-render after the turn ended. Insertion-ordered
     /// for pruning; bounded at [`Self::TOOL_GROUP_CAP`] (see `tool_group`).
     pub(super) tool_groups: Mutex<(Vec<u64>, HashMap<u64, tool_group::GroupState>)>,
+    /// Sessions whose turn settled with background work still alive (#1987):
+    /// session → tool-group message id, so the background-completion path in
+    /// `resume.rs` can find the waiting group after the turn's closures are
+    /// gone and flip it once both registries drain.
+    pub(super) waiting_groups: Mutex<HashMap<Uuid, u64>>,
 }
 
 impl Default for DiscordState {
@@ -81,6 +86,7 @@ impl DiscordState {
             pending_selects: Mutex::new(HashMap::new()),
             pending_forms: Mutex::new(HashMap::new()),
             tool_groups: Mutex::new((Vec::new(), HashMap::new())),
+            waiting_groups: Mutex::new(HashMap::new()),
         }
     }
 }

@@ -29,6 +29,8 @@ fn settled(group: &mut GroupState, ctx: Option<String>) {
     group.settled = Some(crate::channels::discord::tool_group::SettledStatus {
         elapsed: Duration::from_secs(42),
         ctx,
+        waiting: None,
+        terminal: None,
     });
 }
 

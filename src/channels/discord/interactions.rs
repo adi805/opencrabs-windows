@@ -9,6 +9,7 @@
 //! the TTL answer "expired" instead of firing stale actions.
 
 use crate::brain::agent::AgentService;
+use crate::channels::background_work::{bg_indicator_for, subagent_counts_for, waiting_verb};
 use crate::services::SessionService;
 use serenity::prelude::Context;
 use std::sync::Arc;
@@ -559,6 +560,10 @@ pub(crate) async fn route_followup_turn(
                 }
             }
 
+            let waiting = {
+                let (_, bg_count) = bg_indicator_for(&agent, session_id);
+                waiting_verb(bg_count, subagent_counts_for(&agent, session_id))
+            };
             if let Some(mid) = *turn_group_mid.lock().await
                 && let Some(group) = discord_state
                     .settle_tool_group(
@@ -568,9 +573,18 @@ pub(crate) async fn route_followup_turn(
                         } else {
                             Some(ctx_line.clone())
                         },
+                        waiting.clone(),
+                        None,
                     )
                     .await
             {
+                if waiting.is_some() {
+                    // #1987: the tap turn shares the session's waiting-group
+                    // slot so resume.rs can flip this line when work drains.
+                    discord_state
+                        .register_waiting_group(session_id, mid.get())
+                        .await;
+                }
                 let edit = serenity::builder::EditMessage::new()
                     .content(super::tool_group::render_content(&group))
                     .components(super::tool_group::render_components(&group, mid.get()));
@@ -589,12 +603,39 @@ pub(crate) async fn route_followup_turn(
         }
         Err(ref e) if matches!(e, crate::brain::agent::AgentError::Cancelled) => {
             tracing::info!("Discord: follow-up tap turn cancelled for session {session_id}");
+            // #1987: terminal settle so the tap group's 🕒 clock stops with
+            // the cancelled turn instead of running to the orphan cap.
+            if let Some(mid) = *turn_group_mid.lock().await
+                && let Some(group) = discord_state
+                    .settle_tool_group(mid.get(), None, None, Some("Cancelled"))
+                    .await
+            {
+                let edit = serenity::builder::EditMessage::new()
+                    .content(super::tool_group::render_content(&group))
+                    .components(super::tool_group::render_components(&group, mid.get()));
+                if let Err(e) = channel.edit_message(&http, mid, edit).await {
+                    tracing::debug!("Discord: follow-up cancelled settle stamp failed: {e}");
+                }
+            }
         }
         Err(e) => {
             tracing::error!("Discord: follow-up tap agent error: {e}");
             let error_msg = format!("❌ Error\n\n{}", crate::brain::agent::format_user_error(&e));
             if let Err(e) = channel.say(&http, error_msg).await {
                 tracing::warn!("Discord: follow-up tap error post failed: {e}");
+            }
+            // #1987: the tap turn settles to ❌ on failure too.
+            if let Some(mid) = *turn_group_mid.lock().await
+                && let Some(group) = discord_state
+                    .settle_tool_group(mid.get(), None, None, Some("Error"))
+                    .await
+            {
+                let edit = serenity::builder::EditMessage::new()
+                    .content(super::tool_group::render_content(&group))
+                    .components(super::tool_group::render_components(&group, mid.get()));
+                if let Err(e) = channel.edit_message(&http, mid, edit).await {
+                    tracing::debug!("Discord: follow-up error settle stamp failed: {e}");
+                }
             }
         }
     }
