@@ -65,13 +65,15 @@ pub fn render_onboarding(f: &mut Frame, wizard: &OnboardingWizard) {
     let pad = layout::band_padding(area.height);
     let band = Style::default().bg(theme::role(Role::SurfacePanel));
     let footer_h = band_height(footer.len(), pad);
+    // Tall terminals get a blank row between header lines (#1980).
+    let spaced = layout::header_spacing(area.height);
 
     // The left-side timeline replaces the header dots when it fits (#1979).
     // Its fit depends on the body height, which depends on the header, so
     // measure with the dot-less header and keep the dots if it does not fit.
     let steps = OnboardingStep::flow_steps(wizard.mode);
     let timeline = if !wizard.quick_jump && layout::shows_timeline(area.width) {
-        let header = build_header(wizard, head_w as usize, head_wrap, false);
+        let header = build_header(wizard, head_w as usize, head_wrap, false, spaced);
         let body_h = area
             .height
             .saturating_sub(band_height(header.len(), pad) + footer_h);
@@ -83,7 +85,13 @@ pub fn render_onboarding(f: &mut Frame, wizard: &OnboardingWizard) {
         None
     };
 
-    let header = build_header(wizard, head_w as usize, head_wrap, timeline.is_none());
+    let header = build_header(
+        wizard,
+        head_w as usize,
+        head_wrap,
+        timeline.is_none(),
+        spaced,
+    );
     let header_h = band_height(header.len(), pad);
     let [header_area, body_area, footer_area] = Layout::vertical([
         Constraint::Length(header_h),
@@ -209,7 +217,15 @@ fn render_timeline(
     let done = Style::default().fg(theme::role(Role::Success));
     let dim = Style::default().fg(theme::role(Role::GrayDim));
 
+    // The brand line lives here when the timeline is shown, so the header
+    // can be just the step (#1980).
     let mut lines: Vec<Line<'static>> = vec![
+        Line::from(Span::styled(
+            "  OpenCrabs Setup",
+            Style::default()
+                .fg(brand_gold())
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from(Span::styled(
             format!("  {heading}"),
             Style::default()
@@ -252,13 +268,15 @@ fn render_timeline(
 
 /// Pinned top of the screen: what this is and how far along the user is.
 /// Rows are pre-wrapped to `width` so the header height is exact.
-/// `show_dots` keeps the progress dots in the header; off when the left
-/// timeline already shows progress (#1979).
+/// `show_dots` keeps the progress in the header; off when the left timeline
+/// already shows it and carries the brand line (#1979, #1980). `spaced` puts a
+/// blank row between header lines on tall terminals.
 fn build_header(
     wizard: &OnboardingWizard,
     width: usize,
     wrap_width: usize,
     show_dots: bool,
+    spaced: bool,
 ) -> Vec<Line<'static>> {
     let step = wizard.step;
     let bar_style = Style::default()
@@ -278,31 +296,41 @@ fn build_header(
             bar_style,
         )));
     } else {
+        let gap = |lines: &mut Vec<Line<'static>>| {
+            if spaced {
+                lines.push(Line::from(""));
+            }
+        };
         if show_dots {
+            // No timeline: the brand and the step share one line, and the
+            // progress gets its own line under it.
+            lines.push(Line::from(Span::styled(
+                format!("OpenCrabs Setup: {}", step.title()),
+                bar_style,
+            )));
+            gap(&mut lines);
             // Progress counter is flow-aware: QuickStart shows its own
             // sequence, Advanced the full one.
             let current = step.flow_number(wizard.mode);
             let total = OnboardingStep::flow_steps(wizard.mode).len();
             lines.push(Line::from(vec![
-                Span::styled("OpenCrabs Setup  ", bar_style),
                 Span::styled(
                     render_progress_dots(current, total),
                     Style::default().fg(brand_blue()),
                 ),
                 Span::styled(
-                    format!("  {current}/{total}"),
+                    format!("   {current}/{total}"),
                     Style::default().fg(theme::role(Role::Gray)),
                 ),
             ]));
         } else {
-            lines.push(Line::from(Span::styled("OpenCrabs Setup", bar_style)));
+            // The timeline carries the brand; the header is the step itself.
+            lines.push(Line::from(Span::styled(
+                step.title().to_string(),
+                bar_style,
+            )));
         }
-        lines.push(Line::from(Span::styled(
-            step.title().to_string(),
-            Style::default()
-                .fg(brand_gold())
-                .add_modifier(Modifier::BOLD),
-        )));
+        gap(&mut lines);
         let subtitle_style = Style::default().fg(theme::role(Role::Gray));
         for chunk in wrap_text(step.subtitle(), wrap_width) {
             lines.push(Line::from(Span::styled(chunk, subtitle_style)));
