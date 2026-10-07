@@ -2105,12 +2105,44 @@ impl TelegramAgent {
                 }
             });
 
+            // Inline mode (#99, #109). The only update kind that can arrive
+            // from a chat the bot was never added to, which is why it gets its
+            // own gate instead of riding the group and message allowlists: a
+            // non-owner is answered with a single owner-only result and never
+            // with the command set, and the owner's results are built from a
+            // fixed table with no session or workspace context in them, so
+            // nothing private can ride an inline result into an unrelated chat.
+            let inline_handler = Update::filter_inline_query().endpoint({
+                let deps = deps.clone();
+                move |bot: Bot, query: teloxide::types::InlineQuery| {
+                    let deps = deps.clone();
+                    async move {
+                        let user_id = query.from.id.0;
+                        let is_owner = deps
+                            .config_rx
+                            .borrow()
+                            .channels
+                            .telegram
+                            .is_owner(&user_id.to_string());
+                        let answered =
+                            super::inline::answer_query(bot.token(), &query.id.to_string(), is_owner)
+                                .await;
+                        tracing::info!(
+                            "Telegram: inline query from user {user_id} owner={is_owner} \
+                             answered={answered}"
+                        );
+                        ResponseResult::Ok(())
+                    }
+                }
+            });
+
             let tree = dptree::entry()
                 .branch(msg_handler)
                 .branch(edited_handler)
                 .branch(cb_handler)
                 .branch(reaction_handler)
-                .branch(my_chat_member_handler);
+                .branch(my_chat_member_handler)
+                .branch(inline_handler);
 
             // Retry loop: if the dispatcher exits (network hiccup, Telegram conflict
             // from another process using the same token, etc.), wait and reconnect.

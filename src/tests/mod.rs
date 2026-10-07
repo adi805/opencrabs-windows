@@ -903,6 +903,7 @@ pub mod subagent_worktree_test;
 pub mod suggest_leak_recovery_test;
 pub mod suggest_options_test;
 pub mod telegram_ephemeral_test;
+pub mod telegram_inline_query_test;
 #[cfg(feature = "telegram")]
 pub mod telegram_folded_reclaim_suppression_test;
 pub mod telegram_menu_budget_test;

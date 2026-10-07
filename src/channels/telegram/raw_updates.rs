@@ -220,16 +220,23 @@ async fn poll_once(st: &mut RawPollState) {
 ///
 /// `allowed_updates` is an explicit allowlist: Telegram delivers nothing
 /// outside it, so a kind missing here is unreachable no matter what the
-/// dispatcher can handle. Three places have to agree for a kind to work: this
-/// list, an `Update::filter_*` branch in `agent.rs`, and a name in
-/// `update_kind_name` below. A kind added here with no branch only adds
-/// traffic the dispatcher drops; one added with no name logs as "other".
+/// dispatcher can handle. Four places have to agree for a kind to work: this
+/// list, an `Update::filter_*` branch in `agent.rs`, a name in
+/// `update_kind_name` below, and (for inline mode) an answer path in
+/// `inline.rs`. A kind added here with no branch only adds traffic the
+/// dispatcher drops; one added with no name logs as "other".
+///
+/// `inline_query` is the one kind whose handler answers a query instead of
+/// serving a chat, so it is also the one kind that can arrive from a chat the
+/// bot was never added to. See [`super::inline`] for the owner gate and the
+/// bounded result set that keeps it from becoming a second agent loop.
 pub(crate) const ALLOWED_UPDATES: &[&str] = &[
     "message",
     "edited_message",
     "callback_query",
     "message_reaction",
     "my_chat_member",
+    "inline_query",
 ];
 
 /// One getUpdates long-poll: stash raw message payloads, queue the typed
@@ -542,6 +549,7 @@ fn update_kind_name(u: &Update) -> &'static str {
         UpdateKind::CallbackQuery(_) => "callback_query",
         UpdateKind::MessageReaction(_) => "message_reaction",
         UpdateKind::MyChatMember(_) => "my_chat_member",
+        UpdateKind::InlineQuery(_) => "inline_query",
         UpdateKind::Error(_) => "ERROR(unparsed)",
         _ => "other",
     }
