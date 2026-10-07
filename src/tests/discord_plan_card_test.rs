@@ -15,6 +15,7 @@ use serenity::builder::CreateActionRow;
 use crate::channels::discord::plan_card::{
     PLAN_APPROVE, PLAN_DISCARD, PlanKb, is_plan_callback, render_components, render_plan_card,
 };
+use crate::channels::telegram::flow_chrome::ProseSection;
 use crate::tui::plan::{PlanDocument, PlanStatus, PlanTask, TaskStatus, TaskType};
 use uuid::Uuid;
 
@@ -57,7 +58,7 @@ fn editing_plan_renders_the_checklist_with_marks_and_criteria_counts() {
             ("honest settle", TaskStatus::Pending, 0),
         ],
     );
-    let body = render_plan_card(&plan);
+    let body = render_plan_card(&plan, None);
     assert!(body.contains("📋 **Discord UX parity**"), "title: {body}");
     assert!(
         body.contains("☑ **1. port the write governor**"),
@@ -136,7 +137,7 @@ fn plan_callbacks_never_collide_with_tool_approval() {
 #[test]
 fn a_plan_with_nothing_renderable_yields_no_card() {
     let plan = PlanDocument::new(Uuid::new_v4(), String::new());
-    assert_eq!(render_plan_card(&plan), "");
+    assert_eq!(render_plan_card(&plan, None), "");
 }
 
 /// The buttons must actually carry the plan custom_ids, not just exist.
@@ -202,5 +203,128 @@ fn the_card_is_refreshed_after_both_delivery_paths() {
             "super::plan_card::refresh_plan_card(&http,channel,&discord_state,session_id).await;"
         ),
         "the component-tap path must reconcile the plan card"
+    );
+}
+
+// ── #103: an Editing card must show the prose the user is approving ──────
+
+fn prose(heading: Option<&str>, body: &str) -> ProseSection {
+    ProseSection {
+        heading: heading.map(str::to_string),
+        body: body.to_string(),
+    }
+}
+
+/// While Editing, `tasks[]` is empty (the checklist is seeded from the `.md`
+/// only after approval), so the prose is the ONLY place the plan's contents
+/// exist. A title-only card asked the user to approve a plan they could not
+/// read (#103).
+#[test]
+fn editing_card_shows_the_plan_prose() {
+    let plan = plan_with(PlanStatus::Editing, vec![]);
+    let sections = vec![prose(
+        Some("Implementation steps"),
+        "1. Fix the clippy lint\n2. Push and watch CI",
+    )];
+    let body = render_plan_card(&plan, Some(&sections));
+    assert!(body.contains("📋 **Discord UX parity**"), "title: {body}");
+    assert!(
+        body.contains("Fix the clippy lint"),
+        "the steps must be readable on an Editing card: {body}"
+    );
+}
+
+/// Active means the checklist is the content; prose is dropped so the
+/// executing card stays lean.
+#[test]
+fn active_card_omits_prose() {
+    let plan = plan_with(
+        PlanStatus::Active,
+        vec![("run it", TaskStatus::InProgress, 0)],
+    );
+    let sections = vec![prose(Some("Context"), "a very long design rationale")];
+    let body = render_plan_card(&plan, Some(&sections));
+    assert!(
+        !body.contains("design rationale"),
+        "prose leaked into an Active card: {body}"
+    );
+    assert!(body.contains("▶ **1. run it**"), "checklist: {body}");
+}
+
+/// The steps section is what the user is approving, so it must survive
+/// truncation even when a long Context section precedes it in the file.
+#[test]
+fn the_steps_section_leads_the_excerpt() {
+    let plan = plan_with(PlanStatus::Editing, vec![]);
+    let sections = vec![
+        prose(Some("Context"), "background that can be long"),
+        prose(Some("Implementation steps"), "STEP-ONE do the thing"),
+    ];
+    let body = render_plan_card(&plan, Some(&sections));
+    let steps_at = body.find("STEP-ONE").expect("steps present");
+    let ctx_at = body
+        .find("background that can be long")
+        .expect("context present");
+    assert!(steps_at < ctx_at, "steps must lead the excerpt: {body}");
+}
+
+/// Discord rejects a body over its cap outright, so the card must always fit,
+/// however long the prose and the checklist get.
+#[test]
+fn the_card_never_exceeds_the_discord_cap() {
+    let tasks: Vec<(&str, TaskStatus, usize)> = (0..40)
+        .map(|_| {
+            (
+                "a fairly long task title that eats characters",
+                TaskStatus::Pending,
+                3,
+            )
+        })
+        .collect();
+    let plan = plan_with(PlanStatus::Editing, tasks);
+    let sections = vec![prose(Some("Implementation steps"), &"x".repeat(5000))];
+    let body = render_plan_card(&plan, Some(&sections));
+    assert!(
+        body.chars().count() <= 2000,
+        "card is {} chars, over Discord's cap",
+        body.chars().count()
+    );
+}
+
+/// A cut excerpt must read as incomplete, not as the whole plan.
+#[test]
+fn a_truncated_excerpt_is_marked() {
+    let plan = plan_with(PlanStatus::Editing, vec![]);
+    let sections = vec![prose(Some("Implementation steps"), &"y".repeat(5000))];
+    let body = render_plan_card(&plan, Some(&sections));
+    assert!(body.ends_with('…'), "truncation must be marked: {body}");
+    assert!(body.chars().count() <= 2000);
+}
+
+/// No prose on disk (a checklist-style plan) must not regress: the title and
+/// checklist still render exactly as before.
+#[test]
+fn an_editing_card_without_prose_still_renders() {
+    let plan = plan_with(
+        PlanStatus::Editing,
+        vec![("design it", TaskStatus::Pending, 0)],
+    );
+    let body = render_plan_card(&plan, None);
+    assert!(body.contains("📋 **Discord UX parity**"), "{body}");
+    assert!(body.contains("☐ **1. design it**"), "{body}");
+}
+
+/// The refresh path must actually load the `.md` prose and pass it in, or the
+/// renderer fix never reaches a real card.
+#[test]
+fn the_refresh_path_loads_the_plan_prose() {
+    let src = flattened("src/channels/discord/plan_card.rs");
+    assert!(
+        src.contains("flow_chrome::load_plan_prose(session_id).await"),
+        "the card refresh must load the design prose"
+    );
+    assert!(
+        src.contains("render_plan_card(&plan,prose.as_deref())"),
+        "the loaded prose must be passed to the renderer"
     );
 }
