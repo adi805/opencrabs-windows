@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changes
+
+- channels: the evidence footer on a final answer now reports what the turn did
+  (`🛠️ baca 2 file · jalan 3 perintah · tulis 1 file · lainnya 4`) instead of
+  listing tool identifiers (`🔎 evidence: read_file, bash`). Repetition now
+  counts, empty buckets are omitted, and the `+N more` cap is gone because the
+  four buckets are bounded by construction. The source is unchanged: real
+  `ProgressEvent::ToolStarted` executions, one implementation shared by Discord
+  and Telegram (#121).
+
 ## [0.5.5] - 2026-10-07
 
 First release cut from this fork. Carries upstream 0.5.4 plus the fork's own

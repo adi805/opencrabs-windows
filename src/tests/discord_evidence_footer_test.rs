@@ -6,6 +6,10 @@
 //! agent returned, so the phantom gate never inspects it; the wording is
 //! additionally pinned against every `executed_framings` entry so the line
 //! can never read as an "already ran" claim (AC-016).
+//!
+//! The line reports category COUNTS (`🛠️ baca 2 file · jalan 3 perintah`)
+//! rather than tool names: identifiers are machine vocabulary, and the
+//! reader wants to know how much work happened, not which function ran.
 
 use crate::brain::agent::service::phantom_lang::all_langs;
 use crate::channels::discord::tool_group::{GroupEntry, GroupState, evidence_line};
@@ -30,16 +34,19 @@ fn group(names: &[&str]) -> GroupState {
     }
 }
 
-/// AC-014: an answer that used tools names the tools it used.
+/// The footer for a body, composed exactly as the renderer composes it.
+fn expect_line(body: &str) -> String {
+    format!("{EVIDENCE_HEADER} {body}")
+}
+
+/// AC-014: an answer that used tools reports the work it did, as category
+/// counts — not as a list of tool identifiers.
 #[test]
-fn names_every_tool_the_turn_ran() {
-    let line = evidence_line(&group(&["read_file", "bash"])).expect("two tools must yield a line");
-    assert!(line.contains("read_file"), "missing first tool: {line}");
-    assert!(line.contains("bash"), "missing second tool: {line}");
-    assert!(
-        line.starts_with(EVIDENCE_HEADER),
-        "footer must lead with the pinned header: {line}"
-    );
+fn reports_each_category_with_its_count() {
+    let names = ["read_file", "bash", "write_file", "web_search"];
+    let line = evidence_line(&group(&names)).expect("four tools must yield a line");
+    let body = "baca 1 file · jalan 1 perintah · tulis 1 file · lainnya 1";
+    assert_eq!(line, expect_line(body), "one segment per populated bucket");
 }
 
 /// AC-015: a turn that ran no tools shows NO footer. An empty or invented
@@ -52,37 +59,81 @@ fn no_tools_means_no_footer() {
     );
 }
 
-/// A turn that reads the same file four times is still ONE tool in the
-/// evidence line; repetition is not evidence of breadth.
+/// Repetition now COUNTS. The reader asking "how much work happened" wants
+/// `jalan 4 perintah`, not a deduped single mention.
 #[test]
-fn repeated_tools_are_named_once() {
-    let line = evidence_line(&group(&["bash", "bash", "bash"])).expect("one tool yields a line");
-    assert_eq!(line.matches("bash").count(), 1, "duplicate name in: {line}");
+fn repeated_tools_are_counted() {
+    let names = ["bash", "bash", "bash", "bash"];
+    let line = evidence_line(&group(&names)).expect("four calls must yield a line");
+    assert_eq!(line, expect_line("jalan 4 perintah"));
 }
 
-/// A 20-tool turn must not turn its footer into a wall.
+/// A bucket with no actions is omitted, so a read-only turn is one short
+/// phrase rather than a row of zeros.
 #[test]
-fn long_turns_are_capped() {
-    let names: Vec<String> = (0..9).map(|i| format!("tool{i}")).collect();
-    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let line = evidence_line(&group(&refs)).expect("nine tools yield a line");
-    assert!(line.contains("+3 more"), "cap not applied: {line}");
-    assert!(line.contains("tool5"), "first six must be shown: {line}");
-    assert!(!line.contains("tool6"), "seventh must be folded: {line}");
+fn empty_buckets_are_omitted() {
+    let names = ["read_file", "grep"];
+    let line = evidence_line(&group(&names)).expect("two reads yield a line");
+    assert_eq!(line, expect_line("baca 2 file"));
+    for absent in ["jalan", "tulis", "lainnya"] {
+        assert!(!line.contains(absent), "empty bucket {absent} leaked: {line}");
+    }
+}
+
+/// A tool nobody has categorised yet lands in `lainnya` instead of being
+/// dropped: the footer accounts for EVERY action the turn took, so a newly
+/// added tool cannot silently vanish from the receipt.
+#[test]
+fn unknown_tools_land_in_other_rather_than_vanishing() {
+    let names = ["some_future_tool"];
+    let line = evidence_line(&group(&names)).expect("unknown tool must yield a line");
+    assert_eq!(line, expect_line("lainnya 1"));
+}
+
+/// The render order is fixed by the bucket list, not by the order the tools
+/// happened to run in, so the footer reads the same way every turn.
+#[test]
+fn order_is_fixed_regardless_of_call_order() {
+    let run_first = ["bash", "read_file"];
+    let read_first = ["read_file", "bash"];
+    let forward = evidence_line(&group(&run_first)).expect("two tools yield a line");
+    let backward = evidence_line(&group(&read_first)).expect("two tools yield a line");
+    assert_eq!(forward, backward, "call order must not change the footer");
+    let read_at = forward.find("baca");
+    let run_at = forward.find("jalan");
+    assert!(read_at < run_at, "read bucket must render first: {forward}");
+}
+
+/// The old `+N more` cap is gone because the buckets are bounded: a long
+/// turn still renders four short phrases, never a wall of identifiers.
+#[test]
+fn long_turns_stay_bounded() {
+    let mut names: Vec<&str> = vec!["read_file", "ls", "glob", "grep"];
+    names.extend(["bash", "bash"]);
+    names.extend(["write_file", "edit_file"]);
+    names.extend(["a1", "a2", "a3", "a4", "a5", "a6"]);
+    names.extend(["b1", "b2", "b3", "b4", "b5", "b6"]);
+    let line = evidence_line(&group(&names)).expect("twenty tools must yield a line");
+    let body = "baca 4 file · jalan 2 perintah · tulis 2 file · lainnya 12";
+    assert_eq!(line, expect_line(body), "every bucket must be counted");
+    assert!(!line.contains("more"), "the removed cap must not reappear: {line}");
 }
 
 /// AC-016: the footer must not read as a claim that a command ALREADY RAN.
 /// The phantom gate keys on `executed_framings` ("checked with", "verified
-/// with", "ran ", …); the header is pinned against every language's list so
-/// a future rewording cannot quietly re-introduce one.
+/// with", "ran ", …); the WHOLE rendered line — header and every bucket
+/// label — is pinned against every language's list, so a future rewording
+/// cannot quietly re-introduce one.
 #[test]
 fn footer_never_frames_a_command_as_already_run() {
-    let lower = EVIDENCE_HEADER.to_lowercase();
+    let names = ["read_file", "bash", "write_file", "web_search"];
+    let line = evidence_line(&group(&names)).expect("four tools yield a line");
+    let rendered = line.to_lowercase();
     for lang in all_langs() {
         for framing in &lang.executed_framings {
             assert!(
-                !lower.contains(framing.as_str()),
-                "evidence header {EVIDENCE_HEADER:?} contains the executed-framing {framing:?}"
+                !rendered.contains(framing.as_str()),
+                "footer {rendered:?} contains the executed-framing {framing:?}"
             );
         }
     }
@@ -101,7 +152,7 @@ fn both_channels_render_the_shared_line() {
             "{name} does not render the shared evidence line"
         );
         assert!(
-            !src.contains("🔎 evidence:"),
+            !src.contains(EVIDENCE_HEADER),
             "{name} hardcodes the footer header instead of using EVIDENCE_HEADER"
         );
     }
