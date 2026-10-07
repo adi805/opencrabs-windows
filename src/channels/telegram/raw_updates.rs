@@ -45,6 +45,20 @@ pub(crate) fn take_raw_message(chat_id: i64, message_id: i32) -> Option<Value> {
     q.remove(idx).map(|(_, v)| v)
 }
 
+/// Read a stashed payload WITHOUT consuming it.
+///
+/// `take_raw_message` is the recovery path: the no-typed-content branch in
+/// `inbound_media` removes the entry because it is the only reader. A second
+/// reader that only wants to *inspect* the payload (the ephemeral check in
+/// `handler`, which must not steal the entry from that branch) needs the
+/// clone-instead-of-remove variant.
+pub(crate) fn peek_raw_message(chat_id: i64, message_id: i32) -> Option<Value> {
+    let q = RAW_STASH.lock().unwrap_or_else(|e| e.into_inner());
+    q.iter()
+        .find(|((c, m), _)| *c == chat_id && *m == message_id)
+        .map(|(_, v)| v.clone())
+}
+
 /// Forward origin from a RAW message payload — works even when teloxide's
 /// typed parse dropped it along with the unknown content type.
 pub(crate) fn raw_forward_origin(raw: &Value) -> Option<String> {
@@ -531,6 +545,36 @@ fn update_kind_name(u: &Update) -> &'static str {
         UpdateKind::Error(_) => "ERROR(unparsed)",
         _ => "other",
     }
+}
+
+/// What an incoming message says about ephemeral scoping, read from the raw
+/// payload because teloxide-core 0.13 has no field for either.
+///
+/// Bot API 10.2 gives an ephemeral message `message_id: 0` plus an
+/// `ephemeral_message_id`, and names the one member who can see it in
+/// `receiver_user`. Both matter: the id is what `editEphemeralMessage*` and
+/// `deleteEphemeralMessage` take, and `receiver_user` is the only way to know
+/// a group message was scoped to one person rather than posted publicly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EphemeralMeta {
+    /// The id the edit and delete methods take. Never 0 when present.
+    pub ephemeral_message_id: i64,
+    /// The member the message was scoped to, when the server names one.
+    pub receiver_user_id: Option<i64>,
+}
+
+/// Read [`EphemeralMeta`] off a raw message payload, or `None` when the
+/// message is an ordinary one.
+pub(crate) fn ephemeral_meta(raw: &Value) -> Option<EphemeralMeta> {
+    let ephemeral_message_id = raw.get("ephemeral_message_id")?.as_i64()?;
+    let receiver_user_id = raw
+        .get("receiver_user")
+        .and_then(|u| u.get("id"))
+        .and_then(Value::as_i64);
+    Some(EphemeralMeta {
+        ephemeral_message_id,
+        receiver_user_id,
+    })
 }
 
 /// Stream of typed updates driven by the raw poll loop. A named fn (rather

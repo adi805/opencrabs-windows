@@ -31,6 +31,61 @@ pub(crate) enum CommandOutcome {
     },
 }
 
+/// Send a keyboard-carrying command reply (Models, Sessions, ChangeDir,
+/// Profiles).
+///
+/// In a group the reply is scoped to the invoker (Bot API 10.2/10.3, #756), so
+/// the picker is invisible to everyone else, and the id the scoped message
+/// came back with is remembered so the tap that follows can edit it with
+/// `editEphemeralMessage*`. That matters because an ephemeral message carries
+/// `message_id: 0`: the ordinary public edit path cannot address it, so
+/// without the remembered id every tap on a scoped picker would be a no-op.
+///
+/// Falls back to the public send when the scope is refused, when the server
+/// echoes no id, or in a DM (where `ephemeral_rx` is `None`), which is exactly
+/// the pre-10.2 behaviour.
+async fn send_picker_reply(
+    bot: &Bot,
+    msg: &Message,
+    thread_id: Option<ThreadId>,
+    ephemeral_rx: Option<i64>,
+    text: String,
+    keyboard: &InlineKeyboardMarkup,
+) -> Result<(), teloxide::RequestError> {
+    if let Some(rx) = ephemeral_rx {
+        let markup = serde_json::to_value(keyboard).ok();
+        let scoped = super::ephemeral::send_one_scoped(
+            bot.token(),
+            msg.chat.id.0,
+            thread_id,
+            rx,
+            &text,
+            true,
+            markup.as_ref(),
+        )
+        .await;
+        if scoped.landed {
+            // `remember_picker` returns the id it replaced, and never reports
+            // the id it was just handed, so the guard against deleting the
+            // message we are about to keep lives in there.
+            if let Some(eid) = scoped.ephemeral_message_id
+                && let Some(old) = super::ephemeral::remember_picker(msg.chat.id.0, eid)
+            {
+                let _ = super::ephemeral::delete_message(bot.token(), msg.chat.id.0, old).await;
+            }
+            return Ok(());
+        }
+        tracing::info!("Telegram: scoped picker refused, sending the command reply publicly");
+    }
+    send_retrying_rate_limit("command reply", || {
+        message_in_thread(bot, msg.chat.id, thread_id, text.clone())
+            .parse_mode(ParseMode::Html)
+            .reply_markup(keyboard.clone())
+    })
+    .await
+    .map(|_| ())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_channel_command(
     bot: &Bot,
@@ -198,9 +253,11 @@ pub(crate) async fn handle_channel_command(
 
         // Set once for the command acks below. `None` in a DM, where there is
         // nobody to hide the ack from. Commands whose reply carries an inline
-        // keyboard (Models, Sessions, ChangeDir, Profiles) stay public: their
-        // buttons drive callback edits, which need the ephemeral edit/delete
-        // methods 10.2 added and this path does not implement.
+        // keyboard (Models, Sessions, ChangeDir, Profiles) go through
+        // `send_picker_reply`, which scopes them the same way and remembers the
+        // id the scoped message came back with, so the tap that follows edits
+        // the ephemeral bubble via the 10.2 `editEphemeralMessage*` methods
+        // instead of the public edit path that cannot address it.
         let ephemeral_rx = super::ephemeral::receiver_for(is_dm, user_id);
         match cmd {
             ChannelCommand::Models(resp) => {
@@ -230,11 +287,14 @@ pub(crate) async fn handle_channel_command(
                     })
                     .collect();
                 let keyboard = InlineKeyboardMarkup::new(rows);
-                send_retrying_rate_limit("command reply", || {
-                    message_in_thread(bot, msg.chat.id, thread_id, command_md_to_html(&resp.text))
-                        .parse_mode(ParseMode::Html)
-                        .reply_markup(keyboard.clone())
-                })
+                send_picker_reply(
+                    bot,
+                    msg,
+                    thread_id,
+                    ephemeral_rx,
+                    command_md_to_html(&resp.text),
+                    &keyboard,
+                )
                 .await?;
                 return Ok(CommandOutcome::Handled);
             }
@@ -355,11 +415,14 @@ pub(crate) async fn handle_channel_command(
                     })
                     .collect();
                 let keyboard = InlineKeyboardMarkup::new(rows);
-                send_retrying_rate_limit("command reply", || {
-                    message_in_thread(bot, msg.chat.id, thread_id, command_md_to_html(&resp.text))
-                        .parse_mode(ParseMode::Html)
-                        .reply_markup(keyboard.clone())
-                })
+                send_picker_reply(
+                    bot,
+                    msg,
+                    thread_id,
+                    ephemeral_rx,
+                    command_md_to_html(&resp.text),
+                    &keyboard,
+                )
                 .await?;
                 return Ok(CommandOutcome::Handled);
             }
@@ -387,22 +450,28 @@ pub(crate) async fn handle_channel_command(
 
                 let rows = build_cd_keyboard(&resp);
                 let keyboard = InlineKeyboardMarkup::new(rows);
-                send_retrying_rate_limit("command reply", || {
-                    message_in_thread(bot, msg.chat.id, thread_id, command_md_to_html(&resp.text))
-                        .parse_mode(ParseMode::Html)
-                        .reply_markup(keyboard.clone())
-                })
+                send_picker_reply(
+                    bot,
+                    msg,
+                    thread_id,
+                    ephemeral_rx,
+                    command_md_to_html(&resp.text),
+                    &keyboard,
+                )
                 .await?;
                 return Ok(CommandOutcome::Handled);
             }
             ChannelCommand::Profiles(resp) => {
                 let rows = build_profiles_keyboard(&resp);
                 let keyboard = InlineKeyboardMarkup::new(rows);
-                send_retrying_rate_limit("command reply", || {
-                    message_in_thread(bot, msg.chat.id, thread_id, command_md_to_html(&resp.text))
-                        .parse_mode(ParseMode::Html)
-                        .reply_markup(keyboard.clone())
-                })
+                send_picker_reply(
+                    bot,
+                    msg,
+                    thread_id,
+                    ephemeral_rx,
+                    command_md_to_html(&resp.text),
+                    &keyboard,
+                )
                 .await?;
                 return Ok(CommandOutcome::Handled);
             }

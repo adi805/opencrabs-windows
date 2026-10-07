@@ -113,6 +113,63 @@ pub fn edit_text_ui(
     markup: Option<InlineKeyboardMarkup>,
     label: &'static str,
 ) {
+    // An ephemeral message carries `message_id: 0` (Bot API 10.2), so a tap on
+    // an ephemeral picker's keyboard reaches this function with id 0 and the
+    // ordinary `editMessageText` cannot address it: Telegram would reject a
+    // message id of 0 and the tap would look consumed with nothing happening.
+    // When this chat has a tracked scoped picker, edit THAT instead: it is the
+    // bubble the user is actually looking at.
+    if message_id.0 == 0
+        && let Some(ephemeral_id) = super::ephemeral::picker_for(chat_id.0)
+    {
+        // Serialize the keyboard once: the same value decides whether the
+        // picker is finished and is what the markup edit sends.
+        //
+        // An empty keyboard is this codebase's "the picker is done" signal:
+        // the arms that finish a choice pass `InlineKeyboardMarkup::default()`
+        // to strip the buttons. Once that has happened the bubble can never be
+        // tapped again, so stop tracking it, otherwise a later tap elsewhere
+        // would edit a picker that no longer exists.
+        let markup_value = markup.as_ref().and_then(|kb| serde_json::to_value(kb).ok());
+        let resolved = markup_value
+            .as_ref()
+            .and_then(|v| v.get("inline_keyboard"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|rows| rows.is_empty());
+        let bot = bot.clone();
+        tokio::spawn(async move {
+            let edited = super::ephemeral::edit_text(
+                bot.token(),
+                chat_id.0,
+                ephemeral_id,
+                &text,
+                parse_html,
+            )
+            .await;
+            if !edited {
+                tracing::warn!("Telegram: ephemeral picker text edit failed ({label})");
+            }
+            if let Some(value) = markup_value {
+                let marked = super::ephemeral::edit_reply_markup(
+                    bot.token(),
+                    chat_id.0,
+                    ephemeral_id,
+                    &value,
+                )
+                .await;
+                if !marked {
+                    tracing::warn!("Telegram: ephemeral picker keyboard edit failed ({label})");
+                }
+            }
+            if resolved {
+                // Stop tracking it: its buttons are gone, so nothing can tap it
+                // again and a later tap elsewhere must not find it here.
+                let _ = super::ephemeral::forget_picker(chat_id.0);
+            }
+        });
+        return;
+    }
+
     let bot_for_fire = bot.clone();
     let text_for_fire = text.clone();
     let markup_for_fire = markup.clone();

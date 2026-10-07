@@ -438,6 +438,25 @@ pub(crate) async fn handle_message(
         .note_thread_evidence(msg.chat.id.0, msg.is_topic_message, raw_thread)
         .await;
 
+    // Ephemeral messages (Bot API 10.2, #99/B3): a group message the server
+    // scoped to a single member. teloxide-core 0.13 has no field for either
+    // half of that, so both are read from the raw payload the listener stashed.
+    // Two things make it worth knowing: it explains a `message_id` of 0 (so any
+    // reply must ride the scoped send path), and `receiver_user` is the only
+    // signal that the bot was addressed privately rather than in front of the
+    // whole group. Read-only: `peek_raw_message` does not consume the stash
+    // entry the no-typed-content branch needs.
+    if let Some(meta) = super::raw_updates::peek_raw_message(msg.chat.id.0, msg.id.0)
+        .and_then(|raw| super::raw_updates::ephemeral_meta(&raw))
+    {
+        tracing::info!(
+            "Telegram: ephemeral message in chat {} (ephemeral_id={}, receiver={:?})",
+            msg.chat.id.0,
+            meta.ephemeral_message_id,
+            meta.receiver_user_id,
+        );
+    }
+
     // Forum-topic rename capture (#143). A rename fires `forum_topic_edited`
     // as a service message; it carries `from` (the renaming admin), so it
     // survives the `from` extraction above but falls through every text
