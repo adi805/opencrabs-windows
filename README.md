@@ -1982,8 +1982,6 @@ Then just type `opencrabs` to start. The onboarding wizard handles everything on
 > ```
 > Not needed if you use API TTS (OpenAI) or disable TTS entirely.
 
-> **Note:** `/rebuild` works even with pre-built binaries — it auto-clones the source to `~/.opencrabs/source/` on first use, then builds and hot-restarts. For active development or adding custom tools, Option 4 gives you the source tree directly.
-
 ### Option 2: Homebrew (not available for this fork)
 
 The Homebrew formula named `opencrabs` belongs to the upstream project, so installing it gives you the upstream binary rather than this fork. This fork publishes no Homebrew formula. Use Option 1 (prebuilt binary) or Option 3 (build from this repository) instead.
