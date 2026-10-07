@@ -79,10 +79,10 @@ pub(crate) fn supervise_tick_result(
     match joined {
         Ok(result) => result,
         Err(e) if e.is_panic() => Err(anyhow::anyhow!(
-            "cron tick panicked (isolated by supervisor; scheduler keeps running): {e}"
+            "cron tick panicked (isolated by supervisor; scheduler keeps running): {e:#}"
         )),
         Err(e) => Err(anyhow::anyhow!(
-            "cron tick task cancelled (isolated by supervisor; scheduler keeps running): {e}"
+            "cron tick task cancelled (isolated by supervisor; scheduler keeps running): {e:#}"
         )),
     }
 }
@@ -432,7 +432,7 @@ impl CronScheduler {
                 tokio::spawn(async move {
                     if let Err(e) = job_task.await {
                         tracing::error!(
-                            "Cron job {report_name} task failed (isolated; scheduler keeps running): {e}"
+                            "Cron job {report_name} task failed (isolated; scheduler keeps running): {e:#}"
                         );
                     }
                 });
