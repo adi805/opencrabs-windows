@@ -172,7 +172,9 @@ pub fn album_plan(count: usize) -> Vec<usize> {
     }
     // `remaining` is 1..=10 here. Exactly one leftover photo has to be
     // pulled up into the album before it, since a 1-item album is refused.
-    if remaining == 1 && let Some(last) = plan.last_mut() {
+    if remaining == 1
+        && let Some(last) = plan.last_mut()
+    {
         *last -= 1;
         remaining += 1;
     }

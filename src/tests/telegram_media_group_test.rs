@@ -11,8 +11,8 @@
 //! that path. The request itself needs a live bot, so it is not exercised
 //! here; the parser tests are what keep a bad input from reaching it.
 
-use crate::brain::tools::r#trait::Tool;
 use crate::brain::tools::telegram_send::{TelegramSendTool, photo_refs};
+use crate::brain::tools::r#trait::Tool;
 use crate::channels::telegram::send::{MAX_ALBUM_SIZE, album_plan};
 use serde_json::json;
 use std::sync::Arc;
@@ -69,7 +69,10 @@ fn every_plan_sums_to_the_input_and_never_holds_a_lone_photo() {
         let sum: usize = plan.iter().sum();
         assert_eq!(sum, count, "plan for {count} dropped photos: {plan:?}");
         for size in &plan {
-            assert!(*size <= MAX_ALBUM_SIZE, "album too big for {count}: {plan:?}");
+            assert!(
+                *size <= MAX_ALBUM_SIZE,
+                "album too big for {count}: {plan:?}"
+            );
             if count > 1 {
                 assert!(*size >= 2, "lone-item album for {count}: {plan:?}");
             }

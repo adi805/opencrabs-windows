@@ -6,9 +6,8 @@
 //! transport itself needs a live bot.
 
 use crate::channels::telegram::ephemeral::{
-    build_body, build_body_legacy, build_delete_body, build_edit_markup_body,
-    build_edit_text_body, build_rich_body, ephemeral_id_from, forget_picker, picker_for,
-    receiver_for, remember_picker,
+    build_body, build_body_legacy, build_delete_body, build_edit_markup_body, build_edit_text_body,
+    build_rich_body, ephemeral_id_from, forget_picker, picker_for, receiver_for, remember_picker,
 };
 use serde_json::json;
 use teloxide::types::{MessageId, ThreadId};
@@ -22,7 +21,11 @@ const PICKER_CHAT_C: i64 = -1_000_900_003;
 
 #[test]
 fn picker_round_trips_for_one_chat() {
-    assert_eq!(picker_for(PICKER_CHAT_A), None, "test starts from no picker");
+    assert_eq!(
+        picker_for(PICKER_CHAT_A),
+        None,
+        "test starts from no picker"
+    );
     assert_eq!(remember_picker(PICKER_CHAT_A, 41), None);
     assert_eq!(picker_for(PICKER_CHAT_A), Some(41));
     assert_eq!(forget_picker(PICKER_CHAT_A), Some(41));
@@ -68,7 +71,10 @@ fn body_scopes_with_the_10_3_object() {
     let body = build_body(-100200, None, 12345, "hello", false);
     assert_eq!(body["chat_id"], -100200);
     assert_eq!(body["text"], "hello");
-    assert_eq!(body["ephemeral_message_parameters"]["receiver_user_id"], 12345);
+    assert_eq!(
+        body["ephemeral_message_parameters"]["receiver_user_id"],
+        12345
+    );
     assert!(
         body.get("receiver_user_id").is_none(),
         "the flat parameter must not also be present, got {body}"
@@ -90,11 +96,25 @@ fn legacy_body_keeps_the_flat_receiver_user_id() {
 fn both_shapes_carry_the_same_text_and_thread() {
     // The fallback must differ in scoping only. If it also dropped the thread
     // or the parse mode, a fallback send would land in the wrong topic.
-    let current = build_body(-100200, Some(ThreadId(MessageId(77))), 12345, "<b>hi</b>", true);
-    let legacy =
-        build_body_legacy(-100200, Some(ThreadId(MessageId(77))), 12345, "<b>hi</b>", true);
+    let current = build_body(
+        -100200,
+        Some(ThreadId(MessageId(77))),
+        12345,
+        "<b>hi</b>",
+        true,
+    );
+    let legacy = build_body_legacy(
+        -100200,
+        Some(ThreadId(MessageId(77))),
+        12345,
+        "<b>hi</b>",
+        true,
+    );
     for key in ["chat_id", "text", "parse_mode", "message_thread_id"] {
-        assert_eq!(current[key], legacy[key], "{key} drifted between the two shapes");
+        assert_eq!(
+            current[key], legacy[key],
+            "{key} drifted between the two shapes"
+        );
     }
 }
 
@@ -120,14 +140,20 @@ fn rich_body_is_the_public_body_plus_the_scoping_object() {
     let scoped = build_rich_body(-100200, None, 12345, "# hi");
     assert_eq!(scoped["rich_message"], public["rich_message"]);
     assert_eq!(scoped["chat_id"], public["chat_id"]);
-    assert_eq!(scoped["ephemeral_message_parameters"]["receiver_user_id"], 12345);
+    assert_eq!(
+        scoped["ephemeral_message_parameters"]["receiver_user_id"],
+        12345
+    );
 }
 
 #[test]
 fn rich_body_keeps_the_forum_topic() {
     let body = build_rich_body(-100200, Some(ThreadId(MessageId(77))), 12345, "# hi");
     assert_eq!(body["message_thread_id"], 77);
-    assert_eq!(body["ephemeral_message_parameters"]["receiver_user_id"], 12345);
+    assert_eq!(
+        body["ephemeral_message_parameters"]["receiver_user_id"],
+        12345
+    );
 }
 
 #[test]
@@ -143,8 +169,15 @@ fn edit_text_body_targets_the_ephemeral_id() {
 
 #[test]
 fn edit_text_body_sets_parse_mode_only_when_asked() {
-    assert_eq!(build_edit_text_body(-1, 7, "<b>x</b>", true)["parse_mode"], "HTML");
-    assert!(build_edit_text_body(-1, 7, "a < b", false).get("parse_mode").is_none());
+    assert_eq!(
+        build_edit_text_body(-1, 7, "<b>x</b>", true)["parse_mode"],
+        "HTML"
+    );
+    assert!(
+        build_edit_text_body(-1, 7, "a < b", false)
+            .get("parse_mode")
+            .is_none()
+    );
 }
 
 #[test]
@@ -153,7 +186,10 @@ fn edit_markup_body_carries_only_the_markup() {
     let body = build_edit_markup_body(-100200, 4242, &markup);
     assert_eq!(body["ephemeral_message_id"], 4242);
     assert_eq!(body["reply_markup"], markup);
-    assert!(body.get("text").is_none(), "a markup edit must not resend text: {body}");
+    assert!(
+        body.get("text").is_none(),
+        "a markup edit must not resend text: {body}"
+    );
 }
 
 #[test]

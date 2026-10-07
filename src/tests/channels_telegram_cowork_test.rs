@@ -84,7 +84,10 @@ fn cowork_keyboard_forms_for_a_valid_deep_link() {
     // Serialise instead of reaching into teloxide's internals: this is the
     // payload the API receives, so it proves both the label and the link.
     let json = serde_json::to_string(&kb).expect("keyboard serialises");
-    assert!(json.contains("Add to Group"), "button label missing: {json}");
+    assert!(
+        json.contains("Add to Group"),
+        "button label missing: {json}"
+    );
     assert!(
         json.contains("t.me/team_crab_bot?startgroup=cowork_xyz"),
         "deep link missing from the button: {json}"

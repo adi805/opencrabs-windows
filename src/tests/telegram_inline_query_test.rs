@@ -43,8 +43,7 @@ fn every_result_is_a_paste_ready_article() {
     for result in results_for(true) {
         assert_eq!(result["type"], "article", "got {result}");
         assert_eq!(
-            result["input_message_content"]["message_text"],
-            result["title"],
+            result["input_message_content"]["message_text"], result["title"],
             "the inserted text must be the command itself, not a sentence about it: {result}"
         );
     }

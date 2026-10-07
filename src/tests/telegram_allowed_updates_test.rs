@@ -42,7 +42,10 @@ fn update_kind_name_body() -> &'static str {
 fn allowed_updates_has_no_duplicates() {
     let mut seen = std::collections::HashSet::new();
     for kind in ALLOWED_UPDATES {
-        assert!(seen.insert(*kind), "{kind} is listed twice in ALLOWED_UPDATES");
+        assert!(
+            seen.insert(*kind),
+            "{kind} is listed twice in ALLOWED_UPDATES"
+        );
     }
 }
 

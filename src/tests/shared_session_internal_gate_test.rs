@@ -69,7 +69,10 @@ async fn a_private_session_is_not_gated() {
     // store may be unavailable inside a test binary) the refusal text must be
     // absent, and that absence is the property under test.
     let out = search(Uuid::new_v4(), Some("brain")).await;
-    assert!(!out.contains(GATE), "private session must not be gated: {out}");
+    assert!(
+        !out.contains(GATE),
+        "private session must not be gated: {out}"
+    );
 }
 
 #[tokio::test]
