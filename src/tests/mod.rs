@@ -1099,6 +1099,7 @@ pub mod telegram_thread_id_lookup_test;
 pub mod telegram_tool_group_test;
 pub mod telegram_topic_actions_test;
 pub mod telegram_topic_listing_test;
+pub mod telegram_allowed_updates_test;
 pub mod telegram_unknown_content_keys_test;
 pub mod text_complete_test;
 pub mod theme_catalog_converter_test;

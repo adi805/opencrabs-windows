@@ -202,8 +202,24 @@ async fn poll_once(st: &mut RawPollState) {
     );
 }
 
+/// Update kinds the poll loop subscribes to.
+///
+/// `allowed_updates` is an explicit allowlist: Telegram delivers nothing
+/// outside it, so a kind missing here is unreachable no matter what the
+/// dispatcher can handle. Three places have to agree for a kind to work: this
+/// list, an `Update::filter_*` branch in `agent.rs`, and a name in
+/// `update_kind_name` below. A kind added here with no branch only adds
+/// traffic the dispatcher drops; one added with no name logs as "other".
+pub(crate) const ALLOWED_UPDATES: &[&str] = &[
+    "message",
+    "edited_message",
+    "callback_query",
+    "message_reaction",
+    "my_chat_member",
+];
+
 /// One getUpdates long-poll: stash raw message payloads, queue the typed
-/// updates. Errors are logged and absorbed with a short backoff — the outer
+/// updates. Errors are logged and absorbed with a short backoff, the outer
 /// dispatcher retry loop still guards against total failure. Returns the
 /// number of updates the batch carried (0 on every failure shape; each
 /// failure shape logs its own distinct line).
@@ -212,13 +228,7 @@ async fn poll_once_inner(st: &mut RawPollState) -> usize {
     let body = serde_json::json!({
         "timeout": 30,
         "offset": st.offset,
-        "allowed_updates": [
-            "message",
-            "edited_message",
-            "callback_query",
-            "message_reaction",
-            "my_chat_member",
-        ],
+        "allowed_updates": ALLOWED_UPDATES,
     });
     let resp = st
         .http
@@ -517,6 +527,7 @@ fn update_kind_name(u: &Update) -> &'static str {
         UpdateKind::EditedMessage(_) => "edited_message",
         UpdateKind::CallbackQuery(_) => "callback_query",
         UpdateKind::MessageReaction(_) => "message_reaction",
+        UpdateKind::MyChatMember(_) => "my_chat_member",
         UpdateKind::Error(_) => "ERROR(unparsed)",
         _ => "other",
     }
