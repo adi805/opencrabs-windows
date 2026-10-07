@@ -154,7 +154,7 @@ feat core(memory): expose vector index stats to /doctor
 
 ### Prerequisites
 
-- **Rust** 1.94 or later (edition 2024; source of truth: `rust-version` in `Cargo.toml`)
+- **Rust** 1.95 or later (edition 2024; source of truth: `rust-version` in `Cargo.toml`)
 - **SQLite** (bundled via `rusqlite`)
 - **Git**
 

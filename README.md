@@ -2043,7 +2043,7 @@ cargo install opencrabs --no-default-features --features "telegram,whatsapp,disc
 Required for adding custom tools, or modifying the agent.
 
 **Prerequisites:**
-- **Rust stable (1.94+)** — [Install Rust](https://rustup.rs/). The project includes a `rust-toolchain.toml` that selects the correct toolchain automatically
+- **Rust stable (1.95+)** — [Install Rust](https://rustup.rs/). The project includes a `rust-toolchain.toml` that selects the correct toolchain automatically
 - **An API key** from at least one supported provider
 - **SQLite** (bundled via sqlx)
 - **macOS:** Xcode CLI Tools + `brew install cmake pkg-config` (requires macOS 15+)
