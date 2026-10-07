@@ -1377,6 +1377,7 @@ pub(crate) async fn refresh_flow_html(
                 "refresh_flow",
                 secs.duration(),
                 &format!(" for mid={mid:?}, then retrying"),
+                Some(chat.0),
             )
             .await;
             let retry_html = {

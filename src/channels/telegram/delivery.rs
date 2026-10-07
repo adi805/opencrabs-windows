@@ -935,7 +935,13 @@ pub(crate) async fn deliver_final_response(
                                 });
                             }
                             Err(teloxide::RequestError::RetryAfter(secs)) => {
-                                super::rate_limit::wait_out("edit", secs.duration(), "").await;
+                                super::rate_limit::wait_out(
+                                    "edit",
+                                    secs.duration(),
+                                    "",
+                                    Some(chat_id.0),
+                                )
+                                .await;
                                 match bot
                                     .edit_message_text(chat_id, mid, &chunks[0])
                                     .parse_mode(ParseMode::Html)

@@ -793,8 +793,9 @@ pub(crate) async fn send_buttons_raw(
                 .min(15);
             let wait = std::time::Duration::from_secs(wait);
             // This path sleeps on its own rather than going through `wait_out`,
-            // so without this the 429 stays private to one send.
-            super::rate_limit::record_global_429(wait);
+            // so without this the 429 stays private to one send — both to the
+            // process and to this chat's own buckets (#635).
+            super::governor::note_429_pause(chat_id, wait);
             tokio::time::sleep(wait).await;
             continue;
         }
