@@ -15,7 +15,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Padding, Paragraph},
 };
 
 /// Main color palette (matches existing OpenCrabs theme)
@@ -59,12 +59,17 @@ pub fn render_onboarding(f: &mut Frame, wizard: &OnboardingWizard) {
     let wrap_width = (col_w.saturating_sub(8) as usize).max(20);
 
     let header = build_header(wizard, col_w as usize, wrap_width);
-    let footer = build_footer(wizard, area.width as usize);
-    let header_h = (header.len() as u16).saturating_add(1);
+    // The footer band insets its text one column on each side.
+    let footer = build_footer(wizard, area.width.saturating_sub(2) as usize);
+    // Header and footer are tinted bands with breathing room, so they read
+    // as bars instead of text glued to the screen edge (#1975).
+    let pad = layout::band_padding(area.height);
+    let band = Style::default().bg(theme::role(Role::SurfacePanel));
+    let header_h = (header.len() as u16) + 1 + pad.outer + pad.inner;
     let footer_h = if footer.is_empty() {
         0
     } else {
-        (footer.len() as u16).saturating_add(1)
+        (footer.len() as u16) + 1 + pad.outer + pad.inner
     };
     let [header_area, body_area, footer_area] = Layout::vertical([
         Constraint::Length(header_h),
@@ -90,11 +95,20 @@ pub fn render_onboarding(f: &mut Frame, wizard: &OnboardingWizard) {
     let hidden_below = rows.len().saturating_sub(scroll + visible);
 
     f.render_widget(
-        Paragraph::new(header).alignment(Alignment::Center).block(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(brand_blue())),
-        ),
+        Paragraph::new(header)
+            .alignment(Alignment::Center)
+            .style(band)
+            .block(
+                Block::default()
+                    .borders(Borders::BOTTOM)
+                    .border_style(Style::default().fg(brand_blue()))
+                    .padding(Padding {
+                        left: 1,
+                        right: 1,
+                        top: pad.outer,
+                        bottom: pad.inner,
+                    }),
+            ),
         header_area,
     );
     f.render_widget(Paragraph::new(rows).scroll((scroll as u16, 0)), col_area);
@@ -103,11 +117,20 @@ pub fn render_onboarding(f: &mut Frame, wizard: &OnboardingWizard) {
     }
     if footer_h > 0 {
         f.render_widget(
-            Paragraph::new(footer).alignment(Alignment::Center).block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(brand_blue())),
-            ),
+            Paragraph::new(footer)
+                .alignment(Alignment::Center)
+                .style(band)
+                .block(
+                    Block::default()
+                        .borders(Borders::TOP)
+                        .border_style(Style::default().fg(brand_blue()))
+                        .padding(Padding {
+                            left: 1,
+                            right: 1,
+                            top: pad.inner,
+                            bottom: pad.outer,
+                        }),
+                ),
             footer_area,
         );
     }
@@ -201,12 +224,13 @@ fn footer_key_spans(wizard: &OnboardingWizard) -> Vec<Span<'static>> {
             | OnboardingStep::SlackSetup
             | OnboardingStep::TrelloSetup
     );
-    // A first run quits from step 1 (there is no chat to go back to), a
-    // deep link exits to chat, every other step goes back one.
+    // Step 1 has nothing to go back to: a first run quits the app, a re-run
+    // exits to chat (#1976). A deep link exits to chat from any step, every
+    // other step goes back one.
     let esc_label = if wizard.quick_jump {
         "Exit"
-    } else if wizard.is_first_time && step == OnboardingStep::ModeSelect {
-        "Quit"
+    } else if step == OnboardingStep::ModeSelect {
+        if wizard.is_first_time { "Quit" } else { "Exit" }
     } else {
         "Back"
     };
@@ -544,8 +568,13 @@ fn render_mode_select(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizard)
                 }),
         ),
     ]));
+    // Counts come from the same totals as the progress counter, so the
+    // promise on this screen matches the "n/N" in the header (#1977).
     lines.push(Line::from(Span::styled(
-        "       Sensible defaults, 4 steps",
+        format!(
+            "       Sensible defaults, {} steps",
+            OnboardingStep::quick_total()
+        ),
         Style::default().fg(theme::role(Role::Gray)),
     )));
     lines.push(Line::from(""));
@@ -580,7 +609,7 @@ fn render_mode_select(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizard)
         ),
     ]));
     lines.push(Line::from(Span::styled(
-        "       Full control, all 7 steps",
+        format!("       Full control, all {} steps", OnboardingStep::total()),
         Style::default().fg(theme::role(Role::Gray)),
     )));
 }

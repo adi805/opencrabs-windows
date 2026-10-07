@@ -4,9 +4,11 @@
 
 use crate::tui::onboarding::{AuthField, OnboardingStep, OnboardingWizard, PROVIDERS};
 use crate::tui::onboarding_layout::{
-    MAX_CONTENT_WIDTH, content_width, scroll_offset, wrap_line, wrap_lines,
+    BandPadding, MAX_CONTENT_WIDTH, band_padding, content_width, scroll_offset, wrap_line,
+    wrap_lines,
 };
 use crate::tui::onboarding_render::render_onboarding;
+use crate::tui::render::theme::{self, Role};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Style};
@@ -144,4 +146,81 @@ fn scroll_offset_follows_focus_and_clamps() {
     assert_eq!(scroll_offset(49, 50, 20, 0), 30);
     // Page Down adds on top, still clamped.
     assert_eq!(scroll_offset(0, 50, 20, 100), 30);
+}
+
+#[test]
+fn mode_select_step_counts_match_the_progress_counter() {
+    let mut wizard = OnboardingWizard::new();
+    wizard.resume_notice = None;
+    let text = screen_text(&wizard, 100, 30);
+    let quick = format!("Sensible defaults, {} steps", OnboardingStep::quick_total());
+    let full = format!("Full control, all {} steps", OnboardingStep::total());
+    assert!(text.contains(&quick), "missing {quick:?}\n{text}");
+    assert!(text.contains(&full), "missing {full:?}\n{text}");
+}
+
+#[test]
+fn rerun_step_one_footer_says_exit() {
+    // Esc on step 1 of an /onboard re-run closes the wizard back to chat,
+    // so the hint must not promise a previous step.
+    let mut wizard = OnboardingWizard::new();
+    wizard.is_first_time = false;
+    wizard.resume_notice = None;
+    let text = screen_text(&wizard, 100, 30);
+    assert!(text.contains("[Esc] Exit"), "{text}");
+    assert!(!text.contains("[Esc] Back"), "{text}");
+}
+
+fn screen_rows(
+    wizard: &OnboardingWizard,
+    w: u16,
+    h: u16,
+) -> (Vec<String>, ratatui::buffer::Buffer) {
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    terminal.draw(|f| render_onboarding(f, wizard)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let rows = (0..h)
+        .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .collect();
+    (rows, buf)
+}
+
+#[test]
+fn band_padding_shrinks_with_the_terminal() {
+    assert_eq!(band_padding(40), BandPadding { outer: 1, inner: 1 });
+    assert_eq!(band_padding(24), BandPadding { outer: 1, inner: 0 });
+    assert_eq!(band_padding(16), BandPadding { outer: 0, inner: 0 });
+}
+
+#[test]
+fn header_and_footer_keep_off_the_screen_edges() {
+    // #1975: the title and the key hints sat on the first and last rows.
+    let wizard = provider_step_wizard();
+    for (w, h) in [(120, 40), (80, 24)] {
+        let (rows, _) = screen_rows(&wizard, w, h);
+        assert!(
+            rows[0].trim().is_empty(),
+            "{w}x{h}: row 0 not blank: {:?}",
+            rows[0]
+        );
+        let last = &rows[h as usize - 1];
+        assert!(
+            last.trim().is_empty(),
+            "{w}x{h}: last row not blank: {last:?}"
+        );
+        assert!(rows[1].contains("OpenCrabs"), "{w}x{h}: title not on row 1");
+    }
+}
+
+#[test]
+fn header_and_footer_are_tinted_bands() {
+    let wizard = provider_step_wizard();
+    let (_, buf) = screen_rows(&wizard, 120, 40);
+    let tint = theme::role(Role::SurfacePanel);
+    // Padding rows carry the tint across the full width, not just under text.
+    assert_eq!(buf[(0, 0)].bg, tint, "header band");
+    assert_eq!(buf[(119, 0)].bg, tint, "header band right edge");
+    assert_eq!(buf[(0, 39)].bg, tint, "footer band");
+    // The content area stays untinted.
+    assert_ne!(buf[(0, 20)].bg, tint, "content area");
 }
