@@ -1,4 +1,6 @@
 use super::builder::AgentService;
+use super::compaction_budget::enforce_summary_budget;
+use super::request_budget::{COMPACTION_PROMPT_RESERVE_TOKENS, COMPACTION_SUMMARY_MAX_TOKENS};
 use crate::brain::agent::context::{AgentContext, CompactionScope};
 use crate::brain::agent::error::{AgentError, Result};
 use crate::brain::provider::{ContentBlock, LLMRequest, Message, Provider};
@@ -362,7 +364,7 @@ impl AgentService {
             context.max_tokens,
             context.usage_percentage(),
             model_name.to_string(),
-            self.request_max_tokens_for_session(session_id),
+            COMPACTION_SUMMARY_MAX_TOKENS,
             self.get_working_directory_for_session(session_id),
             self.auto_approve_tools,
             cancel,
@@ -687,8 +689,12 @@ impl AgentService {
             })
             .unwrap_or(snapshot_messages.len());
 
-        // Reserve room for the summarizer's OUTPUT budget (8k) + prompt (~1k).
-        let output_reserve = 8_000usize + 1_000usize;
+        // Reserve room for the summarizer's OUTPUT budget plus the prompt that
+        // asks for it. Both terms come from the same constants the summariser
+        // request is built from, so the reserve cannot drift from the allowance
+        // it is reserving for (#1930).
+        let output_reserve =
+            (COMPACTION_SUMMARY_MAX_TOKENS + COMPACTION_PROMPT_RESERVE_TOKENS) as usize;
         let max_input_budget = snapshot_max_tokens.saturating_sub(output_reserve);
         let all_msgs = &snapshot_messages[start..];
         let mut running_tokens = 0usize;
@@ -819,9 +825,15 @@ impl AgentService {
              DO NOT be generic. DO NOT say \"I'm ready to continue.\" Reference actual conversation details \
              that only someone who was there would know.\n\n\
              Tool approval status: {}\n\n\
-             BE EXHAUSTIVE. This is not a summary — it is a complete knowledge transfer. \
-             Include code snippets, exact paths, user quotes, error messages. \
-             The fresh agent has ZERO context beyond what you write here.",
+             HARD BUDGET: the entire document must fit in {max_output_tokens} tokens. It is the \
+             fresh agent's only memory, but a document that overruns is cut off before its tail — \
+             so spend the budget in this order:\n\
+             1. MUST — §0 (obligation status + directive), §8 (next step), §9 (continuation message).\n\
+             2. THEN — file paths, identifiers, commands, and the §7 recovery plan.\n\
+             3. THEN — the narrative: §1-§6, compressed as tight as they can be.\n\
+             FIRST TO GO — code snippets and long quotes. Name a file and line rather than pasting \
+             its body. A short document that carries the directive beats a long one cut off \
+             mid-sentence: the fresh agent has ZERO context beyond what you write here.",
             snapshot_usage_pct,
             snapshot_token_count,
             snapshot_max_tokens,
@@ -858,12 +870,13 @@ impl AgentService {
         let mut request = LLMRequest::new(effective_model, summary_messages)
             .with_max_tokens(max_output_tokens)
             .with_system(
-                "You are a continuation document generator. Your job is to create an exhaustive, \
-                 detailed knowledge transfer document from a conversation so that a fresh AI agent can \
-                 continue the work seamlessly. You must capture every file path, code snippet, user preference, \
-                 error, and pending task. The agent reading your output will have ZERO prior context — \
-                 your document is its entire memory. Be thorough to the point of being verbose. \
-                 Missing a single detail could cause the agent to repeat mistakes or violate user preferences."
+                "You are a continuation document generator. Your job is to create a knowledge transfer \
+                 document from a conversation so that a fresh AI agent can continue the work seamlessly. \
+                 Capture every file path, identifier, user preference, error, and pending task — but stay \
+                 inside the stated token budget: the agent reading your output will have ZERO prior context, \
+                 so a document that is cut off before its tail loses exactly the sections it needs most. \
+                 Spend the budget in the order the prompt gives you, and prefer naming a file and line over \
+                 pasting its body."
                     .to_string(),
             );
         request.working_directory = Some(working_directory.to_string_lossy().to_string());
@@ -883,7 +896,7 @@ impl AgentService {
         )
         .await?;
 
-        let summary = Self::extract_text_from_response(&response);
+        let summary = enforce_summary_budget(&Self::extract_text_from_response(&response));
 
         if let Err(e) = Self::save_compaction_summary_to_memory(&summary).await {
             tracing::warn!("Failed to save compaction summary to daily log: {}", e);

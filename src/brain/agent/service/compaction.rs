@@ -15,6 +15,7 @@
 
 use super::builder::AgentService;
 use super::compaction_notice::CompactionNotifier;
+use super::request_budget::COMPACTION_SUMMARY_MAX_TOKENS;
 use super::types::{ProgressCallback, ProgressEvent};
 use crate::brain::agent::context::{AgentContext, CompactionScope};
 use uuid::Uuid;
@@ -704,7 +705,7 @@ impl AgentService {
         let fallbacks = self.fallback_chain_snapshot();
         let max_tokens = context.max_tokens;
         let model = model_name.to_string();
-        let max_output = self.request_max_tokens_for_session(session_id);
+        let max_output = COMPACTION_SUMMARY_MAX_TOKENS;
         let working_dir = self.get_working_directory_for_session(session_id);
         let auto_approve = self.auto_approve_tools;
         let subagents = self.subagent_manager.clone();
