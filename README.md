@@ -589,7 +589,7 @@ This solves the core UX problem in mention-only groups: previously, tagging the 
 | **Mission Control** | Full-screen `/mission-control` dialog showing every actionable artifact in one place: pending RSI proposals (inbox cards), recent RSI activity (improvements log feed), the schedule queue (cron jobs + paused/active state), and a live **Analytics** panel (brain file sizes, tool usage with proportional bars, failure rates, RSI applied by dimension, phantom-detection and resolution rates, per-model reliability, stream-recovery counts) with **D / W / M / All** window tabs so a fixed 30-day view cannot hide a tool that has already recovered. Apply or reject inbox proposals inline with `a` / `r` — same machinery as the agent's `rsi_proposals` tool, byte-identical install. Tab between panels, j/k to navigate, Enter for the detail popup, Esc to close. Cron paused jobs flag in orange, active in teal — at-a-glance state |
 | **Skills picker** | Full-screen `/skills` dialog with a live filter input — start typing to narrow the list (case-insensitive on name + description), Tab / Shift-Tab cycle the filtered cards (wraps at the edges), Enter runs the selected skill (sends its body as a prompt to the agent), Esc closes. Built-in skills badge orange; user-installed skills badge teal. When the filter narrows to a single match, Enter just fires it — fastest path to launch a skill |
 | **Browser Automation** | Native browser control via CDP (Chrome DevTools Protocol). Auto-detects your default Chromium-based browser (Chrome, Brave, Edge, Arc, Vivaldi, Opera, Chromium) and uses its profile — your logins, cookies, and extensions carry over. 9 browser tools: navigate, click, type, screenshot, eval JS, extract content, wait for elements, find/inventory elements, batched multi-action. Headed or headless mode with display auto-detection. **Shadow DOM aware:** CSS/text/aria search, the interactive inventory, and click/type/act/wait/screenshot all resolve inside open shadow roots, and closed roots still resolve over CDP. **Note:** Firefox is not supported (no CDP) — if Firefox is your default, OpenCrabs falls back to the first available Chromium browser. Feature-gated under `browser` (included by default) |
-| **ACP Server Mode** | Agent Client Protocol server over stdio JSON-RPC (#1540): editors and agent harnesses like Zed and [MonoCode](https://github.com/hardbeat920/monocode) drive OpenCrabs as their coding agent. `opencrabs acp` serves the session over stdio; prompts, tool calls and streaming updates ride the ACP session protocol. Sessions are first-class: the context meter is restored on load and rides usage updates, `session/load` replays the transcript and restores the per-session model, `set_model` persists across processes, native `session/set_mode` applies the approval policy server-side, `session/compact` pushes, and `session/new` offers a live model catalog |
+| **ACP Server Mode** | Agent Client Protocol server over stdio JSON-RPC (#1540): editors and agent harnesses like Zed and [MonoCode](https://github.com/hardbeat920/monocode) drive OpenCrabs as their coding agent. `opencrabs acp` serves the session over stdio; prompts, tool calls and streaming updates ride the ACP session protocol. Sessions are first-class: the context meter is restored on load and rides usage updates, `session/load` replays the transcript and restores the per-session model, `set_model` persists across processes, native `session/set_mode` applies the approval policy server-side, `session/compact` pushes, and `session/new` offers a live model catalog. See [GUI via ACP](#gui-via-acp-monocode) |
 | **Natural Language Commands** | Tell OpenCrabs to create slash commands — it writes them to `commands.toml` autonomously via the `config_manager` tool |
 | **Mechanical Commands (#933)** | `/architecture [path]` (directory tree, depth-capped, secrets/vendor dirs excluded), `/attach <paths...>` (docs-only file attach: `.md` or `docs/` files, hidden paths and secret files refused in compiled code), `/audit [N]` (audit trail: ACTION rows always, READ + OUTCOME when `[features] audit_recording = true`). All three run in the binary with zero API cost; the LLM-flavored `/architecture-explain` lives as an opt-in template in `src/docs/reference/templates/commands/` |
 | **Live Settings** | Agent can read/write `config.toml` at runtime; Settings TUI screen (press `S`) shows current config; approval policy persists across restarts. Default: auto-approve (use `/approve` to change) |
@@ -597,6 +597,23 @@ This solves the core UX problem in mention-only groups: previously, tagging the 
 | **Debug Logging** | `--debug` flag or `debug_logs = true` in config enables file logging; config toggle hot-reloads live without restart; `DEBUG_LOGS_LOCATION` env var for custom log directory |
 | **Agent-to-Agent (A2A)** | HTTP gateway implementing A2A Protocol RC v1.0 — peer-to-peer agent communication via JSON-RPC 2.0. Supports `message/send`, `message/stream` (SSE), `tasks/get`, `tasks/cancel`. Built-in `a2a_send` tool lets the agent proactively call remote A2A agents. Optional Bearer token auth. Includes multi-agent debate (Bee Colony) with confidence-weighted consensus. Task persistence across restarts |
 | **Profiles** | Run multiple isolated instances from the same installation. Each profile gets its own config, keys, memory, sessions, and database. Create with `opencrabs profile create <name>`, switch with `-p <name>`. Migrate config between profiles with `profile migrate`. Export/import for sharing. Token-lock isolation prevents two profiles from using the same bot credential |
+
+### GUI via ACP (MonoCode)
+
+**OpenCrabs does not build or ship its own GUI, and never will.** The TUI is the
+product; if you want a window with tabs and a file tree, you point a third-party
+editor or agent harness at the built-in ACP server.
+
+[MonoCode](https://github.com/hardbeat920/monocode) is the client we point at — MIT,
+Tauri desktop app, macOS / Linux / Windows, shipping an ACP JSON-RPC client. It runs
+OpenCrabs today via a custom ACP agent entry, the same way Zed's custom
+`agent_servers` does. Client provider lists are **presets, not capability gates**, so
+any ACP client can point a custom agent entry at `opencrabs acp`.
+
+The ACP server is the *same agent* the TUI runs — same brain files, memory, sessions
+and database — so a GUI is another window onto one crab, not a second installation.
+
+**→ [Connect guide: GUI client over ACP](docs/acp-connect.md)**
 
 ### CLI
 | Command | Description |
