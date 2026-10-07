@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-10-07
+
+First release cut from this fork. Carries upstream 0.5.4 plus the fork's own
+changes.
+
+### Fixes
+
+- `update-source`: the release probe, crash-recovery rollback, source clone,
+  brain-template sync and agent card now resolve against this fork instead of
+  upstream. A build from this fork previously still phoned home: `/evolve`
+  looked for upstream releases, and the template sync rewrote `AGENTS.md`,
+  `TOOLS.md`, `CODE.md`, `SECURITY.md`, `BOOT.md` and `HEARTBEAT.md` from
+  upstream `main`. One slug (`adi805/opencrabs-windows`) is now the single
+  source, overridable with `OPENCRABS_UPDATE_REPO`.
+- docs: install instructions no longer point at crates.io (`cargo install
+  opencrabs`), at the upstream Homebrew formula, or at a clone directory that
+  does not exist; the bundled plan templates no longer open PRs against
+  upstream.
+- docs: drop the upstream author's local dev path from the `CODE.md` brain
+  template, which is seeded into every fresh install.
+
+### CI
+
+- `release-fork`: publishes tagged releases from this fork with assets named for
+  the updater (`opencrabs-<tag>-<platform>.tar.gz`) plus `SHA256SUMS`, without
+  the crates.io publish that gates `release.yml` and can never succeed on a
+  fork.
+- test: annotate the intentional secret fixtures in `utils_sanitize_test.rs`
+  with `// nosemgrep`, so the Semgrep job stops failing on fixtures that exist
+  to test the redactor.
+
 ## [0.5.4] - 2026-09-26
 
 104 commits since v0.5.3, 7 contributors. 225 files changed, +18,619 / -1,429 lines.
