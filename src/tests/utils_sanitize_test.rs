@@ -560,6 +560,34 @@ fn dash_normalization_is_idempotent() {
 }
 
 #[test]
+fn dash_table_row_em_dash_becomes_hyphen_not_colon() {
+    // #1969: an em dash in a table cell is the model's empty/no-value
+    // marker. A colon corrupts the cell while the table structure survives,
+    // which is how the forwarded Ops cherry-pick table ended up rendering
+    // stray colons for #757/#697 on 2026-10-06.
+    assert_eq!(strip_llm_artifacts("| \u{2014} |"), "| - |");
+    assert_eq!(strip_llm_artifacts("|a|\u{2014}|"), "|a|-|");
+}
+
+#[test]
+fn dash_table_rows_exempt_prose_lines_still_colonize() {
+    let msg = "Picks:\n| # | result |\n|---|--------|\n| 757 | \u{2014} |\nthen \u{2014} done\n";
+    let want = "Picks:\n| # | result |\n|---|--------|\n| 757 | - |\nthen: done\n";
+    assert_eq!(strip_llm_artifacts(msg), want);
+}
+
+#[test]
+fn dash_table_row_en_dash_still_hyphen() {
+    assert_eq!(strip_llm_artifacts("| \u{2013} |"), "| - |");
+}
+
+#[test]
+fn dash_table_normalization_is_idempotent() {
+    let once = strip_llm_artifacts("| \u{2014} | done \u{2014} ok");
+    assert_eq!(strip_llm_artifacts(&once), once);
+}
+
+#[test]
 fn dash_normalization_composes_with_artifact_stripping() {
     // ANSI pass first, dashes last: one call must do both.
     let input = "\u{1b}[31mgo\u{1b}[0m \u{2014} fast 1\u{2013}2";

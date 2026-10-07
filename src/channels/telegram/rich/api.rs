@@ -7,7 +7,7 @@
 //! model's markdown straight through.
 
 use super::mermaid;
-use super::render_html::markdown_to_html_mermaid;
+use super::render_html::markdown_to_html_mermaid_p;
 use crate::channels::telegram::suggest_options::enforce_button_fit;
 use teloxide::types::ThreadId;
 
@@ -281,6 +281,11 @@ async fn post_rich(
     let client = reqwest::Client::new();
     let mut attempt = 0u32;
 
+    // The 429 handler below needs the chat this body targets (#635). It cannot
+    // be the `chat_id` the dedup arm binds: that one lives only inside its
+    // `if let`, and this is read after the loop has been entered.
+    let chat_id = rich_send_fields(url, body).1;
+
     // An edit that would leave the message exactly as it is costs a round trip
     // to be told `message is not modified`, and used to be logged as a send
     // failure (#1443). Nothing to send, so this returns before the pacing gate
@@ -361,6 +366,7 @@ async fn post_rich(
                 "rich API",
                 std::time::Duration::from_secs(retry_after),
                 &format!(" (attempt {attempt}/{RICH_MAX_RETRIES})"),
+                Some(chat_id),
             )
             .await;
             continue;
@@ -595,14 +601,11 @@ async fn post_rich_multipart(
     let mut attempt = 0u32;
 
     loop {
-        {
-            let (_, chat_id, thread, _, _) = rich_send_fields(url, body);
-            crate::channels::telegram::governor::pace_rich(
-                teloxide::types::ChatId(chat_id),
-                thread,
-            )
+        // Bound outside the pacing call so the 429 handler below can name the
+        // chat it belongs to (#635).
+        let (_, chat_id, thread, _, _) = rich_send_fields(url, body);
+        crate::channels::telegram::governor::pace_rich(teloxide::types::ChatId(chat_id), thread)
             .await;
-        }
         // Form is not Clone, so rebuild it from media+body each attempt.
         let form = build_multipart_form(media, body);
         let resp = client.post(url).multipart(form).send().await?;
@@ -648,6 +651,7 @@ async fn post_rich_multipart(
                 "rich API",
                 std::time::Duration::from_secs(retry_after),
                 &format!(" (attempt {attempt}/{RICH_MAX_RETRIES})"),
+                Some(chat_id),
             )
             .await;
             continue;
@@ -862,8 +866,17 @@ pub(crate) async fn send_rich_with_mermaid_target_id(
         Err(e) => {
             // Fallback: HTML dialect (Bot API < 10.2 or a media-field
             // rejection). Tables degrade there, but the message still lands.
+            //
+            // The `_p` renderer, NOT the bare one. This is the rich HTML
+            // dialect, where a bare newline is INSIGNIFICANT whitespace: the
+            // bare renderer emits a paragraph as bare inline text, so every
+            // block of the reply collapses into one wall of text. The `_p`
+            // renderer gives each block its own `<p>` and renders soft breaks
+            // as `<br>` — which is what the plan-card prose path already uses
+            // for this same dialect, so the card survived a rich 429 fallback
+            // while the final reply did not.
             tracing::warn!("rich markdown+media send failed ({e}); falling back to html dialect");
-            let html = markdown_to_html_mermaid(markdown).await;
+            let html = markdown_to_html_mermaid_p(markdown).await;
             send_rich_html_id(
                 api_url,
                 token,

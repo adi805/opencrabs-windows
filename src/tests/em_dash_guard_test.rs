@@ -80,6 +80,28 @@ fn every_self_healing_renderer_normalizes_dashes() {
     );
 }
 
+#[test]
+fn trello_outbound_funnels_through_the_boundary() {
+    // #1970: the #1745 audit missed Trello, leaving card comments as the
+    // only channel shipping completely raw model prose (no dash
+    // normalization, no artifact stripping, no ZERO WIDTH cleanup). Pin the
+    // client chokepoint so both the reply echo and the proactive
+    // add_comment action stay inside the boundary, and so a future
+    // refactor that drops the call fails here instead of shipping raw.
+    let client = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/channels/trello/client.rs");
+    let content = fs::read_to_string(&client)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", client.display()));
+    assert!(
+        content.contains("async fn add_comment_to_card("),
+        "add_comment_to_card moved or renamed; re-verify the Trello boundary (#1970)"
+    );
+    assert!(
+        content.contains("strip_llm_artifacts"),
+        "Trello client no longer routes outbound comments through \
+         strip_llm_artifacts (#1970 regression)"
+    );
+}
+
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;

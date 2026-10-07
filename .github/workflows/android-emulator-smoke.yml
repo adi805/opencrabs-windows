@@ -1,0 +1,193 @@
+name: Android emulator smoke
+
+# Why this file exists: every Android check in this repo is static today. The
+# build job proves the artifact is an Android ELF (file + readelf), the
+# packaging job proves the APK carries the libs. Neither proves Android will
+# actually execute it. This workflow is the missing half: it boots a real
+# system image, installs the APK, launches it, and asserts on-device behaviour.
+#
+# It is also the only way to get an RSS number from an Android runtime. Every
+# memory figure quoted for this client so far came from a 4 GB Linux box, which
+# is a different platform, a different libc and a different OOM killer.
+#
+# x86_64 is built alongside arm64 on purpose. An arm64-only APK cannot be
+# installed on an x86_64 AVD, and running it through the API 35 ARM
+# translation layer would rest on a community claim rather than a contract
+# this repo can verify (ReactiveCircus/android-emulator-runner#458). A native
+# x86_64 build also keeps the memory numbers honest, because translation
+# overhead would distort exactly the measurement this run exists to produce.
+#
+# Deliberately a NEW file rather than a job in android-artifact.yml: that file
+# is the shipping path (arm64 only, artifact for a real phone) and this one is
+# a test harness. Mixing them would put a 20 minute emulator boot in front of
+# every APK artifact upload.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    # Path-filtered on purpose. This job builds two Rust targets and boots an
+    # emulator (~30 min), so running it on every main push would burn a runner
+    # on changes that cannot affect the Android client. It fires only when
+    # something it actually exercises moved.
+    paths:
+      - 'android/**'
+      - '.github/scripts/android-emulator-smoke.sh'
+      - '.github/workflows/android-emulator-smoke.yml'
+
+jobs:
+  build-core:
+    name: Build core (arm64 + x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (pinned by rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27d
+          add-to-path: false
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build (core only, channels excluded)
+        env:
+          # Both names: the runner image preinstalls an NDK and exports
+          # ANDROID_NDK_ROOT, while cargo-ndk reads ANDROID_NDK_HOME.
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        # Capital -P pins the API level. Lowercase -p is read as cargo's
+        # --package and panics with "unknown package: 24" (first run, PR #60).
+        run: >
+          cargo ndk -t arm64-v8a -t x86_64 -P 24
+          build --locked --profile ci
+          --no-default-features --features rtk,code-graph
+
+      - name: Smoke (both artifacts are Android ELFs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for abi in aarch64 x86_64; do
+            bin="target/${abi}-linux-android/ci/opencrabs"
+            echo "--- ${bin}"
+            ls -l "$bin"
+            file "$bin"
+            readelf -h "$bin" | grep -E "Class:|Machine:|OS/ABI:"
+            readelf -d "$bin" | grep -E "NEEDED" || true
+          done
+
+      - name: Upload the binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencrabs-android-core
+          # The least common ancestor is target/, so the artifact keeps the
+          # <target-triple>/ci/opencrabs shape the packaging job expects.
+          path: |
+            target/aarch64-linux-android/ci/opencrabs
+            target/x86_64-linux-android/ci/opencrabs
+          if-no-files-found: error
+          retention-days: 30
+
+  assemble-apk:
+    name: Assemble APK (arm64 + x86_64)
+    needs: build-core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch the core binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: opencrabs-android-core
+          path: apk-input
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27d
+          add-to-path: false
+
+      - name: Assemble the APK
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        # abi=path form, added with the multi-ABI support in assemble-apk.sh.
+        # A bare path still means arm64-v8a, so android-artifact.yml keeps
+        # working unchanged.
+        run: |
+          bash android/assemble-apk.sh \
+            arm64-v8a=apk-input/aarch64-linux-android/ci/opencrabs \
+            x86_64=apk-input/x86_64-linux-android/ci/opencrabs
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencrabs-android-apk-multiabi
+          path: android/out/opencrabs-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  emulator-smoke:
+    name: Boot an emulator and run the client
+    needs: assemble-apk
+    runs-on: ubuntu-24.04
+    # Image download plus cold boot plus the 60s liveness window. Generous on
+    # purpose: a cap that clips a green run costs a whole cycle.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch the APK
+        uses: actions/download-artifact@v4
+        with:
+          name: opencrabs-android-apk-multiabi
+          path: apk
+
+      - name: Enable KVM and prepare the AVD directory
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          # The runner starts without ~/.android/avd and avdmanager writes
+          # config.ini into it. Without the directory it fails with
+          # "Directory nonexistent" (ReactiveCircus/android-emulator-runner#400).
+          mkdir -p "$HOME/.android/avd"
+
+      - name: Run the smoke test on a booted emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          # google_apis rather than google_apis_playstore: the Play images are
+          # not rootable, and the smoke script needs root to seed the session
+          # surface config into the app's private data dir.
+          target: google_apis
+          profile: pixel_5
+          force-avd-creation: false
+          disable-animations: true
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash .github/scripts/android-emulator-smoke.sh apk/opencrabs-debug.apk smoke-out
+
+      - name: Upload the smoke evidence
+        # always(): a failed smoke run is exactly when the logs matter most.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-emulator-smoke-evidence
+          path: smoke-out
+          if-no-files-found: warn
+          retention-days: 30
