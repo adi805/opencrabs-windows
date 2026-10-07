@@ -69,3 +69,32 @@ fn an_unrelated_command_is_not_swallowed_by_the_onboard_guard() {
         assert!(!matches(c), "wrongly captured: {c}");
     }
 }
+
+#[test]
+fn typed_args_reach_the_rendered_prompt() {
+    // #1868: handle_user_command discarded the user's args as `_args`, so
+    // `/servers staging` executed the skill text with no request attached
+    // and the agent never saw what the human actually asked for.
+    use crate::brain::tools::slash_command::with_user_args;
+    assert_eq!(with_user_args("body".into(), ""), "body");
+    assert_eq!(with_user_args("body".into(), "   "), "body");
+    assert_eq!(
+        with_user_args("body".into(), "fix tests"),
+        "body\n\nUser args: fix tests"
+    );
+}
+
+#[test]
+fn the_args_parameter_is_named_not_discarded() {
+    // Structural pin: the signature must thread args, never mask them with
+    // `_args`. Owner rule: unused code is removed or used, not underscored.
+    let src = include_str!("../brain/tools/slash_command.rs");
+    assert!(
+        src.contains("fn handle_user_command(&self, command: &str, args: &str)"),
+        "handle_user_command must take args by name (#1868)"
+    );
+    assert!(
+        !src.contains("_args: &str) -> Result<ToolResult>"),
+        "the discarded-args shape must not come back"
+    );
+}

@@ -1,0 +1,37 @@
+# Ralph verification gate - bundled safety seed (#1902, ships the intent of #872).
+#
+# The plan tool reads this file before accepting a task completion claiming
+# success. A `ralph_loop.toml` at the session working dir wins over this
+# fallback, per-project (#947).
+#
+# enabled = true turns on the criteria gate: a task that completes while
+# declaring acceptance criteria whose task type has NO verification command
+# configured is logged Uncertain, not Verified ("silence is not proof",
+# #870). Nothing is rejected outright; only a configured command that exits
+# non-zero can block a completion.
+
+[verification]
+enabled = true
+require_all_pass = true
+# downgrade (default) = accept but record Uncertain
+# strict               = reject the completion outright
+# off                  = criteria stay advisory, no enforcement
+criteria_policy = "downgrade"
+
+# Commands per task type. A type with no entry verifies nothing (policy
+# above decides how that is graded). Add commands that RUN AND PASS in this
+# project: a command that cannot execute here blocks every completion of
+# that type. Start with none; add when you have a receipt it works.
+#
+# [[verification.task_type_commands]]
+# task_type = "build"
+# commands = ["cargo clippy --all-features -- -D warnings", "cargo test"]
+#
+# [[verification.task_type_commands]]
+# task_type = "test"
+# commands = ["cargo test"]
+
+[forward]
+max_iterations = 20
+fresh_context = true
+state_on_disk = true

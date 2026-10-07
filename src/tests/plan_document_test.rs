@@ -293,3 +293,39 @@ fn plan_document_is_active_incomplete_lifecycle() {
     plan.tasks[0].complete(None);
     assert!(!plan.is_active_incomplete());
 }
+
+// ---- #1932: the trailing auto-complete is for delivery-shaped tasks ----
+// A trailing task that declares acceptance criteria carries a verifiable
+// contract ("this box means the listed commands ran"). A turn that merely
+// settled proves nothing of the kind, so auto-complete must leave it alone
+// and the plan must not archive over it.
+
+#[test]
+fn trailing_auto_complete_refuses_a_task_with_criteria() {
+    let mut plan = PlanDocument::new(Uuid::new_v4(), "P".to_string());
+    let mut a = task(1);
+    a.complete(None);
+    plan.add_task(a);
+    let mut last = task(2);
+    last.acceptance_criteria
+        .push("verify the publisher end to end".to_string());
+    plan.add_task(last); // trailing, Pending, WITH a criteria contract
+    assert!(
+        !plan.complete_trailing_delivery_task(),
+        "#1932: a criteria-bearing trailing task must not be auto-completed"
+    );
+    assert!(!plan.is_complete(), "and the plan must not be archivable");
+    assert!(matches!(plan.tasks[1].status, TaskStatus::Pending));
+}
+
+#[test]
+fn trailing_auto_complete_still_fires_for_plain_delivery_task() {
+    // The #737 shape (no criteria declared) keeps working.
+    let mut plan = PlanDocument::new(Uuid::new_v4(), "P".to_string());
+    let mut a = task(1);
+    a.complete(None);
+    plan.add_task(a);
+    plan.add_task(task(2));
+    assert!(plan.complete_trailing_delivery_task());
+    assert!(plan.is_complete());
+}

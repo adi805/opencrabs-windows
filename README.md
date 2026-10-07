@@ -5505,6 +5505,21 @@ of the data while reporting a bare "Failed to run database migrations" (#1779).
 The same check now also runs *after* migrations, and a failure there is logged by
 the daemon and reported by `doctor` as well as shown on the TUI banner.
 
+### Raw macOS Logs Bleeding Over the TUI (MallocStackLogging)
+
+**Symptom:** lines like `MallocStackLogging: ...` (or other raw stderr noise) painted over the TUI chat, mixed into agent output.
+
+**Cause:** the TUI owns the terminal, and OpenCrabs' own logging goes to file by default (`console_output = false`), so anything painted on screen is external stderr the process inherited. `MallocStackLogging` comes from macOS itself: the env var (or a debugger-attached parent) was set in your shell, and OpenCrabs and its subprocesses inherit it.
+
+**Fix:**
+
+```bash
+env | grep -i MALLOC   # see what's leaking
+unset MallocStackLogging MallocStackLoggingNoCompact
+```
+
+If it persists, check the parent process environment (launchd job, debugger session).
+
 ---
 
 ## 🧩 Companion Tools

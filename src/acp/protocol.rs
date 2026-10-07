@@ -376,7 +376,10 @@ pub fn initialize_result() -> Value {
                 "close": {},
                 "delete": {},
             },
-            "promptCapabilities": { "text": true, "image": false, "embeddedContext": false },
+            // #1856: image prompt blocks decode to `<<IMG:path>>` attachments on
+            // disk (decode_image_block), so the advertisement is honest and
+            // clients (MonoCode, Zed custom agents) can ship images.
+            "promptCapabilities": { "text": true, "image": true, "embeddedContext": false },
         },
         "agentInfo": {
             "name": "opencrabs",
@@ -394,15 +397,24 @@ pub fn initialize_result() -> Value {
 
 /// Extract the text of a `session/prompt` (or `session/steer`) prompt block
 /// list. Text blocks pass through; resource/resource_link blocks contribute
-/// their uri as a readable reference so attachments survive as paths.
+/// their uri as a readable reference so attachments survive as paths. Image
+/// blocks are decoded to files under the attachments dir and surfaced as
+/// `<<IMG:path>>` markers, the same shape every channel already speaks.
 pub fn prompt_text(params: &Value) -> Option<String> {
     let blocks = params.get("prompt")?.as_array()?;
     let mut parts = Vec::new();
+    let mut images = 0usize;
     for block in blocks {
         match block.get("type").and_then(Value::as_str) {
             Some("text") => {
                 if let Some(t) = block.get("text").and_then(Value::as_str) {
                     parts.push(t.to_string());
+                }
+            }
+            Some("image") => {
+                if let Some(path) = decode_image_block(block) {
+                    parts.push(format!("<<IMG:{path}>>"));
+                    images += 1;
                 }
             }
             Some("resource_link") => {
@@ -422,12 +434,55 @@ pub fn prompt_text(params: &Value) -> Option<String> {
             _ => {}
         }
     }
+    if images > 0 {
+        parts.push(
+            "IMPORTANT: Image attachment(s) present. Call analyze_image for EACH <<IMG:path>> marker separately. Do not skip any image."
+                .to_string(),
+        );
+    }
     let text = parts.join("\n");
     if text.trim().is_empty() {
         None
     } else {
         Some(text)
     }
+}
+
+/// Decode one ACP image block to a file under the attachments dir and return
+/// its path. MonoCode sends the flat wire shape (`{data, mimeType}`); the
+/// nested `source.data` variant is accepted as a fallback so both forms work.
+fn decode_image_block(block: &Value) -> Option<String> {
+    use base64::Engine as _;
+    let data = block
+        .get("data")
+        .or_else(|| block.get("source").and_then(|s| s.get("data")))
+        .and_then(Value::as_str)?;
+    let mime = block
+        .get("mimeType")
+        .or_else(|| block.get("source").and_then(|s| s.get("mimeType")))
+        .and_then(Value::as_str)
+        .unwrap_or("image/png");
+    let ext = match mime {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "png",
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .ok()?;
+    let dir = crate::channels::channel_attachments_dir().join("acp");
+    std::fs::create_dir_all(&dir).ok()?;
+    let name = format!(
+        "acp-img-{}.{ext}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos()
+    );
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).ok()?;
+    Some(path.to_string_lossy().into_owned())
 }
 
 /// Map an opencrabs tool name to an ACP tool-call `kind`. The client uses
@@ -529,5 +584,55 @@ pub fn permission_outcome(result: &Value) -> (bool, bool) {
         Some("allow-always") | Some("allow_always") => (true, true),
         Some("allow-once") | Some("allow_once") | Some("allow") => (true, false),
         _ => (false, false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Smallest valid 1x1 PNG, base64-encoded.
+    const PNG_1PX: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn image_blocks_become_markers_on_disk() {
+        let params = json!({
+            "prompt": [
+                { "type": "text", "text": "lihat ini" },
+                { "type": "image", "data": PNG_1PX, "mimeType": "image/png" }
+            ]
+        });
+        let text = prompt_text(&params).expect("turn with image keeps text");
+        assert!(text.contains("lihat ini"));
+        let start = text.find("<<IMG:").expect("IMG marker present");
+        let end = text[start..].find(">>").expect("marker closed") + start;
+        let path = &text[start + 6..end];
+        assert!(
+            std::path::Path::new(path).exists(),
+            "decoded image written to {path}"
+        );
+        assert!(
+            text.contains("analyze_image"),
+            "analysis instruction present"
+        );
+    }
+
+    #[test]
+    fn nested_source_image_shape_also_decodes() {
+        let params = json!({
+            "prompt": [
+                { "type": "image", "source": { "data": PNG_1PX, "mimeType": "image/png" } }
+            ]
+        });
+        let text = prompt_text(&params).expect("image-only turn yields marker text");
+        assert!(text.contains("<<IMG:"));
+    }
+
+    #[test]
+    fn text_only_prompts_get_no_image_instruction() {
+        let params = json!({ "prompt": [{ "type": "text", "text": "halo" }] });
+        let text = prompt_text(&params).expect("plain text");
+        assert!(!text.contains("<<IMG:"));
+        assert!(!text.contains("analyze_image"));
     }
 }

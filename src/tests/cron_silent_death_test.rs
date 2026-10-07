@@ -103,6 +103,22 @@ async fn one_unreadable_row_does_not_empty_the_enabled_list() {
 }
 
 #[tokio::test]
+async fn one_unreadable_row_does_not_empty_the_full_list() {
+    // #1924: list_all() kept the atomic shape #1893 fixed for list_enabled():
+    // `row.context(...)?` aborted on the first bad row, so one hand-edited or
+    // legacy row made every cron listing come back empty for every reader.
+    let (db, repo) = setup().await;
+    for name in ["job-a", "job-broken", "job-c"] {
+        repo.insert(&make_job(name)).await.expect("insert");
+    }
+    corrupt_row(&db, "job-broken").await;
+
+    let jobs = repo.list_all().await.expect("read must succeed");
+    let names: Vec<String> = jobs.iter().map(|j| j.name.clone()).collect();
+    assert_eq!(names, vec!["job-a".to_string(), "job-c".to_string()]);
+}
+
+#[tokio::test]
 async fn a_clean_table_reports_nothing_skipped() {
     let (_db, repo) = setup().await;
     repo.insert(&make_job("job-a")).await.expect("insert");
