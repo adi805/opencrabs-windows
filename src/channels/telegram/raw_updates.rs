@@ -412,13 +412,28 @@ const KNOWN_CONTENT_KEYS: &[&str] = &[
     "paid_message_price_changed",
     "general_forum_topic_hidden",
     "general_forum_topic_unhidden",
+    // Service events the Bot API shipped after teloxide-core 0.13's serde
+    // definitions (verified against the official docs). They carry no user
+    // content, so they must keep the normal (ignored) handling instead of
+    // being rewritten into agent-visible text by `synthesize_unknown_content`:
+    //   community_chat_joined  (10.3) "Service message: chat was joined by a
+    //                                 user from a Community"
+    //   community_chat_removed (10.2) "Service message: chat or bot removed
+    //                                 from a Community"
+    //   purchased_paid_media          "A user purchased paid media with a
+    //                                 non-empty payload sent by the bot in a
+    //                                 non-channel chat", the paid-media
+    //                                 sibling of successful_payment.
+    "community_chat_joined",
+    "community_chat_removed",
+    "purchased_paid_media",
 ];
 
 /// If the raw message carries NONE of the known content keys, rewrite it in
 /// place into a plain text message whose text is the raw content payload
 /// (plus forward provenance), and drop the unknown keys so the typed parse
 /// lands on a normal text message.
-fn synthesize_unknown_content(m: &mut Value) {
+pub(crate) fn synthesize_unknown_content(m: &mut Value) {
     let Some(obj) = m.as_object_mut() else { return };
     if KNOWN_CONTENT_KEYS.iter().any(|k| obj.contains_key(*k)) {
         return;
