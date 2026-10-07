@@ -12,7 +12,7 @@
 //! (#1933). This test is the drift guard: it fails if either side re-acquires a
 //! literal, which is the one edit that silently restores the 4.44x disagreement.
 
-use crate::brain::agent::service::context::parse_context_manifest;
+use crate::brain::agent::service::context::{parse_context_manifest, resolve_context_manifest};
 use crate::brain::agent::service::request_budget::{
     compaction_summary_input_reserve, compaction_summary_output_tokens,
     compaction_summary_request_allowance, COMPACTION_SUMMARY_MAX_TOKENS,
@@ -625,5 +625,170 @@ fn an_endturn_stop_does_not_warn() {
         capture.warns().is_empty(),
         "an EndTurn stop is not a truncation; captured: {:?}",
         capture.warns()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #1933 (head-protect, end to end): a `MaxTokens` cut removes the TAIL, so
+// the ordering the prompt now mandates is what decides whether the manifest
+// fence survives. The pair below is the discriminating test — the same
+// content, the same cut, opposite outcomes — because a fixture that only
+// restates the new order could never fail.
+// ---------------------------------------------------------------------------
+
+/// A ~34 KB continuation document in the MANDATED order: §0, the §10 manifest
+/// fence, §7, §8, then the bulk prose, then §9. Small head, large tail.
+fn head_protected_document() -> String {
+    let prose = |label: &str| {
+        format!(
+            "## {label}\n{}\n\n",
+            "the summariser recorded this at length. ".repeat(200)
+        )
+    };
+    format!(
+        "## 0. IMMEDIATE TASK\n**Obligation status: OPEN**\n\
+         CONTINUE THIS TASK: keep going.\n\n\
+         ## 10. Context Manifest\n```context-manifest\n\
+         active_skills:\n  - opencrabs-dev\n```\n\n\
+         ## 7. Recovery Playbook\nRun `git log --oneline -3`.\n\n\
+         ## 8. Next Step\nCommit the guard.\n\n\
+         {}{}{}{}{}{}\
+         ## 9. Continuation Message\nPicking it back up.\n",
+        prose("1. Chronological Analysis"),
+        prose("2. Files Modified"),
+        prose("3. User Preferences & Constraints"),
+        prose("4. Errors & Corrections"),
+        prose("5. All User Messages"),
+        prose("6. Pending Tasks"),
+    )
+}
+
+/// The SAME content in the PRE-FIX order: §10 "at the very end". The control
+/// arm — a tail cut must be able to remove the fence here, or the test above
+/// discriminates nothing.
+fn manifest_last_document() -> String {
+    let prose = |label: &str| {
+        format!(
+            "## {label}\n{}\n\n",
+            "the summariser recorded this at length. ".repeat(200)
+        )
+    };
+    format!(
+        "## 0. IMMEDIATE TASK\n**Obligation status: OPEN**\n\
+         CONTINUE THIS TASK: keep going.\n\n\
+         ## 7. Recovery Playbook\nRun `git log --oneline -3`.\n\n\
+         ## 8. Next Step\nCommit the guard.\n\n\
+         {}{}{}{}{}{}\
+         ## 9. Continuation Message\nPicking it back up.\n\n\
+         ## 10. Context Manifest\n```context-manifest\n\
+         active_skills:\n  - opencrabs-dev\n```\n",
+        prose("1. Chronological Analysis"),
+        prose("2. Files Modified"),
+        prose("3. User Preferences & Constraints"),
+        prose("4. Errors & Corrections"),
+        prose("5. All User Messages"),
+        prose("6. Pending Tasks"),
+    )
+}
+
+/// A tail cut — the `MaxTokens` failure — keeps the manifest fence only when
+/// the head is protected. Both arms take the identical cut.
+#[test]
+fn a_maxtokens_cut_keeps_the_manifest_only_when_the_head_is_protected() {
+    let head = head_protected_document();
+    let old = manifest_last_document();
+    // Both fixtures are the same size, so a cut at the same FRACTION is the
+    // same cut in bytes: whatever the model wrote last is what is lost.
+    let cut = |d: &str| d[..d.len() / 2].to_string();
+
+    let cut_head = cut(&head);
+    let cut_old = cut(&old);
+
+    assert!(
+        parse_context_manifest(&cut_head).is_some(),
+        "a tail cut of a head-protected document must still carry the \
+         context-manifest fence (#1933)"
+    );
+    assert!(
+        cut_head.to_lowercase().contains("obligation status"),
+        "§0 (the obligation) must survive the same cut (#1933)"
+    );
+    // The control: the pre-fix ordering loses the fence to the SAME cut. If
+    // this ever stops holding, the fixture has gone slack and the assertion
+    // above proves nothing about the ordering.
+    assert!(
+        parse_context_manifest(&cut_old).is_none(),
+        "the control arm (manifest last) must LOSE the fence to the same cut, \
+         or this test cannot distinguish the two orderings"
+    );
+}
+
+/// (b) A document with no fence resolves to the default manifest AND warns,
+/// naming the `required_tools` it could not derive.
+#[test]
+fn resolve_context_manifest_warns_and_defaults_on_a_missing_fence() {
+    let doc = "## 0. IMMEDIATE TASK\n**Obligation status: OPEN**\nno fence here\n";
+
+    let capture = EventCapture::default();
+    let subscriber = tracing_subscriber::registry().with(capture.clone());
+    let manifest =
+        tracing::subscriber::with_default(subscriber, || resolve_context_manifest(doc));
+
+    assert!(
+        manifest.active_skills.is_empty() && manifest.discard_skills.is_empty(),
+        "the fallback must be keep-all-active: discard none, re-activate none"
+    );
+    assert!(
+        manifest.required_tools.is_empty(),
+        "required_tools is not derivable from a document that never carried the fence"
+    );
+    let warns = capture.warns();
+    assert!(
+        warns
+            .iter()
+            .any(|m| m.contains("context-manifest") && m.contains("required_tools")),
+        "the substitution must WARN and name the empty required_tools (#1933); \
+         captured: {warns:?}"
+    );
+}
+
+/// (c) A document cut at source is VISIBLE: the `MaxTokens` stop surfaces the
+/// existing truncation WARN, and the head-protected fence still parses after
+/// the trim — degradation reported, payload intact.
+#[test]
+fn a_cut_document_surfaces_the_truncation_warn_and_keeps_its_fence() {
+    let doc = head_protected_document();
+    let cut = doc[..doc.len() / 2].to_string();
+
+    let usage = crate::brain::provider::TokenUsage {
+        output_tokens: 5_500,
+        reasoning_tokens: 0,
+        ..Default::default()
+    };
+
+    let capture = EventCapture::default();
+    let subscriber = tracing_subscriber::registry().with(capture.clone());
+    let out = tracing::subscriber::with_default(subscriber, || {
+        AgentService::warn_if_summary_truncated(
+            Some(crate::brain::provider::StopReason::MaxTokens),
+            &usage,
+        );
+        AgentService::enforce_summary_budget(
+            cut.clone(),
+            COMPACTION_SUMMARY_MAX_TOKENS as usize,
+        )
+    });
+
+    let warns = capture.warns();
+    assert!(
+        warns
+            .iter()
+            .any(|m| m.contains("MaxTokens") && m.contains("#1933")),
+        "a document cut at source must surface the truncation WARN (#1933); \
+         captured: {warns:?}"
+    );
+    assert!(
+        parse_context_manifest(&out).is_some(),
+        "the head-protected fence must survive both the cut and the trim:\n{out}"
     );
 }
