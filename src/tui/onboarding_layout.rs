@@ -40,6 +40,31 @@ pub fn shows_logo(area_width: u16, area_height: u16) -> bool {
     area_width >= LOGO_MIN_WIDTH && area_height >= LOGO_MIN_HEIGHT
 }
 
+/// Blank rows around the header and footer text (#1975). `outer` sits
+/// between the text and the screen edge, `inner` between the text and the
+/// content. Small terminals give the rows back to the form: inner padding
+/// goes first, then outer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BandPadding {
+    pub outer: u16,
+    pub inner: u16,
+}
+
+/// Terminal height at which the bands get padding on both sides.
+pub const BAND_FULL_PADDING_HEIGHT: u16 = 30;
+/// Terminal height below which the bands get no padding at all.
+pub const BAND_EDGE_PADDING_HEIGHT: u16 = 20;
+
+pub fn band_padding(area_height: u16) -> BandPadding {
+    if area_height >= BAND_FULL_PADDING_HEIGHT {
+        BandPadding { outer: 1, inner: 1 }
+    } else if area_height >= BAND_EDGE_PADDING_HEIGHT {
+        BandPadding { outer: 1, inner: 0 }
+    } else {
+        BandPadding { outer: 0, inner: 0 }
+    }
+}
+
 /// Scroll offset that keeps `focus_row` in view with two rows of context
 /// above it, plus whatever the user added with Page Up / Page Down.
 pub fn scroll_offset(

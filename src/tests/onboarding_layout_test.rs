@@ -4,9 +4,11 @@
 
 use crate::tui::onboarding::{AuthField, OnboardingStep, OnboardingWizard, PROVIDERS};
 use crate::tui::onboarding_layout::{
-    MAX_CONTENT_WIDTH, content_width, scroll_offset, wrap_line, wrap_lines,
+    BandPadding, MAX_CONTENT_WIDTH, band_padding, content_width, scroll_offset, wrap_line,
+    wrap_lines,
 };
 use crate::tui::onboarding_render::render_onboarding;
+use crate::tui::render::theme::{self, Role};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Style};
@@ -167,4 +169,58 @@ fn rerun_step_one_footer_says_exit() {
     let text = screen_text(&wizard, 100, 30);
     assert!(text.contains("[Esc] Exit"), "{text}");
     assert!(!text.contains("[Esc] Back"), "{text}");
+}
+
+fn screen_rows(
+    wizard: &OnboardingWizard,
+    w: u16,
+    h: u16,
+) -> (Vec<String>, ratatui::buffer::Buffer) {
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    terminal.draw(|f| render_onboarding(f, wizard)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let rows = (0..h)
+        .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .collect();
+    (rows, buf)
+}
+
+#[test]
+fn band_padding_shrinks_with_the_terminal() {
+    assert_eq!(band_padding(40), BandPadding { outer: 1, inner: 1 });
+    assert_eq!(band_padding(24), BandPadding { outer: 1, inner: 0 });
+    assert_eq!(band_padding(16), BandPadding { outer: 0, inner: 0 });
+}
+
+#[test]
+fn header_and_footer_keep_off_the_screen_edges() {
+    // #1975: the title and the key hints sat on the first and last rows.
+    let wizard = provider_step_wizard();
+    for (w, h) in [(120, 40), (80, 24)] {
+        let (rows, _) = screen_rows(&wizard, w, h);
+        assert!(
+            rows[0].trim().is_empty(),
+            "{w}x{h}: row 0 not blank: {:?}",
+            rows[0]
+        );
+        let last = &rows[h as usize - 1];
+        assert!(
+            last.trim().is_empty(),
+            "{w}x{h}: last row not blank: {last:?}"
+        );
+        assert!(rows[1].contains("OpenCrabs"), "{w}x{h}: title not on row 1");
+    }
+}
+
+#[test]
+fn header_and_footer_are_tinted_bands() {
+    let wizard = provider_step_wizard();
+    let (_, buf) = screen_rows(&wizard, 120, 40);
+    let tint = theme::role(Role::SurfacePanel);
+    // Padding rows carry the tint across the full width, not just under text.
+    assert_eq!(buf[(0, 0)].bg, tint, "header band");
+    assert_eq!(buf[(119, 0)].bg, tint, "header band right edge");
+    assert_eq!(buf[(0, 39)].bg, tint, "footer band");
+    // The content area stays untinted.
+    assert_ne!(buf[(0, 20)].bg, tint, "content area");
 }
