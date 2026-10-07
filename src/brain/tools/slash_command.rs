@@ -348,10 +348,12 @@ impl Tool for SlashCommandTool {
             )));
         }
 
-        // `/onboard:<step>` — channel-capable onboarding (image/voice/channels).
-        // The TUI wizard is interactive; these text handlers write the same
-        // config so setup works over Telegram/Discord/etc.
-        if let Some(step) = command.strip_prefix("/onboard:") {
+        // Setup commands: `/image`, `/voice`, `/channels` (channel-capable),
+        // `/brain`, `/workspace`, `/daemon` (TUI-only answers), plus the legacy
+        // `/onboard:<step>` spelling as a fallback (#1981). The TUI wizard is
+        // interactive; these text handlers write the same config so setup
+        // works over Telegram/Discord/etc.
+        if let Some(step) = super::slash_onboard::setup_step_for(command) {
             return super::slash_onboard::dispatch(step, args);
         }
 
@@ -385,9 +387,8 @@ impl Tool for SlashCommandTool {
             )),
             "/goal" => self.handle_goal(args, context).await,
             "/profiles" => self.handle_profiles(context).await,
-            // `/onboard:channels`, `/onboard:voice` and the like are the shapes
-            // actually typed; matching only the bare word sent them to the
-            // "Unknown command" arm (#889).
+            // Bare `/onboard` and an empty `/onboard:`; the step spellings are
+            // routed above (#889, #1981).
             c if c == "/onboard" || c.starts_with("/onboard:") => Ok(ToolResult::success(
                 "Onboarding wizard is a TUI-only interactive screen. \
                  However, you can read and modify all settings via config_manager \
@@ -585,7 +586,11 @@ impl SlashCommandTool {
              /goal     — Set/view/pause/clear session goal\n\
              /profiles — List/switch/create/manage profiles\n\
              /whisper  — Voice-to-text (TUI only)\n\
-             /onboard  — Setup wizard (TUI only, use config_manager for programmatic changes)\n\n\
+             /onboard  — Setup wizard (TUI only, use config_manager for programmatic changes)\n\
+             /channels — Channel setup from chat (args: telegram|discord|whatsapp ...)\n\
+             /voice    — Voice STT/TTS setup from chat (args: stt|tts ...)\n\
+             /image    — Vision + image generation setup from chat\n\
+             /brain /workspace /daemon — TUI only\n\n\
              You can also use config_manager to read/write any config setting directly."
                 .into(),
         ))
@@ -1079,6 +1084,12 @@ impl SlashCommandTool {
                 "/stop",
                 "/settings",
                 "/onboard",
+                "/channels",
+                "/voice",
+                "/image",
+                "/brain",
+                "/workspace",
+                "/daemon",
                 "/whisper",
                 "/goal",
                 "/profiles",

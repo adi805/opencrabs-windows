@@ -3633,7 +3633,7 @@ impl AgentService {
                                 session_id,
                                 ProgressEvent::SelfHealingAlert {
                                     message: "No fallback provider available. \
-                                         Configure one with /onboard:provider"
+                                         Configure one with /models"
                                         .to_string(),
                                 },
                             );

@@ -696,7 +696,7 @@ impl OnboardingWizard {
                 // which silently committed config (disabled every other
                 // provider, enabled this one, rebuilt the agent) when the
                 // user pressed Tab to navigate. 2026-05-28 bug: a single
-                // unintended Tab while inspecting models in /onboard:provider
+                // unintended Tab while inspecting models in /models
                 // switched the active provider with no confirmation prompt.
                 // Only Enter commits now.
                 _ => {}

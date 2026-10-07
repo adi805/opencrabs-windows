@@ -1,20 +1,33 @@
-//! Channel-capable `/onboard:*` handlers.
+//! Channel-capable setup command handlers (`/image`, `/voice`, `/channels`).
 //!
 //! The TUI onboarding wizard is an interactive screen, so on channels
-//! (Telegram/Discord/Slack/WhatsApp) the `/onboard:*` steps were unreachable.
-//! These text-driven handlers expose the same setup over a chat: called with
-//! no args they print a menu; called with args they write the exact same
-//! config/keys the wizard writes. Routed from `slash_command` via the
-//! `/onboard:<step>` prefix.
+//! (Telegram/Discord/Slack/WhatsApp) its steps were unreachable. These
+//! text-driven handlers expose the same setup over a chat: called with no
+//! args they print a menu; called with args they write the exact same
+//! config/keys the wizard writes. Routed from `slash_command` through
+//! [`setup_step_for`], which also accepts the legacy `/onboard:<step>`
+//! spelling as a back-compat fallback (#1981).
 //!
-//! `provider` is intentionally absent — `/models` already covers it on
-//! channels. `brain` and the brain-directory change stay TUI-only.
+//! `provider` is intentionally absent: `/models` already covers it on
+//! channels. `/brain`, `/workspace` and `/daemon` stay TUI-only.
 
 use super::error::Result;
 use super::r#trait::ToolResult;
 use crate::config::Config;
 
-/// Route `/onboard:<sub>` to the matching handler.
+/// The setup step a slash command names, if it is one: the direct commands
+/// (#1981) or the legacy `/onboard:<step>` spelling, still accepted so brain
+/// files and habits that say it keep working. Bare `/onboard` is not a step.
+pub(crate) fn setup_step_for(command: &str) -> Option<&str> {
+    match command {
+        "/image" | "/voice" | "/channels" | "/brain" | "/workspace" | "/daemon" => {
+            Some(&command[1..])
+        }
+        c => c.strip_prefix("/onboard:").filter(|step| !step.is_empty()),
+    }
+}
+
+/// Route a setup step (`image`, `voice`, `channels`, ...) to its handler.
 pub(crate) fn dispatch(sub: &str, args: &str) -> Result<ToolResult> {
     match sub.trim().to_lowercase().as_str() {
         "image" => onboard_image(args),
@@ -22,12 +35,18 @@ pub(crate) fn dispatch(sub: &str, args: &str) -> Result<ToolResult> {
         "channels" => onboard_channels(args),
         "brain" => Ok(ToolResult::success(
             "Brain/persona setup edits multiple markdown files and is TUI-only \
-             (type /onboard:brain in the desktop app). To tweak persona text from \
+             (type /brain in the desktop app). To tweak persona text from \
              here, read/edit the brain files via the brain tools."
                 .into(),
         )),
+        "workspace" | "daemon" => Ok(ToolResult::success(format!(
+            "/{} is TUI-only: it changes this machine's workspace or background \
+             service. Type it in the desktop app, or use config_manager for the \
+             underlying settings.",
+            sub.trim().to_lowercase()
+        ))),
         other => Ok(ToolResult::error(format!(
-            "Unknown onboarding step '{other}'. Available on channels: image, voice, channels."
+            "Unknown setup step '{other}'. Available on channels: /image, /voice, /channels."
         ))),
     }
 }
@@ -56,15 +75,15 @@ fn split_first(s: &str) -> (&str, &str) {
 }
 
 const IMAGE_MENU: &str = "Image setup — pick one:\n\
-    • `/onboard:image gemini <GOOGLE_AI_KEY>` — Google vision + image generation (Nano Banana).\n\
-    • `/onboard:image provider <VISION_MODEL>` — use your ACTIVE provider's vision model \
-    (OpenAI-compatible, no extra key). e.g. `/onboard:image provider mimo-v2.5-pro`.\n\
-    • `/onboard:image generation <GENERATION_MODEL>` — route generate_image to your \
-    ACTIVE provider's images endpoint (OpenAI-compatible). e.g. `/onboard:image generation \
+    • `/image gemini <GOOGLE_AI_KEY>` — Google vision + image generation (Nano Banana).\n\
+    • `/image provider <VISION_MODEL>` — use your ACTIVE provider's vision model \
+    (OpenAI-compatible, no extra key). e.g. `/image provider mimo-v2.5-pro`.\n\
+    • `/image generation <GENERATION_MODEL>` — route generate_image to your \
+    ACTIVE provider's images endpoint (OpenAI-compatible). e.g. `/image generation \
     qwen-image`. Non-active providers: `[providers.fallback] generation = [\"name\"]`.\n\
     Ask the user which they want and re-run with the argument.";
 
-/// `/onboard:image [gemini <key> | provider <vision_model> | generation <generation_model>]`
+/// `/image [gemini <key> | provider <vision_model> | generation <generation_model>]`
 pub(crate) fn onboard_image(args: &str) -> Result<ToolResult> {
     let args = args.trim();
     if args.is_empty() {
@@ -76,7 +95,7 @@ pub(crate) fn onboard_image(args: &str) -> Result<ToolResult> {
             let key = rest.trim();
             if key.is_empty() {
                 return Ok(ToolResult::error(
-                    "Need the key: `/onboard:image gemini <GOOGLE_AI_KEY>`.".into(),
+                    "Need the key: `/image gemini <GOOGLE_AI_KEY>`.".into(),
                 ));
             }
             if let Err(e) =
@@ -107,7 +126,7 @@ pub(crate) fn onboard_image(args: &str) -> Result<ToolResult> {
             let model = rest.trim();
             if model.is_empty() {
                 return Ok(ToolResult::error(
-                    "Need the vision model: `/onboard:image provider <VISION_MODEL>` \
+                    "Need the vision model: `/image provider <VISION_MODEL>` \
                      (a vision-capable model on your active provider)."
                         .into(),
                 ));
@@ -118,8 +137,7 @@ pub(crate) fn onboard_image(args: &str) -> Result<ToolResult> {
             };
             let Some(section) = active_provider_section(&config) else {
                 return Ok(ToolResult::error(
-                    "No active provider. Set one up with /models or /onboard:provider first."
-                        .into(),
+                    "No active provider. Set one up with /models first.".into(),
                 ));
             };
             if let Err(e) = Config::write_key(&section, "vision_model", model) {
@@ -137,7 +155,7 @@ pub(crate) fn onboard_image(args: &str) -> Result<ToolResult> {
             let model = rest.trim();
             if model.is_empty() {
                 return Ok(ToolResult::error(
-                    "Need the generation model: `/onboard:image generation <GENERATION_MODEL>` \
+                    "Need the generation model: `/image generation <GENERATION_MODEL>` \
                      (an images-capable model on your active provider, e.g. qwen-image)."
                         .into(),
                 ));
@@ -148,8 +166,7 @@ pub(crate) fn onboard_image(args: &str) -> Result<ToolResult> {
             };
             let Some(section) = active_provider_section(&config) else {
                 return Ok(ToolResult::error(
-                    "No active provider. Set one up with /models or /onboard:provider first."
-                        .into(),
+                    "No active provider. Set one up with /models first.".into(),
                 ));
             };
             if let Err(e) = Config::write_key(&section, "generation_model", model) {
@@ -171,14 +188,14 @@ pub(crate) fn onboard_image(args: &str) -> Result<ToolResult> {
 }
 
 const VOICE_MENU: &str = "Voice setup — STT (speech→text) and TTS (text→speech). Pick:\n\
-    • `/onboard:voice stt groq <GROQ_KEY>` — Groq Whisper.\n\
-    • `/onboard:voice stt openai <BASE_URL> <MODEL> <KEY>` — any OpenAI-compatible STT.\n\
-    • `/onboard:voice stt off`\n\
-    • `/onboard:voice tts openai <OPENAI_KEY>` — OpenAI TTS.\n\
-    • `/onboard:voice tts off`\n\
+    • `/voice stt groq <GROQ_KEY>` — Groq Whisper.\n\
+    • `/voice stt openai <BASE_URL> <MODEL> <KEY>` — any OpenAI-compatible STT.\n\
+    • `/voice stt off`\n\
+    • `/voice tts openai <OPENAI_KEY>` — OpenAI TTS.\n\
+    • `/voice tts off`\n\
     Ask the user what they want, then re-run with the argument.";
 
-/// `/onboard:voice [stt … | tts …]`
+/// `/voice [stt … | tts …]`
 pub(crate) fn onboard_voice(args: &str) -> Result<ToolResult> {
     let args = args.trim();
     if args.is_empty() {
@@ -295,14 +312,14 @@ const TELEGRAM_NO_TOKEN_HELP: &str = "Telegram setup — create a bot on @BotFat
     3. Choose a display name for your bot\n\
     4. Choose a username (must end with 'bot', e.g. myteam_crab_bot)\n\
     5. Copy the token BotFather gives you (looks like: 123456789:ABCdef...)\n\
-    6. Send it here: `/onboard:channels telegram <TOKEN>`\n\n\
+    6. Send it here: `/channels telegram <TOKEN>`\n\n\
     Once the token is saved, the bot starts automatically.";
 
 const CHANNELS_MENU: &str = "Channel setup — connect a messenger:\n\
-    • `/onboard:channels telegram <BOT_TOKEN> [YOUR_NUMERIC_ID]` — or just `/onboard:channels telegram` for setup steps\n\
-    • `/onboard:channels telegram richtext on|off`: rich text experience (needs the latest Telegram app)\n\
-    • `/onboard:channels discord <BOT_TOKEN>`\n\
-    • `/onboard:channels whatsapp` — starts pairing; I'll send you a QR to scan.\n\
+    • `/channels telegram <BOT_TOKEN> [YOUR_NUMERIC_ID]` — or just `/channels telegram` for setup steps\n\
+    • `/channels telegram richtext on|off`: rich text experience (needs the latest Telegram app)\n\
+    • `/channels discord <BOT_TOKEN>`\n\
+    • `/channels whatsapp` — starts pairing; I'll send you a QR to scan.\n\
     Ask the user which channel + token, then re-run with the argument.";
 
 /// Validate a Telegram bot token format: "numbers:alphanumeric" with key >= 30 chars.
@@ -328,7 +345,7 @@ fn validate_telegram_token(token: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// `/onboard:channels [telegram <token> | discord <token> | whatsapp]`
+/// `/channels [telegram <token> | discord <token> | whatsapp]`
 pub(crate) fn onboard_channels(args: &str) -> Result<ToolResult> {
     let args = args.trim();
     if args.is_empty() {
@@ -351,7 +368,7 @@ pub(crate) fn onboard_channels(args: &str) -> Result<ToolResult> {
                     Some("off" | "false" | "no") => false,
                     _ => {
                         return Ok(ToolResult::error(
-                            "Usage: `/onboard:channels telegram richtext on|off`. Enable only \
+                            "Usage: `/channels telegram richtext on|off`. Enable only \
                              if you run the latest Telegram app version (older clients will \
                              not render rich messages correctly)."
                                 .into(),
@@ -361,7 +378,7 @@ pub(crate) fn onboard_channels(args: &str) -> Result<ToolResult> {
                 set_flags(&[("channels.telegram", "rich_messages", &value.to_string())])?;
                 return Ok(ToolResult::success(if value {
                     "Rich text experience enabled. It only renders on current Telegram \
-                     apps; run `/onboard:channels telegram richtext off` if messages \
+                     apps; run `/channels telegram richtext off` if messages \
                      show as unsupported."
                         .into()
                 } else {
@@ -405,7 +422,7 @@ pub(crate) fn onboard_channels(args: &str) -> Result<ToolResult> {
                     )));
                 }
                 None => " No numeric user ID given — message the bot so it learns your ID, or \
-                         pass it: `/onboard:channels telegram <token> <numeric_id>`."
+                         pass it: `/channels telegram <token> <numeric_id>`."
                     .to_string(),
             };
             Ok(ToolResult::success(format!(
@@ -417,7 +434,7 @@ pub(crate) fn onboard_channels(args: &str) -> Result<ToolResult> {
             let token = params.trim();
             if token.is_empty() {
                 return Ok(ToolResult::error(
-                    "Need the bot token: `/onboard:channels discord <BOT_TOKEN>`.".into(),
+                    "Need the bot token: `/channels discord <BOT_TOKEN>`.".into(),
                 ));
             }
             set_flags(&[("channels.discord", "enabled", "true")])?;

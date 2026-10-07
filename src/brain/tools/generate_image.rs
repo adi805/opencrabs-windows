@@ -88,7 +88,7 @@ pub struct GenerateImageTool {
 /// nothing (mirrors `VISION_SETUP_HINT`: never a permanently-registered
 /// hint over a config that has since gained a route).
 pub const GENERATION_SETUP_HINT: &str = "Image generation is not configured. Options: \
-    `/onboard:image gemini <GOOGLE_AI_KEY>` for Gemini, or set `generation_model = \"<model>\"` \
+    `/image gemini <GOOGLE_AI_KEY>` for Gemini, or set `generation_model = \"<model>\"` \
     on a provider section (`[providers.<name>]` / `[providers.custom.<name>]` with base_url) \
     to route through any OpenAI-compatible `/images/generations` endpoint. Pin a non-active \
     provider with `[providers.fallback] generation = [\"<name>\", ...]`.";
@@ -307,7 +307,7 @@ impl Tool for GenerateImageTool {
             if candidates.is_empty() {
                 return Ok(ToolResult::error(
                     "No Gemini-backend candidate is configured, and img2img input images \
-                     require the Gemini backend. Either set up Gemini (`/onboard:image \
+                     require the Gemini backend. Either set up Gemini (`/image \
                      gemini <key>`) or retry without the `image` parameter."
                         .to_string(),
                 ));
