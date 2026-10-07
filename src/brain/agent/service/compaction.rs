@@ -58,6 +58,43 @@ impl CompactionOutcome {
     }
 }
 
+/// The marker row to persist for `outcome`, given the context it was applied
+/// to (#1928).
+///
+/// The apply step already installed the authoritative marker IN `context`, and
+/// only that text carries a banner matching its own scope: a delta summary
+/// opens with the sentinel banner, a full-window one does not. Formatting a
+/// fresh banner from the outcome instead wrote a DELTA summary under the
+/// FULL-WINDOW banner — which claims to summarise "everything before this
+/// point". The reload trusts the banner, so every earlier frozen segment was
+/// silently dropped on the next turn (`run_tool_loop` rebuilds from the DB
+/// every turn, not only on restart).
+///
+/// Truncation is the exception: it drops messages without installing a marker,
+/// so the notice IS the only record that history was lost.
+pub(crate) fn marker_row_to_persist(
+    context: &AgentContext,
+    outcome: &CompactionOutcome,
+    trigger: &str,
+) -> String {
+    match outcome {
+        CompactionOutcome::Summarised(_) => {
+            let mut text = context
+                .last_marker_text()
+                .unwrap_or_else(|| outcome.marker(trigger));
+            let note = trigger.trim();
+            if !note.is_empty() {
+                // Keep the caller's note, but only ever AFTER the banner: the
+                // loader anchors on the row's opening characters, so a trailing
+                // note can never be mistaken for the banner itself.
+                text.push_str(&format!("\n\n[compaction trigger: {note}]"));
+            }
+            text
+        }
+        CompactionOutcome::Truncated => outcome.marker(trigger),
+    }
+}
+
 /// A summariser running against a snapshot of a session's context while that
 /// session keeps taking turns.
 ///
@@ -188,8 +225,11 @@ impl AgentService {
     /// headroom to summarise without bumping into the actual ceiling.
     ///
     /// Returns `Some(outcome)` on any visit that changed the context, and the
-    /// caller MUST persist `outcome.marker(..)`. That includes the truncation
-    /// path: a context that shrank without a marker cannot be reloaded.
+    /// caller MUST persist `marker_row_to_persist(&context, &outcome, ..)` —
+    /// NOT `outcome.marker(..)`, whose banner is hardcoded to the full-window
+    /// form and therefore lies about a delta summary's scope (#1928). That
+    /// includes the truncation path: a context that shrank without a marker
+    /// cannot be reloaded.
     pub(super) async fn enforce_context_budget(
         &self,
         session_id: Uuid,

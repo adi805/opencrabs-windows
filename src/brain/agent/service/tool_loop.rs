@@ -1483,7 +1483,11 @@ impl AgentService {
         if let Some(ref outcome) = compaction_result {
             // Persist compaction marker to DB so restarts load from this point
             if let Err(e) = message_service
-                .create_message(session_id, "user".to_string(), outcome.marker(""))
+                .create_message(
+                    session_id,
+                    "user".to_string(),
+                    super::compaction::marker_row_to_persist(&context, outcome, ""),
+                )
                 .await
             {
                 tracing::error!("Failed to persist compaction marker to DB: {}", e);
@@ -1970,7 +1974,11 @@ impl AgentService {
             } {
                 // Persist compaction marker to DB so restarts load from this point
                 if let Err(e) = message_service
-                    .create_message(session_id, "user".to_string(), outcome.marker(""))
+                    .create_message(
+                        session_id,
+                        "user".to_string(),
+                        super::compaction::marker_row_to_persist(&context, outcome, ""),
+                    )
                     .await
                 {
                     tracing::error!("Failed to persist mid-loop compaction marker to DB: {}", e);
@@ -4197,7 +4205,11 @@ impl AgentService {
                     .create_message(
                         session_id,
                         "user".to_string(),
-                        outcome.marker(" after token calibration revealed high context usage"),
+                        super::compaction::marker_row_to_persist(
+                            &context,
+                            outcome,
+                            " after token calibration revealed high context usage",
+                        ),
                     )
                     .await
                 {
@@ -7835,7 +7847,11 @@ impl AgentService {
             } {
                 // Persist compaction marker to DB so restarts load from this point
                 if let Err(e) = message_service
-                    .create_message(session_id, "user".to_string(), outcome.marker(""))
+                    .create_message(
+                        session_id,
+                        "user".to_string(),
+                        super::compaction::marker_row_to_persist(&context, outcome, ""),
+                    )
                     .await
                 {
                     tracing::error!("Failed to persist post-tool compaction marker to DB: {}", e);

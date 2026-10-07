@@ -359,6 +359,21 @@ impl AgentContext {
             .rposition(Self::is_compaction_marker_msg)
     }
 
+    /// Text of the last in-memory compaction marker, if any.
+    ///
+    /// #1928: this is the marker the apply step actually installed, and the
+    /// only text whose banner matches its own scope — a delta summary opens
+    /// with the sentinel banner, a full-window one does not. The persist path
+    /// writes THIS, so the row in the DB is the row the reload will read
+    /// (`messages_from_last_compaction` anchors on the banner).
+    pub(crate) fn last_marker_text(&self) -> Option<String> {
+        let idx = self.last_marker_index()?;
+        match self.messages[idx].content.first() {
+            Some(ContentBlock::Text { text }) => Some(text.clone()),
+            _ => None,
+        }
+    }
+
     /// An in-memory marker: a user message whose FIRST text block starts
     /// with the canonical prefix — the in-memory twin of the #175
     /// anchored-prefix rule the DB loader uses.
@@ -386,7 +401,7 @@ impl AgentContext {
             role: Role::User,
             content: vec![ContentBlock::Text {
                 text: format!(
-                    "[CONTEXT COMPACTION — {SEGMENT_SENTINEL} This block summarises only the \
+                    "{DELTA_MARKER_PREFIX} This block summarises only the \
                      messages since the previous compaction marker. The earlier frozen \
                      segments above remain in force unchanged; do not re-derive or merge \
                      them.]\n\n{summary}"
@@ -563,6 +578,54 @@ pub(crate) const COMPACTION_MARKER_PREFIX: &str = "[CONTEXT COMPACTION";
 /// Inverted on purpose: tagging the one new marker type keeps every legacy
 /// marker (and every legacy DB stream) behaving exactly as before.
 pub(crate) const SEGMENT_SENTINEL: &str = "DELTA SEGMENT.";
+
+/// The banner that OPENS a delta-segment marker: `COMPACTION_MARKER_PREFIX`,
+/// an em-dash, then the sentinel. The DB loader tests THIS, anchored at the
+/// start of the row, to tell a segment (extends the boundary) from a boundary
+/// (restarts history).
+///
+/// Anchored on purpose (#1928). The test used to be `content.contains(
+/// SEGMENT_SENTINEL)` over the whole row, body included — so any marker whose
+/// *summary prose* happened to mention "DELTA SEGMENT." was mistaken for a
+/// segment and skipped, pushing the reload anchor further back (or, with no
+/// older marker, returning the whole uncompacted history). That is the #175
+/// anchored-prefix trap reintroduced for the sentinel.
+///
+/// One constant for both halves: the writer emits it, the loader anchors on
+/// it. The assertion below ties it to the sentinel at COMPILE time, so editing
+/// either constant alone fails the build instead of silently re-opening #1928.
+pub(crate) const DELTA_MARKER_PREFIX: &str = "[CONTEXT COMPACTION — DELTA SEGMENT.";
+
+const _: () = {
+    /// Byte equality of `needle` at `at`, without allocating — const-evaluable.
+    const fn eq_at(hay: &str, at: usize, needle: &str) -> bool {
+        let (h, n) = (hay.as_bytes(), needle.as_bytes());
+        if at + n.len() > h.len() {
+            return false;
+        }
+        let mut i = 0;
+        while i < n.len() {
+            if h[at + i] != n[i] {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+    // The banner is the marker prefix, " — ", then the sentinel. Prefix +
+    // suffix at an exact offset + total length pins the whole string.
+    const SEPARATOR: &str = " — ";
+    assert!(eq_at(DELTA_MARKER_PREFIX, 0, COMPACTION_MARKER_PREFIX));
+    assert!(eq_at(
+        DELTA_MARKER_PREFIX,
+        COMPACTION_MARKER_PREFIX.len() + SEPARATOR.len(),
+        SEGMENT_SENTINEL
+    ));
+    assert!(
+        DELTA_MARKER_PREFIX.len()
+            == COMPACTION_MARKER_PREFIX.len() + SEPARATOR.len() + SEGMENT_SENTINEL.len()
+    );
+};
 
 /// What a compaction summarises (#1649).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
