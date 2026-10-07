@@ -107,14 +107,21 @@ async fn keep_typing_while_detached(
     agents: Option<Arc<SubAgentManager>>,
     session_id: Uuid,
 ) {
-    crate::channels::typing_tick::tick_while_detached(background, agents, session_id, TICK, || {
-        fire_chat_action(
-            &bot,
-            chat_id,
-            thread_id,
-            ChatAction::Typing,
-            "handover typing",
-        )
-    })
+    crate::channels::typing_tick::tick_while_detached(
+        background,
+        agents,
+        session_id,
+        None,
+        TICK,
+        || {
+            fire_chat_action(
+                &bot,
+                chat_id,
+                thread_id,
+                ChatAction::Typing,
+                "handover typing",
+            )
+        },
+    )
     .await;
 }

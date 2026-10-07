@@ -65,6 +65,10 @@ pub(crate) fn spawn_typing(
             background,
             agents,
             session_id,
+            // The tail here starts where `cancel` ended the turn loop, so the
+            // turn token is not a valid stop for it; no external stop is
+            // wired for Discord (#1989 is the WhatsApp tail and resume).
+            None,
             TICK,
             || broadcast(&http, channel, "handover"),
         )

@@ -1511,11 +1511,18 @@ pub(crate) async fn handle_message(
 
     // Typing indicator — send composing every 5 s while the agent thinks
     let typing_cancel = CancellationToken::new();
+    // The agent-call token is created HERE rather than at the call because
+    // the handover tail below must watch it: `/stop` and the next turn's
+    // `store_cancel_token` are the two events that should end this
+    // indicator, and both cancel exactly this token (#1989).
+    let cancel_token = CancellationToken::new();
     tokio::spawn({
         let client = client.clone();
         let chat_jid = reply_target.clone();
         let cancel = typing_cancel.clone();
+        let stop = cancel_token.clone();
         let background = agent.background_manager();
+        let agents = agent.subagent_manager();
         async move {
             loop {
                 if let Err(e) = client.chatstate().send_composing(&chat_jid).await {
@@ -1529,16 +1536,32 @@ pub(crate) async fn handle_message(
             // Keep composing past the end of the turn while this session still
             // has detached work (#812). Spawning a long background command ENDS
             // the turn, so without this the indicator dies at the moment the
-            // user most needs a sign that something is happening.
-            if let Some(manager) = background {
-                while manager.running_for(session_id) > 0 {
+            // user most needs a sign that something is happening. This tail
+            // now runs through the shared tick (#1989): sub-agent work holds
+            // the indicator too, and `/stop` or the next turn ends it instead
+            // of leaving a second loop pinging under the new turn's indicator.
+            crate::channels::typing_tick::tick_while_detached(
+                background,
+                agents,
+                session_id,
+                Some(stop.clone()),
+                std::time::Duration::from_secs(5),
+                || async {
                     if let Err(e) = client.chatstate().send_composing(&chat_jid).await {
-                        tracing::warn!(error = %e, "failed to send WhatsApp composing indicator");
+                        tracing::warn!(
+                            error = %e,
+                            "failed to send WhatsApp composing indicator"
+                        );
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                }
-            }
-            if let Err(e) = client.chatstate().send_paused(&chat_jid).await {
+                },
+            )
+            .await;
+            // Paused only when the work ended on its own: after a `/stop` or
+            // a new turn, the silence (or the new turn's composing) is owned
+            // elsewhere, and a stale paused would snuff it.
+            if !stop.is_cancelled()
+                && let Err(e) = client.chatstate().send_paused(&chat_jid).await
+            {
                 tracing::warn!(error = %e, "failed to send WhatsApp paused indicator");
             }
         }
@@ -1880,8 +1903,10 @@ pub(crate) async fn handle_message(
         })
     };
 
-    // Send to agent with WhatsApp approval + progress callbacks
-    let cancel_token = CancellationToken::new();
+    // Send to agent with WhatsApp approval + progress callbacks.
+    // `cancel_token` itself is created further up, where the typing task
+    // spawns: the handover tail must watch it too (#1989). This call still
+    // wires it to the agent call and to `/stop`.
     wa_state
         .store_cancel_token(session_id, cancel_token.clone())
         .await;

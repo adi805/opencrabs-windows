@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::brain::tools::subagent::manager::{SubAgent, SubAgentManager, SubAgentState};
@@ -35,12 +36,23 @@ fn child(parent: Uuid, awaiting: bool) -> SubAgent {
 /// Count pings for a 150 ms budget at a 10 ms tick. A still-looping case
 /// gets cancelled by the timeout; every settled case returned on its own.
 async fn run_tick(agents: Option<Arc<SubAgentManager>>, session: Uuid) -> usize {
+    run_tick_with_stop(agents, session, None).await
+}
+
+/// Same budget with the optional stop token (#1989) wired through, so the
+/// cancel semantics the WhatsApp tail depends on are exercised for real.
+async fn run_tick_with_stop(
+    agents: Option<Arc<SubAgentManager>>,
+    session: Uuid,
+    stop: Option<CancellationToken>,
+) -> usize {
     let pings = Arc::new(AtomicUsize::new(0));
     let counted = pings.clone();
     let tick = tick_while_detached(
         None,
         agents,
         session,
+        stop,
         Duration::from_millis(10),
         move || {
             let pings = counted.clone();
@@ -77,4 +89,41 @@ async fn working_children_hold_the_typing_tick() {
 async fn unwired_surface_sends_nothing() {
     let pings = run_tick(None, Uuid::new_v4()).await;
     assert_eq!(pings, 0);
+}
+
+#[tokio::test]
+async fn stop_token_ends_a_live_tick() {
+    // #1989: the WhatsApp tail must answer `/stop` (and the next turn's
+    // token takeover) while detached work is still running. A live child
+    // keeps the count above zero forever, so only the stop token can break
+    // this loop; without it the helper pings until the 150 ms timeout.
+    let mgr = Arc::new(SubAgentManager::new());
+    let session = Uuid::new_v4();
+    mgr.insert(child(session, false));
+    let stop = CancellationToken::new();
+    let watcher = stop.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(35)).await;
+        watcher.cancel();
+    });
+    let pings = run_tick_with_stop(Some(mgr), session, Some(stop)).await;
+    assert!(pings > 0, "the tick must ping while work runs");
+    assert!(
+        pings <= 10,
+        "a cancelled stop must end the loop within a tick or two, got {pings}"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_stop_before_entry_sends_nothing() {
+    // The takeover case: the next turn's `store_cancel_token` cancels the
+    // previous token before the old tail ever starts. A dead session must
+    // not get a single post-handover ping.
+    let mgr = Arc::new(SubAgentManager::new());
+    let session = Uuid::new_v4();
+    mgr.insert(child(session, false));
+    let stop = CancellationToken::new();
+    stop.cancel();
+    let pings = run_tick_with_stop(Some(mgr), session, Some(stop)).await;
+    assert_eq!(pings, 0, "an already-cancelled stop must ping nothing");
 }

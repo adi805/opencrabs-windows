@@ -20,6 +20,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::brain::agent::service::background_tasks::BackgroundTaskManager;
@@ -31,6 +32,13 @@ use crate::brain::tools::subagent::SubAgentManager;
 /// excluded: the round ended, a person has to answer, and a typing indicator
 /// held open on a human is the stuck clock #1984 reports.
 ///
+/// `stop` is an optional hard end for the indicator itself (#1989): WhatsApp
+/// reuses this loop for its post-turn tail, and `/stop` or the next turn's
+/// registration must end it rather than leave a second loop pinging under
+/// the new turn's own indicator. Checked before every ping and raced against
+/// the sleep, so a cancelled token ends the loop within one tick, and a token
+/// that was already cancelled ends it before the first ping.
+///
 /// Returns immediately when neither manager is wired, which is what a surface
 /// without detached-work support needs. The first ping goes out BEFORE the
 /// first sleep: the turn has just ended and its own last ping is already
@@ -40,6 +48,7 @@ pub(crate) async fn tick_while_detached<F, Fut>(
     background: Option<Arc<BackgroundTaskManager>>,
     agents: Option<Arc<SubAgentManager>>,
     session_id: Uuid,
+    stop: Option<CancellationToken>,
     tick: Duration,
     mut send: F,
 ) where
@@ -50,6 +59,9 @@ pub(crate) async fn tick_while_detached<F, Fut>(
         return;
     }
     loop {
+        if stop.as_ref().is_some_and(CancellationToken::is_cancelled) {
+            break;
+        }
         let bg = background
             .as_ref()
             .map(|m| m.running_for(session_id))
@@ -62,6 +74,12 @@ pub(crate) async fn tick_while_detached<F, Fut>(
             break;
         }
         send().await;
-        tokio::time::sleep(tick).await;
+        match stop.as_ref() {
+            Some(token) => tokio::select! {
+                _ = token.cancelled() => break,
+                _ = tokio::time::sleep(tick) => {}
+            },
+            None => tokio::time::sleep(tick).await,
+        }
     }
 }
