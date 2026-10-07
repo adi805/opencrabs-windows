@@ -21,6 +21,13 @@
 # claim, not a contract this repo can verify.
 set -euo pipefail
 
+# minSdk 26 is a product contract, not a build detail: the PRD pins it in
+# "Layer 2: Machine Spec" and NFR-005, and AC-026 verifies it on a real
+# device. It is also the floor the Java shell actually needs (NotificationChannel,
+# plus Process.isAlive/destroyForcibly). Declared once so the dex and the
+# manifest cannot drift apart, which is how it read 24 in both places before.
+MIN_SDK=26
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "$#" -eq 0 ]; then
   echo "usage: $0 <abi>=<path-to-core-binary> [...]" >&2
@@ -143,7 +150,7 @@ fi
 grep -v 'bootstrap class path' "$OUT/javac.log" || true
 
 find "$OUT/classes" -name '*.class' > "$OUT/classes.txt"
-"$BT/d8" --lib "$AJAR" --min-api 24 --output "$OUT" "@$OUT/classes.txt"
+"$BT/d8" --lib "$AJAR" --min-api "$MIN_SDK" --output "$OUT" "@$OUT/classes.txt"
 if [ ! -f "$OUT/classes.dex" ]; then
   echo "d8 produced no classes.dex" >&2
   exit 1
@@ -155,7 +162,7 @@ echo "dex         : $(stat -c%s "$OUT/classes.dex") bytes"
   -o "$OUT/base.apk" \
   --manifest "$ROOT/android/AndroidManifest.xml" \
   -I "$AJAR" \
-  --min-sdk-version 24 \
+  --min-sdk-version "$MIN_SDK" \
   --target-sdk-version 35 \
   --version-code 1 \
   --version-name 0.1.0
