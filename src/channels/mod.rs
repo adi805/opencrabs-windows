@@ -3,6 +3,7 @@
 //! Messaging channel integrations (Telegram, WhatsApp, Discord, Slack) and the
 //! shared factory for creating channel-specific agent services.
 
+pub(crate) mod background_work;
 pub mod bg_resume;
 pub mod commands;
 #[cfg(any(feature = "discord", feature = "telegram"))]
