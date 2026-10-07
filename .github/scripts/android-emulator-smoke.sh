@@ -159,15 +159,19 @@ fi
 # suppressed. The assertion further down would then fail for a harness reason
 # while looking like an app defect. Grant it as root (adb root already ran) so
 # that check measures the app's ability to post a notification.
+# dumpsys prints each permission TWICE: a bare name under "requested permissions"
+# and the state under "runtime permissions" as `<name>: granted=<bool>`. Matching
+# the bare name and taking head -1 reads a line that never carries a state, so the
+# check failed while the permission was in fact granted.
 say "grant POST_NOTIFICATIONS (runtime permission on API 33+)"
-NOTIF_ROW="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | head -1)"
+NOTIF_ROW="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep -m1 'android.permission.POST_NOTIFICATIONS: granted=')"
 case "$NOTIF_ROW" in
   "")
     echo "  NOTE: $PKG does not declare POST_NOTIFICATIONS on this image - nothing to grant"
     ;;
   *)
     adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS > "$OUT/pm-grant.txt" 2>&1 || true
-    NOTIF_AFTER="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | head -1)"
+    NOTIF_AFTER="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep -m1 'android.permission.POST_NOTIFICATIONS: granted=')"
     case "$NOTIF_AFTER" in
       *granted=true*) pass "POST_NOTIFICATIONS granted for the run" ;;
       *) cat "$OUT/pm-grant.txt"; fail "POST_NOTIFICATIONS declared but could not be granted" ;;
@@ -191,7 +195,7 @@ say "POST_NOTIFICATIONS (the app must ask, API 33+)"
 # it the way a user would (a headless emulator cannot tap the dialog) and
 # restart, so the foreground notification is posted with the permission
 # already in place. Granting it after the service started does not re-post.
-ASKED="$(adb logcat -d -s OpenCrabsApp:V 2>/dev/null | tr -d '\r' | grep -m1 'POST_NOTIFICATIONS requesting')"
+ASKED="$(adb logcat -d -s OpenCrabsApp:V 2>/dev/null | tr -d '\r' | grep -m1E 'POST_NOTIFICATIONS (requesting|already granted)')"
 echo "  ${ASKED:-<no POST_NOTIFICATIONS request marker in logcat>}"
 if [ -n "$ASKED" ]; then
   pass "the app requested POST_NOTIFICATIONS at runtime"
@@ -519,7 +523,7 @@ say "notification (foreground service visibility)"
 # 35, so declaring it in the manifest is not enough: an app that never asks for
 # it shows no notification at all. The operator then starts the core and sees
 # nothing - no indicator that it is running, and no way to stop it.
-NOTIF_LINE="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep 'android.permission.POST_NOTIFICATIONS' | head -1)"
+NOTIF_LINE="$(adb shell dumpsys package "$PKG" 2>/dev/null | tr -d '\r' | grep -m1 'android.permission.POST_NOTIFICATIONS: granted=')"
 echo "  ${NOTIF_LINE:-<no POST_NOTIFICATIONS row>}"
 case "$NOTIF_LINE" in
   *granted=true*) pass "POST_NOTIFICATIONS granted at runtime" ;;
