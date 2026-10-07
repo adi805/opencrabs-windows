@@ -793,6 +793,10 @@ pub struct App {
     /// Profiles dialog state — filter, selection, scroll. Same pattern.
     pub profiles_dialog: crate::tui::app::profiles_dialog::ProfilesDialogState,
 
+    /// Dispatcher-level mouse-report fragment gate (#1983): fed at the top
+    /// of `handle_key_event` so every mode inherits burst suppression.
+    pub(crate) mouse_frag_gate: crate::tui::app::mouse_frag::MouseFragGate,
+
     /// Onboarding wizard state
     pub onboarding: Option<OnboardingWizard>,
     pub force_onboard: bool,
@@ -1125,6 +1129,7 @@ impl App {
             mc: crate::tui::app::mission_control::McState::default(),
             skills_dialog: crate::tui::app::skills_dialog::SkillsDialogState::default(),
             profiles_dialog: crate::tui::app::profiles_dialog::ProfilesDialogState::default(),
+            mouse_frag_gate: crate::tui::app::mouse_frag::MouseFragGate::default(),
             onboarding: None,
             force_onboard: false,
             processing_sessions: HashSet::new(),
@@ -3404,6 +3409,18 @@ impl App {
     async fn handle_key_event(&mut self, event: crossterm::event::KeyEvent) -> Result<()> {
         use super::events::keys;
         use crossterm::event::{KeyCode, KeyModifiers};
+
+        // Mouse-report fragments (#1983): when an escape read splits,
+        // crossterm re-publishes SGR/URXVT bursts as individual Char
+        // events. The #1943 gate only covered the chat plain-char path;
+        // this choke point makes every surface (onboarding, dialogs,
+        // mission control, sudo, rename) inherit the suppression before
+        // any mode consumes the key. F12 and other non-Char keys always
+        // pass, so the mouse-capture escape hatch stays reachable.
+        if self.mouse_frag_gate.absorb(&event.code) {
+            tracing::debug!("[MOUSEFRAG] dropped fragment {:?} at dispatch", event.code);
+            return Ok(());
+        }
 
         // Ctrl+C expanded command panel (#1775). Modal: while open, every
         // key is consumed; Esc/q/Ctrl+C dismiss it. Checked before all
