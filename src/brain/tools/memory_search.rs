@@ -107,6 +107,26 @@ impl Tool for MemorySearchTool {
             .and_then(|v| v.as_str())
             .unwrap_or("memory");
 
+        // Shared-session gate (#1051 external, #1957 internal). The gate, not
+        // the exclude patterns, is the security boundary. Checked before the
+        // store is opened, so a refused call costs nothing.
+        let shared = crate::memory::is_session_shared(context.session_id);
+        let external_blocked = shared && !crate::memory::external_allowed_in_shared();
+        // #1957: before this, ONLY `external` was gated, so a group chat could
+        // still read the owner's personal context through scope="brain"
+        // (SOUL/USER/AGENTS/MEMORY.md), through the DEFAULT scope="memory"
+        // (daily logs), or through load_brain_file. Same boundary, now wired
+        // to the surfaces that actually carry it.
+        let internal_blocked = shared && !crate::memory::internal_allowed_in_shared();
+        if internal_blocked && matches!(scope, "brain" | "memory" | "all") {
+            return Ok(ToolResult::error(format!(
+                "scope=\"{scope}\" is not available in this shared/group session. \
+                 Brain files and daily memory logs hold the owner's personal context and stay \
+                 private to the owner's sessions by default (#1957). Set \
+                 [memory] internal_allowed_in_shared = true to allow it here."
+            )));
+        }
+
         // Get the memory store
         let store = match crate::memory::get_store() {
             Ok(s) => s,
@@ -119,12 +139,6 @@ impl Tool for MemorySearchTool {
                 )));
             }
         };
-
-        // External session gate (#1051, ADR-003): external content is
-        // default-deny in shared/group sessions. The gate — not the exclude
-        // patterns — is the security boundary.
-        let external_blocked = crate::memory::is_session_shared(context.session_id)
-            && !crate::memory::external_allowed_in_shared();
 
         let searched = match scope {
             "brain" => crate::memory::search_brain(store, &query, n).await,

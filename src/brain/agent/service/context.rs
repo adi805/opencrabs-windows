@@ -59,7 +59,16 @@ impl AgentService {
         // written constantly and read almost never; #800 made reading cheap,
         // but a cheap read still has to be chosen, and the model cannot decide
         // to recall a correction it has forgotten exists.
-        if let Some(recall) = crate::brain::memory_recall::recall_for(user_message).await {
+        // #1957: MEMORY.md recall is owner context. Do not ride it along in a
+        // shared/group session unless the operator opted in.
+        let recall = if crate::memory::is_session_shared(session_id)
+            && !crate::memory::internal_allowed_in_shared()
+        {
+            None
+        } else {
+            crate::brain::memory_recall::recall_for(user_message).await
+        };
+        if let Some(recall) = recall {
             tracing::info!(
                 "Recalled {} chars from MEMORY.md for session {session_id}",
                 recall.len()

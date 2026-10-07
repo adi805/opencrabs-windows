@@ -878,6 +878,7 @@ enabled = false
 # ]
 # # exclude = ["**/node_modules/**"]          # extra global excludes (secrets/VCS are excluded by default)
 # # external_allowed_in_shared = false         # default: external results are owner-session-only
+# # internal_allowed_in_shared = false         # default: brain files + daily logs are owner-session-only (#1957)
 # # sweep_interval_secs = 300                  # freshness sweep interval; changed files also caught lazily at search time
 
 # --------------------------------------------
