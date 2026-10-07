@@ -1957,9 +1957,7 @@ fn rule_on_origin(origin: Option<&str>) -> OriginRuling {
 /// owner id keeps its own older error further up the call chain, so this
 /// returns nothing to let that path speak.
 fn cross_platform_refusal(origin: Option<&str>, owner: Option<i64>) -> Option<String> {
-    if owner.is_none() {
-        return None;
-    }
+    owner?;
     match rule_on_origin(origin) {
         OriginRuling::Allow => None,
         OriginRuling::Refuse { channel } => Some(format!(
