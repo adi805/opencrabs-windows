@@ -11,8 +11,10 @@ name: Android binary (artifact)
 # runs. Same rationale as linux-artifact.yml and windows-artifact.yml.
 #
 # Scope: core only (--no-default-features --features rtk,code-graph). Channels
-# are excluded on purpose (Android PRD decision, 2026-10-06 05:25): the app
-# runs the TUI on-device and carries no bot tokens. Dropping them also drops
+# are excluded on purpose (Android PRD decision, 2026-10-06 05:25). The shell
+# spawns `opencrabs daemon`, not the TUI, so the premise that decision rested on
+# ("the app runs the TUI on-device") does not describe what actually ships.
+# Channels stay excluded here. Dropping them also drops
 # teloxide, serenity, whatsapp-rust, chromey, pdfium and the ALSA-backed voice
 # features, none of which cross-compile to Android without extra native libs.
 #
