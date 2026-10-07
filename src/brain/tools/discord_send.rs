@@ -78,6 +78,27 @@ fn channel_or_err(id: Option<u64>) -> std::result::Result<u64, ToolResult> {
     Ok(raw)
 }
 
+/// Build the `list_channels` response body.
+///
+/// Discord omits channels the bot cannot view from `GET /guilds/{id}/channels`
+/// entirely (channel obfuscation, mandatory 2026-11-16) and sets **no** signal on
+/// the HTTP response to say so: the `CHANNEL_OBFUSCATED` flag (`1 << 17`) is
+/// Gateway-only. A short list is therefore indistinguishable from a guild that
+/// genuinely has that many channels, so the body states the limitation instead of
+/// implying completeness. See the 2026-10-07 Discord bot audit, Appendix F.
+fn list_channels_body(gid: u64, list: &str) -> String {
+    if list.is_empty() {
+        return format!(
+            "Channels in guild {gid}: none visible.\n\
+             Note: the bot can only see channels it has VIEW_CHANNEL for; the rest are \
+             omitted without any signal. Pass channel_id explicitly if you know the target."
+        );
+    }
+    format!(
+        "Channels in guild {gid} (only those the bot can view; others are omitted silently):\n{list}"
+    )
+}
+
 /// Unwrap guild id or return error ToolResult.
 #[allow(clippy::result_large_err)]
 fn guild_or_err(id: Option<u64>) -> std::result::Result<u64, ToolResult> {
@@ -565,7 +586,8 @@ impl Tool for DiscordSendTool {
          announcement through a channel webhook (announce), manage AutoMod rules \
          (automod_list/automod_create/automod_edit/automod_delete), and read the guild audit log \
          (audit_log). Always use discord_send instead of http_request: credentials handled \
-         securely."
+         securely. Note: `list_channels` returns only the channels the bot can view, and omits \
+         the rest silently. Address channels by numeric id (from `channel_id`), never by name."
     }
 
     fn input_schema(&self) -> Value {
@@ -1188,9 +1210,7 @@ impl Tool for DiscordSendTool {
                             .map(|c| format!("{}: {} ({})", c.id, c.name, c.kind.name()))
                             .collect::<Vec<_>>()
                             .join("\n");
-                        Ok(ToolResult::success(format!(
-                            "Channels in guild {gid}:\n{list}"
-                        )))
+                        Ok(ToolResult::success(list_channels_body(gid, &list)))
                     }
                     Err(e) => Ok(ToolResult::error(format!("Failed to list channels: {e}"))),
                 }
@@ -1935,5 +1955,41 @@ impl Tool for DiscordSendTool {
                  announce, automod_list, automod_create, automod_edit, automod_delete, audit_log"
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod list_channels_obfuscation_tests {
+    use super::*;
+
+    /// A non-empty listing must not read as authoritative: after channel
+    /// obfuscation lands (2026-11-16) the HTTP response carries no signal that
+    /// channels were omitted, so the body has to say it outright.
+    #[test]
+    fn a_populated_listing_flags_that_channels_may_be_omitted() {
+        let body = list_channels_body(42, "111: general (Text)");
+        assert!(body.contains("111: general"), "{body}");
+        assert!(body.contains("only those the bot can view"), "{body}");
+        assert!(body.contains("omitted silently"), "{body}");
+    }
+
+    /// The empty case is the one obfuscation makes *unreachable by reasoning*:
+    /// "no channels" and "all channels hidden" render identically over HTTP, so
+    /// the body must spell out both readings rather than assert the first.
+    #[test]
+    fn an_empty_listing_does_not_claim_the_guild_has_no_channels() {
+        let body = list_channels_body(42, "");
+        assert!(body.contains("none visible"), "{body}");
+        assert!(body.contains("VIEW_CHANNEL"), "{body}");
+        // The dangerous reading, "this guild is empty", must not be stated.
+        assert!(!body.contains("Channels in guild 42:\n"), "{body}");
+    }
+
+    /// The guild id is threaded through both shapes, so a caller can still tell
+    /// which guild answered.
+    #[test]
+    fn both_shapes_carry_the_guild_id() {
+        assert!(list_channels_body(7, "").contains("guild 7"));
+        assert!(list_channels_body(7, "x: y (Text)").contains("guild 7"));
     }
 }
