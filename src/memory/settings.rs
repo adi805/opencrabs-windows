@@ -66,6 +66,14 @@ pub(crate) fn external_allowed_in_shared() -> bool {
     read_memory_config().external_allowed_in_shared
 }
 
+/// Whether the internal memory surfaces (brain files, daily logs,
+/// `load_brain_file`, per-turn recall) may surface in shared/group sessions
+/// (#1957). Defaults to deny, same boundary as `external`: the session gate
+/// is the security boundary, not the exclude patterns.
+pub(crate) fn internal_allowed_in_shared() -> bool {
+    read_memory_config().internal_allowed_in_shared
+}
+
 /// Seconds between external freshness sweeps (#1051).
 pub(crate) fn sweep_interval_secs() -> u64 {
     read_memory_config().sweep_interval_secs

@@ -2225,6 +2225,15 @@ pub struct MemoryConfig {
     #[serde(default)]
     pub external_allowed_in_shared: bool,
 
+    /// Allow the internal memory surfaces to return content in shared/group
+    /// sessions (#1957): `scope="brain"`, `scope="memory"` (the default),
+    /// `load_brain_file`, and the per-turn MEMORY.md recall. Default-deny:
+    /// these carry the owner's personal context (USER.md, MEMORY.md, daily
+    /// logs, TOOLS.md peer keys), so they stay owner-session-only unless the
+    /// operator explicitly opts in.
+    #[serde(default)]
+    pub internal_allowed_in_shared: bool,
+
     /// Seconds between external-path freshness sweeps (#1051). The sweep
     /// discovers added/removed files and reconciles config changes; modified
     /// files are caught lazily at search time regardless.
@@ -2324,6 +2333,7 @@ impl Default for MemoryConfig {
             extra_paths: Vec::new(),
             exclude: default_external_excludes(),
             external_allowed_in_shared: false,
+            internal_allowed_in_shared: false,
             sweep_interval_secs: default_sweep_interval_secs(),
             backfill_interval_secs: default_backfill_interval_secs(),
         }

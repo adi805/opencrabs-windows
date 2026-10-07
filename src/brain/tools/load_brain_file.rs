@@ -75,6 +75,22 @@ impl Tool for LoadBrainFileTool {
             .unwrap_or("")
             .trim();
 
+        // #1957: this tool exists to load the owner's context files (USER.md,
+        // MEMORY.md, daily logs, TOOLS.md with its peer keys). In a shared or
+        // group session that is a leak surface, so it is default-deny exactly
+        // like the internal memory_search scopes.
+        if crate::memory::is_session_shared(ctx.session_id)
+            && !crate::memory::internal_allowed_in_shared()
+        {
+            return Ok(ToolResult::error(
+                "load_brain_file is not available in this shared/group session: brain files \
+                 hold the owner's personal context and stay private to the owner's sessions by \
+                 default (#1957). Set [memory] internal_allowed_in_shared = true to allow it \
+                 here."
+                    .to_string(),
+            ));
+        }
+
         // Skill-slug form (issue #131): a bare skill name (no `.md`, no
         // separators) resolves through the skill registry — same rules as
         // slash invocation — and returns the prompt body. This gives
