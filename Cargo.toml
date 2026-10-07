@@ -1,18 +1,26 @@
 [package]
-name = "opencrabs"
+name = "opencrabs-fork"
 version = "0.5.4"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Adolfo Usier <adolfo@meetneura.ai>"]
 license = "MIT"
 description = "The autonomous, self-improving AI agent. Single Rust binary. Every channel. Recommended: the 40MB prebuilt binary for macOS, Linux and Windows: https://github.com/opencrabs/opencrabs/releases"
-repository = "https://github.com/opencrabs/opencrabs"
+repository = "https://github.com/adi805/opencrabs-windows"
 homepage = "https://opencrabs.com"
 documentation = "https://docs.opencrabs.com"
 keywords = ["ai", "terminal", "assistant", "llm", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 readme = "README.md"
 # exclude = ["src/assets/"]
+
+[lib]
+# Deliberately NOT the package name. Keeping the upstream crate name means
+# the ~41 `use opencrabs::…` paths across src/ (main.rs included) compile
+# unchanged: renaming the lib would turn a one-line distribution change into
+# a repo-wide rename. `[[bin]]` keeps `opencrabs` for the same reason.
+name = "opencrabs"
+path = "src/lib.rs"
 
 [dependencies]
 # Async Runtime
