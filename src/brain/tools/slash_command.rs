@@ -1026,22 +1026,25 @@ impl SlashCommandTool {
         Ok(ToolResult::success(lines.join("\n")))
     }
 
-    fn handle_user_command(&self, command: &str, _args: &str) -> Result<ToolResult> {
+    fn handle_user_command(&self, command: &str, args: &str) -> Result<ToolResult> {
         let brain_path = crate::brain::BrainLoader::resolve_path();
         let loader = crate::brain::CommandLoader::from_brain_path(&brain_path);
         let commands = loader.load();
 
         if let Some(cmd) = commands.iter().find(|c| c.name == command) {
             match cmd.action.as_str() {
-                "system" => Ok(ToolResult::success(format!(
-                    "[System message] {}",
-                    cmd.prompt
+                "system" => Ok(ToolResult::success(with_user_args(
+                    format!("[System message] {}", cmd.prompt),
+                    args,
                 ))),
                 _ => {
                     // "prompt" action — return the prompt for the agent to execute
-                    Ok(ToolResult::success(format!(
-                        "User command '{}' ({}): {}",
-                        cmd.name, cmd.description, cmd.prompt
+                    Ok(ToolResult::success(with_user_args(
+                        format!(
+                            "User command '{}' ({}): {}",
+                            cmd.name, cmd.description, cmd.prompt
+                        ),
+                        args,
                     )))
                 }
             }
@@ -1053,9 +1056,12 @@ impl SlashCommandTool {
             // only commands.toml was consulted, so every skill reached the
             // "Unknown command" arm (#889). `/servers` and `/channels` are
             // skills on disk and failed for exactly this reason.
-            Ok(ToolResult::success(format!(
-                "Skill '{}' ({}): {}",
-                skill.name, skill.description, skill.body
+            Ok(ToolResult::success(with_user_args(
+                format!(
+                    "Skill '{}' ({}): {}",
+                    skill.name, skill.description, skill.body
+                ),
+                args,
             )))
         } else {
             // List available commands for context
@@ -1107,4 +1113,18 @@ fn parse_goal_args(args: &str) -> (Option<u32>, &str) {
         return (Some(turns), rem.trim());
     }
     (None, s)
+}
+
+/// #1868: everything typed after the command name was dropped on the floor
+/// (`_args` in `handle_user_command`), so `/findfile *.rs` handed the agent
+/// the command prompt with none of the user's request attached. The agent
+/// gets both halves now: the rendered prompt and the args that qualify it.
+/// Empty input changes nothing.
+pub(crate) fn with_user_args(rendered: String, args: &str) -> String {
+    let args = args.trim();
+    if args.is_empty() {
+        rendered
+    } else {
+        format!("{rendered}\n\nUser args: {args}")
+    }
 }
