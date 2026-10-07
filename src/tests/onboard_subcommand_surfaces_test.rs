@@ -1,18 +1,21 @@
-//! The `/onboard:<sub>` set must read the same on every surface (#1664).
+//! The setup command set must read the same on every surface (#1664, #1981).
 //!
-//! `README.md` documented `/onboard:gateway` for a step that does not exist
-//! and an arm that was never written. Typing it opened the full wizard at the
-//! mode selector, silently, because the dispatch match ended in a catch-all
-//! that swallowed every unrecognised suffix. A stale doc row was therefore
-//! indistinguishable from bare `/onboard`, and nothing failed until a user
-//! followed the README.
+//! `README.md` once documented `/onboard:gateway` for a step that did not
+//! exist and an arm that was never written. Typing it opened the full wizard
+//! at the mode selector, silently, because the dispatch match ended in a
+//! catch-all that swallowed every unrecognised suffix. A stale doc row was
+//! therefore indistinguishable from bare `/onboard`, and nothing failed until
+//! a user followed the README.
 //!
-//! Dispatch is the source of truth. These tests hold the README table and the
-//! slash registry to it in both directions, so the next row that outlives its
-//! arm, or arm that never reaches a surface, fails the build instead.
+//! Dispatch is the source of truth. Since #1981 the offered set is the direct
+//! commands (`SETUP_COMMANDS`); the legacy `/onboard:<step>` spellings still
+//! resolve but must not be offered anywhere. These tests hold the README
+//! table and the slash registry to dispatch in both directions.
 
 use crate::tui::app::state::SLASH_COMMANDS;
-use crate::tui::onboarding::deep_link::{ONBOARD_SUBCOMMANDS, unknown_suffix_message};
+use crate::tui::onboarding::deep_link::{
+    LEGACY_ONBOARD_SUBCOMMANDS, SETUP_COMMANDS, is_setup_command, unknown_suffix_message,
+};
 use std::fs;
 use std::path::Path;
 
@@ -21,72 +24,67 @@ fn readme() -> String {
         .expect("README.md must be readable")
 }
 
-/// Every `| `/onboard:x` |` row in the README, from any of its command tables.
-fn readme_rows(readme: &str) -> Vec<String> {
+/// The command in every `| `/x ...` |` row of the README command tables,
+/// first word only (`/channels [name]` -> `/channels`).
+fn readme_commands(readme: &str) -> Vec<String> {
     readme
         .lines()
         .filter_map(|line| {
-            let rest = line.strip_prefix("| `/onboard:")?;
-            let name = rest.split('`').next()?;
-            Some(name.to_string())
+            let rest = line.strip_prefix("| `/")?;
+            let cell = rest.split('`').next()?;
+            let word = cell.split_whitespace().next()?;
+            Some(format!("/{word}"))
         })
         .collect()
 }
 
-fn registry_names() -> Vec<String> {
-    SLASH_COMMANDS
-        .iter()
-        .filter_map(|c| c.name.strip_prefix("/onboard:").map(str::to_string))
-        .collect()
-}
-
-fn is_dispatched(name: &str) -> bool {
-    ONBOARD_SUBCOMMANDS.iter().any(|(sub, _)| *sub == name)
-}
-
 #[test]
-fn every_documented_subcommand_has_a_dispatch_arm() {
-    let readme = readme();
-    for name in readme_rows(&readme) {
+fn every_setup_command_is_documented_in_the_readme() {
+    let rows = readme_commands(&readme());
+    for (name, _) in SETUP_COMMANDS {
         assert!(
-            is_dispatched(&name),
-            "README documents /onboard:{name} but dispatch has no arm for it, \
-             so typing it opens the wizard at the mode selector instead"
+            rows.iter().any(|r| r == name),
+            "{name} dispatches to a step but no README row mentions it"
         );
     }
 }
 
 #[test]
-fn every_dispatch_arm_is_documented_in_the_readme() {
-    let readme = readme();
-    let rows = readme_rows(&readme);
-    for (name, _) in ONBOARD_SUBCOMMANDS {
+fn every_setup_command_is_offered_by_autocomplete() {
+    for (name, _) in SETUP_COMMANDS {
         assert!(
-            rows.iter().any(|row| row == name),
-            "/onboard:{name} dispatches to a step but no README row mentions it"
-        );
-    }
-}
-
-#[test]
-fn every_registered_subcommand_has_a_dispatch_arm() {
-    for name in registry_names() {
-        assert!(
-            is_dispatched(&name),
-            "autocomplete offers /onboard:{name} but dispatch has no arm for it"
-        );
-    }
-}
-
-#[test]
-fn every_dispatch_arm_is_offered_by_autocomplete() {
-    let registered = registry_names();
-    for (name, _) in ONBOARD_SUBCOMMANDS {
-        assert!(
-            registered.iter().any(|r| r == name),
-            "/onboard:{name} dispatches to a step but is absent from SLASH_COMMANDS, \
+            SLASH_COMMANDS.iter().any(|c| c.name == *name),
+            "{name} dispatches to a step but is absent from SLASH_COMMANDS, \
              so neither autocomplete nor the help dialog can offer it"
         );
+    }
+}
+
+#[test]
+fn legacy_onboard_spellings_are_offered_nowhere() {
+    assert!(
+        !SLASH_COMMANDS
+            .iter()
+            .any(|c| c.name.starts_with("/onboard:")),
+        "autocomplete must offer the direct commands, not /onboard:<step>"
+    );
+    let rows = readme_commands(&readme());
+    assert!(
+        !rows.iter().any(|r| r.starts_with("/onboard:")),
+        "README command tables must list the direct commands, not /onboard:<step>"
+    );
+}
+
+#[test]
+fn every_documented_setup_row_has_a_dispatch_arm() {
+    // A README row naming a setup step must be a real command: a direct one,
+    // or bare /onboard.
+    let setup_words = ["workspace", "channels", "voice", "image", "daemon", "brain"];
+    for row in readme_commands(&readme()) {
+        let word = row.trim_start_matches('/');
+        if setup_words.contains(&word) {
+            assert!(is_setup_command(&row), "README documents {row} with no arm");
+        }
     }
 }
 
@@ -96,18 +94,23 @@ fn gateway_is_gone_from_every_surface() {
         !readme().contains("/onboard:gateway"),
         "there is no gateway wizard step and no gateway dispatch arm"
     );
-    assert!(!is_dispatched("gateway"));
-    assert!(!registry_names().iter().any(|n| n == "gateway"));
+    assert!(
+        !LEGACY_ONBOARD_SUBCOMMANDS
+            .iter()
+            .any(|(n, _)| *n == "gateway")
+    );
+    assert!(!is_setup_command("/gateway"));
 }
 
 #[test]
-fn unknown_suffix_message_names_the_offender_and_the_valid_set() {
+fn unknown_suffix_message_names_the_offender_and_the_direct_commands() {
     let msg = unknown_suffix_message("gateway");
     assert!(msg.contains("gateway"), "{msg}");
-    for (name, _) in ONBOARD_SUBCOMMANDS {
-        assert!(
-            msg.contains(&format!("/onboard:{name}")),
-            "valid set must list /onboard:{name}: {msg}"
-        );
+    for (name, _) in SETUP_COMMANDS {
+        assert!(msg.contains(name), "valid set must list {name}: {msg}");
     }
+    assert!(
+        !msg.contains("/onboard:"),
+        "must not steer to legacy spellings: {msg}"
+    );
 }

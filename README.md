@@ -3841,13 +3841,12 @@ Any tool on your `$PATH` works. If it runs in your terminal, OpenCrabs can use i
 | `/models` | Switch model (fetches live from provider API) |
 | `/usage` | Usage dashboard — interactive overlay with daily activity, cost by project/provider/model/activity, tool stats, and period filtering (T/W/M/A keys). Tab to navigate cards, Esc to close |
 | `/onboard` | Run setup wizard (full flow) |
-| `/onboard:provider` | Jump to provider/API key setup |
-| `/onboard:workspace` | Jump to workspace settings |
-| `/onboard:channels` | Jump to channel config |
-| `/onboard:voice` | Jump to voice STT/TTS setup |
-| `/onboard:image` | Jump to image handling setup |
-| `/onboard:daemon` | Jump to background service (always-on) setup |
-| `/onboard:brain` | Jump to brain/persona setup |
+| `/workspace` | Workspace settings |
+| `/channels [name]` | Channel config (`/channels telegram` opens that channel directly) |
+| `/voice` | Voice STT/TTS setup |
+| `/image` | Image handling setup |
+| `/daemon` | Background service (always-on) setup |
+| `/brain` | Brain/persona setup |
 | `/doctor` | Run connection health check |
 | `/sessions` | Open session manager |
 | `/sessions:<query>` | Filter sessions by name (Telegram/Discord/Slack) |
@@ -3879,9 +3878,9 @@ When connected via messaging channels, the following slash commands are availabl
 | `/rtk` | Show RTK token savings statistics |
 | `/new` | Start a new session |
 | `/rename <title>` | Rename the current session |
-| `/onboard:channels` | Channel setup wizard — configure Telegram, Discord, WhatsApp, Slack, or Trello from chat |
-| `/onboard:voice` | Voice STT/TTS setup — pick provider, model, and credentials |
-| `/onboard:image` | Image handling setup — configure vision analysis and image generation |
+| `/channels` | Channel setup wizard — configure Telegram, Discord, WhatsApp, Slack, or Trello from chat |
+| `/voice` | Voice STT/TTS setup — pick provider, model, and credentials |
+| `/image` | Image handling setup — configure vision analysis and image generation |
 | `/restart` | Restart OpenCrabs. Relaunches the same binary with the same arguments, so nothing about how it was started has to be known or repeated. Unfinished turns resume automatically on startup |
 | `/exit` | Shut OpenCrabs down. Starting it again needs access to the machine it runs on, so this is the one command with no way back from chat |
 
