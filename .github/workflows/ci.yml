@@ -105,9 +105,10 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y libasound2-dev
 
       - name: Check formatting
-        # Soft-fail: legacy un-formatted code blocks shouldn't block PRs
-        # yet. Promote to hard-fail once a fmt sweep lands on main.
-        continue-on-error: true
+        # Hard-fail, not soft (#120). The gate was advisory only because
+        # legacy un-formatted blocks made it red repo-wide; the rustfmt
+        # sweep cleared that, so a diff here is a real regression and must
+        # block the PR rather than annotate it.
         run: cargo fmt --all -- --check
 
       - name: Clippy
