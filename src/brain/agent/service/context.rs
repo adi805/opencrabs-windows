@@ -1238,6 +1238,28 @@ pub(crate) fn format_plan_reminder(plan: &crate::tui::plan::PlanDocument) -> Opt
         return None;
     }
 
+    // #1903: staleness cutoff. The reminder is written for in-flight
+    // plans; when the plan file has not moved in max_age_hours, the full
+    // block is permanent prompt overhead the model often cannot clear
+    // (a CLI provider with no native plan tool can neither `complete`
+    // nor `discard`). Shrink to a one-line stale note that names the
+    // human exits instead. 0 disables the cutoff (remind forever).
+    let max_age_hours = crate::config::Config::current()
+        .agent
+        .plan_reminder_max_age_hours;
+    if max_age_hours > 0
+        && chrono::Utc::now() - chrono::Duration::hours(max_age_hours as i64) > plan.updated_at
+    {
+        return Some(format!(
+            "[ACTIVE PLAN REMINDER (stale) injected by the harness, not from the user]\n\
+                 📋 Plan: \"{}\" ({done}/{total} done) has not moved in {}h; the full reminder is \
+                 suppressed. If it is dead, discard it (`plan discard` or the plan card's Discard); \
+                 if it lives, `plan start` re-surfaces the task details and resets this clock. Do \
+                 not execute it from this note alone.\n",
+            plan.title, max_age_hours
+        ));
+    }
+
     let mut out = format!(
         "[ACTIVE PLAN REMINDER — injected by the harness, not from the user]\n\
          📋 Plan: \"{}\" ({done}/{total} done). Keep executing it; do not abandon it. \

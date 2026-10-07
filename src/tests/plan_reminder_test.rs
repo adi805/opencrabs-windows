@@ -93,3 +93,56 @@ fn legacy_active_statuses_map_to_active_and_are_reminded() {
         assert!(format_plan_reminder(&plan).is_some());
     }
 }
+
+// ---- #1903: staleness cutoff ----------------------------------------
+// An Active plan whose file has not moved in `agent.plan_reminder_max_age_hours`
+// (default 24h) must stop injecting the full execution reminder every turn:
+// under a provider with no native plan tool the model can neither `complete`
+// nor `discard`, so the nag was permanent, unremovable prompt overhead. Past
+// the cutoff it shrinks to a one-line stale note naming the human exits.
+
+#[test]
+fn stale_active_plan_gets_one_line_note_not_full_reminder() {
+    let mut plan = plan_with(
+        PlanStatus::Active,
+        vec![
+            ("wire auth service", TaskStatus::Completed),
+            ("build login form", TaskStatus::InProgress),
+            ("add tests", TaskStatus::Pending),
+        ],
+    );
+    plan.updated_at = chrono::Utc::now() - chrono::Duration::hours(48);
+    let out = format_plan_reminder(&plan).expect("stale plans still get a note");
+    assert!(
+        out.contains("ACTIVE PLAN REMINDER (stale)"),
+        "stale plans must be marked stale, got: {out}"
+    );
+    assert!(
+        !out.contains("Keep executing"),
+        "the full execution nag must not ride on a stale plan, got: {out}"
+    );
+    assert!(
+        out.contains("plan discard"),
+        "the note must name the out-of-band exits, got: {out}"
+    );
+    assert!(
+        !out.contains("→ Task 1"),
+        "the task listing must be suppressed when stale, got: {out}"
+    );
+}
+
+#[test]
+fn fresh_active_plan_reminds_in_full() {
+    // updated_at = now (set by add_task in the helper): current behaviour
+    // must be untouched inside the cutoff window.
+    let plan = plan_with(
+        PlanStatus::Active,
+        vec![
+            ("wire auth service", TaskStatus::Completed),
+            ("build login form", TaskStatus::InProgress),
+        ],
+    );
+    let out = format_plan_reminder(&plan).expect("fresh in-flight plan must be reminded");
+    assert!(out.contains("Keep executing"));
+    assert!(!out.contains("stale"));
+}
