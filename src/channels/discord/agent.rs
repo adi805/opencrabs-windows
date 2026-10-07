@@ -374,7 +374,7 @@ impl EventHandler for Handler {
             // normal channel delivery that route_followup_turn drives, so
             // the placeholder is deleted once the ack is accepted instead
             // of edited into the reply, and a refused ack is logged rather
-            // than swallowed like the old `let _ack`.
+            // than swallowed by a discard-binding like the old code did.
             let ack = command
                 .create_response(
                     &ctx.http,
