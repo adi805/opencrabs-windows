@@ -3479,6 +3479,8 @@ OpenCrabs includes 40+ built-in tools. The AI can use these during conversation:
 | `memory_search` | Hybrid semantic search — FTS5 keyword + vector embeddings combined via RRF. `scope` picks the corpus: `memory` (daily logs, the default) for history, `brain` for rules and policy in your brain files, `all` for both. Local GGUF, OpenAI-compatible API, or FTS5-only mode. With `.rs` files under `extra_paths`, structural queries ("who calls X") auto-route to the tree-sitter symbol graph (`code-graph` feature, on by default) |
 | `session_search` | Direct case-insensitive SQL substring search over the live `messages` table — exhaustive and always current, including the active session thousands of messages back. `list` shows sessions with titles, dates, and message counts; `tail` returns the last N messages. Complements `memory_search` (indexed, semantic) with exact-match recall |
 
+> **Sources footer (#1883).** Every search tool (`web_search`, `exa_search`, `brave_search`, `serper_search`) feeds a deterministic `Sources:` footer appended to the delivered answer, harvested from that turn's search results, deduped across engines, and capped at 5 — so source links appear even when the model cites nothing. Turns that ran no search tool are unchanged.
+
 #### Image & Video
 | Tool | Description |
 |------|-------------|
