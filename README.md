@@ -2,8 +2,8 @@
 [![Rust Edition](https://img.shields.io/badge/rust-2024_edition-orange.svg)](https://www.rust-lang.org/)
 [![Ratatui](https://img.shields.io/badge/ratatui-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)](https://ratatui.rs)
 [![Docker](https://img.shields.io/badge/docker-%23000000.svg?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com)
-[![CI](https://github.com/opencrabs/opencrabs/actions/workflows/ci.yml/badge.svg)](https://github.com/opencrabs/opencrabs/actions/workflows/ci.yml)
-[![GitHub Stars](https://img.shields.io/github/stars/opencrabs/opencrabs?style=social)](https://github.com/opencrabs/opencrabs)
+[![CI](https://github.com/adi805/opencrabs-windows/actions/workflows/ci.yml/badge.svg)](https://github.com/adi805/opencrabs-windows/actions/workflows/ci.yml)
+[![GitHub Stars](https://img.shields.io/github/stars/adi805/opencrabs-windows?style=social)](https://github.com/adi805/opencrabs-windows)
 
 <a href="https://trendshift.io/repositories/22468?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-22468" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/22468/daily?language=Rust" alt="opencrabs/opencrabs — Trendshift #3 Repository Of The Day, Rust" width="250" height="55"/></a>
 <a href="https://trendshift.io/repositories/22468?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-22468" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/22468/weekly?language=Rust" alt="opencrabs/opencrabs — Trendshift #20 Repository Of The Week, Rust" width="250" height="55"/></a>
@@ -27,7 +27,7 @@
 
 **Author:** [Adolfo Usier](https://github.com/adolfousier)
 
-⭐ Star us on [GitHub](https://github.com/opencrabs/opencrabs) if you like what you see!
+⭐ Star us on [GitHub](https://github.com/adi805/opencrabs-windows) if you like what you see!
 
 ---
 
@@ -346,7 +346,7 @@ This override works for **every provider** — OpenAI-compatible (custom, xiaomi
 > - **Cost** is the lesser one, and it's softened by caching: OpenCrabs uses prompt caching across every caching-capable provider (currently averaging ~87% efficiency), and a long context is mostly an unchanged prefix served from cache — so a bigger window costs far less than the raw token count suggests.
 > - **Context loss** is the one to watch: most models degrade as the window fills — they lose track of the middle and recall less reliably. Only the latest SOTA models hold large context robustly: closed (Opus 4.7 / 4.8, Fable 5, GPT-5.5, Gemini 3.1, …) or open (Qwen 3.7, Kimi K2.7, MiMo V2.5, GLM 5.2, DeepSeek V4, and the newer releases that keep coming from these and other labs). So raise `context_window` mainly on those frontier models; on anything older or smaller, staying near 200k keeps answers sharper.
 >
-> **Local models want less:** 128k is a good sweet spot — go **lower** if your machine is tight on resources or you start noticing hallucinations/fabrications, and **higher** only if you have more than 32GB of RAM and have tested your model at a larger window. Not sure what fits your setup? Reach out to Adolfo for suggestions/support, or open a [GitHub discussion](https://github.com/opencrabs/opencrabs/discussions).
+> **Local models want less:** 128k is a good sweet spot — go **lower** if your machine is tight on resources or you start noticing hallucinations/fabrications, and **higher** only if you have more than 32GB of RAM and have tested your model at a larger window. Not sure what fits your setup? Reach out to Adolfo for suggestions/support, or open a [GitHub discussion](https://github.com/adi805/opencrabs-windows/discussions).
 >
 > **Leave auto-compaction on** — it's been battle-tested over months and needs no babysitting. Only run a *manual* compaction (the `/compact` command) if you have a specific, strong reason to summarize early; otherwise let it manage itself.
 
@@ -1930,20 +1930,20 @@ OpenCrabs supports multi-agent structured debate via the **Bee Colony** protocol
 
 ### Option 1: Download Binary (just run it)
 
-Grab a pre-built binary from [GitHub Releases](https://github.com/opencrabs/opencrabs/releases) — available for Linux (amd64/arm64), macOS (amd64/arm64), and Windows.
+Grab a pre-built binary from [GitHub Releases](https://github.com/adi805/opencrabs-windows/releases) — available for Linux (amd64/arm64), macOS (amd64/arm64), and Windows.
 
 ```bash
 # macOS (Apple Silicon) — downloads latest, installs to /usr/local/bin
-curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
 
 # macOS (Intel)
-curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
 
 # Linux (x86_64)
-curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
 
 # Linux (ARM64)
-curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/adi805/opencrabs-windows/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
 ```
 
 Then just type `opencrabs` to start. The onboarding wizard handles everything on first run.
@@ -2044,11 +2044,11 @@ Required for `/rebuild`, adding custom tools, or modifying the agent.
 - **Linux (Fedora/RHEL):** `sudo dnf install gcc gcc-c++ make pkg-config clang openssl-devel cmake alsa-lib-devel libgomp`
 - **Linux (Arch):** `sudo pacman -S base-devel pkg-config clang openssl cmake alsa-lib gcc-libs`
 
-> **One-liner setup:** `bash <(curl -sL https://raw.githubusercontent.com/opencrabs/opencrabs/main/src/scripts/setup.sh)` — detects your platform, installs all dependencies, and sets up Rust.
+> **One-liner setup:** `bash <(curl -sL https://raw.githubusercontent.com/adi805/opencrabs-windows/main/src/scripts/setup.sh)` — detects your platform, installs all dependencies, and sets up Rust.
 
 ```bash
 # Clone
-git clone https://github.com/opencrabs/opencrabs.git
+git clone https://github.com/adi805/opencrabs-windows.git
 cd opencrabs
 
 # Build & run (development)
@@ -2077,7 +2077,7 @@ Run OpenCrabs in an isolated container. Build takes ~15min (Rust release + LTO).
 
 ```bash
 # Clone and run
-git clone https://github.com/opencrabs/opencrabs.git
+git clone https://github.com/adi805/opencrabs-windows.git
 cd opencrabs
 
 # Run with docker compose
@@ -5133,7 +5133,7 @@ The default release binary requires AVX2 (Haswell 2013+). If you have an older C
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
 
-Pre-built `*-compat` binaries are also available on the [releases page](https://github.com/opencrabs/opencrabs/releases) for AVX-only CPUs. Vector embeddings are off by default (#1798), so you get FTS5-only keyword search out of the box; set `vector_enabled = true` in `[memory]` only on machines that can run the GGUF engine.
+Pre-built `*-compat` binaries are also available on the [releases page](https://github.com/adi805/opencrabs-windows/releases) for AVX-only CPUs. Vector embeddings are off by default (#1798), so you get FTS5-only keyword search out of the box; set `vector_enabled = true` in `[memory]` only on machines that can run the GGUF engine.
 
 ### macOS
 
@@ -5650,7 +5650,7 @@ Cloud API issues, billing questions, and account problems should be directed to 
 
 ## 🔐 Reporting a vulnerability
 
-Security issues go through [GitHub's private vulnerability reporting](https://github.com/opencrabs/opencrabs/security/advisories/new), not a public issue. See [SECURITY.md](SECURITY.md) for what is in scope, what to include, and which dependency advisories are already known and tracked.
+Security issues go through [GitHub's private vulnerability reporting](https://github.com/adi805/opencrabs-windows/security/advisories/new), not a public issue. See [SECURITY.md](SECURITY.md) for what is in scope, what to include, and which dependency advisories are already known and tracked.
 
 ---
 
@@ -5678,7 +5678,7 @@ Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidel
 
 ```bash
 # Setup
-git clone https://github.com/opencrabs/opencrabs.git
+git clone https://github.com/adi805/opencrabs-windows.git
 cd opencrabs
 cargo build
 cargo test
@@ -5703,9 +5703,9 @@ cargo test
 
 ## 📞 Support
 
-- **Issues:** [GitHub Issues](https://github.com/opencrabs/opencrabs/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/opencrabs/opencrabs/discussions)
-- **Docs:** [Documentation](https://github.com/opencrabs/opencrabs/tree/main/src/docs)
+- **Issues:** [GitHub Issues](https://github.com/adi805/opencrabs-windows/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/adi805/opencrabs-windows/discussions)
+- **Docs:** [Documentation](https://github.com/adi805/opencrabs-windows/tree/main/src/docs)
 
 ---
 
@@ -5722,4 +5722,4 @@ cargo test
 
 ---
 
-[Latest Release](https://github.com/opencrabs/opencrabs/releases/tag/v0.2.81)
+[Latest Release](https://github.com/adi805/opencrabs-windows/releases/tag/v0.2.81)
