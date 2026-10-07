@@ -140,9 +140,40 @@ jobs:
         run: |
           set -euo pipefail
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-          AAPT2="$(ls -d "$SDK"/build-tools/*/ | sort -V | tail -1)aapt2"
+          if [ -z "${SDK:-}" ] || [ ! -d "$SDK" ]; then
+            echo "::error::ANDROID_HOME/ANDROID_SDK_ROOT is not a directory (got '${SDK:-<empty>}')"
+            exit 1
+          fi
+          # Resolve aapt2 the same way assemble-apk.sh does: newest build-tools
+          # that actually ships the binary. The previous form died as a bare
+          # "exit code 1" with no output at all, which reads as an APK defect
+          # when it is a harness defect. Fail loud, and name the cause.
+          AAPT2=""
+          for d in $(ls -d "$SDK"/build-tools/*/ 2>/dev/null | sort -Vr); do
+            if [ -x "${d}aapt2" ]; then AAPT2="${d}aapt2"; break; fi
+          done
+          if [ -z "$AAPT2" ]; then
+            echo "::error::no executable aapt2 under $SDK/build-tools"
+            exit 1
+          fi
           APK=android/out/opencrabs-debug.apk
-          LINE="$("$AAPT2" dump badging "$APK" | grep -m1 '^sdkVersion:')"
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK not found at $APK (assemble step did not produce it)"
+            exit 1
+          fi
+          echo "aapt2: $AAPT2"
+          echo "apk  : $APK ($(stat -c%s "$APK") bytes)"
+          BADGING="$("$AAPT2" dump badging "$APK" 2>&1 || true)"
+          if [ -z "$BADGING" ]; then
+            echo "::error::aapt2 produced no badging output for $APK"
+            exit 1
+          fi
+          LINE="$(printf '%s\n' "$BADGING" | grep -m1 '^sdkVersion:' || true)"
+          if [ -z "${LINE:-}" ]; then
+            echo "::error::aapt2 badging carries no sdkVersion line"
+            printf '%s\n' "$BADGING" | head -20
+            exit 1
+          fi
           echo "manifest: $LINE"
           GOT="${LINE#sdkVersion:}"; GOT="${GOT//\'/}"
           if [ "${GOT:-0}" -lt 26 ]; then
@@ -153,7 +184,7 @@ jobs:
 
           # AC-030: the floor must also exist in the source manifest. The flag
           # alone is what let the value drift from 26 to 24 unnoticed.
-          TLINE="$("$AAPT2" dump badging "$APK" | grep -m1 '^targetSdkVersion:' || true)"
+          TLINE="$(printf '%s\n' "$BADGING" | grep -m1 '^targetSdkVersion:' || true)"
           TGOT="${TLINE#targetSdkVersion:}"; TGOT="${TGOT//\'/}"
           if [ -z "${TGOT:-}" ]; then
             echo "::error::APK carries no targetSdkVersion; aapt2 writes it only from the flag, and an unset target drops the app into legacy compatibility mode"
