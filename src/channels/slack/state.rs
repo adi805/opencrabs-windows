@@ -27,7 +27,8 @@ pub struct SlackState {
     pub(super) session_channels: Mutex<HashMap<Uuid, String>>,
     /// Reverse ownership map (#148): channel_id → session_id, written in
     /// lockstep with `session_channels` at `register_session_channel` (the
-    /// ONLY write site for both). Last writer wins — mirrors the forward map.
+    /// ONLY write site for all three maps). Last writer wins - mirrors the
+    /// forward map.
     pub(super) channel_sessions: Mutex<HashMap<String, Uuid>>,
     /// Pending approval channels: approval_id → oneshot sender of (approved, always)
     pub(super) pending_approvals: Mutex<HashMap<String, oneshot::Sender<(bool, bool)>>>,
@@ -46,12 +47,18 @@ pub struct SlackState {
     /// Collapse interaction can re-render long after the turn ended.
     /// Insertion-ordered for pruning; bounded at [`Self::TOOL_GROUP_CAP`] (see `tool_group`).
     pub(super) tool_groups: Mutex<(Vec<String>, HashMap<String, tool_group::GroupState>)>,
-    /// The most recent group that settled with detached background tasks
-    /// still running (#1797): (channel id, group message ts, owning
-    /// session). Its "Finished" flip fires when a completion arrives, which
-    /// is the channel's next inbound event, so the flip hook reads this at
-    /// the top of handle_message.
-    pub(super) waiting_group: Mutex<Option<(String, String, Uuid)>>,
+    /// Groups that settled with background work still running (#1797):
+    /// channel id → (group message ts, owning session). Keyed per channel
+    /// since #1988: the old single global slot let a second channel
+    /// overwrite the first waiting group, which then never flipped. The
+    /// flip removes the entry, from `resume.rs` on a delivered completion
+    /// or at the top of handle_message as a backstop.
+    pub(super) waiting_groups: Mutex<HashMap<String, (String, Uuid)>>,
+    /// Session → thread_ts of its last inbound turn (#1988). Written in
+    /// lockstep with `session_channels` at `register_session_channel`;
+    /// absent for top-level turns. The background-resume reply posts into
+    /// this thread instead of at the channel top level.
+    pub(super) session_threads: Mutex<HashMap<Uuid, String>>,
 }
 
 impl Default for SlackState {
@@ -72,7 +79,8 @@ impl SlackState {
             pending_followups: Mutex::new(HashMap::new()),
             cancel_tokens: Mutex::new(HashMap::new()),
             tool_groups: Mutex::new((Vec::new(), HashMap::new())),
-            waiting_group: Mutex::new(None),
+            waiting_groups: Mutex::new(HashMap::new()),
+            session_threads: Mutex::new(HashMap::new()),
         }
     }
 }

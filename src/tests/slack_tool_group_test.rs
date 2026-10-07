@@ -2,6 +2,7 @@
 //! and the flow-status summary (#1797): always-on tool-call counter, live
 //! clock, settled terminal line, and the background-waiting override.
 
+use crate::channels::background_work::{SubagentCounts, waiting_verb};
 use crate::channels::slack::SlackState;
 use crate::channels::slack::tool_group::{GroupEntry, GroupState, TurnOutcome, render};
 use slack_morphism::prelude::{SlackChannelId, SlackTs};
@@ -75,7 +76,7 @@ fn settled_line_carries_outcome_ctx_and_clock() {
     let mut g = group(2, true, false);
     g.settle(
         TurnOutcome::Finished,
-        0,
+        None,
         Some("ctx: 78K/200K 39% | 854 tok/s".into()),
     );
     let text = text_of(&render(&g, &SlackTs::new("1.0".into())));
@@ -93,7 +94,13 @@ fn settled_line_carries_outcome_ctx_and_clock() {
 #[test]
 fn background_tasks_override_to_waiting() {
     let mut g = group(2, true, false);
-    g.settle(TurnOutcome::Finished, 2, Some("ctx: 78K/200K 39%".into()));
+    // The seam verb comes from the shared fold (#1988), not a local count.
+    let verb = waiting_verb(Some(2), SubagentCounts::default());
+    g.settle(
+        TurnOutcome::Finished,
+        verb,
+        Some("ctx: 78K/200K 39%".into()),
+    );
     let text = text_of(&render(&g, &SlackTs::new("1.0".into())));
     assert!(text.contains("⏳ Waiting for 2 background tasks"), "{text}");
     assert!(
@@ -106,10 +113,14 @@ fn background_tasks_override_to_waiting() {
 #[test]
 fn flip_to_finished_keeps_the_ctx_budget() {
     let mut g = group(2, true, false);
-    g.settle(TurnOutcome::Finished, 1, Some("ctx: 10K/200K 5%".into()));
+    g.settle(
+        TurnOutcome::Finished,
+        waiting_verb(Some(1), SubagentCounts::default()),
+        Some("ctx: 10K/200K 5%".into()),
+    );
     // The completion arrived and the recount is zero: the flip re-stamps
     // WITHOUT a ctx, and the original budget must survive.
-    g.settle(TurnOutcome::Finished, 0, None);
+    g.settle(TurnOutcome::Finished, None, None);
     let text = text_of(&render(&g, &SlackTs::new("1.0".into())));
     assert!(text.contains("✅ Finished"), "{text}");
     assert!(
@@ -121,12 +132,17 @@ fn flip_to_finished_keeps_the_ctx_budget() {
 #[test]
 fn failed_settle_reports_the_outcome() {
     let mut g = group(1, false, false);
-    g.settle(TurnOutcome::Failed, 0, None);
+    g.settle(TurnOutcome::Failed, None, None);
     let text = text_of(&render(&g, &SlackTs::new("1.0".into())));
     assert!(text.contains("❌ Failed"), "{text}");
-    // A failed settle never overrides to waiting, even with tasks running.
+    // A failed settle never overrides to waiting, even with a fully
+    // populated waiting verb handed to the seam (#1988 gate).
     let mut g = group(1, false, false);
-    g.settle(TurnOutcome::Failed, 3, None);
+    g.settle(
+        TurnOutcome::Failed,
+        waiting_verb(Some(3), SubagentCounts::default()),
+        None,
+    );
     let text = text_of(&render(&g, &SlackTs::new("1.0".into())));
     assert!(
         text.contains("❌ Failed"),
@@ -164,7 +180,7 @@ async fn upsert_preserves_settle_and_turn_start() {
     let state = SlackState::new();
     let mut first = group(2, true, false);
     let anchored = first.started_at;
-    first.settle(TurnOutcome::Finished, 0, Some("ctx: 1K/200K 1%".into()));
+    first.settle(TurnOutcome::Finished, None, Some("ctx: 1K/200K 1%".into()));
     state.upsert_tool_group("111.0".into(), first).await;
     // A late update built fresh by a progress callback.
     let stored = state
@@ -185,15 +201,66 @@ async fn upsert_preserves_settle_and_turn_start() {
 async fn waiting_group_flip_roundtrip() {
     let state = SlackState::new();
     assert!(state.take_waiting_group_for("C1").await.is_none());
+    let s1 = uuid::Uuid::new_v4();
     state
-        .note_waiting_group("C1".into(), "111.0".into(), uuid::Uuid::new_v4())
+        .note_waiting_group("C1".into(), "111.0".into(), s1)
         .await;
-    // Another channel never sees it.
-    assert!(state.take_waiting_group_for("C2").await.is_none());
-    let (ts, _session) = state.take_waiting_group_for("C1").await.expect("waiting");
+    // #1988: a second channel's note must NOT clobber the first waiting
+    // group; entries live side by side keyed by channel.
+    state
+        .note_waiting_group("C2".into(), "222.0".into(), uuid::Uuid::new_v4())
+        .await;
+    let (ts, session) = state.take_waiting_group_for("C1").await.expect("waiting");
     assert_eq!(ts, "111.0");
+    assert_eq!(session, s1);
+    // C2's own entry is intact and independent.
+    let (ts, _) = state
+        .take_waiting_group_for("C2")
+        .await
+        .expect("c2 waiting");
+    assert_eq!(ts, "222.0");
     // Taken: a second flip is a no-op.
     assert!(state.take_waiting_group_for("C1").await.is_none());
+}
+
+#[test]
+fn settle_verb_folds_agents_and_tasks_together() {
+    // #1988 regression: sub-agent-only sessions used to settle with no
+    // waiting state at all because the count read only the task registry.
+    // The seam now receives the shared fold, so mixed and agent-only work
+    // both hold the group in the waiting line.
+    let mut g = group(2, true, false);
+    let verb = waiting_verb(
+        Some(1),
+        SubagentCounts {
+            working: 2,
+            awaiting: 0,
+        },
+    );
+    g.settle(TurnOutcome::Finished, verb, None);
+    let text = text_of(&render(&g, &SlackTs::new("1.0".into())));
+    assert!(
+        text.contains("⏳ Waiting for 1 background task + 2 working agents"),
+        "{text}"
+    );
+    assert!(
+        text.contains("🕒"),
+        "waiting keeps the rolling clock: {text}"
+    );
+    let mut g = group(2, true, false);
+    let verb = waiting_verb(
+        None,
+        SubagentCounts {
+            working: 3,
+            awaiting: 0,
+        },
+    );
+    g.settle(TurnOutcome::Finished, verb, None);
+    let text = text_of(&render(&g, &SlackTs::new("1.0".into())));
+    assert!(
+        text.contains("⏳ Waiting for 3 working agents"),
+        "agent-only work still holds the line: {text}"
+    );
 }
 
 #[tokio::test]
