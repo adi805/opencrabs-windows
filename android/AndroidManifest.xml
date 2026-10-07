@@ -31,6 +31,19 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Declared explicitly because a build flag alone is not the contract.
+         Measured 2026-10-07 with aapt2 link: when both a manifest element and
+         the min-sdk-version flag are present, the MANIFEST wins, so a stale
+         value here would silently override the flag and no build step would
+         notice. With this element the floor is visible in source review and the
+         CI guard can compare the two.
+
+         targetSdkVersion 35 mirrors what assemble-apk.sh passes. Removing this
+         element entirely would also leave targetSdkVersion unset, because aapt2
+         writes it only from the target-sdk-version flag, and an unset target
+         drops the app into legacy compatibility behaviour. -->
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+
     <application
         android:label="OpenCrabs"
         android:allowBackup="false"
