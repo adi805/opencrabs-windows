@@ -1857,6 +1857,7 @@ pub(crate) async fn handle_message(
         thread_id,
         typing_cancel.clone(),
         agent.background_manager(),
+        agent.subagent_manager(),
         session_id,
     );
 

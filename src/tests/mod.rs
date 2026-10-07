@@ -177,6 +177,7 @@ pub mod channels_telegram_cowork_test;
 #[cfg(feature = "telegram")]
 pub mod channels_telegram_session_resolve_test;
 pub mod channels_tests;
+pub mod channels_typing_tick_test;
 pub mod channels_voice_service_test;
 pub mod chat_expand_anchor_test;
 pub mod chat_fold_deliverable_test;

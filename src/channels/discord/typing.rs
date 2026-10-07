@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::brain::agent::service::background_tasks::BackgroundTaskManager;
+use crate::brain::tools::subagent::SubAgentManager;
 
 /// Re-send interval, under Discord's ~10s expiry so the dots do not flicker
 /// between ticks. Matches the cadence the compaction burst already uses.
@@ -45,6 +46,7 @@ pub(crate) fn spawn_typing(
     channel: ChannelId,
     cancel: CancellationToken,
     background: Option<Arc<BackgroundTaskManager>>,
+    agents: Option<Arc<SubAgentManager>>,
     session_id: Uuid,
 ) {
     tokio::spawn(async move {
@@ -59,9 +61,13 @@ pub(crate) fn spawn_typing(
         }
 
         // The turn ended; keep going while detached work continues.
-        crate::channels::typing_tick::tick_while_detached(background, session_id, TICK, || {
-            broadcast(&http, channel, "handover")
-        })
+        crate::channels::typing_tick::tick_while_detached(
+            background,
+            agents,
+            session_id,
+            TICK,
+            || broadcast(&http, channel, "handover"),
+        )
         .await;
     });
 }

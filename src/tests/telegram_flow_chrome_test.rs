@@ -3,10 +3,11 @@
 //! ctx → clock), and the uncollapsed shell — the whole message is never wrapped
 //! in one outer expandable; only the processing log collapses.
 
+use crate::channels::background_work::subagent_waiting_phrase;
 use crate::channels::telegram::flow::{
     FlowHeader, FlowLine, FlowOutcome, SubagentCounts, render_flow_details_chrome,
     render_flow_details_chrome_pref, render_flow_html_chrome, render_flow_html_chrome_pref,
-    settled_icon_verb, subagent_waiting_phrase,
+    settled_icon_verb,
 };
 use crate::channels::telegram::flow_chrome::{
     FlowSections, GoalSection, ProseSection, clock_glyph, split_plan_prose,

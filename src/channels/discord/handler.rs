@@ -1085,6 +1085,7 @@ pub(crate) async fn handle_message(
         msg.channel_id,
         typing_cancel.clone(),
         agent.background_manager(),
+        agent.subagent_manager(),
         session_id,
     );
     let _typing_guard = super::typing::TypingGuard(typing_cancel);

@@ -632,6 +632,7 @@ pub(crate) async fn resume_session_inner(
         thread_id,
         typing_cancel.clone(),
         agent.background_manager(),
+        agent.subagent_manager(),
         session_id,
     );
 
