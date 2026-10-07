@@ -1982,27 +1982,23 @@ Then just type `opencrabs` to start. The onboarding wizard handles everything on
 > ```
 > Not needed if you use API TTS (OpenAI) or disable TTS entirely.
 
-> **Note:** `/rebuild` works even with pre-built binaries — it auto-clones the source to `~/.opencrabs/source/` on first use, then builds and hot-restarts. For active development or adding custom tools, Option 2 gives you the source tree directly.
+> **Note:** `/rebuild` works even with pre-built binaries — it auto-clones the source to `~/.opencrabs/source/` on first use, then builds and hot-restarts. For active development or adding custom tools, Option 4 gives you the source tree directly.
 
-### Option 2: Install via Homebrew
+### Option 2: Homebrew (not available for this fork)
 
-```bash
-brew install opencrabs
-```
+The Homebrew formula named `opencrabs` belongs to the upstream project, so installing it gives you the upstream binary rather than this fork. This fork publishes no Homebrew formula. Use Option 1 (prebuilt binary) or Option 3 (build from this repository) instead.
 
-Installs from homebrew-core, with prebuilt bottles for macOS and Linux maintained by Homebrew. The formula is bumped automatically on every release, and `brew upgrade opencrabs` tracks the latest version.
-
-### Option 3: Install via Cargo
+### Option 3: Install via Cargo (from this repository)
 
 ```bash
-cargo install opencrabs
+cargo install --git https://github.com/adi805/opencrabs-windows --locked
 ```
 
-> **This compiles from source and takes around an hour.** Options 1 and 2 download the same binary in seconds. Use Cargo when you want a custom feature set (see below), you are on a platform with no published binary, or you specifically want a source install.
+> **This compiles from source and takes around an hour.** Option 1 downloads the same binary in seconds. Use Cargo when you want a custom feature set (see below), you are on a platform with no published binary, or you specifically want a source install.
 
 > **Linux (Debian/Ubuntu):** Install system deps first: `sudo apt-get install build-essential pkg-config clang libclang-dev libasound2-dev libssl-dev cmake`
 >
-> **Large build:** The build can use 8GB+ in `/tmp`. If you run out of space: `CARGO_TARGET_DIR=~/.cargo/target cargo install opencrabs`
+> **Large build:** The build can use 8GB+ in `/tmp`. If you run out of space: `CARGO_TARGET_DIR=~/.cargo/target cargo install --git https://github.com/adi805/opencrabs-windows --locked`
 
 #### Feature Flags
 
@@ -2010,10 +2006,10 @@ All features are enabled by default. To customize, use `--no-default-features` a
 
 ```bash
 # Install with only Telegram and Discord
-cargo install opencrabs --no-default-features --features "telegram,discord"
+cargo install --git https://github.com/adi805/opencrabs-windows --locked --no-default-features --features "telegram,discord"
 
 # Everything except browser automation
-cargo install opencrabs --no-default-features --features "telegram,whatsapp,discord,slack,trello,local-stt,local-tts,browser,rtk,code-graph,pdfium"
+cargo install --git https://github.com/adi805/opencrabs-windows --locked --no-default-features --features "telegram,whatsapp,discord,slack,trello,local-stt,local-tts,browser,rtk,code-graph,pdfium"
 ```
 
 | Feature | Crate | Description |
@@ -2049,7 +2045,7 @@ Required for `/rebuild`, adding custom tools, or modifying the agent.
 ```bash
 # Clone
 git clone https://github.com/adi805/opencrabs-windows.git
-cd opencrabs
+cd opencrabs-windows
 
 # Build & run (development)
 cargo run --bin opencrabs
@@ -2078,7 +2074,7 @@ Run OpenCrabs in an isolated container. Build takes ~15min (Rust release + LTO).
 ```bash
 # Clone and run
 git clone https://github.com/adi805/opencrabs-windows.git
-cd opencrabs
+cd opencrabs-windows
 
 # Run with docker compose
 # API keys are mounted from keys.toml on host
@@ -2209,11 +2205,11 @@ The field shows as configured when a key is in effect from either source, so a b
 
 #### Local STT (whisper.cpp)
 
-Run speech-to-text on-device with zero API cost. Included by default in prebuilt binaries and `cargo install opencrabs`.
+Run speech-to-text on-device with zero API cost. Included by default in prebuilt binaries and in source builds from this repository.
 
 In `/onboard:voice`, select **Local** mode, pick a model size, and press Enter to download. Models are stored at `~/.local/share/opencrabs/models/whisper/`.
 
-> **Building from source:** Local STT requires CMake and a C++ compiler (for whisper.cpp). To exclude it: `cargo install opencrabs --no-default-features --features telegram,whatsapp,discord,slack,trello`
+> **Building from source:** Local STT requires CMake and a C++ compiler (for whisper.cpp). To exclude it: `cargo install --git https://github.com/adi805/opencrabs-windows --locked --no-default-features --features telegram,whatsapp,discord,slack,trello`
 
 | Model | Size | Quality |
 |-------|------|---------|
@@ -3951,7 +3947,7 @@ opencrabs -d
 RUST_LOG=debug opencrabs -d
 ```
 
-All four work the same whether installed via `cargo install opencrabs` or built from source.
+All four work the same whether installed from a prebuilt binary or built from source.
 
 ```bash
 # Log management
@@ -5658,7 +5654,7 @@ Security issues go through [GitHub's private vulnerability reporting](https://gi
 
 **The command-line interface is the stable surface. The Rust library is not.**
 
-The crate is published on crates.io so the binary can be installed with `cargo install opencrabs`. Its `pub` modules are internals, exposed because the binary and the integration tests need them across module boundaries, not because they are an API to build against.
+This fork is not published to crates.io (the `opencrabs` name there belongs to the upstream project), so build it from this repository with `cargo install --git https://github.com/adi805/opencrabs-windows --locked`. Its `pub` modules are internals, exposed because the binary and the integration tests need them across module boundaries, not because they are an API to build against.
 
 What the version number covers:
 
@@ -5679,7 +5675,7 @@ Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidel
 ```bash
 # Setup
 git clone https://github.com/adi805/opencrabs-windows.git
-cd opencrabs
+cd opencrabs-windows
 cargo build
 cargo test
 # Make changes, then submit a PR

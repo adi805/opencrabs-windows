@@ -18,7 +18,7 @@ jobs:
             const author = context.payload.issue.user.login;
             const assignees = author === 'leshchenko1979'
               ? ['leshchenko1979']
-              : ['adolfousier'];
+              : ['adi805'];
             await github.rest.issues.addAssignees({
               owner: context.repo.owner,
               repo: context.repo.repo,
