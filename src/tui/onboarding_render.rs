@@ -201,12 +201,13 @@ fn footer_key_spans(wizard: &OnboardingWizard) -> Vec<Span<'static>> {
             | OnboardingStep::SlackSetup
             | OnboardingStep::TrelloSetup
     );
-    // A first run quits from step 1 (there is no chat to go back to), a
-    // deep link exits to chat, every other step goes back one.
+    // Step 1 has nothing to go back to: a first run quits the app, a re-run
+    // exits to chat (#1976). A deep link exits to chat from any step, every
+    // other step goes back one.
     let esc_label = if wizard.quick_jump {
         "Exit"
-    } else if wizard.is_first_time && step == OnboardingStep::ModeSelect {
-        "Quit"
+    } else if step == OnboardingStep::ModeSelect {
+        if wizard.is_first_time { "Quit" } else { "Exit" }
     } else {
         "Back"
     };

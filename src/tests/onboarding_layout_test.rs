@@ -156,3 +156,15 @@ fn mode_select_step_counts_match_the_progress_counter() {
     assert!(text.contains(&quick), "missing {quick:?}\n{text}");
     assert!(text.contains(&full), "missing {full:?}\n{text}");
 }
+
+#[test]
+fn rerun_step_one_footer_says_exit() {
+    // Esc on step 1 of an /onboard re-run closes the wizard back to chat,
+    // so the hint must not promise a previous step.
+    let mut wizard = OnboardingWizard::new();
+    wizard.is_first_time = false;
+    wizard.resume_notice = None;
+    let text = screen_text(&wizard, 100, 30);
+    assert!(text.contains("[Esc] Exit"), "{text}");
+    assert!(!text.contains("[Esc] Back"), "{text}");
+}
