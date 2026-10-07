@@ -29,6 +29,8 @@ fn wizard_at_provider_auth() -> OnboardingWizard {
     w.mode = WizardMode::Advanced;
     w.step = OnboardingStep::ProviderAuth;
     w.ps.api_key_input = "sk-test-key".to_string();
+    // ProviderAuth requires a model as well as a key (#1973).
+    w.ps.model_filter = "test-model".to_string();
     w
 }
 
@@ -220,6 +222,8 @@ fn quick_jump_does_not_trigger_step_save() {
         w.quick_jump = true;
         w.step = OnboardingStep::ProviderAuth;
         w.ps.api_key_input = "sk-test-key".to_string();
+        // ProviderAuth requires a model as well as a key (#1973).
+        w.ps.model_filter = "test-model".to_string();
 
         w.next_step();
         assert!(w.quick_jump_done, "quick_jump sets done flag");

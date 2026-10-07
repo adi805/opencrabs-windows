@@ -12,7 +12,6 @@ use crate::channels::telegram::rich::api::{
     build_body_markdown_media_edit, build_body_markdown_media_target, multipart_scalar_fields,
 };
 use crate::channels::telegram::rich::ast::{Block, Inline, MermaidResult};
-use crate::channels::telegram::rich::markdown_to_html_mermaid;
 use crate::channels::telegram::rich::mermaid::{
     MediaEntry, PREVALIDATE_CONNECT_TIMEOUT_SECS, PREVALIDATE_TIMEOUT_SECS, base64url, cache_get,
     cache_put, classify_render_failure, error_note, failure_html, find_mermaid_fences,
@@ -20,6 +19,7 @@ use crate::channels::telegram::rich::mermaid::{
     looks_like_mermaid_source, markdown_failure_block, markdown_failure_block_with_link,
     replacement_for, resolve_blocks, resolve_markdown_media, svg_link_md,
 };
+use crate::channels::telegram::rich::{markdown_to_html_mermaid, markdown_to_html_mermaid_p};
 
 // ---------------------------------------------------------------------------
 // base64url
@@ -857,4 +857,44 @@ fn multipart_scalar_fields_carries_message_id_for_edits_only() {
     });
     let send_parts = multipart_scalar_fields(&send_body);
     assert!(!send_parts.iter().any(|(name, _)| name == "message_id"));
+}
+
+// ---------------------------------------------------------------------------
+// The two HTML renderers differ exactly where the rich fallback needs them to
+// ---------------------------------------------------------------------------
+
+/// The rich HTML dialect does not treat a bare newline as a paragraph break,
+/// so the fallback renderer must be the `_p` variant.
+///
+/// `markdown_to_html_mermaid` (bare) is correct for the CLASSIC `sendMessage`
+/// HTML dialect, where a literal `\n` renders as a line break, and it is what
+/// the classic path still uses. `markdown_to_html_mermaid_p` gives each block
+/// its own `<p>`, which is what the rich dialect needs — the plan-card prose
+/// path already renders this way, so a plan card survived a rich 429 fallback
+/// while a final reply did not. No mermaid fence appears in the input, so
+/// `should_render_mermaid` is false and neither call touches the network.
+#[tokio::test]
+async fn only_the_p_renderer_wraps_blocks_for_the_rich_html_dialect() {
+    let md = "First paragraph.\n\nSecond paragraph.";
+
+    let classic = markdown_to_html_mermaid(md).await;
+    assert!(
+        !classic.contains("<p>"),
+        "the bare renderer must not emit <p> tags: {classic}"
+    );
+    assert!(
+        classic.contains("First paragraph.\n\nSecond"),
+        "the bare renderer joins blocks with a bare newline, which the rich \
+         dialect collapses: {classic}"
+    );
+
+    let rich = markdown_to_html_mermaid_p(md).await;
+    assert!(
+        rich.contains("<p>First paragraph.</p>"),
+        "the _p renderer must give the first block its own <p>: {rich}"
+    );
+    assert!(
+        rich.contains("<p>Second paragraph.</p>"),
+        "the _p renderer must give the second block its own <p>: {rich}"
+    );
 }

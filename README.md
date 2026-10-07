@@ -589,7 +589,7 @@ This solves the core UX problem in mention-only groups: previously, tagging the 
 | **Mission Control** | Full-screen `/mission-control` dialog showing every actionable artifact in one place: pending RSI proposals (inbox cards), recent RSI activity (improvements log feed), the schedule queue (cron jobs + paused/active state), and a live **Analytics** panel (brain file sizes, tool usage with proportional bars, failure rates, RSI applied by dimension, phantom-detection and resolution rates, per-model reliability, stream-recovery counts) with **D / W / M / All** window tabs so a fixed 30-day view cannot hide a tool that has already recovered. Apply or reject inbox proposals inline with `a` / `r` — same machinery as the agent's `rsi_proposals` tool, byte-identical install. Tab between panels, j/k to navigate, Enter for the detail popup, Esc to close. Cron paused jobs flag in orange, active in teal — at-a-glance state |
 | **Skills picker** | Full-screen `/skills` dialog with a live filter input — start typing to narrow the list (case-insensitive on name + description), Tab / Shift-Tab cycle the filtered cards (wraps at the edges), Enter runs the selected skill (sends its body as a prompt to the agent), Esc closes. Built-in skills badge orange; user-installed skills badge teal. When the filter narrows to a single match, Enter just fires it — fastest path to launch a skill |
 | **Browser Automation** | Native browser control via CDP (Chrome DevTools Protocol). Auto-detects your default Chromium-based browser (Chrome, Brave, Edge, Arc, Vivaldi, Opera, Chromium) and uses its profile — your logins, cookies, and extensions carry over. 9 browser tools: navigate, click, type, screenshot, eval JS, extract content, wait for elements, find/inventory elements, batched multi-action. Headed or headless mode with display auto-detection. **Shadow DOM aware:** CSS/text/aria search, the interactive inventory, and click/type/act/wait/screenshot all resolve inside open shadow roots, and closed roots still resolve over CDP. **Note:** Firefox is not supported (no CDP) — if Firefox is your default, OpenCrabs falls back to the first available Chromium browser. Feature-gated under `browser` (included by default) |
-| **ACP Server Mode** | Agent Client Protocol server over stdio JSON-RPC (#1540): editors and agent harnesses like Zed and monocle drive OpenCrabs as their coding agent. `opencrabs acp` serves the session over stdio; prompts, tool calls and streaming updates ride the ACP session protocol. Sessions are first-class: the context meter is restored on load and rides usage updates, `session/load` replays the transcript and restores the per-session model, `set_model` persists across processes, native `session/set_mode` applies the approval policy server-side, `session/compact` pushes, and `session/new` offers a live model catalog |
+| **ACP Server Mode** | Agent Client Protocol server over stdio JSON-RPC (#1540): editors and agent harnesses like Zed and [MonoCode](https://github.com/hardbeat920/monocode) drive OpenCrabs as their coding agent. `opencrabs acp` serves the session over stdio; prompts, tool calls and streaming updates ride the ACP session protocol. Sessions are first-class: the context meter is restored on load and rides usage updates, `session/load` replays the transcript and restores the per-session model, `set_model` persists across processes, native `session/set_mode` applies the approval policy server-side, `session/compact` pushes, and `session/new` offers a live model catalog |
 | **Natural Language Commands** | Tell OpenCrabs to create slash commands — it writes them to `commands.toml` autonomously via the `config_manager` tool |
 | **Mechanical Commands (#933)** | `/architecture [path]` (directory tree, depth-capped, secrets/vendor dirs excluded), `/attach <paths...>` (docs-only file attach: `.md` or `docs/` files, hidden paths and secret files refused in compiled code), `/audit [N]` (audit trail: ACTION rows always, READ + OUTCOME when `[features] audit_recording = true`). All three run in the binary with zero API cost; the LLM-flavored `/architecture-explain` lives as an opt-in template in `src/docs/reference/templates/commands/` |
 | **Live Settings** | Agent can read/write `config.toml` at runtime; Settings TUI screen (press `S`) shows current config; approval policy persists across restarts. Default: auto-approve (use `/approve` to change) |
@@ -1982,8 +1982,6 @@ Then just type `opencrabs` to start. The onboarding wizard handles everything on
 > ```
 > Not needed if you use API TTS (OpenAI) or disable TTS entirely.
 
-> **Note:** `/rebuild` works even with pre-built binaries — it auto-clones the source to `~/.opencrabs/source/` on first use, then builds and hot-restarts. For active development or adding custom tools, Option 2 gives you the source tree directly.
-
 ### Option 2: Install via Homebrew
 
 ```bash
@@ -2033,7 +2031,7 @@ cargo install opencrabs --no-default-features --features "telegram,whatsapp,disc
 
 ### Option 4: Build from Source (full control)
 
-Required for `/rebuild`, adding custom tools, or modifying the agent.
+Required for adding custom tools, or modifying the agent.
 
 **Prerequisites:**
 - **Rust stable (1.94+)** — [Install Rust](https://rustup.rs/). The project includes a `rust-toolchain.toml` that selects the correct toolchain automatically
@@ -3058,12 +3056,6 @@ name = "/standup"
 description = "Generate a daily standup summary"
 action = "prompt"
 prompt = "Summarize my recent git commits and open tasks for a standup. Be concise."
-
-[[commands]]
-name = "/rebuild"
-description = "Build and restart OpenCrabs from source"
-action = "prompt"
-prompt = 'Run `RUSTFLAGS="-C target-cpu=native" cargo build --release` in /srv/rs/opencrabs. If it succeeds, ask if I want to restart now.'
 ```
 
 Commands appear instantly in autocomplete (type `/`) after saving — no restart needed. The `action` field supports:
@@ -3529,7 +3521,6 @@ OpenCrabs includes 40+ built-in tools. The AI can use these during conversation:
 | `write_opencrabs_file` | Write or edit any file under `~/.opencrabs/` (brain files, memory logs, commands.toml). Enforces append-only + dedup-aware shrink + `.bak` snapshots on the 9 protected brain files (SOUL/USER/AGENTS/TOOLS/CODE/SECURITY/MEMORY/BOOT) |
 | `evolve` | Download latest release binary from GitHub and hot-restart (no Rust toolchain needed). Also runs automatically on startup and every 24h when `[agent] auto_update = true` (default), and via the `/evolve` slash command — both paths invoke the tool directly without the LLM, so they can't be dropped or refused by a provider |
 | `evolve` on a Homebrew install | The upgrade is delegated to `brew upgrade opencrabs` instead of swapping the binary, so brew's manifest and the Cellar agree with what is on disk. Each `brew` child runs under a 600s budget and is killed when it overruns, and the killed message names the check to run (`brew list --versions opencrabs`), because a killed upgrade may have written the new keg without repointing the symlink. The version reported afterwards is read back from brew, never borrowed from the GitHub release name fetched before brew ran; if brew reports nothing, none is claimed. On a systemd host the same delayed-restart timer the download path arms is armed as a backstop, so a restart that dies still comes back (#1779) |
-| `rebuild` | Build from source (`cargo build --release`) and hot-restart |
 | `suggest_options` | Surface up to 8 short options for the user to pick as their next input. Channel-agnostic: native buttons where the channel has them, numbered text where it does not. Options carry styles (`primary`/`danger`/default); a single option renders as one tap-to-confirm button; the first word of each option must be distinctive or the set is refused (#1611) |
 | `goal_manage` | Set and manage an autonomous goal for the session, so the agent can drive itself toward it across turns |
 | `tasks_list` | List in-flight background work: spawned sub-agents with id and label, and running background tasks |
@@ -3726,7 +3717,7 @@ OpenCrabs supports spawning specialized sub-agents that run autonomously in isol
 | `code` | Implementation — full write access | All parent tools minus recursive/dangerous |
 | `research` | Web search + documentation lookup | `read_file`, `glob`, `grep`, `ls`, `web_search`, `http_client` |
 
-Sub-agents never have access to recursive tools (`spawn_agent`, `resume_agent`, `wait_agent`, `send_input`, `close_agent`) or dangerous system tools (`rebuild`, `evolve`).
+Sub-agents never have access to recursive tools (`spawn_agent`, `resume_agent`, `wait_agent`, `send_input`, `close_agent`) or dangerous system tools (`evolve`).
 
 **Subagent Provider and Model** — two ways to control which provider and model a sub-agent uses, in order of precedence:
 
@@ -3830,7 +3821,6 @@ Any tool on your `$PATH` works. If it runs in your terminal, OpenCrabs can use i
 | `/sessions:<query>` | Filter sessions by name (Telegram/Discord/Slack) |
 | `/approve` | Tool approval policy selector (approve-only / session / yolo) |
 | `/compact` | Compact context (summarize + trim for long sessions) |
-| `/rebuild` | Build from source & hot-restart — streams live compiler output to chat, auto exec() restarts on success (no prompt), auto-clones repo if no source tree found |
 | `/whisper` | Voice-to-text — speak anywhere, pastes to clipboard |
 | `/cd` | Change working directory (directory picker) |
 | `/settings` or `S` | Open Settings screen (provider, approval, commands, paths) |
@@ -3838,7 +3828,7 @@ Any tool on your `$PATH` works. If it runs in your terminal, OpenCrabs can use i
 | `/new` | Start a new session |
 | `/clear` | Start fresh: clears the session's context without a summariser call |
 | `/evolve` | Check for updates and install latest release |
-| `/restart` | Restart OpenCrabs and resume the current session. Unlike `/rebuild` and `/evolve`, which restart only as a side effect of updating, this cycles the process as-is |
+| `/restart` | Restart OpenCrabs and resume the current session. Unlike `/evolve`, which restarts only as a side effect of updating, this cycles the process as-is |
 | `/exit` | Exit OpenCrabs (the typed equivalent of `Ctrl+C` twice) |
 | `/rtk` | Show RTK token savings statistics |
 | `/mission-control` | Full-screen dialog: RSI proposals, activity log, cron schedule |
@@ -4105,46 +4095,6 @@ prompt = "Spawn an isolated sub-agent to handle this task in parallel while the 
 ```
 
 Commands appear in autocomplete alongside built-in commands. After each agent response, `commands.toml` is automatically reloaded — no restart needed. Legacy `commands.json` files are auto-migrated on first load.
-
-### Self-Sustaining Architecture
-
-OpenCrabs can modify its own source code, build, test, and hot-restart itself — triggered by the agent via the `rebuild` tool or by the user via `/rebuild`:
-
-```
-/rebuild          # User-triggered: build → restart prompt
-rebuild tool      # Agent-triggered: build → ProgressEvent::RestartReady → restart prompt
-```
-
-**How it works:**
-
-1. The agent edits source files using its built-in tools (read, write, edit, bash)
-2. `SelfUpdater::build()` runs `cargo build --release` asynchronously
-3. On success, a `ProgressEvent::RestartReady` is emitted → bridged to `TuiEvent::RestartReady`
-4. The TUI switches to **RestartPending** mode — user presses Enter to confirm
-5. `SelfUpdater::restart(session_id)` replaces the process via Unix `exec()`
-6. The new binary starts with `opencrabs chat --session <uuid>` — resuming the same conversation
-7. A hidden wake-up message is sent to the agent so it greets the user and continues where it left off
-
-**Two trigger paths:**
-
-| Path | Entry point | Signal |
-|------|-------------|--------|
-| **Agent-triggered** | `rebuild` tool (called by the agent after editing source) | `ProgressCallback` → `RestartReady` |
-| **User-triggered** | `/rebuild` slash command | `TuiEvent::RestartReady` directly |
-
-**Key details:**
-
-- The running binary is in memory — source changes on disk don't affect it until restart
-- If the build fails, the agent stays running and can read compiler errors to fix them
-- Session persistence via SQLite means no conversation context is lost across restarts
-- After restart, the agent auto-wakes with session context — no user input needed
-- Brain files (`SOUL.md`, `MEMORY.md`, etc.) are re-read every turn, so edits take effect immediately without rebuild
-- User-defined slash commands (`commands.toml`) also auto-reload after each agent response
-- Hot restart is Unix-only (`exec()` syscall); on Windows the build/test steps work but restart requires manual relaunch
-
-**Modules:**
-- `src/brain/self_update.rs` — `SelfUpdater` struct with `auto_detect()`, `build()`, `test()`, `restart()`
-- `src/brain/tools/rebuild.rs` — `RebuildTool` (agent-callable, emits `ProgressEvent::RestartReady`)
 
 ### Self-Improving Agent
 

@@ -7,14 +7,15 @@ use super::onboarding::{
     ImageField, OnboardingStep, OnboardingWizard, PROVIDERS, SlackField, TelegramField,
     TrelloField, WizardMode,
 };
+use super::onboarding_layout as layout;
 use super::provider_selector::CUSTOM_PROVIDER_IDX;
 use crate::tui::render::theme::{self, Role};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
 };
 
 /// Main color palette (matches existing OpenCrabs theme)
@@ -52,79 +53,354 @@ pub(crate) fn visible_window(total: usize, selected: usize, max: usize) -> (usiz
 
 pub fn render_onboarding(f: &mut Frame, wizard: &OnboardingWizard) {
     let area = f.area();
+    let col_w = layout::content_width(area.width);
+    // Text areas (brain setup) and subtitles wrap inside the column, leaving
+    // room for the field indent.
+    let wrap_width = (col_w.saturating_sub(8) as usize).max(20);
 
-    // Compute wrap width early so content builders can use it.
-    // Box = min(64, 90% terminal), inner = box - 2 borders, wrap = inner - 8 padding
-    let box_w = 64u16.min(area.width * 9 / 10).max(40u16.min(area.width));
-    let wrap_width = (box_w.saturating_sub(10) as usize).max(20);
+    let header = build_header(wizard, col_w as usize, wrap_width);
+    let footer = build_footer(wizard, area.width as usize);
+    let header_h = (header.len() as u16).saturating_add(1);
+    let footer_h = if footer.is_empty() {
+        0
+    } else {
+        (footer.len() as u16).saturating_add(1)
+    };
+    let [header_area, body_area, footer_area] = Layout::vertical([
+        Constraint::Length(header_h),
+        Constraint::Min(1),
+        Constraint::Length(footer_h),
+    ])
+    .areas(area);
+    let [_, col_area, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(col_w),
+        Constraint::Fill(1),
+    ])
+    .areas(body_area);
 
-    // Build wizard content FIRST so we know the actual height
+    let visible = col_area.height as usize;
+    let (rows, focus_row) = build_body(wizard, area, col_w as usize, wrap_width, visible);
+    let scroll = layout::scroll_offset(
+        focus_row,
+        rows.len(),
+        visible,
+        wizard.user_scroll_offset as usize,
+    );
+    let hidden_below = rows.len().saturating_sub(scroll + visible);
+
+    f.render_widget(
+        Paragraph::new(header).alignment(Alignment::Center).block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(brand_blue())),
+        ),
+        header_area,
+    );
+    f.render_widget(Paragraph::new(rows).scroll((scroll as u16, 0)), col_area);
+    if hidden_below > 0 && col_area.height > 0 {
+        render_more_below(f, col_area, hidden_below);
+    }
+    if footer_h > 0 {
+        f.render_widget(
+            Paragraph::new(footer).alignment(Alignment::Center).block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(brand_blue())),
+            ),
+            footer_area,
+        );
+    }
+
+    // WhatsApp QR popup: rendered as a centered overlay with white bg so the
+    // QR modules have the contrast needed to be scannable by a phone camera.
+    if wizard.step == OnboardingStep::WhatsAppSetup
+        && let Some(ref qr_text) = wizard.whatsapp_qr_text
+    {
+        render_whatsapp_qr_popup(f, qr_text, area);
+    }
+}
+
+/// Pinned top of the screen: what this is and how far along the user is.
+/// Rows are pre-wrapped to `width` so the header height is exact.
+fn build_header(wizard: &OnboardingWizard, width: usize, wrap_width: usize) -> Vec<Line<'static>> {
+    let step = wizard.step;
+    let bar_style = Style::default()
+        .fg(brand_gold())
+        .add_modifier(Modifier::BOLD);
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Header
-    let step = wizard.step;
-    // Progress counter is flow-aware: QuickStart shows its own 6-step sequence
-    // (e.g. 4/6), Advanced shows the full 9. Dots only render at all for the
-    // full wizard (entered at Mode Select) — deep-links/`/models` set quick_jump.
-    let (step_current, step_total) = if wizard.mode == WizardMode::QuickStart {
-        (step.quick_number(), OnboardingStep::quick_total())
-    } else {
-        (step.number(), OnboardingStep::total())
-    };
-    if step != OnboardingStep::Complete && !wizard.quick_jump {
-        // Show logo + tagline on the first step only
-        if step == OnboardingStep::ModeSelect {
-            let logo_style = Style::default()
-                .fg(brand_gold())
-                .add_modifier(Modifier::BOLD);
-            for logo_line in [
-                "   ___                    ___           _",
-                "  / _ \\ _ __  ___ _ _    / __|_ _ __ _| |__  ___",
-                " | (_) | '_ \\/ -_) ' \\  | (__| '_/ _` | '_ \\(_-<",
-                r"  \___/| .__/\___|_||_|  \___|_| \__,_|_.__//__/",
-                "       |_|",
-            ] {
-                lines.push(Line::from(Span::styled(logo_line.to_string(), logo_style)));
-            }
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "\u{1f980} The autonomous AI agent. Self-improving. Every channel.",
-                Style::default()
-                    .fg(brand_gold())
-                    .add_modifier(Modifier::ITALIC),
-            )));
-            lines.push(Line::from(""));
-        }
-
-        lines.push(Line::from(""));
+    if step == OnboardingStep::Complete {
         lines.push(Line::from(Span::styled(
-            render_progress_dots(step_current, step_total),
-            Style::default().fg(brand_blue()),
+            "OpenCrabs Setup Complete",
+            bar_style,
         )));
-        lines.push(Line::from(""));
+    } else if wizard.quick_jump {
+        // Deep links (/models, /doctor, /onboard:*) show one step: name it.
+        lines.push(Line::from(Span::styled(
+            format!("OpenCrabs · {}", step.title()),
+            bar_style,
+        )));
+    } else {
+        // Progress counter is flow-aware: QuickStart shows its own sequence,
+        // Advanced the full one.
+        let (current, total) = if wizard.mode == WizardMode::QuickStart {
+            (step.quick_number(), OnboardingStep::quick_total())
+        } else {
+            (step.number(), OnboardingStep::total())
+        };
+        lines.push(Line::from(vec![
+            Span::styled("OpenCrabs Setup  ", bar_style),
+            Span::styled(
+                render_progress_dots(current, total),
+                Style::default().fg(brand_blue()),
+            ),
+            Span::styled(
+                format!("  {current}/{total}"),
+                Style::default().fg(theme::role(Role::Gray)),
+            ),
+        ]));
         lines.push(Line::from(Span::styled(
             step.title().to_string(),
             Style::default()
                 .fg(brand_gold())
                 .add_modifier(Modifier::BOLD),
         )));
-        // Wrap subtitle so it never truncates
         let subtitle_style = Style::default().fg(theme::role(Role::Gray));
         for chunk in wrap_text(step.subtitle(), wrap_width) {
             lines.push(Line::from(Span::styled(chunk, subtitle_style)));
         }
-        lines.push(Line::from(""));
-        lines.push(Line::from(""));
-    } else if wizard.quick_jump {
-        // Top padding for doctor/deep-link mode (no header, just spacing)
-        lines.push(Line::from(""));
+    }
+    layout::wrap_lines(lines, width).0
+}
+
+/// Pinned bottom of the screen: the current error (always visible, never
+/// scrolled away under the form) and the keys this step takes.
+fn build_footer(wizard: &OnboardingWizard, width: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if let Some(ref err) = wizard.error_message {
+        lines.push(Line::from(Span::styled(
+            format!("! {err}"),
+            Style::default().fg(theme::role(Role::Error)),
+        )));
+    }
+    if wizard.step != OnboardingStep::Complete {
+        lines.push(Line::from(footer_key_spans(wizard)));
+    }
+    layout::wrap_lines(lines, width).0
+}
+
+fn footer_key_spans(wizard: &OnboardingWizard) -> Vec<Span<'static>> {
+    let step = wizard.step;
+    let is_channels = step == OnboardingStep::Channels;
+    let is_channel_sub = matches!(
+        step,
+        OnboardingStep::TelegramSetup
+            | OnboardingStep::DiscordSetup
+            | OnboardingStep::WhatsAppSetup
+            | OnboardingStep::SlackSetup
+            | OnboardingStep::TrelloSetup
+    );
+    // A first run quits from step 1 (there is no chat to go back to), a
+    // deep link exits to chat, every other step goes back one.
+    let esc_label = if wizard.quick_jump {
+        "Exit"
+    } else if wizard.is_first_time && step == OnboardingStep::ModeSelect {
+        "Quit"
+    } else {
+        "Back"
+    };
+
+    let mut footer: Vec<Span<'static>> = vec![
+        Span::styled(
+            " [Esc] ",
+            Style::default()
+                .fg(theme::role(Role::Error))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{}  ", esc_label),
+            Style::default().fg(theme::role(Role::AccentSoft)),
+        ),
+    ];
+
+    if is_channels {
+        // Channels list: Space toggles, Enter opens setup, arrow keys navigate
+        footer.push(Span::styled(
+            "[Space] ",
+            Style::default()
+                .fg(brand_blue())
+                .add_modifier(Modifier::BOLD),
+        ));
+        footer.push(Span::styled(
+            "Toggle  ",
+            Style::default().fg(theme::role(Role::AccentSoft)),
+        ));
+        footer.push(Span::styled(
+            "[Enter] ",
+            Style::default()
+                .fg(accent_gold())
+                .add_modifier(Modifier::BOLD),
+        ));
+        footer.push(Span::styled(
+            "Setup",
+            Style::default().fg(theme::role(Role::AccentSoft)),
+        ));
+    } else if is_channel_sub {
+        // Channel setup screens: tab nav + editing hints
+        footer.push(Span::styled(
+            "[Tab] ",
+            Style::default()
+                .fg(brand_blue())
+                .add_modifier(Modifier::BOLD),
+        ));
+        footer.push(Span::styled(
+            "Next  ",
+            Style::default().fg(theme::role(Role::AccentSoft)),
+        ));
+        footer.push(Span::styled(
+            "[←→] ",
+            Style::default()
+                .fg(brand_blue())
+                .add_modifier(Modifier::BOLD),
+        ));
+        footer.push(Span::styled(
+            "Cursor  ",
+            Style::default().fg(theme::role(Role::AccentSoft)),
+        ));
+        footer.push(Span::styled(
+            "[Enter] ",
+            Style::default()
+                .fg(accent_gold())
+                .add_modifier(Modifier::BOLD),
+        ));
+        footer.push(Span::styled(
+            "Confirm",
+            Style::default().fg(theme::role(Role::AccentSoft)),
+        ));
+    } else if step == OnboardingStep::HealthCheck {
+        footer.push(Span::styled(
+            "[Enter] ",
+            Style::default()
+                .fg(accent_gold())
+                .add_modifier(Modifier::BOLD),
+        ));
+        if wizard.health_complete {
+            footer.push(Span::styled(
+                "Re-check",
+                Style::default().fg(theme::role(Role::AccentSoft)),
+            ));
+        } else {
+            footer.push(Span::styled(
+                "Check",
+                Style::default().fg(theme::role(Role::AccentSoft)),
+            ));
+        }
+    } else {
+        // All other steps: Tab/Shift+Tab field nav + Enter confirm
+        if step != OnboardingStep::ModeSelect {
+            footer.push(Span::styled(
+                "[Tab] ",
+                Style::default()
+                    .fg(brand_blue())
+                    .add_modifier(Modifier::BOLD),
+            ));
+            footer.push(Span::styled(
+                "Next Field  ",
+                Style::default().fg(theme::role(Role::AccentSoft)),
+            ));
+        }
+        footer.push(Span::styled(
+            "[Enter] ",
+            Style::default()
+                .fg(accent_gold())
+                .add_modifier(Modifier::BOLD),
+        ));
+        footer.push(Span::styled(
+            "Confirm",
+            Style::default().fg(theme::role(Role::AccentSoft)),
+        ));
     }
 
-    let header_end = lines.len();
+    footer
+}
+
+/// The scrolling middle of the screen, pre-wrapped to the column width, and
+/// the row the focused field starts on. The provider step's lists shrink
+/// until the whole form fits, so on a small terminal the key and model
+/// fields show without scrolling at all (#1973).
+fn build_body(
+    wizard: &OnboardingWizard,
+    area: Rect,
+    col_w: usize,
+    wrap_width: usize,
+    visible: usize,
+) -> (Vec<Line<'static>>, usize) {
+    let mut list_rows = layout::MAX_LIST_ROWS;
+    loop {
+        let (lines, focused_line) = build_body_lines(wizard, area, wrap_width, list_rows);
+        let (rows, starts) = layout::wrap_lines(lines, col_w);
+        if rows.len() <= visible || list_rows <= layout::MIN_LIST_ROWS {
+            let focus_row = starts.get(focused_line).copied().unwrap_or(0);
+            return (rows, focus_row);
+        }
+        list_rows -= 1;
+    }
+}
+
+fn build_body_lines(
+    wizard: &OnboardingWizard,
+    area: Rect,
+    wrap_width: usize,
+    list_rows: usize,
+) -> (Vec<Line<'static>>, usize) {
+    let step = wizard.step;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Logo + tagline on the first step only, and only when the terminal has
+    // rows to spare: on a small window the form wins.
+    if step == OnboardingStep::ModeSelect
+        && !wizard.quick_jump
+        && layout::shows_logo(area.width, area.height)
+    {
+        let logo_style = Style::default()
+            .fg(brand_gold())
+            .add_modifier(Modifier::BOLD);
+        lines.push(Line::from(""));
+        for logo_line in [
+            "   ___                    ___           _",
+            "  / _ \\ _ __  ___ _ _    / __|_ _ __ _| |__  ___",
+            " | (_) | '_ \\/ -_) ' \\  | (__| '_/ _` | '_ \\(_-<",
+            r"  \___/| .__/\___|_||_|  \___|_| \__,_|_.__//__/",
+            "       |_|",
+        ] {
+            lines.push(Line::from(Span::styled(logo_line.to_string(), logo_style)));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  \u{1f980} The autonomous AI agent. Self-improving. Every channel.",
+            Style::default()
+                .fg(brand_gold())
+                .add_modifier(Modifier::ITALIC),
+        )));
+    }
+
+    // Resume notice: what is still outstanding after picking up a run that
+    // was left halfway (#919).
+    if let Some(ref notice) = wizard.resume_notice {
+        lines.push(Line::from(""));
+        for chunk in wrap_text(notice, wrap_width) {
+            lines.push(Line::from(Span::styled(
+                format!("  {chunk}"),
+                Style::default().fg(brand_blue()),
+            )));
+        }
+    }
+    lines.push(Line::from(""));
 
     // Step-specific content; returns a focused-line hint for scrolling
     let focused_line: usize = match step {
-        OnboardingStep::ProviderAuth => render_provider_auth(&mut lines, wizard),
+        OnboardingStep::ProviderAuth => render_provider_auth(&mut lines, wizard, list_rows),
         OnboardingStep::Channels => render_channels(&mut lines, wizard),
         OnboardingStep::TelegramSetup => render_telegram_setup(&mut lines, wizard),
         OnboardingStep::DiscordSetup => render_discord_setup(&mut lines, wizard),
@@ -146,316 +422,28 @@ pub fn render_onboarding(f: &mut Frame, wizard: &OnboardingWizard) {
             0
         }
     };
+    (lines, focused_line)
+}
 
-    // Resume notice — what is still outstanding after picking up a run that
-    // was left halfway (#919). Shown above any error so an error about the
-    // current field stays closest to the field.
-    if let Some(ref notice) = wizard.resume_notice {
-        lines.push(Line::from(""));
-        for chunk in wrap_text(notice, wrap_width) {
-            lines.push(Line::from(Span::styled(
-                format!("  {chunk}"),
-                Style::default().fg(brand_blue()),
-            )));
-        }
-    }
-
-    // Error message
-    if let Some(ref err) = wizard.error_message {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!("  ! {}", err),
-            Style::default().fg(theme::role(Role::Error)),
-        )));
-    }
-
-    // Navigation footer
-    if step != OnboardingStep::Complete {
-        lines.push(Line::from(""));
-
-        let is_channels = step == OnboardingStep::Channels;
-        let is_channel_sub = matches!(
-            step,
-            OnboardingStep::TelegramSetup
-                | OnboardingStep::DiscordSetup
-                | OnboardingStep::WhatsAppSetup
-                | OnboardingStep::SlackSetup
-                | OnboardingStep::TrelloSetup
-        );
-        let esc_label = if wizard.quick_jump { "Exit" } else { "Back" };
-
-        let mut footer: Vec<Span<'static>> = vec![
-            Span::styled(
-                " [Esc] ",
-                Style::default()
-                    .fg(theme::role(Role::Error))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{}  ", esc_label),
-                Style::default().fg(theme::role(Role::AccentSoft)),
-            ),
-        ];
-
-        if is_channels {
-            // Channels list: Space toggles, Enter opens setup, arrow keys navigate
-            footer.push(Span::styled(
-                "[Space] ",
-                Style::default()
-                    .fg(brand_blue())
-                    .add_modifier(Modifier::BOLD),
-            ));
-            footer.push(Span::styled(
-                "Toggle  ",
-                Style::default().fg(theme::role(Role::AccentSoft)),
-            ));
-            footer.push(Span::styled(
-                "[Enter] ",
-                Style::default()
-                    .fg(accent_gold())
-                    .add_modifier(Modifier::BOLD),
-            ));
-            footer.push(Span::styled(
-                "Setup",
-                Style::default().fg(theme::role(Role::AccentSoft)),
-            ));
-        } else if is_channel_sub {
-            // Channel setup screens: tab nav + editing hints
-            footer.push(Span::styled(
-                "[Tab] ",
-                Style::default()
-                    .fg(brand_blue())
-                    .add_modifier(Modifier::BOLD),
-            ));
-            footer.push(Span::styled(
-                "Next  ",
-                Style::default().fg(theme::role(Role::AccentSoft)),
-            ));
-            footer.push(Span::styled(
-                "[←→] ",
-                Style::default()
-                    .fg(brand_blue())
-                    .add_modifier(Modifier::BOLD),
-            ));
-            footer.push(Span::styled(
-                "Cursor  ",
-                Style::default().fg(theme::role(Role::AccentSoft)),
-            ));
-            footer.push(Span::styled(
-                "[Enter] ",
-                Style::default()
-                    .fg(accent_gold())
-                    .add_modifier(Modifier::BOLD),
-            ));
-            footer.push(Span::styled(
-                "Confirm",
-                Style::default().fg(theme::role(Role::AccentSoft)),
-            ));
-        } else if step == OnboardingStep::HealthCheck {
-            footer.push(Span::styled(
-                "[Enter] ",
-                Style::default()
-                    .fg(accent_gold())
-                    .add_modifier(Modifier::BOLD),
-            ));
-            if wizard.health_complete {
-                footer.push(Span::styled(
-                    "Re-check",
-                    Style::default().fg(theme::role(Role::AccentSoft)),
-                ));
-            } else {
-                footer.push(Span::styled(
-                    "Check",
-                    Style::default().fg(theme::role(Role::AccentSoft)),
-                ));
-            }
-        } else {
-            // All other steps: Tab/Shift+Tab field nav + Enter confirm
-            if step != OnboardingStep::ModeSelect {
-                footer.push(Span::styled(
-                    "[Tab] ",
-                    Style::default()
-                        .fg(brand_blue())
-                        .add_modifier(Modifier::BOLD),
-                ));
-                footer.push(Span::styled(
-                    "Next Field  ",
-                    Style::default().fg(theme::role(Role::AccentSoft)),
-                ));
-            }
-            footer.push(Span::styled(
-                "[Enter] ",
-                Style::default()
-                    .fg(accent_gold())
-                    .add_modifier(Modifier::BOLD),
-            ));
-            footer.push(Span::styled(
-                "Confirm",
-                Style::default().fg(theme::role(Role::AccentSoft)),
-            ));
-        }
-
-        lines.push(Line::from(footer));
-    }
-
-    // Bottom padding
-    lines.push(Line::from(""));
-
-    // --- Layout calculations ---
-    // Responsive: use up to 90% of terminal width (min 40, max 64)
-    let box_width = 64u16.min(area.width * 9 / 10).max(40u16.min(area.width));
-    let inner_width = box_width.saturating_sub(2) as usize; // inside borders
-
-    // The header occupies lines 0..header_end (progress dots, title, subtitle).
-    // These lines AND the footer/empty lines get centered.
-    // Step-specific content lines (radio buttons, fields, descriptions) stay
-    // left-aligned as a group so they don't drift relative to each other.
-
-    // Find where the footer starts (the nav line near the bottom).
-    // The footer only exists on non-Complete steps: empty separator + nav line + bottom padding.
-    let footer_start: usize = if step != OnboardingStep::Complete && lines.len() >= 3 {
-        lines.len() - 3 // empty separator, footer line, bottom padding
-    } else {
-        lines.len() // no footer to center separately
+/// A dim cue on the last visible row when the form continues below, so a
+/// field under the fold is never invisible without a hint it exists.
+fn render_more_below(f: &mut Frame, col_area: Rect, hidden: usize) {
+    let row = Rect {
+        y: col_area.y + col_area.height - 1,
+        height: 1,
+        ..col_area
     };
-
-    // Step content stays LEFT-ALIGNED (matches the /models picker
-    // layout). The previous behavior computed a per-frame
-    // `content_pad` from the widest line of the currently-rendered
-    // content and used it to horizontally center the whole content
-    // block — but the widest line varied with the selected provider
-    // (a custom provider's `https://...` base URL is far wider than
-    // a vanilla provider's `API Key: ***` line). That made the
-    // whole list re-indent on every Up/Down keypress, which the
-    // user surfaced as "the position keeps changing on every
-    // navigation". Left-aligning with a small uniform pad keeps the
-    // list rows in the same column regardless of which provider is
-    // selected.
-    let content_pad: usize = 2;
-
-    let centered_lines: Vec<Line<'static>> = lines
-        .into_iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let line_width: usize = line
-                .spans
-                .iter()
-                .map(|s| {
-                    use unicode_width::UnicodeWidthStr;
-                    s.content.width()
-                })
-                .sum();
-
-            if line_width == 0 {
-                return line; // empty lines stay empty
-            }
-
-            if i < header_end || i >= footer_start {
-                // Header and footer: center each line independently
-                // so the title bar / nav line stay visually balanced.
-                if line_width >= inner_width {
-                    line
-                } else {
-                    let pad = (inner_width - line_width) / 2;
-                    let mut spans = vec![Span::raw(" ".repeat(pad))];
-                    spans.extend(line.spans);
-                    Line::from(spans)
-                }
-            } else {
-                // Step content: fixed small left pad so columns are
-                // stable across selections.
-                let mut spans = vec![Span::raw(" ".repeat(content_pad))];
-                spans.extend(line.spans);
-                Line::from(spans)
-            }
-        })
-        .collect();
-
-    // Calculate actual content height: lines + 2 for top/bottom border.
-    // Allow the dialog to take up to ~95% of the terminal so small /
-    // zoomed-in windows don't truncate the form's last fields. The
-    // previous 90% cap left ~3 rows wasted at the bottom which on a
-    // 20-row terminal was exactly the 2-3 fields users reported losing.
-    let content_height = (centered_lines.len() as u16).saturating_add(2);
-    let max_box_height = area.height.saturating_mul(19) / 20;
-    let box_height = content_height.min(max_box_height);
-    // Inner visible rows (no borders) — used for scroll calculation
-    let visible_rows = box_height.saturating_sub(2) as usize;
-    // Combine the focus-driven scroll (keeps the focused field
-    // visible) with the user's manual Page Up / Page Down offset
-    // (lets them peek at fields below focus on small terminals).
-    // Without the manual offset the bottom of the form was reachable
-    // only by Tab-cycling all the way down — confusing UX when the
-    // user just wanted to confirm a value is still there.
-    let max_scroll = centered_lines.len().saturating_sub(visible_rows);
-    let focus_scroll: usize = if focused_line > 2 && centered_lines.len() > visible_rows {
-        focused_line.saturating_sub(2).min(max_scroll)
-    } else {
-        0
-    };
-    let user_extra = wizard.user_scroll_offset as usize;
-    let scroll_offset: u16 = focus_scroll.saturating_add(user_extra).min(max_scroll) as u16;
-
-    // Center the wizard box on screen using Flex::Center
-    let v_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .flex(Flex::Center)
-        .constraints([Constraint::Length(box_height)])
-        .split(area);
-
-    let h_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .flex(Flex::Center)
-        .constraints([Constraint::Length(box_width)])
-        .split(v_chunks[0]);
-
-    let wizard_area = h_chunks[0];
-
-    let title_string = if step == OnboardingStep::Complete {
-        " OpenCrabs Setup Complete ".to_string()
-    } else if wizard.quick_jump {
-        format!(" {} ", step.title())
-    } else {
-        format!(" OpenCrabs Setup ({}/{}) ", step_current, step_total)
-    };
-
-    let title_alignment = if wizard.quick_jump {
-        Alignment::Center
-    } else {
-        Alignment::Left
-    };
-
-    let paragraph = Paragraph::new(centered_lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(brand_blue()))
-                .title(Span::styled(
-                    title_string,
-                    Style::default()
-                        .fg(brand_blue())
-                        .add_modifier(Modifier::BOLD),
-                ))
-                .title_alignment(title_alignment),
-        )
-        .alignment(Alignment::Left)
-        .wrap(Wrap { trim: false });
-    // Only apply scroll when needed — scroll((0,0)) can interact with Wrap
-    let paragraph = if scroll_offset > 0 {
-        paragraph.scroll((scroll_offset, 0))
-    } else {
-        paragraph
-    };
-
-    f.render_widget(paragraph, wizard_area);
-
-    // WhatsApp QR popup — rendered as a centered overlay with white bg so the
-    // QR modules have the contrast needed to be scannable by a phone camera.
-    if wizard.step == OnboardingStep::WhatsAppSetup
-        && let Some(ref qr_text) = wizard.whatsapp_qr_text
-    {
-        render_whatsapp_qr_popup(f, qr_text, area);
-    }
+    f.render_widget(ratatui::widgets::Clear, row);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("↓ {hidden} more below · PgDn"),
+            Style::default()
+                .fg(theme::role(Role::Gray))
+                .add_modifier(Modifier::ITALIC),
+        )))
+        .alignment(Alignment::Right),
+        row,
+    );
 }
 
 /// Render the WhatsApp QR code as a centered full-screen popup with white
@@ -599,7 +587,13 @@ fn render_mode_select(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizard)
 
 /// Returns the line index (in `lines`) of the currently focused element —
 /// used by `render_onboarding` to scroll the Paragraph and keep it visible.
-fn render_provider_auth(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizard) -> usize {
+/// `list_rows` caps the provider and model lists; the caller shrinks it until
+/// the form fits the screen.
+fn render_provider_auth(
+    lines: &mut Vec<Line<'static>>,
+    wizard: &OnboardingWizard,
+    list_rows: usize,
+) -> usize {
     let is_custom = wizard.ps.is_custom();
     let mut focused_line: usize = 0;
 
@@ -613,13 +607,12 @@ fn render_provider_auth(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizar
     // model and key fields off screen where they could not be seen or reached
     // (#948). The count only grows: every custom provider the user adds is
     // another row.
-    const MAX_VISIBLE_PROVIDERS: usize = 8;
     let total_providers = display_order.len();
     let sel_pos = display_order
         .iter()
         .position(|&i| i == wizard.ps.selected_provider)
         .unwrap_or(0);
-    let (p_start, p_end) = visible_window(total_providers, sel_pos, MAX_VISIBLE_PROVIDERS);
+    let (p_start, p_end) = visible_window(total_providers, sel_pos, list_rows);
 
     if p_start > 0 {
         lines.push(Line::from(Span::styled(
@@ -714,6 +707,9 @@ fn render_provider_auth(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizar
             wizard.ps.custom_name.clone()
         };
         let cursor = if name_focused { "█" } else { "" };
+        if name_focused {
+            focused_line = lines.len();
+        }
         lines.push(Line::from(vec![
             Span::styled(
                 "  Name:     ",
@@ -739,6 +735,9 @@ fn render_provider_auth(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizar
             wizard.ps.base_url.clone()
         };
         let cursor = if base_focused { "█" } else { "" };
+        if base_focused {
+            focused_line = lines.len();
+        }
         lines.push(Line::from(vec![
             Span::styled(
                 "  Base URL: ",
@@ -772,6 +771,9 @@ fn render_provider_auth(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizar
         } else {
             ""
         };
+        if api_key_focused {
+            focused_line = lines.len();
+        }
         lines.push(Line::from(vec![
             Span::styled(
                 "  API Key:  ",
@@ -794,6 +796,9 @@ fn render_provider_auth(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizar
         ]));
 
         // Custom provider: show model list if fetched, otherwise free-text
+        if model_focused {
+            focused_line = lines.len();
+        }
         if wizard.ps.models.is_empty() {
             let model_display = if wizard.ps.custom_model.is_empty() {
                 "model-name".to_string()
@@ -829,7 +834,6 @@ fn render_provider_auth(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizar
             // user typed and the screen did not react, so the feature looked
             // absent, and navigation indexes the FILTERED list while the draw
             // indexed the full one, so the highlight pointed at the wrong row.
-            const MAX_VISIBLE: usize = 6;
             let filter = wizard.ps.model_filter.trim().to_lowercase();
             let visible: Vec<String> = wizard
                 .ps
@@ -882,7 +886,7 @@ fn render_provider_auth(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizar
 
             let total = visible.len();
             let safe_sel = wizard.ps.selected_model.min(total.saturating_sub(1));
-            let (start, end) = visible_window(total, safe_sel, MAX_VISIBLE);
+            let (start, end) = visible_window(total, safe_sel, list_rows);
 
             if start > 0 {
                 lines.push(Line::from(Span::styled(
@@ -923,6 +927,9 @@ fn render_provider_auth(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizar
             wizard.ps.context_window.clone()
         };
         let cursor = if cw_focused { "█" } else { "" };
+        if cw_focused {
+            focused_line = lines.len();
+        }
         lines.push(Line::from(vec![
             Span::styled(
                 "  Context:  ",
@@ -1300,6 +1307,9 @@ fn render_provider_auth(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizar
             } else {
                 ""
             };
+            if key_focused {
+                focused_line = lines.len();
+            }
 
             lines.push(Line::from(vec![
                 Span::styled(
@@ -1337,7 +1347,10 @@ fn render_provider_auth(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizar
     if !is_custom {
         let model_focused = wizard.auth_field == AuthField::Model;
         let model_count = wizard.ps.model_count();
-        if model_count > 0 || wizard.ps.models_fetching {
+        // Drawn whenever the field is focused, even with nothing listed: a
+        // provider whose fetch came back empty still needs a model, and the
+        // typed name is the only way to give it one.
+        if model_count > 0 || wizard.ps.models_fetching || model_focused {
             lines.push(Line::from(""));
             // Record scroll anchor: 2 lines above the Model: label so the key
             // line stays visible as context when scrolling into the model section.
@@ -1358,23 +1371,13 @@ fn render_provider_auth(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizar
                 }),
             )));
 
-            const MAX_VISIBLE_MODELS: usize = 8;
-
             // Helper: render a windowed slice of models, keeping selection visible
             let render_model_window = |lines: &mut Vec<Line<'static>>,
                                        models: &[&str],
                                        selected: usize,
                                        focused: bool| {
                 let total = models.len();
-                let (start, end) = if total <= MAX_VISIBLE_MODELS {
-                    (0, total)
-                } else {
-                    let half = MAX_VISIBLE_MODELS / 2;
-                    let s = selected
-                        .saturating_sub(half)
-                        .min(total - MAX_VISIBLE_MODELS);
-                    (s, s + MAX_VISIBLE_MODELS)
-                };
+                let (start, end) = visible_window(total, selected, list_rows);
                 if start > 0 {
                     lines.push(Line::from(Span::styled(
                         format!("  ↑ {} more", start),
@@ -1460,7 +1463,11 @@ fn render_provider_auth(lines: &mut Vec<Line<'static>>, wizard: &OnboardingWizar
                         )));
                     } else {
                         lines.push(Line::from(Span::styled(
-                            "  no models match".to_string(),
+                            if model_count == 0 {
+                                "  no models listed, type the model name".to_string()
+                            } else {
+                                "  no models match".to_string()
+                            },
                             Style::default()
                                 .fg(theme::role(Role::Gray))
                                 .add_modifier(Modifier::ITALIC),

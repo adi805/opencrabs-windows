@@ -94,15 +94,23 @@ fn first_opencrabs_frame(bt: &std::backtrace::Backtrace) -> Option<String> {
 /// Force-restore terminal state. Safe to call from signal handlers and panic hooks.
 pub(crate) fn force_restore_terminal() {
     let _ = disable_raw_mode();
-    let _ = execute!(
-        io::stdout(),
+    let _ = restore_to(&mut io::stdout());
+}
+
+/// Write the complete restore sequence (kitty flags pop, alt screen, bracketed
+/// paste, focus change, mouse capture, cursor show) to any sink. Split out
+/// for #1964: every death path must emit the whole sequence, and the exact
+/// bytes are pinned by tui_restore_test against a capture buffer.
+pub(crate) fn restore_to<W: std::io::Write>(w: &mut W) -> std::io::Result<()> {
+    execute!(
+        w,
         PopKeyboardEnhancementFlags,
         LeaveAlternateScreen,
         DisableBracketedPaste,
         DisableFocusChange,
         DisableMouseCapture
-    );
-    let _ = execute!(io::stdout(), crossterm::cursor::Show);
+    )?;
+    execute!(w, crossterm::cursor::Show)
 }
 
 /// Re-establish TUI terminal ownership after an editor handoff (#1744) gave
@@ -209,6 +217,35 @@ pub async fn run(mut app: App) -> Result<()> {
             std::process::exit(130); // 128 + SIGINT(2)
         }
     });
+
+    // #1964: SIGTERM (kill, tmux respawn, ssh drop) and SIGHUP killed the TUI
+    // with mouse capture still enabled, and the shell echoed every mouse
+    // wiggle as ^[[<35;…M garbage. Mirror the SIGINT path: restore, then exit.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        tokio::spawn(async move {
+            let (Ok(mut sigterm), Ok(mut sighup)) = (
+                signal(SignalKind::terminate()),
+                signal(SignalKind::hangup()),
+            ) else {
+                tracing::warn!("TUI could not install SIGTERM/SIGHUP handlers");
+                return;
+            };
+            let code = tokio::select! {
+                _ = sigterm.recv() => 143,
+                _ = sighup.recv() => 129,
+            };
+            tracing::error!("TUI received exit signal {code}, restoring terminal");
+            force_restore_terminal();
+            std::process::exit(code);
+        });
+    }
+
+    // #1964: a predecessor that died without restoring (SIGKILL, or a binary
+    // predating the panic hook) leaves DECSET modes on; clear them before we
+    // take over the terminal.
+    force_restore_terminal();
 
     // Setup terminal
     enable_raw_mode()?;

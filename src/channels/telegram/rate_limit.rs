@@ -85,6 +85,13 @@ pub(crate) fn record_global_429(retry_after: Duration) {
     let now = super::governor::gate_now();
     let new_deadline = now + total_wait;
 
+    // #1927: sample the admission profile BEFORE the cooldown lock. The
+    // profile reads the peer registry, so taking it first keeps the two locks
+    // from ever being held at once — and it must be sampled before the
+    // deadline moves, so the line reports what the chat was doing in the
+    // second that got refused, not what it does once the cooldown is armed.
+    let profile = super::governor::recent_profile(None);
+
     let mut lock = GLOBAL_COOLDOWN.write().unwrap_or_else(|e| e.into_inner());
     let active_deadline = match *lock {
         Some(existing) if existing > new_deadline => existing,
@@ -97,7 +104,7 @@ pub(crate) fn record_global_429(retry_after: Duration) {
     if capped {
         tracing::warn!(
             "Telegram: Global 429 cooldown activated: {}s requested exceeds {}s cap \
-             — cooling down for {}s (deadline {:?}); chat likely flood-banned",
+             — cooling down for {}s (deadline {:?}); chat likely flood-banned; recent {profile}",
             retry_after.as_secs(),
             MAX_INLINE_RATE_LIMIT_WAIT.as_secs(),
             total_wait.as_secs(),
@@ -105,7 +112,8 @@ pub(crate) fn record_global_429(retry_after: Duration) {
         );
     } else {
         tracing::warn!(
-            "Telegram: Global 429 cooldown activated: cooling down for {}s (deadline {:?})",
+            "Telegram: Global 429 cooldown activated: cooling down for {}s (deadline {:?}); \
+             recent {profile}",
             total_wait.as_secs(),
             active_deadline
         );
@@ -123,6 +131,18 @@ pub(crate) fn is_global_cooldown_active() -> bool {
         Some(deadline) => deadline > now,
         None => false,
     }
+}
+
+/// The raw process-wide 429 deadline, if one is set (#635).
+///
+/// Unlike [`is_global_cooldown_active`] this does NOT compare against the
+/// clock: it hands the instant out so the governor's single `Cooldown`
+/// accessor can decide "in force" once, against the same `now` it reads the
+/// per-chat pause with. Deciding twice — once here against `gate_now()`, once
+/// there — is how the global and per-chat halves drift apart by a call.
+pub(crate) fn global_cooldown_deadline() -> Option<Instant> {
+    let lock = GLOBAL_COOLDOWN.read().unwrap_or_else(|e| e.into_inner());
+    *lock
 }
 
 /// Whether a cosmetic reaction ack may hit the API right now (#1778).
@@ -175,8 +195,19 @@ pub(crate) fn reset_global_cooldown() {
 /// counter or message id into the line. The capped branch's wording is
 /// forensic, do not soften it: a window over the cap means the chat is
 /// flood-banned, not merely throttled (#1064).
-pub(crate) async fn wait_out(what: &str, window: Duration, extra: &str) {
-    record_global_429(window);
+///
+/// `chat` is the chat this 429 was learned on, when the caller knows it
+/// (#635). A 429 is never only about one chat: it is also evidence that THIS
+/// chat is throttled, which is what [`super::governor::note_429_pause`] arms
+/// so the same chat's own buckets stop handing out tokens for the window.
+/// `None` for callers with no chat in scope (the generic
+/// `send_retrying_rate_limit` ladder) — the process-wide deadline is still
+/// armed, only the per-chat half is skipped.
+pub(crate) async fn wait_out(what: &str, window: Duration, extra: &str, chat: Option<i64>) {
+    match chat {
+        Some(chat_id) => super::governor::note_429_pause(chat_id, window),
+        None => record_global_429(window),
+    }
     let (wait, capped) = clamp_inline_wait(window);
     if capped {
         tracing::warn!(

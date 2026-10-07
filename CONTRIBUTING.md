@@ -88,6 +88,48 @@ refactor(memory): mod.rs is declarations-only
 
 A bare area prefix (`TUI:`, `z.ai:`, `Reasoning stream:`) is not the convention. The type makes the tracker filterable and lets the fixing commit reuse the title verbatim. Add labels on creation (`--label bug --label tui`), one for the type and one for the area.
 
+## Where Issues Go
+
+OpenCrabs is developed alongside a **dev factory** — the tooling, CI, and automation that build, test, and release the binary. Issues are split by what they describe:
+
+- **The binary** — runtime behaviour, channels, providers, TUI, memory, tools — belongs in this repository.
+- **The dev factory** — its tooling, CI, release automation, and process — belongs in [`leshchenko1979/opencrabs-dev-factory`](https://github.com/leshchenko1979/opencrabs-dev-factory).
+
+The historical issue portfolio lives at `leshchenko1979/opencrabs` and is read-only; new issues do not go there.
+
+### Sweep for duplicates first
+
+**Search before you file** — open *and* closed, issues *and* PRs:
+
+```bash
+gh search issues --repo opencrabs/opencrabs "<terms>" --state all
+gh search prs --repo opencrabs/opencrabs "<terms>" --state all
+```
+
+A closed hit that already fixed the same defect means *reference it*, not *re-file it*. A duplicate costs a review cycle and splits the record across two threads.
+
+### Mark core-surface changes
+
+A change that touches a core runtime surface — the agent loop, provider layer, channels, memory, config, migrations — is reviewed more carefully than docs or tooling. Mark it in the title so triage can route it:
+
+```
+fix core(provider): tool-call arguments drop the final delta
+feat core(memory): expose vector index stats to /doctor
+```
+
+`fix core` and `feat core` are the two core prefixes; every other change uses the plain type.
+
+## Issue & PR Lifecycle
+
+1. **File one atomic issue** — one issue, one piece of work (see above).
+2. **Wait for a maintainer to confirm** it is real and not a duplicate.
+3. **Get assigned** — assignment is the public signal that the issue is claimed. Do not comment "I'll take this"; the assignment says it.
+4. **Branch and fix** — a short-lived branch off `main` in your fork, with atomic commits.
+5. **Open the PR** — reference the issue in the body, explain *why* the change is needed, and add the `core` prefix if it applies.
+6. **Merge closes the issue** — because the issue and the PR live in the same repository, `Fixes #N` closes it on merge.
+
+**Commenting:** the only comments expected on an issue are the approved design (for non-trivial work) and per-commit implementation notes. Status chatter — "working on it", "+1", "any update?" — belongs nowhere.
+
 ## Step-by-Step: Submitting a Bug Fix
 
 1. **Find or create the issue** — Check existing issues first. If none exists, create one.
@@ -112,7 +154,7 @@ A bare area prefix (`TUI:`, `z.ai:`, `Reasoning stream:`) is not the convention.
 
 ### Prerequisites
 
-- **Rust** 1.91 or later (edition 2024)
+- **Rust** 1.94 or later (edition 2024; source of truth: `rust-version` in `Cargo.toml`)
 - **SQLite** (bundled via `rusqlite`)
 - **Git**
 
@@ -128,13 +170,13 @@ cargo clippy --all-features         # USE THIS — never `cargo check` or `cargo
 cargo test --all-features            # run the suite (incl. your new tests)
 cargo fmt --all                      # auto-format before committing
 
-# Run the EXACT CI checks (you MUST pass all three before submitting a PR)
-cargo fmt --all -- --check
-cargo clippy --lib --bins --tests --examples --all-features -- -D warnings
-cargo test --all-features --verbose
+# Run the EXACT CI checks before submitting a PR
+cargo fmt --all -- --check                # soft-fail in CI today, still expected on your diff
+cargo clippy --locked --lib --bins --tests --examples --all-features -- -D warnings
+cargo test --locked --profile ci --all-features --verbose
 ```
 
-**All three commands must pass.** PRs with failing CI will not be merged. We'll comment on the PR explaining what's failing and how to fix it. Push the fix, wait for CI to go green, and the PR will be reviewed.
+**`cargo clippy` and `cargo test` are hard CI gates: they must pass.** PRs with failing CI will not be merged. We'll comment on the PR explaining what's failing and how to fix it. Push the fix, wait for CI to go green, and the PR will be reviewed. The `cargo fmt --check` step is a soft-fail in CI today (`continue-on-error: true` in `ci.yml`): legacy unformatted code would otherwise block every PR until a fmt sweep lands on main, after which it becomes a hard gate. Format the code you touch anyway; an unformatted diff gets bounced in review.
 
 `cargo clippy` is the lint pass we trust — `cargo check` only type-checks and misses the lint rules CI enforces. Iterate with clippy locally so you don't burn a CI run discovering a `-D warnings` failure.
 
@@ -329,7 +371,7 @@ To be transparent, here's what will get your PR closed immediately:
 
 - **Stub/placeholder code** — Empty implementations, `todo!()`, functions that return hardcoded empty values
 - **No linked issue** — Feature PRs without an approved issue
-- **Fails CI** — If `cargo fmt --check`, `cargo clippy`, or `cargo test` fail
+- **Fails CI** — If `cargo clippy` or `cargo test` fail (the hard gates; `cargo fmt --check` is a soft-fail in CI today, but an unformatted diff still gets bounced in review)
 - **Unrelated changes** — Reformatting files you didn't modify, drive-by "improvements"
 - **No tests** — Bug fixes without a regression test, features without any tests
 - **Tests that write the live config** — A test that saves `config.toml` or `keys.toml` outside a home override

@@ -312,6 +312,16 @@ pub(crate) async fn deliver_final_response(
                 let reaction = teloxide::types::ReactionType::Emoji {
                     emoji: mapped.clone(),
                 };
+                super::telemetry::log_request(
+                    "turn",
+                    "delivery reaction",
+                    &session_id.to_string(),
+                    "reaction",
+                    "setMessageReaction",
+                    chat_id.0,
+                    None,
+                    inbound.map(|m| i64::from(m.id.0)),
+                );
                 let react_result = match inbound {
                     Some(m) => bot
                         .set_message_reaction(chat_id, m.id)
@@ -944,7 +954,13 @@ pub(crate) async fn deliver_final_response(
                                 });
                             }
                             Err(teloxide::RequestError::RetryAfter(secs)) => {
-                                super::rate_limit::wait_out("edit", secs.duration(), "").await;
+                                super::rate_limit::wait_out(
+                                    "edit",
+                                    secs.duration(),
+                                    "",
+                                    Some(chat_id.0),
+                                )
+                                .await;
                                 match bot
                                     .edit_message_text(chat_id, mid, &chunks[0])
                                     .parse_mode(ParseMode::Html)

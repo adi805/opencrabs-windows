@@ -1014,11 +1014,28 @@ pub fn strip_llm_artifacts(text: &str) -> String {
 /// becomes a plain hyphen so ranges stay natural ("1\u{2013}3" becomes
 /// "1-3"). Order matters: the spaced forms must run before the glued
 /// fallback.
+///
+/// Table-row exemption (#1969): a line whose first non-blank char is `|` is
+/// a markdown table row, and models write em dashes there as the empty-cell
+/// marker ("| \u{2014} |"). Colonizing a cell corrupts the table's content
+/// while the structure survives, which reads as silent garble (real case:
+/// Ops cherry-pick table, rows #757/#697, 2026-10-06). On table rows both
+/// dash kinds collapse to a plain hyphen-minus instead; every other line
+/// keeps the original chain. Splitting is newline-inclusive so trailing
+/// newlines and CRLF bytes survive byte-for-byte.
 pub(crate) fn normalize_dashes(text: &str) -> String {
-    text.replace(" \u{2014}", ":")
-        .replace("\u{2014} ", ": ")
-        .replace('\u{2014}', ":")
-        .replace('\u{2013}', "-")
+    text.split_inclusive('\n')
+        .map(|line| {
+            if line.trim_start().starts_with('|') {
+                line.replace(['\u{2014}', '\u{2013}'], "-")
+            } else {
+                line.replace(" \u{2014}", ":")
+                    .replace("\u{2014} ", ": ")
+                    .replace('\u{2014}', ":")
+                    .replace('\u{2013}', "-")
+            }
+        })
+        .collect()
 }
 
 /// Strip a matched `<tag>...</tag>` block, and handle an unclosed opener

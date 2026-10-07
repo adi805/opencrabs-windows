@@ -264,6 +264,16 @@ where
     C: Into<ChatId>,
 {
     let chat = chat_id.into();
+    super::telemetry::log_request(
+        "system",
+        why,
+        "-",
+        "delete",
+        "deleteMessage",
+        chat.0,
+        None,
+        Some(i64::from(msg_id.0)),
+    );
     if let Err(e) = bot.delete_message(chat, msg_id).await {
         let text = e.to_string();
         let quiet =
@@ -306,6 +316,19 @@ pub async fn fire_chat_action<C>(
     if !super::governor::admit_chat_action(chat, thread_id.map(|t| t.0.0)).await {
         return;
     }
+    // #721 E1: emitted AFTER the admit gate — a refresh the governor dropped
+    // never goes on the wire, so it is not a request and must not inflate the
+    // rate this line exists to measure.
+    super::telemetry::log_request(
+        "turn",
+        why,
+        "-",
+        "typing",
+        "sendChatAction",
+        chat.0,
+        thread_id.map(|t| i64::from(t.0.0)),
+        None,
+    );
     if let Err(e) = chat_action_in_thread(bot, chat, thread_id, action)
         .await
         .map(|_| ())
@@ -770,8 +793,9 @@ pub(crate) async fn send_buttons_raw(
                 .min(15);
             let wait = std::time::Duration::from_secs(wait);
             // This path sleeps on its own rather than going through `wait_out`,
-            // so without this the 429 stays private to one send.
-            super::rate_limit::record_global_429(wait);
+            // so without this the 429 stays private to one send — both to the
+            // process and to this chat's own buckets (#635).
+            super::governor::note_429_pause(chat_id, wait);
             tokio::time::sleep(wait).await;
             continue;
         }
