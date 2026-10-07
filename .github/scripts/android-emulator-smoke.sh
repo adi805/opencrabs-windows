@@ -342,13 +342,25 @@ echo "crash buffer lines: $(wc -l < "$OUT/logcat-crash.txt")"
 echo "--- crash buffer (full) ---"
 cat "$OUT/logcat-crash.txt"
 adb logcat -d > "$OUT/logcat-full.txt" 2>&1 || true
-grep -iE 'ANR in|FATAL EXCEPTION|Force finishing' "$OUT/logcat-full.txt" > "$OUT/logcat-anr.txt" || true
+# Scope this to OUR package. An unscoped 'ANR in' bills any system app's ANR to
+# us: run 37547925162 failed on "ANR in com.google.android.apps.nexuslauncher"
+# (the Pixel Launcher, on a loaded emulator) while every OpenCrabs check passed,
+# including the surface bind and both health probes. A false FAIL here is worse
+# than no check at all: it sends you hunting a bug that does not exist.
+grep -iE "ANR in ${PKG}|Force finishing activity ${PKG}" "$OUT/logcat-full.txt" > "$OUT/logcat-anr.txt" 2>/dev/null || true
+# Our own fatal exceptions land in the dedicated crash buffer, where the stack
+# trace names our process ("Process: io.opencrabs.mobile, PID: ...").
+grep -iE "$PKG" "$OUT/logcat-crash.txt" >> "$OUT/logcat-anr.txt" 2>/dev/null || true
 cat "$OUT/logcat-anr.txt"
 if [ -s "$OUT/logcat-anr.txt" ]; then
-  fail "ANR or fatal exception in the full log"
+  fail "ANR or fatal exception in $PKG (see above)"
 else
-  pass "no ANR or fatal exception"
+  pass "no ANR or fatal exception in $PKG"
 fi
+# Other packages DO crash and ANR on a busy emulator. Report the count so it is
+# visible in the log, but never let it fail the run.
+OTHER=$(grep -icE 'ANR in|FATAL EXCEPTION' "$OUT/logcat-full.txt" 2>/dev/null) || OTHER=0
+echo "NOTE: unscoped ANR/fatal lines anywhere in logcat: ${OTHER:-0} (informational, not a failure)"
 
 # ---------------------------------------------------------------- summary ----
 say "summary"
