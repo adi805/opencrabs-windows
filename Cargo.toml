@@ -1,5 +1,5 @@
 [package]
-name = "opencrabs"
+name = "opencrabs-fork"
 version = "0.5.5"
 edition = "2024"
 rust-version = "1.95"
@@ -13,6 +13,14 @@ keywords = ["ai", "terminal", "assistant", "llm", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 readme = "README.md"
 # exclude = ["src/assets/"]
+
+[lib]
+# Deliberately NOT the package name. Keeping the upstream crate name means
+# the ~41 `use opencrabs::…` paths across src/ (main.rs included) compile
+# unchanged: renaming the lib would turn a one-line distribution change into
+# a repo-wide rename. `[[bin]]` keeps `opencrabs` for the same reason.
+name = "opencrabs"
+path = "src/lib.rs"
 
 [dependencies]
 # Async Runtime
