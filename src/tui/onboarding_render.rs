@@ -53,36 +53,67 @@ pub(crate) fn visible_window(total: usize, selected: usize, max: usize) -> (usiz
 
 pub fn render_onboarding(f: &mut Frame, wizard: &OnboardingWizard) {
     let area = f.area();
-    let col_w = layout::content_width(area.width);
-    // Text areas (brain setup) and subtitles wrap inside the column, leaving
-    // room for the field indent.
-    let wrap_width = (col_w.saturating_sub(8) as usize).max(20);
+    // The header centers its text over the same width the content column
+    // would get on a timeline-less screen; the subtitle wraps inside it.
+    let head_w = layout::content_width(area.width);
+    let head_wrap = (head_w.saturating_sub(8) as usize).max(20);
 
-    let header = build_header(wizard, col_w as usize, wrap_width);
     // The footer band insets its text one column on each side.
     let footer = build_footer(wizard, area.width.saturating_sub(2) as usize);
     // Header and footer are tinted bands with breathing room, so they read
     // as bars instead of text glued to the screen edge (#1975).
     let pad = layout::band_padding(area.height);
     let band = Style::default().bg(theme::role(Role::SurfacePanel));
-    let header_h = (header.len() as u16) + 1 + pad.outer + pad.inner;
-    let footer_h = if footer.is_empty() {
-        0
+    let footer_h = band_height(footer.len(), pad);
+
+    // The left-side timeline replaces the header dots when it fits (#1979).
+    // Its fit depends on the body height, which depends on the header, so
+    // measure with the dot-less header and keep the dots if it does not fit.
+    let steps = OnboardingStep::flow_steps(wizard.mode);
+    let timeline = if !wizard.quick_jump && layout::shows_timeline(area.width) {
+        let header = build_header(wizard, head_w as usize, head_wrap, false);
+        let body_h = area
+            .height
+            .saturating_sub(band_height(header.len(), pad) + footer_h);
+        match layout::timeline_fit(steps.len(), body_h.saturating_sub(1)) {
+            layout::TimelineFit::Hidden => None,
+            fit => Some(fit),
+        }
     } else {
-        (footer.len() as u16) + 1 + pad.outer + pad.inner
+        None
     };
+
+    let header = build_header(wizard, head_w as usize, head_wrap, timeline.is_none());
+    let header_h = band_height(header.len(), pad);
     let [header_area, body_area, footer_area] = Layout::vertical([
         Constraint::Length(header_h),
         Constraint::Min(1),
         Constraint::Length(footer_h),
     ])
     .areas(area);
+
+    let content_area = match timeline {
+        Some(fit) => {
+            let [timeline_area, rest] = Layout::horizontal([
+                Constraint::Length(layout::TIMELINE_WIDTH),
+                Constraint::Fill(1),
+            ])
+            .areas(body_area);
+            render_timeline(f, timeline_area, wizard, steps, fit);
+            rest
+        }
+        None => body_area,
+    };
+    let col_w = layout::content_width(content_area.width);
+    // Text areas (brain setup) wrap inside the column, leaving room for the
+    // field indent.
+    let wrap_width = (col_w.saturating_sub(8) as usize).max(20);
     let [_, col_area, _] = Layout::horizontal([
         Constraint::Fill(1),
         Constraint::Length(col_w),
         Constraint::Fill(1),
     ])
-    .areas(body_area);
+    .areas(content_area);
 
     let visible = col_area.height as usize;
     let (rows, focus_row) = build_body(wizard, area, col_w as usize, wrap_width, visible);
@@ -144,9 +175,91 @@ pub fn render_onboarding(f: &mut Frame, wizard: &OnboardingWizard) {
     }
 }
 
+/// Rows a header/footer band takes: its text, the rule, and the padding.
+fn band_height(text_rows: usize, pad: layout::BandPadding) -> u16 {
+    if text_rows == 0 {
+        0
+    } else {
+        text_rows as u16 + 1 + pad.outer + pad.inner
+    }
+}
+
+/// The left-side step timeline (#1979): a heading, then one node per step of
+/// the active flow, done / current / upcoming, joined by connector rows when
+/// there is room for them.
+fn render_timeline(
+    f: &mut Frame,
+    area: Rect,
+    wizard: &OnboardingWizard,
+    steps: &[OnboardingStep],
+    fit: layout::TimelineFit,
+) {
+    let complete = wizard.step == OnboardingStep::Complete;
+    let current = if complete {
+        steps.len() + 1
+    } else {
+        wizard.step.flow_number(wizard.mode)
+    };
+    let heading = if complete {
+        "All steps done".to_string()
+    } else {
+        format!("Step {current} of {}", steps.len())
+    };
+    let label_room = (area.width as usize).saturating_sub(6);
+    let done = Style::default().fg(theme::role(Role::Success));
+    let dim = Style::default().fg(theme::role(Role::GrayDim));
+
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(Span::styled(
+            format!("  {heading}"),
+            Style::default()
+                .fg(theme::role(Role::Gray))
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    for (i, s) in steps.iter().enumerate() {
+        let (node, node_style, label_style) = match layout::node_state(i, current) {
+            layout::NodeState::Done => ("●", done, Style::default().fg(theme::role(Role::Gray))),
+            layout::NodeState::Current => {
+                let hot = Style::default()
+                    .fg(brand_gold())
+                    .add_modifier(Modifier::BOLD);
+                ("◉", hot, hot)
+            }
+            layout::NodeState::Upcoming => ("○", dim, dim),
+        };
+        let label: String = s.title().chars().take(label_room).collect();
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(node, node_style),
+            Span::raw("  "),
+            Span::styled(label, label_style),
+        ]));
+        if fit == layout::TimelineFit::Spacious && i + 1 < steps.len() {
+            // A segment is travelled once the step below it is reached.
+            let link = if i + 2 <= current { done } else { dim };
+            lines.push(Line::from(vec![Span::raw("  "), Span::styled("│", link)]));
+        }
+    }
+    let inner = Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 /// Pinned top of the screen: what this is and how far along the user is.
 /// Rows are pre-wrapped to `width` so the header height is exact.
-fn build_header(wizard: &OnboardingWizard, width: usize, wrap_width: usize) -> Vec<Line<'static>> {
+/// `show_dots` keeps the progress dots in the header; off when the left
+/// timeline already shows progress (#1979).
+fn build_header(
+    wizard: &OnboardingWizard,
+    width: usize,
+    wrap_width: usize,
+    show_dots: bool,
+) -> Vec<Line<'static>> {
     let step = wizard.step;
     let bar_style = Style::default()
         .fg(brand_gold())
@@ -165,24 +278,25 @@ fn build_header(wizard: &OnboardingWizard, width: usize, wrap_width: usize) -> V
             bar_style,
         )));
     } else {
-        // Progress counter is flow-aware: QuickStart shows its own sequence,
-        // Advanced the full one.
-        let (current, total) = if wizard.mode == WizardMode::QuickStart {
-            (step.quick_number(), OnboardingStep::quick_total())
+        if show_dots {
+            // Progress counter is flow-aware: QuickStart shows its own
+            // sequence, Advanced the full one.
+            let current = step.flow_number(wizard.mode);
+            let total = OnboardingStep::flow_steps(wizard.mode).len();
+            lines.push(Line::from(vec![
+                Span::styled("OpenCrabs Setup  ", bar_style),
+                Span::styled(
+                    render_progress_dots(current, total),
+                    Style::default().fg(brand_blue()),
+                ),
+                Span::styled(
+                    format!("  {current}/{total}"),
+                    Style::default().fg(theme::role(Role::Gray)),
+                ),
+            ]));
         } else {
-            (step.number(), OnboardingStep::total())
-        };
-        lines.push(Line::from(vec![
-            Span::styled("OpenCrabs Setup  ", bar_style),
-            Span::styled(
-                render_progress_dots(current, total),
-                Style::default().fg(brand_blue()),
-            ),
-            Span::styled(
-                format!("  {current}/{total}"),
-                Style::default().fg(theme::role(Role::Gray)),
-            ),
-        ]));
+            lines.push(Line::from(Span::styled("OpenCrabs Setup", bar_style)));
+        }
         lines.push(Line::from(Span::styled(
             step.title().to_string(),
             Style::default()

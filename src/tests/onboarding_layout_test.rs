@@ -2,10 +2,11 @@
 //! centered dialog, and the provider step's key and model fields stay on
 //! screen on small terminals.
 
+use crate::tui::onboarding::WizardMode;
 use crate::tui::onboarding::{AuthField, OnboardingStep, OnboardingWizard, PROVIDERS};
 use crate::tui::onboarding_layout::{
-    BandPadding, MAX_CONTENT_WIDTH, band_padding, content_width, scroll_offset, wrap_line,
-    wrap_lines,
+    BandPadding, MAX_CONTENT_WIDTH, NodeState, TimelineFit, band_padding, content_width,
+    node_state, scroll_offset, timeline_fit, wrap_line, wrap_lines,
 };
 use crate::tui::onboarding_render::render_onboarding;
 use crate::tui::render::theme::{self, Role};
@@ -223,4 +224,91 @@ fn header_and_footer_are_tinted_bands() {
     assert_eq!(buf[(0, 39)].bg, tint, "footer band");
     // The content area stays untinted.
     assert_ne!(buf[(0, 20)].bg, tint, "content area");
+}
+
+// ── left-side step timeline (#1979) ─────────────────────────────────────
+
+#[test]
+fn flow_steps_agree_with_totals_and_numbering() {
+    let quick = OnboardingStep::flow_steps(WizardMode::QuickStart);
+    let full = OnboardingStep::flow_steps(WizardMode::Advanced);
+    assert_eq!(quick.len(), OnboardingStep::quick_total());
+    assert_eq!(full.len(), OnboardingStep::total());
+    for (i, s) in quick.iter().enumerate() {
+        assert_eq!(s.flow_number(WizardMode::QuickStart), i + 1, "{s:?}");
+    }
+    for (i, s) in full.iter().enumerate() {
+        assert_eq!(s.flow_number(WizardMode::Advanced), i + 1, "{s:?}");
+    }
+}
+
+#[test]
+fn node_states_split_around_the_current_step() {
+    assert_eq!(node_state(0, 2), NodeState::Done);
+    assert_eq!(node_state(1, 2), NodeState::Current);
+    assert_eq!(node_state(2, 2), NodeState::Upcoming);
+    // Past the last step (Complete): everything is done.
+    assert_eq!(node_state(5, 7), NodeState::Done);
+}
+
+#[test]
+fn timeline_fit_drops_connectors_before_hiding() {
+    // 6 steps: heading 2 + 6 nodes + 5 connectors = 13 rows.
+    assert_eq!(timeline_fit(6, 13), TimelineFit::Spacious);
+    assert_eq!(timeline_fit(6, 12), TimelineFit::Compact);
+    assert_eq!(timeline_fit(6, 8), TimelineFit::Compact);
+    assert_eq!(timeline_fit(6, 7), TimelineFit::Hidden);
+}
+
+fn mode_select_wizard() -> OnboardingWizard {
+    let mut w = OnboardingWizard::new();
+    w.step = OnboardingStep::ModeSelect;
+    w.mode = WizardMode::QuickStart;
+    w.quick_jump = false;
+    w.resume_notice = None;
+    w.error_message = None;
+    w
+}
+
+#[test]
+fn wide_screen_shows_the_timeline_instead_of_header_dots() {
+    let wizard = mode_select_wizard();
+    let text = screen_text(&wizard, 160, 45);
+    assert!(text.contains("Step 1 of 6"), "{text}");
+    for title in ["Home Base", "Brain Fuel", "Make It Yours"] {
+        assert!(text.contains(title), "timeline misses {title}\n{text}");
+    }
+    assert!(
+        !text.contains("1/6"),
+        "header still carries the counter\n{text}"
+    );
+    assert!(text.contains("◉"), "no current-step node\n{text}");
+}
+
+#[test]
+fn advanced_flow_timeline_lists_all_nine_steps() {
+    let mut wizard = mode_select_wizard();
+    wizard.mode = WizardMode::Advanced;
+    let text = screen_text(&wizard, 160, 45);
+    assert!(text.contains("Step 1 of 9"), "{text}");
+    for title in ["Chat Me Anywhere", "Voice Superpowers", "Image Handling"] {
+        assert!(text.contains(title), "timeline misses {title}\n{text}");
+    }
+}
+
+#[test]
+fn narrow_screen_keeps_the_header_dots() {
+    let wizard = mode_select_wizard();
+    let text = screen_text(&wizard, 80, 24);
+    assert!(text.contains("1/6"), "{text}");
+    assert!(!text.contains("Step 1 of"), "{text}");
+}
+
+#[test]
+fn deep_link_gets_no_timeline() {
+    let mut wizard = provider_step_wizard();
+    wizard.quick_jump = true;
+    let text = screen_text(&wizard, 160, 45);
+    assert!(!text.contains("Step 3 of"), "{text}");
+    assert!(text.contains("API Key:"), "{text}");
 }

@@ -40,6 +40,58 @@ pub fn shows_logo(area_width: u16, area_height: u16) -> bool {
     area_width >= LOGO_MIN_WIDTH && area_height >= LOGO_MIN_HEIGHT
 }
 
+/// Columns the left-side step timeline takes, gutter included (#1979).
+pub const TIMELINE_WIDTH: u16 = 28;
+/// Narrowest terminal that gets the timeline. Below this the content column
+/// needs every column and the progress dots stay in the header instead.
+pub const TIMELINE_MIN_AREA_WIDTH: u16 = 110;
+
+/// Whether the left-side timeline fits a terminal this wide.
+pub fn shows_timeline(area_width: u16) -> bool {
+    area_width >= TIMELINE_MIN_AREA_WIDTH
+}
+
+/// How a timeline node reads relative to the step the user is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeState {
+    Done,
+    Current,
+    Upcoming,
+}
+
+/// State of the `index`-th step (0-based) when the user is on the 1-based
+/// `current` step. `current` past the last step (Complete) marks all done.
+pub fn node_state(index: usize, current: usize) -> NodeState {
+    match (index + 1).cmp(&current) {
+        std::cmp::Ordering::Less => NodeState::Done,
+        std::cmp::Ordering::Equal => NodeState::Current,
+        std::cmp::Ordering::Greater => NodeState::Upcoming,
+    }
+}
+
+/// How the timeline spends the rows it has: a connector row between nodes
+/// when there is room, nodes only when not, nothing when even that is too
+/// tall (the header dots take over). Two rows are kept for the heading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelineFit {
+    Spacious,
+    Compact,
+    Hidden,
+}
+
+pub fn timeline_fit(steps: usize, rows: u16) -> TimelineFit {
+    let rows = rows as usize;
+    if steps == 0 {
+        TimelineFit::Hidden
+    } else if 2 + steps * 2 - 1 <= rows {
+        TimelineFit::Spacious
+    } else if 2 + steps <= rows {
+        TimelineFit::Compact
+    } else {
+        TimelineFit::Hidden
+    }
+}
+
 /// Blank rows around the header and footer text (#1975). `outer` sits
 /// between the text and the screen edge, `inner` between the text and the
 /// content. Small terminals give the rows back to the form: inner padding
