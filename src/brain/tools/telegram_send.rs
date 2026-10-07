@@ -46,6 +46,37 @@ fn get_str<'a>(input: &'a Value, key: &str) -> std::result::Result<&'a str, Tool
     }
 }
 
+/// Photo references for `send_photo`: the `photo_urls` array when the caller
+/// passes one (2 or more entries land as a single album, #97), otherwise the
+/// single `photo_url` string. Order is preserved, and the first entry is the
+/// one that carries the caption.
+#[allow(clippy::result_large_err)]
+pub(crate) fn photo_refs(input: &Value) -> std::result::Result<Vec<String>, ToolResult> {
+    if let Some(raw) = input.get("photo_urls") {
+        let arr = raw.as_array().ok_or_else(|| {
+            ToolResult::error("'photo_urls' must be an array of photo URLs or paths.".to_string())
+        })?;
+        if arr.is_empty() {
+            return Err(ToolResult::error(
+                "'photo_urls' was empty: pass at least one photo.".to_string(),
+            ));
+        }
+        let mut refs = Vec::with_capacity(arr.len());
+        for (idx, entry) in arr.iter().enumerate() {
+            match entry.as_str() {
+                Some(s) if !s.is_empty() => refs.push(s.to_string()),
+                _ => {
+                    return Err(ToolResult::error(format!(
+                        "'photo_urls[{idx}]' must be a non-empty string."
+                    )));
+                }
+            }
+        }
+        return Ok(refs);
+    }
+    get_str(input, "photo_url").map(|s| vec![s.to_string()])
+}
+
 /// Extract an i64 from a JSON value, coercing numeric strings (#646).
 /// Schemas declare "integer" but models often quote the value
 /// (`"chat_id": "123456"`), and the old `as_i64()` silently dropped it —
@@ -452,6 +483,11 @@ impl Tool for TelegramSendTool {
                 "photo_url": {
                     "type": "string",
                     "description": "Photo for send_photo: an HTTPS URL or a local file path (e.g. /tmp/chart.png or ~/.opencrabs/out.png)"
+                },
+                "photo_urls": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Album for send_photo: 2 or more photos (HTTPS URLs or local file paths) delivered as ONE album, so the set raises a single notification. Takes precedence over photo_url; the caption goes on the first photo. More than 10 photos are split into several albums (11 -> 9+2), never dropped."
                 },
                 "document_url": {
                     "type": "string",
@@ -993,6 +1029,8 @@ impl TelegramSendTool {
     }
 
     /// `send_photo` — photo by URL or local path, with optional caption.
+    /// Passing `photo_urls` with 2 or more entries delivers them as ONE
+    /// album instead of one notification per photo (#97).
     async fn action_send_photo(
         &self,
         bot: &teloxide::Bot,
@@ -1001,80 +1039,170 @@ impl TelegramSendTool {
     ) -> Result<ToolResult> {
         let NewTarget { chat_id, thread_id } =
             pget!(resolve_new_target(input, context.session_id, &self.telegram_state).await);
-        let reference = pget!(get_str(input, "photo_url")).to_string();
+        let references = pget!(photo_refs(input));
         let caption = input
             .get("caption")
             .and_then(|v| v.as_str())
             .map(str::to_string);
+        let album = references.len() > 1;
+        let action = if album { "send_media_group" } else { "send_photo" };
         // Collapse an identical photo+caption re-sent to the same chat
         // within the dedup window (#721) — model repeats or post-timeout
-        // retries otherwise land the same media twice back-to-back.
+        // retries otherwise land the same media twice back-to-back. The
+        // whole set is the signature, so dropping one photo from the album
+        // is a different send, not a duplicate.
+        let dedup_key = references.join("\n");
         if !self.telegram_state.claim_media_send(
-            "send_photo",
+            action,
             chat_id,
-            &reference,
+            &dedup_key,
             caption.as_deref(),
         ) {
             tracing::info!(
-                "telegram_send: suppressed duplicate send_photo to chat {chat_id} ({reference})"
+                "telegram_send: suppressed duplicate {action} to chat {chat_id} ({} photos)",
+                references.len()
             );
             return Ok(ToolResult::success(format!(
                 "Photo already sent to chat {chat_id} moments ago — skipped the duplicate."
             )));
         }
-        let file = pget!(resolve_input_file(&reference, "photo_url").await);
         let reply_to = input.get("message_id").and_then(value_as_i64);
-        match send_retrying_rate_limit("telegram_send send_photo", || {
-            let mut req = crate::channels::telegram::send::photo_in_thread(
-                bot,
-                ChatId(chat_id),
-                thread_id,
-                file.clone(),
-            );
-            if let Some(ref c) = caption {
-                req = req.caption(c.clone());
-            }
-            if let Some(mid) = reply_to {
-                req = req.reply_parameters(ReplyParameters::new(MessageId(mid as i32)));
-            }
-            req
-        })
-        .await
-        {
-            Ok(m) => {
-                log_send_success(
-                    "tool",
-                    "send_photo",
-                    "send_photo",
-                    &context.session_id.to_string(),
-                    "media",
-                    chat_id,
-                    thread_id.map(|t| t.0.0),
-                    m.id.0,
-                    reference.len(),
-                    &content_hash8(&reference),
+        let session = context.session_id.to_string();
+
+        if !album {
+            let reference = references[0].clone();
+            let file = pget!(resolve_input_file(&reference, "photo_url").await);
+            return match send_retrying_rate_limit("telegram_send send_photo", || {
+                let mut req = crate::channels::telegram::send::photo_in_thread(
+                    bot,
+                    ChatId(chat_id),
+                    thread_id,
+                    file.clone(),
                 );
-                Ok(ToolResult::success(format!(
-                    "Photo sent to chat {chat_id}.{}",
-                    landing_echo(chat_id, thread_id).await
-                )))
-            }
-            Err(e) => {
-                log_send_failure(
-                    "tool",
-                    "send_photo",
-                    "send_photo",
-                    &context.session_id.to_string(),
-                    "media",
-                    chat_id,
-                    thread_id.map(|t| t.0.0),
-                    reference.len(),
-                    &content_hash8(&reference),
-                    &e.to_string(),
-                );
-                Ok(ToolResult::error(format!("Failed to send photo: {e}")))
-            }
+                if let Some(ref c) = caption {
+                    req = req.caption(c.clone());
+                }
+                if let Some(mid) = reply_to {
+                    req = req.reply_parameters(ReplyParameters::new(MessageId(mid as i32)));
+                }
+                req
+            })
+            .await
+            {
+                Ok(m) => {
+                    log_send_success(
+                        "tool",
+                        "send_photo",
+                        &session,
+                        "send_photo",
+                        "media",
+                        chat_id,
+                        thread_id.map(|t| t.0.0),
+                        m.id.0,
+                        reference.len(),
+                        &content_hash8(&reference),
+                    );
+                    Ok(ToolResult::success(format!(
+                        "Photo sent to chat {chat_id}.{}",
+                        landing_echo(chat_id, thread_id).await
+                    )))
+                }
+                Err(e) => {
+                    log_send_failure(
+                        "tool",
+                        "send_photo",
+                        &session,
+                        "send_photo",
+                        "media",
+                        chat_id,
+                        thread_id.map(|t| t.0.0),
+                        reference.len(),
+                        &content_hash8(&reference),
+                        &e.to_string(),
+                    );
+                    Ok(ToolResult::error(format!("Failed to send photo: {e}")))
+                }
+            };
         }
+
+        // Album path. Every reference is resolved before the first request so
+        // a bad path fails the whole call instead of half-publishing it.
+        let mut files: Vec<InputFile> = Vec::with_capacity(references.len());
+        for reference in &references {
+            files.push(pget!(resolve_input_file(reference, "photo_url").await));
+        }
+        let total = files.len();
+        let plan = crate::channels::telegram::send::album_plan(total);
+        let albums = plan.len();
+        let mut offset = 0usize;
+        let mut landed = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+        for size in plan {
+            let chunk: Vec<InputFile> = files[offset..offset + size].to_vec();
+            // Telegram shows one caption per album, so only the first chunk
+            // carries it: repeating it on every chunk reads as duplicate text.
+            let chunk_caption = if offset == 0 { caption.as_deref() } else { None };
+            let hash8 = content_hash8(&references[offset..offset + size].join("\n"));
+            match send_retrying_rate_limit("telegram_send send_media_group", || {
+                crate::channels::telegram::send::media_group_in_thread(
+                    bot,
+                    ChatId(chat_id),
+                    thread_id,
+                    chunk.clone(),
+                    chunk_caption,
+                    reply_to.map(|mid| MessageId(mid as i32)),
+                )
+            })
+            .await
+            {
+                Ok(msgs) => {
+                    landed += size;
+                    if let Some(first) = msgs.first() {
+                        log_send_success(
+                            "tool",
+                            "send_media_group",
+                            &session,
+                            "send_media_group",
+                            "media",
+                            chat_id,
+                            thread_id.map(|t| t.0.0),
+                            first.id.0,
+                            size,
+                            &hash8,
+                        );
+                    }
+                }
+                Err(e) => {
+                    log_send_failure(
+                        "tool",
+                        "send_media_group",
+                        &session,
+                        "send_media_group",
+                        "media",
+                        chat_id,
+                        thread_id.map(|t| t.0.0),
+                        size,
+                        &hash8,
+                        &e.to_string(),
+                    );
+                    failures.push(format!("{size} photos: {e}"));
+                }
+            }
+            offset += size;
+        }
+
+        if failures.is_empty() {
+            return Ok(ToolResult::success(format!(
+                "Sent {total} photos to chat {chat_id} as {albums} album(s).{}",
+                landing_echo(chat_id, thread_id).await
+            )));
+        }
+        // Partial: every chunk was attempted, so nothing is silently dropped,
+        // and the count that did land is stated instead of implied.
+        Ok(ToolResult::error(format!(
+            "Sent {landed} of {total} photos to chat {chat_id}; failed: {}",
+            failures.join("; ")
+        )))
     }
 
     /// `send_document` — file by URL or local path, with optional caption.

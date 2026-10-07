@@ -494,6 +494,8 @@ pub mod telegram_intermediate_status_report_test;
 #[cfg(feature = "telegram")]
 pub mod telegram_mentions_other_bot_test;
 #[cfg(feature = "telegram")]
+pub mod telegram_media_group_test;
+#[cfg(feature = "telegram")]
 pub mod telegram_menu_scope_test;
 #[cfg(feature = "telegram")]
 pub mod telegram_push_target_test;
