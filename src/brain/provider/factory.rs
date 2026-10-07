@@ -456,7 +456,7 @@ pub async fn create_provider_with_warning(
             Ok(Some(provider)) => {
                 if let Some(failed) = failed_name {
                     let msg = format!(
-                        "{} failed to initialize — fell back to {}. Run /onboard:provider to reconfigure.",
+                        "{} failed to initialize — fell back to {}. Run /models to reconfigure.",
                         failed, reg.display_name
                     );
                     tracing::warn!("{}", msg);
@@ -755,7 +755,7 @@ fn try_create_custom_by_name(config: &Config, name: &str) -> Result<Option<Arc<d
     // fall through to the next option (e.g. the global active provider).
     let Some(mut base_url) = custom_config.base_url.clone() else {
         tracing::warn!(
-            "Custom provider '{}' has no base_url configured — skipping (run /onboard:provider)",
+            "Custom provider '{}' has no base_url configured — skipping (run /models)",
             name
         );
         return Ok(None);
@@ -1499,7 +1499,7 @@ fn try_create_github(config: &Config) -> Result<Option<Arc<dyn Provider>>> {
     let Some(oauth_token) = oauth_token else {
         tracing::warn!(
             "GitHub Copilot enabled but no OAuth token found. \
-             Run /onboard:provider to authenticate."
+             Run /models to authenticate."
         );
         return Ok(None);
     };
@@ -1551,7 +1551,7 @@ async fn try_create_qwen(config: &Config) -> Result<Option<Arc<dyn Provider>>> {
     };
 
     let Some(api_key) = qwen_config.api_key.as_ref().filter(|k| !k.is_empty()) else {
-        tracing::warn!("Qwen enabled but no API key configured — run /onboard:provider");
+        tracing::warn!("Qwen enabled but no API key configured — run /models");
         return Ok(None);
     };
 
@@ -1933,7 +1933,7 @@ fn try_create_custom(config: &Config) -> Result<Option<Arc<dyn Provider>>> {
     // LM Studio URL the user never configured.
     let Some(mut base_url) = custom_config.base_url.clone() else {
         tracing::warn!(
-            "Custom provider '{}' has no base_url configured — skipping (run /onboard:provider)",
+            "Custom provider '{}' has no base_url configured — skipping (run /models)",
             name
         );
         return Ok(None);

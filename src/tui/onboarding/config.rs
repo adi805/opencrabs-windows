@@ -1045,7 +1045,7 @@ impl OnboardingWizard {
             // that section is real OpenAI (no base_url), so a Groq key there
             // only ever produced a 401. The dialog has no OpenAI TTS key input
             // to put in its place, so set it with
-            // `/onboard:voice tts openai <key>` rather than writing something
+            // `/voice tts openai <key>` rather than writing something
             // that cannot work.
             if let Some(key) = typed_secret(&self.stt_openai_compat_key_input)
                 && let Err(e) = crate::config::write_secret_key(

@@ -337,11 +337,11 @@ impl PiperTts {
         let config_path = dir.join(format!("{voice_id}.onnx.json"));
 
         if !piper_bin.exists() {
-            anyhow::bail!("Piper not installed. Run /onboard:voice to set up local TTS.");
+            anyhow::bail!("Piper not installed. Run /voice to set up local TTS.");
         }
         if !model_path.exists() {
             anyhow::bail!(
-                "Piper voice '{}' not downloaded. Run /onboard:voice to download.",
+                "Piper voice '{}' not downloaded. Run /voice to download.",
                 voice_id
             );
         }

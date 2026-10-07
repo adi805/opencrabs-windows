@@ -290,7 +290,7 @@ fn build_header(
             bar_style,
         )));
     } else if wizard.quick_jump {
-        // Deep links (/models, /doctor, /onboard:*) show one step: name it.
+        // Deep links (/models, /doctor, /voice and the other setup commands) show one step: name it.
         lines.push(Line::from(Span::styled(
             format!("OpenCrabs · {}", step.title()),
             bar_style,

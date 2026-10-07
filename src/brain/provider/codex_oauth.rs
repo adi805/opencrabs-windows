@@ -557,7 +557,7 @@ impl CodexOAuthProvider {
         // Verify tokens exist
         if token_manager.get_cached_token().is_none() {
             return Err(ProviderError::Internal(
-                "Codex OAuth not authenticated — run /onboard:provider to authenticate".to_string(),
+                "Codex OAuth not authenticated — run /models to authenticate".to_string(),
             ));
         }
 

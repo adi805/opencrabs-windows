@@ -17,7 +17,7 @@ use uuid::Uuid;
 pub(crate) const VISION_SETUP_HINT: &str = "Image analysis isn't set up yet. To enable it, either: (1) set a \
      multimodal `vision_model` on your active provider via the \
      `config_manager` tool (works for OpenAI-compatible providers), \
-     or (2) add a Google Gemini vision key via the `/onboard:image` \
+     or (2) add a Google Gemini vision key via the `/image` \
      wizard (or an `[image.vision]` section). It hot-reloads, so no \
      restart is needed. Tell the user this.";
 
