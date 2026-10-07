@@ -6,6 +6,8 @@
 //! the constructed endpoint is hit.
 
 use crate::channels::telegram::rich::api;
+use crate::channels::telegram::rich::ast::MermaidResult;
+use crate::channels::telegram::rich::mermaid::cache_put;
 
 #[tokio::test]
 async fn send_rich_markdown_id_uses_custom_api_url() {
@@ -237,4 +239,114 @@ async fn a_base_without_a_trailing_slash_still_works() {
     .await;
 
     hit.assert_async().await;
+}
+
+/// #629 — the HTML fallback must render with the paragraph-wrapping variant.
+///
+/// The rich HTML dialect treats a bare newline as INSIGNIFICANT whitespace, so
+/// a fallback rendered by the bare `markdown_to_html_mermaid` joins every block
+/// with a bare newline and the whole reply arrives as one wall of text. This
+/// drives the real fallback leg end to end: the primary markdown+media send is
+/// failed by the mock, and the assertion is on the body the fallback sent.
+///
+/// The media leg is primed through the render cache rather than the network.
+/// `markdown_to_html_mermaid_p` resolves each fence through `resolve_blocks`,
+/// which calls `resolve`, which consults `cache_get` first — so a
+/// `cache_put(ImageBytes)` makes the fence resolve offline and keeps the test
+/// hermetic. `MERMAID_FENCE_SOURCE` is shared with that `cache_put`: a mismatch
+/// would leave the cache cold, the resolver would reach for the network, and
+/// the test would fail on a timeout rather than on the assertion.
+#[tokio::test]
+async fn the_html_fallback_wraps_each_block_in_its_own_p_tag() {
+    const MERMAID_FENCE_SOURCE: &str = "graph TD\n    Fallback629Probe --> B";
+
+    // Serialize against the other suites that swap the process-wide config
+    // mirror (governor_gates, governor_spacing_floor, stale_topic_eviction):
+    // all four take this same guard. Restore the pre-test mirror on the way
+    // out so the swap cannot leak sideways.
+    let _guard = crate::channels::telegram::governor::test_support::registry_guard().await;
+    let previous = crate::config::Config::current();
+
+    // `should_render_mermaid` reads `rich_messages && mermaid_render` from the
+    // live mirror, and `send_rich_with_mermaid_target_id` early-returns to the
+    // no-media path — which has no HTML fallback at all — when it is false. Pin
+    // both on explicitly rather than relying on their `default_true` serde
+    // default, so the test exercises the fallback it names whatever the ambient
+    // mirror holds.
+    let mut pinned = (*previous).clone();
+    pinned.channels.telegram.rich_messages = true;
+    pinned.channels.telegram.mermaid_render = true;
+    crate::config::Config::set_current(pinned);
+
+    cache_put(
+        MERMAID_FENCE_SOURCE,
+        &MermaidResult::ImageBytes(png_ihdr(800, 600)),
+    );
+
+    let body = "First paragraph.\n\nSecond paragraph.\n\n\
+                ```mermaid\ngraph TD\n    Fallback629Probe --> B\n```";
+
+    let mut server = mockito::Server::new_async().await;
+
+    // Primary leg: identified by its `media` array, which the HTML body never
+    // carries. 400 (not 429) so `post_rich` reports it without retrying.
+    let primary = server
+        .mock("POST", "/botTESTTOKEN/sendRichMessage")
+        .match_body(mockito::Matcher::Regex(r#""media"\s*:\s*\["#.to_string()))
+        .with_status(400)
+        .with_body(r#"{"ok":false,"description":"Bad Request: can't parse rich message"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    // Fallback leg: its html body must carry one <p> per block.
+    let fallback = server
+        .mock("POST", "/botTESTTOKEN/sendRichMessage")
+        .match_body(mockito::Matcher::Regex(
+            r#"<p>First paragraph\.</p>"#.to_string(),
+        ))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"ok":true,"result":{"message_id":7}}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let id = api::send_rich_with_mermaid_target_id(
+        &server.url(),
+        "TESTTOKEN",
+        12345,
+        None,
+        None,
+        body,
+        "test",
+        "-",
+    )
+    .await;
+
+    assert_eq!(
+        id.expect("the html fallback must deliver the message"),
+        7,
+        "the fallback leg must return its own message id"
+    );
+    // `expect(1)` on the fallback mock is the guard against the no-media early
+    // return: if that return is taken the fallback is never called and this
+    // assertion fails rather than the test passing vacuously.
+    fallback.assert_async().await;
+    primary.assert_async().await;
+
+    // Restore the mirror the guard is still holding.
+    crate::config::Config::set_current((*previous).clone());
+}
+
+/// A minimal PNG carrying a real IHDR width/height — enough for `png_dims`.
+fn png_ihdr(w: u32, h: u32) -> Vec<u8> {
+    let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    png.extend_from_slice(&13u32.to_be_bytes());
+    png.extend_from_slice(b"IHDR");
+    png.extend_from_slice(&w.to_be_bytes());
+    png.extend_from_slice(&h.to_be_bytes());
+    png.extend_from_slice(&[8, 6, 0, 0, 0]);
+    png.extend_from_slice(&[0, 0, 0, 0]);
+    png
 }
