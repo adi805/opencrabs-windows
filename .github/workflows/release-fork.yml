@@ -78,8 +78,15 @@ jobs:
     name: Build ${{ matrix.asset_suffix }}
     needs: [preflight]
     runs-on: ${{ matrix.os }}
-    # A cold --all-features build (llama's cmake C++ plus the thin-LTO link) is
-    # the long pole; warm from rust-cache it lands far lower.
+    # Profile: `ci`, NOT `release`. `[profile.release]` is lto="fat" with
+    # codegen-units=1, and on the ARM runner that fat-LTO link alone runs
+    # past the point where GitHub preempts the runner: two consecutive runs
+    # died with "The runner has received a shutdown signal" (exit 143) at
+    # ~34min, before the archive step ever ran, so no release was published.
+    # `[profile.ci]` is release with lto="thin" and codegen-units=16, and
+    # linux-artifact.yml builds this same --all-features arm64 target with it
+    # in ~18min. Same opt-level (3), same runtime behaviour, a link that
+    # finishes inside the runner's window.
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -109,7 +116,7 @@ jobs:
           cache-on-failure: true
 
       - name: Build
-        run: cargo build --locked --release --target ${{ matrix.target }} --all-features
+        run: cargo build --locked --profile ci --target ${{ matrix.target }} --all-features
 
       - name: Download RTK
         shell: bash
@@ -122,11 +129,11 @@ jobs:
           curl -sL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/${RTK_ASSET}" -o "/tmp/${RTK_ASSET}"
           mkdir -p /tmp/rtk-extract && tar xzf "/tmp/${RTK_ASSET}" -C /tmp/rtk-extract
           RTK_BIN=$(find /tmp/rtk-extract -name "rtk" | head -1)
-          cp "$RTK_BIN" "target/${{ matrix.target }}/release/"
-          chmod +x "target/${{ matrix.target }}/release/rtk"
+          cp "$RTK_BIN" "target/${{ matrix.target }}/ci/"
+          chmod +x "target/${{ matrix.target }}/ci/rtk"
 
       - name: Strip
-        run: strip target/${{ matrix.target }}/release/opencrabs
+        run: strip target/${{ matrix.target }}/ci/opencrabs
 
       # Execute it before shipping it. `--version` returns from argument parsing
       # before profile setup and logging init run, so it cannot catch an
@@ -136,7 +143,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          ver=$(./target/${{ matrix.target }}/release/opencrabs --version 2>&1)
+          ver=$(./target/${{ matrix.target }}/ci/opencrabs --version 2>&1)
           status=$?
           set -e
           echo "exit=$status version=$ver"
@@ -152,7 +159,7 @@ jobs:
         shell: bash
         run: |
           ARCHIVE="opencrabs-${RELEASE_TAG}-${{ matrix.asset_suffix }}"
-          cd "target/${{ matrix.target }}/release"
+          cd "target/${{ matrix.target }}/ci"
           tar czf "../../../${ARCHIVE}.tar.gz" opencrabs rtk
           echo "archive: ${ARCHIVE}.tar.gz"
 
