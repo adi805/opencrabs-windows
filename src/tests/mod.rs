@@ -206,6 +206,7 @@ mod compaction_background_test;
 pub mod compaction_budget_test;
 pub mod compaction_fallback_chain_test;
 pub mod compaction_marker_no_brain_weld_test;
+pub mod compaction_marker_persist_test;
 pub mod compaction_notice_test;
 pub mod compaction_prompts_test;
 mod compaction_scope_test;

@@ -298,16 +298,21 @@ impl AgentService {
     pub fn messages_from_last_compaction(
         all_messages: Vec<crate::db::models::Message>,
     ) -> Vec<crate::db::models::Message> {
-        use crate::brain::agent::context::SEGMENT_SENTINEL;
-        const COMPACTION_MARKER: &str = "[CONTEXT COMPACTION";
+        use crate::brain::agent::context::{COMPACTION_MARKER_PREFIX, DELTA_MARKER_PREFIX};
 
         // Walk backward to the last marker that RESTARTS history. Segment
-        // markers (sentinel-tagged, #175 anchored prefix) are skipped: the
+        // markers (delta-bannered, #175 anchored prefix) are skipped: the
         // boundary they extend from is what the reload anchors on.
+        //
+        // The sentinel test is ANCHORED, not a `contains` scan (#1928). A
+        // substring search over the whole row also matched the summary BODY,
+        // so a legitimate full-window marker whose prose mentioned the
+        // sentinel was skipped as a segment — moving the anchor further back,
+        // or (with no older marker) reloading the entire uncompacted history.
         let boundary_idx = all_messages.iter().rposition(|msg| {
             msg.role == "user"
-                && msg.content.starts_with(COMPACTION_MARKER)
-                && !msg.content.contains(SEGMENT_SENTINEL)
+                && msg.content.starts_with(COMPACTION_MARKER_PREFIX)
+                && !msg.content.starts_with(DELTA_MARKER_PREFIX)
         });
 
         if let Some(idx) = boundary_idx {
