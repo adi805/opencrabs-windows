@@ -244,3 +244,37 @@ fn session_target_deliver_to_format() {
     };
     assert_eq!(rt.deliver_to(), format!("session:{u}"));
 }
+
+/// #1961: a session URL with a bound channel/thread must bake AS the session,
+/// never re-pointed at the thread. Thread-form delivery resolves "whoever owns
+/// the thread at send time"; after a re-spawn bound a new uuid to the same
+/// thread, the cron wake landed in an unowned session and the lane's obligation
+/// was silently refused. The bake pins the exact address instead.
+#[tokio::test]
+async fn session_url_bakes_to_the_session_even_with_a_channel_binding() {
+    let mut w = FakeWorld::new();
+    let target = Uuid::new_v4();
+    let squatter = Uuid::new_v4();
+    w.forward.insert(
+        target,
+        OriginTarget {
+            channel: "telegram",
+            chat_id: "-100123".into(),
+            thread: Some(42),
+        },
+    );
+    // Bait: the thread is now owned by a different session (the re-spawn race).
+    w.bind("telegram", "-100123", Some(42), squatter);
+
+    let r = resolve_target(
+        &format!("oc://session/{target}"),
+        None,
+        &w,
+        &[sess(target, "lane")],
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.session, Some(target));
+    assert_eq!(r.destination, TargetDestination::Session(target));
+    assert_eq!(r.deliver_to(), format!("session:{target}"));
+}
