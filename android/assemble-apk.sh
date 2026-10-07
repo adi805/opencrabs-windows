@@ -12,14 +12,19 @@
 # loader will execute from, and the package manager only extracts entries named
 # lib*.so. Hence libopencrabs.so.
 #
-# Usage: android/assemble-apk.sh <path-to-core-binary>
+# Usage: android/assemble-apk.sh <abi>=<path-to-core-binary> [...]
+#        android/assemble-apk.sh <path-to-core-binary>   (legacy: arm64-v8a)
+#
+# More than one ABI is allowed so an x86_64 APK can be produced for the
+# emulator leg. An arm64-only APK cannot be installed on an x86_64 AVD, and
+# leaning on the API 35 ARM-translation layer to run it would be a community
+# claim, not a contract this repo can verify.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${1:-}"
-if [ -z "$BIN" ] || [ ! -f "$BIN" ]; then
-  echo "usage: $0 <path-to-core-binary>" >&2
-  echo "got: '${BIN:-<empty>}'" >&2
+if [ "$#" -eq 0 ]; then
+  echo "usage: $0 <abi>=<path-to-core-binary> [...]" >&2
+  echo "       $0 <path-to-core-binary>    (legacy: arm64-v8a)" >&2
   exit 2
 fi
 
@@ -47,29 +52,74 @@ for p in "$BT" "$AJAR"; do
 done
 echo "build-tools : $BT"
 echo "android.jar : $AJAR"
-echo "core binary : $BIN ($(stat -c%s "$BIN") bytes)"
 
 OUT="$ROOT/android/out"
 rm -rf "$OUT"
-mkdir -p "$OUT/classes" "$OUT/stage/lib/arm64-v8a"
-
-# --- 1. native libraries -----------------------------------------------------
-cp "$BIN" "$OUT/stage/lib/arm64-v8a/libopencrabs.so"
-chmod 755 "$OUT/stage/lib/arm64-v8a/libopencrabs.so"
+mkdir -p "$OUT/classes"
+: > "$OUT/libs.txt"
 
 NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
-CXX=""
-if [ -n "$NDK" ] && [ -d "$NDK" ]; then
-  CXX="$(find "$NDK" -name libc++_shared.so -path '*aarch64-linux-android*' 2>/dev/null | head -1)"
-fi
-if [ -z "$CXX" ]; then
-  echo "libc++_shared.so not found under NDK ('${NDK:-<unset>}')" >&2
-  echo "the core binary NEEDs it (readelf -d shows it in NEEDED), so the APK" >&2
-  echo "would crash at spawn time without it" >&2
-  exit 2
-fi
-cp "$CXX" "$OUT/stage/lib/arm64-v8a/libc++_shared.so"
-echo "c++ runtime : $CXX"
+
+# --- 1. native libraries -----------------------------------------------------
+#
+# One lib/<abi>/ directory per ABI. libc++_shared.so is per-ABI inside the NDK:
+# the aarch64 copy will not load on x86_64 and vice versa, so the lookup has to
+# key off the ABI being staged rather than assume aarch64.
+#
+# The NDK names its ABI directories after the target TRIPLE, not after the APK
+# ABI name: arm64-v8a lives under aarch64-linux-android. Matching on the APK ABI
+# name therefore finds nothing for arm64, and a bare `find | head -1` with no
+# path filter could hand back another ABI's copy, which the loader refuses at
+# spawn time. Map explicitly and fail loudly on an unmapped ABI.
+abi_triple() {
+  case "$1" in
+    arm64-v8a)   echo "aarch64-linux-android" ;;
+    armeabi-v7a) echo "arm-linux-androideabi" ;;
+    x86)         echo "i686-linux-android" ;;
+    x86_64)      echo "x86_64-linux-android" ;;
+    *)           echo "" ;;
+  esac
+}
+
+stage_abi() {
+  abi="$1"
+  bin="$2"
+  if [ ! -f "$bin" ]; then
+    echo "core binary not found for $abi: '$bin'" >&2
+    exit 2
+  fi
+  mkdir -p "$OUT/stage/lib/$abi"
+  cp "$bin" "$OUT/stage/lib/$abi/libopencrabs.so"
+  chmod 755 "$OUT/stage/lib/$abi/libopencrabs.so"
+  echo "core binary : $abi <- $bin ($(stat -c%s "$bin") bytes)"
+
+  cxx=""
+  triple="$(abi_triple "$abi")"
+  if [ -z "$triple" ]; then
+    echo "unknown ABI '$abi': no NDK triple mapping, cannot locate libc++_shared.so" >&2
+    exit 2
+  fi
+  if [ -n "$NDK" ] && [ -d "$NDK" ]; then
+    cxx="$(find "$NDK" -name libc++_shared.so -path "*${triple}*" 2>/dev/null | head -1)"
+  fi
+  if [ -z "$cxx" ]; then
+    echo "libc++_shared.so not found for $abi (NDK triple '$triple') under NDK ('${NDK:-<unset>}')" >&2
+    echo "the core binary NEEDs it (readelf -d shows it in NEEDED), so the APK" >&2
+    echo "would crash at spawn time without it" >&2
+    exit 2
+  fi
+  cp "$cxx" "$OUT/stage/lib/$abi/libc++_shared.so"
+  echo "c++ runtime : $abi <- $cxx"
+
+  printf '%s\n' "lib/$abi/libopencrabs.so" "lib/$abi/libc++_shared.so" >> "$OUT/libs.txt"
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    *=*) stage_abi "${arg%%=*}" "${arg#*=}" ;;
+    *)   stage_abi "arm64-v8a" "$arg" ;;
+  esac
+done
 
 # --- 2. java -> dex ----------------------------------------------------------
 find "$ROOT/android/java" -name '*.java' > "$OUT/sources.txt"
@@ -100,9 +150,12 @@ cp "$OUT/base.apk" "$OUT/unsigned.apk"
 cp "$OUT/classes.dex" "$OUT/stage/classes.dex"
 (
   cd "$OUT/stage"
-  zip -q -X "$OUT/unsigned.apk" classes.dex \
-    lib/arm64-v8a/libopencrabs.so \
-    lib/arm64-v8a/libc++_shared.so
+  # libs.txt is written by stage_abi and is never empty here: a run with nothing
+  # to stage exits before reaching this point. Read into an array rather than
+  # $(cat ...) so the intended word splitting is explicit and shellcheck's
+  # SC2046 stays quiet.
+  mapfile -t LIBS < "$OUT/libs.txt"
+  zip -q -X "$OUT/unsigned.apk" classes.dex "${LIBS[@]}"
 )
 
 # --- 5. align, sign ----------------------------------------------------------

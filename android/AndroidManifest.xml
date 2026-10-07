@@ -18,6 +18,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.opencrabs.mobile">
 
+    <!-- The core runs an agent that calls LLM providers over the network, so
+         INTERNET is required for every outbound provider call.
+
+         It is NOT what gates the loopback bind, and an earlier revision of this
+         comment claimed it was: on API 34 the session surface binds
+         127.0.0.1:18792 fine without this permission (run 37544238265, RESULT=PASS,
+         with the surface answering at t=0 and t=60s). Kept because the agent
+         cannot reach a provider without it. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
