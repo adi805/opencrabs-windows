@@ -33,7 +33,9 @@ use crate::brain::tools::brain_file_safety;
 /// files now live in both places (brain templates under
 /// `src/docs/reference/templates`, config examples at the root), so each
 /// entry carries its own repo-relative path (#819).
-const TEMPLATE_BASE_URL: &str = "https://raw.githubusercontent.com/opencrabs/opencrabs/main";
+fn template_base_url() -> &'static str {
+    crate::utils::update_source::raw_base()
+}
 
 /// A brain file: same name locally and under the templates directory.
 macro_rules! md {
@@ -459,7 +461,7 @@ pub fn upstream_changed(state: &SyncState, local_name: &str, upstream_content: &
 /// Fetch a single template. `path` is relative to the repository root.
 pub async fn fetch_template(path: &str) -> Result<String, String> {
     let filename = path;
-    let url = format!("{TEMPLATE_BASE_URL}/{path}");
+    let url = format!("{}/{path}", template_base_url());
     let response = reqwest::get(&url)
         .await
         .map_err(|e| format!("Failed to fetch {filename}: {e}"))?;

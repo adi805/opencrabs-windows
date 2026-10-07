@@ -84,7 +84,7 @@ pub fn build_agent_card(host: &str, port: u16, tool_registry: Option<&ToolRegist
                 .to_string(),
         ),
         version: Some(crate::VERSION.to_string()),
-        documentation_url: Some("https://github.com/opencrabs/opencrabs".to_string()),
+        documentation_url: Some(crate::utils::update_source::repo_page().to_string()),
         icon_url: None,
         supported_interfaces: vec![SupportedInterface {
             url: format!("{}/a2a/v1", base_url),
@@ -93,7 +93,7 @@ pub fn build_agent_card(host: &str, port: u16, tool_registry: Option<&ToolRegist
         }],
         provider: Some(AgentProvider {
             organization: "OpenCrabs Contributors".to_string(),
-            url: Some("https://github.com/opencrabs/opencrabs".to_string()),
+            url: Some(crate::utils::update_source::repo_page().to_string()),
         }),
         capabilities: Some(AgentCapabilities {
             streaming: true,

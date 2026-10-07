@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # OpenCrabs — one-line install
-# curl -fsSL https://raw.githubusercontent.com/opencrabs/opencrabs/main/src/scripts/install.sh | bash
+# curl -fsSL https://raw.githubusercontent.com/adi805/opencrabs-windows/main/src/scripts/install.sh | bash
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -31,6 +31,7 @@ case "$OS" in
 esac
 
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+REPO="${OPENCRABS_UPDATE_REPO:-adi805/opencrabs-windows}"
 
 # Check if install dir is writable
 if [ ! -w "$INSTALL_DIR" ] 2>/dev/null; then
@@ -41,7 +42,7 @@ else
 fi
 
 info "Detecting latest release..."
-TAG=$(curl -fsSL https://api.github.com/repos/opencrabs/opencrabs/releases/latest \
+TAG=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
   | grep -o '"tag_name": *"[^"]*"' \
   | head -1 \
   | cut -d'"' -f4)
@@ -51,14 +52,14 @@ if [ -z "$TAG" ]; then
 fi
 
 FILENAME="opencrabs-${TAG}-${OS}-${ARCH}.tar.gz"
-DOWNLOAD_URL="https://github.com/opencrabs/opencrabs/releases/download/${TAG}/${FILENAME}"
+DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${FILENAME}"
 
 info "Downloading ${TAG} for ${OS}-${ARCH}..."
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 if ! curl -fsSL "$DOWNLOAD_URL" -o "${TMPDIR}/${FILENAME}"; then
-  error "Failed to download ${FILENAME}\n   URL: ${DOWNLOAD_URL}\n   Check https://github.com/opencrabs/opencrabs/releases for available releases"
+  error "Failed to download ${FILENAME}\n   URL: ${DOWNLOAD_URL}\n   Check https://github.com/${REPO}/releases for available releases"
 fi
 
 info "Extracting..."
