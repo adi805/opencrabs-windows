@@ -740,6 +740,20 @@ impl TelegramState {
         self.session_chats.lock().await.get(&session_id).copied()
     }
 
+    /// Which platform owns this session, from the durable binding (#1889):
+    /// "telegram", "discord", "slack", "whatsapp"... `None` when no binding
+    /// was ever recorded — targetless cron and A2A sessions land here, and
+    /// callers must treat unknown origin as no objection.
+    pub async fn session_origin_channel(&self, session_id: Uuid) -> Option<String> {
+        let store = self.binding_store.lock().await.clone()?;
+        store
+            .by_session(&session_id.to_string())
+            .await
+            .ok()
+            .flatten()
+            .map(|b| b.channel)
+    }
+
     /// Register the settled flow-card state for a session (#1377). Called at
     /// turn settle when a flow card exists; overwrites any previous card.
     pub(crate) async fn register_flow_state(

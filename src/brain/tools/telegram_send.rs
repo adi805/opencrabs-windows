@@ -342,7 +342,22 @@ async fn chat_or_err(
     // exactly such a session, so this used to hand every targetless job a
     // destination it was never given — the owner's DM. Guarded like the rest:
     // with no deliver_to the job sends nowhere and reports in its own session.
-    match state.owner_chat_id().await {
+    //
+    // #1889: a session anchored on Discord/Slack/WhatsApp also arrives here
+    // with no Telegram session_chat, and the owner fallback used to jump
+    // platforms silently: the artifact landed in the owner's Telegram chat
+    // while the conversation stayed on Discord. Refuse before the wire call
+    // when the session's binding names another platform; targetless cron
+    // keeps the guarded owner path.
+    let owner = state.owner_chat_id().await;
+    if let Some(reason) = cross_platform_refusal(
+        state.session_origin_channel(session_id).await.as_deref(),
+        owner,
+    ) {
+        tracing::warn!("telegram_send: {reason}");
+        return Err(ToolResult::error(reason));
+    }
+    match owner {
         Some(id) => guard_cron_target(id),
         None => Err(ToolResult::error(
             "No owner chat ID known yet and no 'chat_id' parameter provided. \
@@ -1908,5 +1923,92 @@ impl TelegramSendTool {
                 Ok(ToolResult::error(format!("Failed to bind topic: {e}")))
             }
         }
+    }
+}
+
+/// #1889: may the owner fallback carry a telegram_send on this session?
+///
+/// Pure decision — origin is the session's durable binding, `None` meaning
+/// unknown. Sending for a session the user is talking to ON Telegram stays
+/// allowed (the fallback predates the binding lookup and cron jobs rely on
+/// it); so does an unknown origin. What it kills is the silent platform jump:
+/// the Discord conversation stays on Discord while the artifact lands in the
+/// owner's Telegram chat, with no receipt the user asked for anywhere near
+/// the message they were reading. Unknown origin is no objection; a binding
+/// that names another platform is.
+#[derive(Debug, PartialEq, Eq)]
+enum OriginRuling {
+    /// Origin is telegram, or unknown — owner fallback may carry the send.
+    Allow,
+    /// Origin is another surface — refuse before the wire call.
+    Refuse { channel: String },
+}
+
+fn rule_on_origin(origin: Option<&str>) -> OriginRuling {
+    match origin {
+        None | Some("telegram") => OriginRuling::Allow,
+        Some(channel) => OriginRuling::Refuse {
+            channel: channel.to_string(),
+        },
+    }
+}
+
+/// Error text when the ruling is a refusal, `None` when allowed. An absent
+/// owner id keeps its own older error further up the call chain, so this
+/// returns nothing to let that path speak.
+fn cross_platform_refusal(origin: Option<&str>, owner: Option<i64>) -> Option<String> {
+    if owner.is_none() {
+        return None;
+    }
+    match rule_on_origin(origin) {
+        OriginRuling::Allow => None,
+        OriginRuling::Refuse { channel } => Some(format!(
+            "telegram_send refused: this session lives on '{channel}', not Telegram, \
+             and no chat_id was given. Sending here would jump platforms silently \
+             (#1889). Use the {channel} tool, pass an explicit chat_id, or send from \
+             a Telegram session."
+        )),
+    }
+}
+
+#[cfg(test)]
+mod cross_platform_tests {
+    use super::*;
+
+    #[test]
+    fn discord_origin_refuses_the_owner_fallback() {
+        let r = cross_platform_refusal(Some("discord"), Some(7711740248));
+        let msg = r.expect("a discord session must not silently use the telegram owner chat");
+        assert!(msg.contains("discord"), "{msg}");
+        assert!(msg.contains("#1889"), "{msg}");
+    }
+
+    #[test]
+    fn slack_and_whatsapp_refuse_too() {
+        for ch in ["slack", "whatsapp"] {
+            let msg = cross_platform_refusal(Some(ch), Some(1))
+                .unwrap_or_else(|| panic!("{ch} origin must refuse"));
+            assert!(msg.contains(ch), "{msg}");
+        }
+    }
+
+    #[test]
+    fn telegram_origin_is_allowed() {
+        assert_eq!(cross_platform_refusal(Some("telegram"), Some(1)), None);
+    }
+
+    #[test]
+    fn unknown_origin_is_no_objection() {
+        // Targetless cron and A2A sessions carry no binding; the guarded
+        // owner fallback is their long-standing route and must keep working.
+        assert_eq!(cross_platform_refusal(None, Some(1)), None);
+        assert_eq!(rule_on_origin(None), OriginRuling::Allow);
+    }
+
+    #[test]
+    fn no_owner_keeps_the_older_error_path() {
+        // Without an owner id, this guard has nothing to route to; the None
+        // branch in chat_or_err still fires its own message.
+        assert_eq!(cross_platform_refusal(Some("discord"), None), None);
     }
 }
