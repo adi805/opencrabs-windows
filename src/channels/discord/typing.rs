@@ -70,6 +70,9 @@ pub(crate) fn spawn_typing(
             // wired for Discord (#1989 is the WhatsApp tail and resume).
             None,
             TICK,
+            // #1984: the tail is bounded even if some row leaks every
+            // stuck-entry cleanup.
+            crate::channels::typing_tick::DEFAULT_TICK_CEILING,
             || broadcast(&http, channel, "handover"),
         )
         .await;

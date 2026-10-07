@@ -262,6 +262,42 @@ pub(crate) async fn cancellable_backoff(token: Option<&CancellationToken>, dur: 
     }
 }
 
+/// #1984: drop-time cleanup of the claude mirror rows a stream leaves behind.
+///
+/// Each `task_started` event mirrors a row into the background manager so
+/// surfaces show the CLI's backgrounded work (#1776 seam 2), and the CLI's
+/// own `task_notification` removes it. When that notification never arrives
+/// (the task was stopped, the CLI died mid-run) the row lived forever and
+/// every later turn's typing tick pinged on it: the stuck indicator #1984
+/// reports. The marker set is exactly the rows this process mirrored in, so
+/// draining it when the stream (and with it the CLI process) ends closes
+/// every row this process could still own. A genuine survivor is unaffected:
+/// its late completion wakes the session through the synthetic survival
+/// delivery, which keys on the notification, not on the row.
+struct ClaudeMirrorExitGuard<'a> {
+    service: &'a AgentService,
+    session_id: Uuid,
+}
+
+impl Drop for ClaudeMirrorExitGuard<'_> {
+    fn drop(&mut self) {
+        let Some(mgr) = self.service.background_manager() else {
+            return;
+        };
+        // No `expect` inside Drop: a poisoned lock means another turn died
+        // mid-marker-update, and panicking from a destructor would abort the
+        // process over a cosmetic row. Skipping silently is safe because the
+        // next turn's entry clear still removes the markers.
+        if let Ok(mut tasks) = self.service.claude_turn_tasks.lock() {
+            super::background_tasks::clear_claude_mirrors_for_session(
+                &mut tasks,
+                &mgr,
+                self.session_id,
+            );
+        }
+    }
+}
+
 impl AgentService {
     /// Token count for the serialized schemas of ALL registered tools — the
     /// upper-bound tool overhead. Used as the cl100k baseline and as the
@@ -519,6 +555,18 @@ impl AgentService {
         const REASONING_REPEAT_WINDOW: usize = 8192; // reasoning can legitimately be longer
         const REASONING_REPEAT_MIN_MATCH: usize = 300; // min substring to detect reasoning loops
         let is_cli = provider.cli_handles_tools();
+        // #1984: the CLI process ends with this stream, on every path
+        // (clean, errored, unwound). Its mirror rows must end with it, or
+        // one lost notification holds a row alive forever and every later
+        // typing tick pings on it (see ClaudeMirrorExitGuard).
+        let _claude_mirror_exit = if is_cli {
+            Some(ClaudeMirrorExitGuard {
+                service: self,
+                session_id,
+            })
+        } else {
+            None
+        };
         // CLI: track unflushed text so we can emit IntermediateText at tool
         // boundaries, giving the TUI real-time text→tools→text interleaving
         // during streaming instead of one massive wall after stream ends.
@@ -1106,21 +1154,32 @@ impl AgentService {
                                 mgr.mirror_started(session_id, &label);
                             }
                         }
-                        ("task_notification", Some(s @ ("completed" | "failed"))) => {
+                        ("task_notification", st) => {
+                            // #1984: any status a notification carries is
+                            // terminal. Claude also reports stopped, cancelled
+                            // and killed, and the old arm keyed the row removal
+                            // on completed|failed only, so every other status
+                            // left the mirror row alive forever, which is the
+                            // stuck typing indicator this issue reports. Clear
+                            // first, unconditionally; the synthetic wake stays
+                            // limited to the two statuses that carry a result
+                            // worth delivering.
                             if let Some(mgr) = self.background_manager() {
                                 mgr.mirror_finished(session_id, &label);
                             }
-                            if super::background_tasks::claude_needs_survival_delivery(
-                                &self
-                                    .claude_turn_tasks
-                                    .lock()
-                                    .expect("claude turn-task lock"),
-                                session_id,
-                                id,
-                            ) {
+                            if matches!(st, Some("completed") | Some("failed"))
+                                && super::background_tasks::claude_needs_survival_delivery(
+                                    &self
+                                        .claude_turn_tasks
+                                        .lock()
+                                        .expect("claude turn-task lock"),
+                                    session_id,
+                                    id,
+                                )
+                            {
                                 let msg = super::background_tasks::claude_completion_message(
                                     id,
-                                    s,
+                                    st.unwrap_or("unknown"),
                                     description.as_deref(),
                                 );
                                 match super::session_routes::deliver_to_session(

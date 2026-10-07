@@ -1546,6 +1546,10 @@ pub(crate) async fn handle_message(
                 session_id,
                 Some(stop.clone()),
                 std::time::Duration::from_secs(5),
+                // #1984: the tail is bounded even if some row leaks every
+                // stuck-entry cleanup (the stop token already ends it on
+                // /stop or a new turn, #1989).
+                crate::channels::typing_tick::DEFAULT_TICK_CEILING,
                 || async {
                     if let Err(e) = client.chatstate().send_composing(&chat_jid).await {
                         tracing::warn!(

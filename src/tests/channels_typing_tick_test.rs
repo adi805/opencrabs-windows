@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::brain::agent::service::background_tasks::BackgroundTaskManager;
 use crate::brain::tools::subagent::manager::{SubAgent, SubAgentManager, SubAgentState};
 use crate::channels::typing_tick::tick_while_detached;
 
@@ -54,6 +55,10 @@ async fn run_tick_with_stop(
         session,
         stop,
         Duration::from_millis(10),
+        // Far outside every test's own 150 ms watchdog below, so the
+        // existing cases keep exercising exactly what they exercised
+        // before the #1984 ceiling landed.
+        Duration::from_secs(5),
         move || {
             let pings = counted.clone();
             async move {
@@ -126,4 +131,47 @@ async fn cancelled_stop_before_entry_sends_nothing() {
     stop.cancel();
     let pings = run_tick_with_stop(Some(mgr), session, Some(stop)).await;
     assert_eq!(pings, 0, "an already-cancelled stop must ping nothing");
+}
+
+#[tokio::test]
+async fn tick_loop_exits_at_its_ceiling() {
+    // #1984 acceptance: no counted row, however stuck, can hold the
+    // indicator past the ceiling. The row stays live (the ceiling stops
+    // the PINGING, not the registry), so only the ceiling can break this
+    // loop, and it must do so before the 150 ms watchdog.
+    let bg = Arc::new(BackgroundTaskManager::new());
+    let session = Uuid::new_v4();
+    bg.mirror_started(session, "stuck row never finished");
+    let pings = Arc::new(AtomicUsize::new(0));
+    let counted = pings.clone();
+    let tick = tick_while_detached(
+        Some(bg.clone()),
+        None,
+        session,
+        None,
+        Duration::from_millis(10),
+        Duration::from_millis(60),
+        move || {
+            let pings = counted.clone();
+            async move {
+                pings.fetch_add(1, Ordering::SeqCst);
+            }
+        },
+    );
+    let ended_on_its_own = tokio::time::timeout(Duration::from_millis(150), tick)
+        .await
+        .is_ok();
+    let n = pings.load(Ordering::SeqCst);
+    assert!(ended_on_its_own, "the ceiling must end the loop itself");
+    // >=1: a zero-tick ceiling bug would exit before any ping; <=12: the
+    // 60 ms ceiling at a 10 ms tick can only cover a handful of pings.
+    assert!(
+        (1..=12).contains(&n),
+        "the ceiling should allow a handful of pings then stop, got {n}"
+    );
+    assert_eq!(
+        bg.running_for(session),
+        1,
+        "the ceiling stops the pinging, not the registry"
+    );
 }

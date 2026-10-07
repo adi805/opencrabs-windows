@@ -211,7 +211,7 @@ impl BackgroundTaskManager {
                 }
             }
             let started = std::time::Instant::now();
-            let result = run_detached(&command, &cwd, session_id).await;
+            let result = run_detached(&command, &cwd, session_id, DETACH_CEILING).await;
             // Capture ONCE: the log line, the status file and the receipt
             // payload (#15) must all report the same runtime.
             let elapsed_secs = started.elapsed().as_secs_f32();
@@ -342,49 +342,154 @@ pub(super) fn task_repo() -> Option<crate::db::BackgroundTaskRepository> {
     crate::db::global_pool().map(|p| crate::db::BackgroundTaskRepository::new(p.clone()))
 }
 
+/// The hard ceiling on waiting for a detached command's shell (#1984).
+///
+/// The old wait was unbudgeted: a foregrounded never-exiting command (a dev
+/// server without `&`, a watch loop) held its tracker row open forever, and
+/// every typing tick counting that row pinged into eternity. The ceiling
+/// matches the flow-ticker's 30 minutes: past that no one is still watching
+/// this indicator, and an orphan row must not outlive the session's attention.
+pub(crate) const DETACH_CEILING: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 /// Run `command` through the platform shell (`cmd /C` on Windows, `sh -c`
 /// elsewhere) in `cwd`, capturing merged stdout+stderr.
-async fn run_detached(command: &str, cwd: &std::path::Path, session_id: Uuid) -> CmdResult {
+///
+/// #1984 rewrote the capture. The old `.output()` waited for the pipe's EOF,
+/// and a command that leaves children behind (`nohup x &`, a server backgrounded
+/// in the same shell) hands that pipe to a child that outlives the shell, so
+/// EOF never arrived, the wait never ended, `mark_finished` never ran, and the
+/// row stayed live forever, exactly the stuck typing indicator this issue
+/// reports. Output now goes to a temp file and the wait observes the SHELL
+/// only, bounded by `ceiling`: a survivor may keep appending to the file, and
+/// that is fine, because nobody waits on it any more.
+pub(crate) async fn run_detached(
+    command: &str,
+    cwd: &std::path::Path,
+    session_id: Uuid,
+    ceiling: std::time::Duration,
+) -> CmdResult {
     use crate::utils::shell::PushShellCommand;
     use tokio::process::Command;
     let (shell, shell_arg) = crate::utils::shell::shell_pair();
-    let output = Command::new(shell)
-        .push_shell_command(shell_arg, command)
+
+    let log_path = std::env::temp_dir().join(format!(
+        "opencrabs-bg-{}-{}-{}.log",
+        session_id.as_simple(),
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default(),
+    ));
+    let launch_fail = |note: String| {
+        // Distinct from a command that ran and failed: nothing executed at
+        // all, so the exit code below is not one the command produced.
+        tracing::error!(
+            target: "background_task",
+            "Background command could not be launched in {}: {note}",
+            cwd.display()
+        );
+        CmdResult {
+            success: false,
+            code: -1,
+            output: format!("failed to launch: {note}"),
+        }
+    };
+    let log = match std::fs::File::create(&log_path) {
+        Ok(f) => f,
+        Err(e) => return launch_fail(e.to_string()),
+    };
+    // The clone shares the file descriptor, so stdout and stderr interleave
+    // at one offset the same way the merged pipe used to.
+    let stderr_log = match log.try_clone() {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = std::fs::remove_file(&log_path);
+            return launch_fail(e.to_string());
+        }
+    };
+    let mut cmd = Command::new(shell);
+    cmd.push_shell_command(shell_arg, command)
         .current_dir(cwd)
         .env("OPENCRABS_SESSION_ID", session_id.to_string())
-        .output()
-        .await;
-    match output {
-        Ok(out) => {
-            let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
-            let err = String::from_utf8_lossy(&out.stderr);
-            if !err.trim().is_empty() {
-                if !combined.is_empty() {
-                    combined.push('\n');
-                }
-                combined.push_str(&err);
-            }
-            CmdResult {
-                success: out.status.success(),
-                code: out.status.code().unwrap_or(-1),
-                output: combined,
-            }
-        }
+        .stdin(std::process::Stdio::null())
+        .stdout(log)
+        .stderr(stderr_log)
+        .kill_on_drop(true);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
         Err(e) => {
-            // Distinct from a command that ran and failed: nothing executed at
-            // all, so the exit code below is not one the command produced.
+            let _ = std::fs::remove_file(&log_path);
+            return launch_fail(e.to_string());
+        }
+    };
+
+    let outcome = match tokio::time::timeout(ceiling, child.wait()).await {
+        Ok(Ok(status)) => CmdResult {
+            success: status.success(),
+            code: status.code().unwrap_or(-1),
+            output: read_log_tail(&log_path),
+        },
+        Ok(Err(e)) => {
             tracing::error!(
                 target: "background_task",
-                "Background command could not be launched in {}: {e}",
+                "Background command could not be waited on in {}: {e}",
                 cwd.display()
             );
             CmdResult {
                 success: false,
                 code: -1,
-                output: format!("failed to launch: {e}"),
+                output: format!("failed to run: {e}"),
             }
         }
+        Err(_) => {
+            // Ceiling reached. Kill the shell now rather than on drop: the
+            // tracker row closes with this result, so nothing waits on the
+            // dead task any longer. Detached grandchildren (the `nohup` kind
+            // this is for) keep running with their file fd, unbothered.
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            CmdResult {
+                success: false,
+                code: -1,
+                output: format!(
+                    "[detached ceiling reached after {}s; the command was \
+                     stopped and may have been still running]\n{}",
+                    ceiling.as_secs(),
+                    read_log_tail(&log_path),
+                ),
+            }
+        }
+    };
+    // Best-effort cleanup. On Windows a survivor still holding the file makes
+    // the remove fail, which leaks one temp log rather than losing the receipt.
+    let _ = std::fs::remove_file(&log_path);
+    outcome
+}
+
+/// The last 64 KiB of a detached command's log, starting on a whole line.
+/// Bounded because a chatty survivor can append for the entire ceiling; the
+/// completion receipt only ever shows the tail anyway.
+fn read_log_tail(path: &std::path::Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    const MAX_BYTES: u64 = 64 * 1024;
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    if size > MAX_BYTES && file.seek(SeekFrom::End(-(MAX_BYTES as i64))).is_err() {
+        return String::new();
     }
+    let mut buf = Vec::new();
+    let _ = file.read_to_end(&mut buf);
+    let mut text = String::from_utf8_lossy(&buf).into_owned();
+    if size > MAX_BYTES
+        && let Some(nl) = text.find('\n')
+    {
+        // The seek landed mid-line; drop the fragment.
+        text = text[nl + 1..].to_string();
+    }
+    text
 }
 
 /// A short human label for a command (first meaningful token sequence), for the
@@ -409,10 +514,33 @@ pub(crate) fn claude_task_label(task_id: &str) -> String {
 
 /// Per-turn marker set for claude-cli background tasks (#1776 seam 3):
 /// `(session_id, task_id)` pairs started during the CURRENT turn. Cleared at
-/// `run_tool_loop_inner` entry, so a notification for a task absent from the
-/// set is a post-exit survivor and must be delivered synthetically, while a
-/// task present stays silent (claude sees those natively mid-turn).
+/// `run_tool_loop_inner` entry and when the CLI stream ends (#1984), so a
+/// notification for a task absent from the set is a post-exit survivor and
+/// must be delivered synthetically, while a task present stays silent
+/// (claude sees those natively mid-turn).
 pub(crate) type ClaudeTurnTasks = std::collections::HashSet<(Uuid, String)>;
+
+/// Drop every mirrored row a claude process still owned when it exits
+/// (#1984). The marker set is exactly the rows this process mirrored in, so
+/// clearing them on process exit means one lost notification can no longer
+/// hold a typing tick open forever. A task whose completion genuinely arrives
+/// in a LATER turn is unaffected: the synthetic survival delivery keys on the
+/// notification itself, and a row that is already gone makes the mirror-side
+/// cleanup a harmless no-op (see [`BackgroundTaskManager::mirror_finished`]).
+/// Other sessions' rows and markers are untouched.
+pub(crate) fn clear_claude_mirrors_for_session(
+    tasks: &mut ClaudeTurnTasks,
+    mgr: &BackgroundTaskManager,
+    session_id: Uuid,
+) {
+    tasks.retain(|(sid, id)| {
+        if *sid != session_id {
+            return true;
+        }
+        mgr.mirror_finished(*sid, &claude_task_label(id));
+        false
+    });
+}
 
 /// The seam-3 discriminator (#1776): a notification whose task was NOT
 /// started during this turn is a post-exit survivor — the turn (and its

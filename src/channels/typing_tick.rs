@@ -26,6 +26,12 @@ use uuid::Uuid;
 use crate::brain::agent::service::background_tasks::BackgroundTaskManager;
 use crate::brain::tools::subagent::SubAgentManager;
 
+/// Default ceiling for every handover tail (#1984): 30 minutes, matching the
+/// flow ticker. A tail is a handover, not a lease on the indicator: whatever
+/// is counted, the loop still ends at some point, so even a row that leaks
+/// through every cleanup above cannot pin a chat's typing forever.
+pub(crate) const DEFAULT_TICK_CEILING: Duration = Duration::from_secs(30 * 60);
+
 /// Ping `send` every `tick` for as long as `session_id` has detached work in
 /// either registry: background shell tasks (`background`) or working
 /// sub-agents (`agents`) (#1985). A child parked at `AwaitingInput` is
@@ -39,6 +45,13 @@ use crate::brain::tools::subagent::SubAgentManager;
 /// the sleep, so a cancelled token ends the loop within one tick, and a token
 /// that was already cancelled ends it before the first ping.
 ///
+/// `ceiling` is the hard bound on the loop's total life (#1984), counted
+/// from the handover, checked before every ping. It is the last line of
+/// defense: stuck-entry sources are fixed at the root (mirror rows clear on
+/// any terminal notification and on CLI exit; `run_detached` waits the shell
+/// under a ceiling), and this ensures a future leak of any row kind pings at
+/// most `ceiling` and not forever.
+///
 /// Returns immediately when neither manager is wired, which is what a surface
 /// without detached-work support needs. The first ping goes out BEFORE the
 /// first sleep: the turn has just ended and its own last ping is already
@@ -50,6 +63,7 @@ pub(crate) async fn tick_while_detached<F, Fut>(
     session_id: Uuid,
     stop: Option<CancellationToken>,
     tick: Duration,
+    ceiling: Duration,
     mut send: F,
 ) where
     F: FnMut() -> Fut,
@@ -58,8 +72,12 @@ pub(crate) async fn tick_while_detached<F, Fut>(
     if background.is_none() && agents.is_none() {
         return;
     }
+    let born = std::time::Instant::now();
     loop {
         if stop.as_ref().is_some_and(CancellationToken::is_cancelled) {
+            break;
+        }
+        if born.elapsed() >= ceiling {
             break;
         }
         let bg = background

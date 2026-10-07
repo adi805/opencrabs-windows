@@ -113,6 +113,9 @@ async fn keep_typing_while_detached(
         session_id,
         None,
         TICK,
+        // #1984: the tail is bounded even if some row leaks every
+        // stuck-entry cleanup.
+        crate::channels::typing_tick::DEFAULT_TICK_CEILING,
         || {
             fire_chat_action(
                 &bot,
