@@ -254,6 +254,7 @@ pub mod cron_deliver_to_thread_test;
 pub mod cron_delivery_truncate_test;
 pub mod cron_discord_forum_test;
 pub mod cron_error_chain_test;
+pub mod cron_liveness_test;
 pub mod cron_next_run_at_test;
 pub mod cron_no_op_evidence_test;
 pub mod cron_profile_isolation_test;

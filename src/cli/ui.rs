@@ -2043,8 +2043,12 @@ async fn cmd_chat_inner(
     if headless {
         // Spawn health endpoint if configured (for systemd watchdog / uptime monitors)
         if let Some(port) = config.daemon.health_port {
+            // #1925: the pool lets the handler answer "enabled jobs exist" -
+            // the condition that turns a silent dead scheduler into a named
+            // health state.
+            let health_pool = db.pool().clone();
             tokio::spawn(async move {
-                if let Err(e) = crate::cli::daemon_health::serve(port).await {
+                if let Err(e) = crate::cli::daemon_health::serve(port, health_pool).await {
                     tracing::error!("Daemon health server failed: {}", e);
                 }
             });

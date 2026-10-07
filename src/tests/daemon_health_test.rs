@@ -46,23 +46,15 @@ fn config_default_includes_daemon() {
 
 #[tokio::test]
 async fn health_endpoint_returns_ok() {
-    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use axum::routing::get;
     use tower::ServiceExt;
 
-    // Build the same router as daemon_health::serve
-    let app = Router::new().route(
-        "/health",
-        get(|| async {
-            axum::Json(serde_json::json!({
-                "status": "ok",
-                "version": crate::VERSION,
-                "mode": "daemon",
-            }))
-        }),
-    );
+    // The real handler, not a rebuilt copy: a copy drifts from the response
+    // shape the moment the endpoint changes (the #1925 cron block just did).
+    let db = crate::db::Database::connect_in_memory().await.expect("db");
+    db.run_migrations().await.expect("migrations");
+    let app = crate::cli::daemon_health::router(db.pool().clone());
 
     let req = Request::builder()
         .uri("/health")
@@ -77,6 +69,7 @@ async fn health_endpoint_returns_ok() {
     assert_eq!(json["status"], "ok");
     assert_eq!(json["mode"], "daemon");
     assert_eq!(json["version"], crate::VERSION);
+    assert!(json["cron"].is_object(), "cron liveness block (#1925)");
 }
 
 #[tokio::test]
