@@ -113,3 +113,8 @@ desktop/
 # `desktop-gui` lands on main.
 !src/desktop/
 bench_scratch/
+
+# android/assemble-apk.sh stages its dex, aligned APK and signed APK here.
+# Regenerable and ~28MB per APK, so a stray `git add -A` would commit a binary
+# the next build overwrites anyway.
+android/out/
