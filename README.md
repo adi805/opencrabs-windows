@@ -277,10 +277,10 @@ https://github.com/user-attachments/assets/7f45c5f8-acdf-48d5-b6a4-0e4811a9ee23
 | **PDF Support** | Attach PDF files by path — native Anthropic PDF support; for other providers, text is extracted locally via `pdf-extract`. **Scanned / image-only PDFs** (no embedded text) are rendered to page images so vision models can read them — this needs **poppler** (`pdftoppm`) on the system: macOS `brew install poppler`, Debian/Ubuntu `apt install poppler-utils`, Fedora `dnf install poppler-utils`. The one-line installer sets this up automatically; without it, the PDF is still saved and its path handed to the agent (text extraction and the `pdf_to_images` tool can be retried once poppler is present) |
 | **Document Parsing** | Built-in `parse_document` tool extracts text from PDF, DOC, DOCX, XLSX, XLSM, XLSB, XLS, ODS, CSV, HTML, TXT, MD, JSON, XML. All native Rust, zero external services: PDF text via `pdf-extract`, legacy Word 97-2003 `.doc` via `rwml`, DOCX/XML via a `quick-xml` streaming walk, spreadsheets (all five Excel/ODS variants) via `calamine`, CSV via `csv`. Scanned/image-only PDFs fall back to page-image rendering for vision models (see **PDF Support** above). Spreadsheet files are parsed into readable table format with sheet headers. Reading legacy binary `.ppt` is out of scope by design |
 | **Document Generation** | Built-in `generate_document` tool creates XLSX (live Excel formulas), DOCX, and PDF natively in Rust with zero host dependencies, plus PPTX via python-pptx when present. Full styling per format: brand colors, page headers/footers with logos and page numbers, zebra tables, frozen headers, autofilters, number formats, PowerPoint brand templates. Image blocks embed PNG/JPEG inline with optional captions in PDF and DOCX. Generated files are delivered as downloadable attachments on Telegram/WhatsApp/Discord. See [Document Generation](#-document-generation) |
-| **Voice (STT)** | Voice notes transcribed via **Groq Whisper API** (`whisper-large-v3-turbo`), any **OpenAI-compatible STT endpoint** (set `base_url` + `model` under `[providers.stt.openai_compatible]` — works with self-hosted Whisper, Deepgram-compatible proxies, etc.), **Voicebox STT** (self-hosted open-source voice stack — point the `base_url` of `[providers.stt.voicebox]` at your instance; 2s liveness probe runs before each request so a dead voicebox fails fast), or **Local** whisper.cpp via `whisper-rs` (runs on-device, Tiny 75 MB / Base 142 MB / Small 466 MB / Medium 1.5 GB, zero API cost). All dispatched through a single entry point so every channel gets the same provider priority chain — and an optional `[providers.stt].fallback_chain` lets the user codify "if my local voicebox is down, try Groq, then OpenAI" so transient outages auto-route to the next provider with zero user action. Choose mode in `/onboard:voice`. Included by default |
+| **Voice (STT)** | Voice notes transcribed via **Groq Whisper API** (`whisper-large-v3-turbo`), any **OpenAI-compatible STT endpoint** (set `base_url` + `model` under `[providers.stt.openai_compatible]` — works with self-hosted Whisper, Deepgram-compatible proxies, etc.), **Voicebox STT** (self-hosted open-source voice stack — point the `base_url` of `[providers.stt.voicebox]` at your instance; 2s liveness probe runs before each request so a dead voicebox fails fast), or **Local** whisper.cpp via `whisper-rs` (runs on-device, Tiny 75 MB / Base 142 MB / Small 466 MB / Medium 1.5 GB, zero API cost). All dispatched through a single entry point so every channel gets the same provider priority chain — and an optional `[providers.stt].fallback_chain` lets the user codify "if my local voicebox is down, try Groq, then OpenAI" so transient outages auto-route to the next provider with zero user action. Choose mode in `/voice`. Included by default |
 | **Voice (TTS)** | Agent replies to voice notes with audio via **OpenAI TTS API** (`gpt-4o-mini-tts`), any **OpenAI-compatible TTS endpoint** (set `base_url` + `model` + `voice` under `[providers.tts.openai_compatible]` — works with self-hosted Coqui/Bark, ElevenLabs-compatible proxies, etc.), **Voicebox TTS** (async `/generate` → poll `/generate/{id}/status` → fetch audio; set the `base_url` + `profile_id` of `[providers.tts.voicebox]`), or **Local** Piper TTS (runs on-device via Python venv, Ryan / Amy / Lessac / Kristin / Joe / Cori, zero API cost). All outputs normalised to OGG/Opus via `ensure_opus` before delivery — consistent format across every channel regardless of backend. `[providers.tts].fallback_chain` provides the same auto-failover behaviour as the STT side. Falls back to text if disabled |
 | **Attachment Indicator** | Attached images show as `[IMG1:filename.png]` in the input title bar |
-| **Image Generation** | Agent generates images via Google Gemini (`gemini-3.1-flash-image-preview` "Nano Banana") using the `generate_image` tool — enabled via `/onboard:image`. Returned as native images/attachments in all channels |
+| **Image Generation** | Agent generates images via Google Gemini (`gemini-3.1-flash-image-preview` "Nano Banana") using the `generate_image` tool — enabled via `/image`. Returned as native images/attachments in all channels |
 
 #### Vision setup — two paths, pick one
 
@@ -294,7 +294,7 @@ enabled = true
 vision_model = "mimo-v2-omni"  # any vision-capable model on this provider
 ```
 
-**Path B (fallback).** Enable Gemini globally. Use this only when your active provider has no vision-capable model. Easiest way: run `/onboard:image` and the wizard walks you through. Manual setup:
+**Path B (fallback).** Enable Gemini globally. Use this only when your active provider has no vision-capable model. Easiest way: run `/image` and the wizard walks you through. Manual setup:
 
 ```toml
 # config.toml
@@ -314,7 +314,7 @@ api_key = "YOUR_GEMINI_KEY"
 
 > **Pinning vision to a provider:** set `[providers.fallback] vision = ["name"]` to try that provider first for `analyze_image` and `analyze_video`, regardless of its `enabled` flag (vision needs only `vision_model` plus a key). Names follow the same rule as every other provider key: the bare section name, so `[providers.custom.myprovider]` is `"myprovider"`. An entry that does not resolve is skipped with a warning and resolution falls through to the normal provider scan. There is no `[image.vision] provider` key; that section configures the Gemini backend only.
 
-> **Pinning generation to a provider:** `[providers.fallback] generation = ["name"]` is the same mechanism for `generate_image`, resolved over each provider's `generation_model` instead of `vision_model`. Order per request: the session's current provider, then this chain, then the global Gemini `[image.generation]` section strictly last — and only that Gemini leg is gated by `image.generation.enabled`; a provider route registers the tool even with the flag off. Custom providers need an explicit `base_url` (never guessed); any OpenAI-compatible `/images/generations` endpoint works (OpenRouter, Together, DashScope/Qwen-Image, vLLM, …). Quick setup for the active provider: `/onboard:image generation <model>`.
+> **Pinning generation to a provider:** `[providers.fallback] generation = ["name"]` is the same mechanism for `generate_image`, resolved over each provider's `generation_model` instead of `vision_model`. Order per request: the session's current provider, then this chain, then the global Gemini `[image.generation]` section strictly last — and only that Gemini leg is gated by `image.generation.enabled`; a provider route registers the tool even with the flag off. Custom providers need an explicit `base_url` (never guessed); any OpenAI-compatible `/images/generations` endpoint works (OpenRouter, Together, DashScope/Qwen-Image, vLLM, …). Quick setup for the active provider: `/image generation <model>`.
 
 **Diagnostic:** when vision is unavailable for any reason, `is_vision_available` logs the exact cause at INFO level in `~/.opencrabs/logs/opencrabs.YYYY-MM-DD` — search for `target=vision`.
 
@@ -384,7 +384,7 @@ The one user-settable TTL is `cache_ttl` (default 300s, range 1-86400), which se
 |---------|-------------|
 | **Telegram Bot** | Full-featured Telegram bot — owner DMs share TUI session, groups get isolated per-group sessions (keyed by chat ID). Photo/voice support (STT transcribes incoming voice notes; TTS replies as OGG/Opus voice notes via `send_voice` when input was audio). Allowed user IDs, allowed chat/group IDs, per-group allow lists (`[channels.telegram.groups.<id>]`), `respond_to` filter (`all`/`dm_only`/`mention`/`auto`, global or per-group). Passive group message capture — all messages stored for context even when bot isn't mentioned |
 | **Telegram Userbot (experimental)** | Feature-gated, opt-in, receive-only MTProto companion. Experimental: merged from #1209 without a maintainer-side live login yet; expect rough edges. Local QR/code/2FA login; allowlisted text is passively stored under `telegram-userbot` for explicit retrieval through `channel_search`. Empty `allowed_chats` is dry mode. It does not invoke the agent or send/edit/react as the user. |
-| **WhatsApp** | Pair by scanning a QR code from the TUI: first-run onboarding, or `/onboard:channels` then select WhatsApp. The QR is shown in the terminal. You run the bot AS whatever account you scan: your own number (talk via "Message Yourself") or any other number you own, including a WhatsApp Business account, to serve that account's incoming DMs. `response_policy` (`auto`/`owner_only`/`allowlist`/`open`) decides who it answers; the paired account's self-chat and `bot_owner` operator are always allowed. Streaming edits ONE living message in place rather than posting a chunk per step, and a finished multi-step turn is acknowledged with a reaction. Inbound: text, image, video, audio, document, sticker, location, contact card, reactions and poll votes (decrypted and resolved back to the option labels). Media whose CDN URL has expired is recovered through a server re-upload rather than reported as a failed download. Outbound audio goes out as a native voice note (`ptt`) with a recording indicator, pairing directly with built-in `local-tts`. Beyond messaging: block / unblock / list blocked contacts, disappearing messages (per message or channel-wide), pin and unpin chats, forward a message the session has seen, set the profile name and status, post status updates, discover followed newsletters, and create and assign labels. Every action that delivers a message is charged to an outbound send budget. Tool-approval prompts can optionally be sent as interactive buttons (`interactive_buttons`, off by default). Follow-up suggestion sets that exceed the native button cap render as a poll instead, and a vote selects the option (#1616). Per-phone sessions, session persists across restarts. Per-room access mirrors Telegram's `[channels.telegram.groups.<id>]`: `[channels.whatsapp.groups.<id>]` scopes an allow list to one group, `respond_to` can keep a room silent until the bot is @mentioned, and `open` admits every member of that one room without loosening DMs or any other group (#161) |
+| **WhatsApp** | Pair by scanning a QR code from the TUI: first-run onboarding, or `/channels` then select WhatsApp. The QR is shown in the terminal. You run the bot AS whatever account you scan: your own number (talk via "Message Yourself") or any other number you own, including a WhatsApp Business account, to serve that account's incoming DMs. `response_policy` (`auto`/`owner_only`/`allowlist`/`open`) decides who it answers; the paired account's self-chat and `bot_owner` operator are always allowed. Streaming edits ONE living message in place rather than posting a chunk per step, and a finished multi-step turn is acknowledged with a reaction. Inbound: text, image, video, audio, document, sticker, location, contact card, reactions and poll votes (decrypted and resolved back to the option labels). Media whose CDN URL has expired is recovered through a server re-upload rather than reported as a failed download. Outbound audio goes out as a native voice note (`ptt`) with a recording indicator, pairing directly with built-in `local-tts`. Beyond messaging: block / unblock / list blocked contacts, disappearing messages (per message or channel-wide), pin and unpin chats, forward a message the session has seen, set the profile name and status, post status updates, discover followed newsletters, and create and assign labels. Every action that delivers a message is charged to an outbound send budget. Tool-approval prompts can optionally be sent as interactive buttons (`interactive_buttons`, off by default). Follow-up suggestion sets that exceed the native button cap render as a poll instead, and a vote selects the option (#1616). Per-phone sessions, session persists across restarts. Per-room access mirrors Telegram's `[channels.telegram.groups.<id>]`: `[channels.whatsapp.groups.<id>]` scopes an allow list to one group, `respond_to` can keep a room silent until the bot is @mentioned, and `open` admits every member of that one room without loosening DMs or any other group (#161) |
 | **Discord** | Full Discord bot — text + image + voice. Owner DMs share TUI session, guild channels get isolated per-channel sessions. Allowed user IDs, allowed channel IDs, `respond_to` filter. Tool calls render as ONE grouped message per turn, collapsed to a summary with an Expand/Collapse button, edited in place as tools run — Slack parity. Intermediate narration folds into the same bubble as dim subtext lines (`trace_narration`, default true). Reacting to a bot message becomes an agent turn (approval emoji = keep going with a silent react-back, stop emoji = pause and ask), and the agent reacts back via its `<<react:EMOJI>>` marker. Multiple generated files batch into one gallery-style message. Slash commands are native: `commands.toml` is projected onto Discord's command list per guild with argument hints (#1850, needs the `applications.commands` invite scope). Interactive components: select menus (`discord_send` with `action=select_menu`), modal forms (`action=modal`), component TTL with auto-cleanup, role-based access control, forum thread creation. Live reply tracing with auto-threading (tool turns stream into a linked thread; tables render as native Discord markdown tables) and double-post dedup on tool turns (#1603, #1608). Full proactive control via `discord_send` (28 actions): `send`, `reply`, `react`, `unreact`, `edit`, `delete`, `pin`, `unpin`, `create_thread`, `send_embed`, `get_messages`, `list_channels`, `add_role`, `remove_role`, `kick`, `ban`, `timeout`, `nickname`, `send_file`, `send_select`, `send_form`, `send_poll`, `announce`, `automod_list`, `automod_create`, `automod_edit`, `automod_delete`, `audit_log`. An announcement posts through a channel webhook under the bot's own name and avatar, and is crossposted when the channel is an announcement channel; AutoMod rules and the guild audit log are reachable through the same tool, with every rule change carrying an audit-log reason. Generated images sent as native Discord file attachments |
 | **Slack** | Full Slack bot via Socket Mode — owner DMs share TUI session, channels get isolated per-channel sessions. Text + image + voice (STT transcribes incoming audio attachments; TTS replies upload an OGG/Opus audio file via Slack's external upload flow — renders inline with waveform UI — when input was audio and `tts_enabled=true`). Allowed user IDs, allowed channel IDs, `respond_to` filter. Tool calls render as ONE grouped message per turn, collapsed to a summary with an Expand/Collapse button (Block Kit), edited in place as tools run — Telegram parity. Reacting to a bot message becomes an agent turn (approval emoji = keep going with a silent react-back, stop emoji = pause and ask), and the agent reacts back via its `<<react:EMOJI>>` marker. All file uploads (generated docs/images, TTS audio) use Slack's supported external upload flow (`files.getUploadURLExternal` + `completeUploadExternal`) with real MIME types. Full proactive control via `slack_send` (17 actions): `send`, `reply`, `react`, `unreact`, `edit`, `delete`, `pin`, `unpin`, `get_messages`, `get_channel`, `list_channels`, `get_user`, `list_members`, `kick_user`, `set_topic`, `send_blocks`, `send_file`. Generated images sent as native Slack file uploads. Bot token + app token from `api.slack.com/apps` (Socket Mode required). **Required Bot Token Scopes:** `chat:write`, `channels:history`, `groups:history`, `im:history`, `mpim:history`, `users:read`, `files:read`, `files:write`, `reactions:write`, `app_mentions:read` |
 | **Trello** | Tool-only by default — the AI acts on Trello only when explicitly asked via `trello_send`. Opt-in polling via `poll_interval_secs` in config; when enabled, only `@bot_username` mentions from allowed users trigger a response. Full card management via `trello_send` (22 actions): `add_comment`, `create_card`, `move_card`, `find_cards`, `list_boards`, `get_card`, `get_card_comments`, `update_card`, `archive_card`, `add_member_to_card`, `remove_member_from_card`, `add_label_to_card`, `remove_label_from_card`, `add_checklist`, `add_checklist_item`, `complete_checklist_item`, `list_lists`, `get_board_members`, `search`, `get_notifications`, `mark_notifications_read`, `add_attachment`. API Key + Token from `trello.com/power-ups/admin`, board IDs and member-ID allowlist configurable |
@@ -410,7 +410,7 @@ Videos uploaded on any channel (mp4, m4v, mov, webm, mkv, avi, 3gp, flv) auto-ro
 
 When a Telegram reply carries structured Markdown (tables, headings, lists, `- [ ]` task lists, fenced code, or math), OpenCrabs can render it natively using Telegram's rich messages (Bot API 10.1) — real tables, real section headings, real checkboxes — instead of plain text or basic HTML.
 
-This is **on by default** via `channels.telegram.rich_messages`. The one caveat: native rich messages are unreadable on **Telegram Web and older clients** — those show a "this message is not supported, update Telegram" placeholder, and the rich API has no text fallback. If your audience runs outdated clients, disable it in the onboarding dialog (the "Rich text experience" checkbox) or ask the agent: `/onboard:channels telegram richtext off`. With the flag off, the universal HTML rendering is used — tables come out as aligned monospace grids, task items as `☐`/`☑`, with proper paragraph spacing, so structured replies look decent on every client.
+This is **on by default** via `channels.telegram.rich_messages`. The one caveat: native rich messages are unreadable on **Telegram Web and older clients** — those show a "this message is not supported, update Telegram" placeholder, and the rich API has no text fallback. If your audience runs outdated clients, disable it in the onboarding dialog (the "Rich text experience" checkbox) or ask the agent: `/channels telegram richtext off`. With the flag off, the universal HTML rendering is used — tables come out as aligned monospace grids, task items as `☐`/`☑`, with proper paragraph spacing, so structured replies look decent on every client.
 
 When enabled, native rich applies to the agent's reply (sent as a fresh rich message so it renders cleanly) and to proactive `telegram_send` messages. Plain-prose replies are left untouched, so incidental characters like a stray `*` or `#` are never reinterpreted. If the rich send fails for any reason, OpenCrabs falls back silently to HTML, so a message is never dropped.
 
@@ -420,7 +420,7 @@ When enabled, native rich applies to the agent's reply (sent as a fresh rich mes
 
 The `/cowork` command creates a team workspace directly from Telegram. It is **Telegram-only** because it relies on Telegram-specific primitives: group creation via `?startgroup` deep links, invite links, QR codes from `t.me` URLs, and `new_chat_members` service messages for auto-registration. None of these exist in Discord, Slack, or WhatsApp.
 
-**Prerequisite:** Telegram must be configured (bot token set via `/onboard:channels telegram` or manual `config.toml` setup).
+**Prerequisite:** Telegram must be configured (bot token set via `/channels telegram` or manual `config.toml` setup).
 
 **Flow:**
 1. Owner sends `/cowork` in DM (owner-only command) → bot replies with an **Add to Group** inline button
@@ -1274,7 +1274,7 @@ api_key = "sk-YOUR_KEY"
 
 <details><summary>Manual config (without wizard)</summary>
 
-The OAuth token is saved automatically during onboarding. If you need to re-authenticate, run `/onboard:provider` and select GitHub Copilot.
+The OAuth token is saved automatically during onboarding. If you need to re-authenticate, run `/models` and select GitHub Copilot.
 
 Enable in `config.toml`:
 ```toml
@@ -1740,7 +1740,7 @@ OpenCrabs supports image generation and vision analysis via Google Gemini by def
 ### Setup
 
 1. Get a free API key from [aistudio.google.com](https://aistudio.google.com)
-2. Run `/onboard:image` in chat (or go through onboarding Advanced mode) to configure
+2. Run `/image` in chat (or go through onboarding Advanced mode) to configure
 3. Or add manually to `keys.toml`:
 
 ```toml
@@ -1782,7 +1782,7 @@ Both tools use `gemini-3.1-flash-image-preview` ("Nano Banana") by default — G
 
 The seeded Gemini default works out of the box, but you can override the model used by `generate_image` per-provider without leaving the TUI:
 
-- **From the wizard** — `/onboard:image` shows a "Generation model" input below the toggle. Empty keeps the seeded default; type any model name to override.
+- **From the wizard** — `/image` shows a "Generation model" input below the toggle. Empty keeps the seeded default; type any model name to override.
 - **From config.toml** — set `generation_model = "..."` under any `[providers.<name>]` block. The active session's provider wins over `image.generation.model`.
 
 Backend dispatch is automatic, based on the provider's `base_url`:
@@ -2203,11 +2203,11 @@ First-time users are guided through a 9-step setup wizard that appears automatic
 
 **QuickStart mode** skips steps 4-8 with sensible defaults. **Advanced mode** lets you configure everything.
 
-Type `/onboard:voice` or `/onboard:image` in chat to jump directly to Voice or Image setup anytime. These work from any channel (Telegram, Discord, Slack, WhatsApp) via text-driven handlers — not just the TUI. From a channel, the agent walks you through each step interactively. You can also pass arguments directly: `/onboard:channels telegram <BOT_TOKEN> <YOUR_NUMERIC_ID>` to set up Telegram in one line, or `/onboard:image gemini <API_KEY>` to configure vision with Google.
+Type `/voice` or `/image` in chat to jump directly to Voice or Image setup anytime. These work from any channel (Telegram, Discord, Slack, WhatsApp) via text-driven handlers — not just the TUI. From a channel, the agent walks you through each step interactively. You can also pass arguments directly: `/channels telegram <BOT_TOKEN> <YOUR_NUMERIC_ID>` to set up Telegram in one line, or `/image gemini <API_KEY>` to configure vision with Google.
 
 #### OpenAI TTS: voice and key
 
-Selecting **API (OpenAI TTS)** in `/onboard:voice` offers a voice picker (`alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`) and its own API key field.
+Selecting **API (OpenAI TTS)** in `/voice` offers a voice picker (`alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`) and its own API key field.
 
 The key resolves in this order:
 
@@ -2222,7 +2222,7 @@ The field shows as configured when a key is in effect from either source, so a b
 
 Run speech-to-text on-device with zero API cost. Included by default in prebuilt binaries and in source builds from this repository.
 
-In `/onboard:voice`, select **Local** mode, pick a model size, and press Enter to download. Models are stored at `~/.local/share/opencrabs/models/whisper/`.
+In `/voice`, select **Local** mode, pick a model size, and press Enter to download. Models are stored at `~/.local/share/opencrabs/models/whisper/`.
 
 > **Building from source:** Local STT requires CMake and a C++ compiler (for whisper.cpp). To exclude it: `cargo install --git https://github.com/adi805/opencrabs-windows --locked --no-default-features --features telegram,whatsapp,discord,slack,trello`
 
@@ -5165,12 +5165,12 @@ If the Telegram bot stops responding or you need to re-link it, re-run the chann
 
 **Fix:**
 
-1. Run `/onboard:channels` (TUI: opens the wizard; on a channel: the agent walks you through it).
+1. Run `/channels` (TUI: opens the wizard; on a channel: the agent walks you through it).
 2. Paste your **bot token** again if it's missing (get it from [@BotFather](https://t.me/BotFather)).
 3. Paste your **numeric user ID** and hit Enter to confirm.
 4. If the bot sends you a message on Telegram, it worked.
 
-On a channel you can do it in one line: `/onboard:channels telegram <BOT_TOKEN> <YOUR_NUMERIC_ID>`.
+On a channel you can do it in one line: `/channels telegram <BOT_TOKEN> <YOUR_NUMERIC_ID>`.
 
 **Why you have to provide your numeric ID:** Telegram's Bot API exposes only the *bot's* identity from a token (via `getMe`) — it has **no way to reveal who created the bot** in BotFather. A bot only learns a human's ID when that human messages it (the incoming update carries the sender's ID). The onboarding wizard auto-detects your ID via `getUpdates` when you leave the field blank, **but** that only works if (a) you've already messaged the bot and (b) the bot isn't already running and consuming those updates — which is exactly the case during a *reconnect*. So on reconnect, message the bot first, or just paste the ID (get it from [@userinfobot](https://t.me/userinfobot)).
 
@@ -5187,7 +5187,7 @@ Each OpenCrabs instance supports **one WhatsApp account** (one companion device)
 **Full reset steps (required before connecting a new number):**
 
 1. **Remove the OpenCrabs device from WhatsApp** — open WhatsApp on your phone, go to **Settings → Linked Devices**, find the `opencrabs` device, and **remove it**. This is mandatory.
-2. **Reset the connection in OpenCrabs** — in the TUI or from a channel, go to `/onboard:channels` and press **R** to reset the WhatsApp connection. Wait for confirmation that the reset is complete.
+2. **Reset the connection in OpenCrabs** — in the TUI or from a channel, go to `/channels` and press **R** to reset the WhatsApp connection. Wait for confirmation that the reset is complete.
 3. **Re-pair from scratch** — after the reset is confirmed, go to WhatsApp → **Settings → Linked Devices** → **Link a Device** and scan the new QR code shown by OpenCrabs.
 
 If the bot still shows the old number after resetting, make sure you completed step 1 (removing the device from WhatsApp) before step 2.
@@ -5196,8 +5196,8 @@ If the bot still shows the old number after resetting, make sure you completed s
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Old number still replying | Old device not removed from WhatsApp app | Remove `opencrabs` from WhatsApp → Settings → Linked Devices, then press **R** in `/onboard:channels` |
-| QR code doesn't appear | Agent is still connected (no restart triggered) | Press **R** in `/onboard:channels` to force a restart, then wait for the new QR |
+| Old number still replying | Old device not removed from WhatsApp app | Remove `opencrabs` from WhatsApp → Settings → Linked Devices, then press **R** in `/channels` |
+| QR code doesn't appear | Agent is still connected (no restart triggered) | Press **R** in `/channels` to force a restart, then wait for the new QR |
 | Bot doesn't reply to anyone | `response_policy` is too restrictive | Set `response_policy = "allowlist"` and add phone numbers to `allowed_phones` in `config.toml` |
 | Bot replies to everyone | `response_policy` is `open` | Set `response_policy = "allowlist"` or `"owner_only"` in `config.toml` |
 | Bot doesn't reply to self-chat | `allowed_phones` doesn't include the paired number | The paired number's self-chat is always allowed, regardless of `allowed_phones`. If it's not working, check that `response_policy` isn't `dm_only` with no owner set |
