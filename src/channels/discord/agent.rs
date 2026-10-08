@@ -299,6 +299,19 @@ impl EventHandler for Handler {
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        // FR-005 (AC-007, AC-008): suggestions while the user is still typing.
+        // Answered first and in place: an autocomplete request has the same
+        // three-second window as any other interaction and no fallback, so it
+        // must not queue behind the command path's spawn. The decision lives in
+        // `autocomplete.rs`; this is only the wiring. An unenumerable option
+        // answers with an empty list, never an error, so there is no branch
+        // here for the negative case.
+        if let Interaction::Autocomplete(command) = &interaction {
+            let cfg = self.config_rx.borrow().clone();
+            super::autocomplete::answer(&ctx.http, command, &cfg, &self.session_svc).await;
+            return;
+        }
+
         // Slash commands (#1850): rebuild the invocation as the text the user
         // would have typed and route it through the same display path a tapped
         // suggestion uses. Parity is structural: the agent receives `/check

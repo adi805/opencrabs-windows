@@ -170,6 +170,28 @@ pub(crate) fn description_for(description: &str, name: &str) -> String {
     chosen.chars().take(DESCRIPTION_MAX).collect()
 }
 
+/// The single option every command carries, flagged for autocomplete when its
+/// values come from a live catalog (FR-005 / AC-007).
+///
+/// The flag is decided by [`super::autocomplete::catalog_for`], the same table
+/// the interaction arm answers from, so what is registered and what is answered
+/// cannot drift. A command with no catalog keeps a plain text option, which is
+/// what every command had before this: Discord only sends an autocomplete
+/// interaction for an option that asked for one.
+pub(crate) fn command_option(source_name: &str) -> CreateCommandOption {
+    let option = CreateCommandOption::new(
+        CommandOptionType::String,
+        ARGS_OPTION,
+        ARGS_OPTION_DESCRIPTION,
+    )
+    .required(false);
+    if super::autocomplete::catalog_for(source_name).is_some() {
+        option.set_autocomplete(true)
+    } else {
+        option
+    }
+}
+
 /// Project the catalog onto Discord's command grammar. Catalog order is
 /// preserved and the first entry wins a sanitized-name collision, which is the
 /// ordering rule `trim_catalog_to_budget` already applies on Telegram, so both
@@ -236,14 +258,7 @@ pub(crate) fn plan_commands(catalog: &[UserCommand]) -> CommandPlan {
         let builder = CreateCommand::new(name.clone())
             .description(description.clone())
             .kind(CommandType::ChatInput)
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    ARGS_OPTION,
-                    ARGS_OPTION_DESCRIPTION,
-                )
-                .required(false),
-            );
+            .add_option(command_option(&entry.name));
 
         plan.entries.push((name, entry.name.clone(), description));
         plan.commands.push(builder);

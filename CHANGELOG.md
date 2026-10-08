@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page ceiling: the answers that most need a thread could never get one. The
   default threshold moves from 0 (disabled) to 1800 (FR-007, AC-010).
 
+- discord: command options whose values come from a live catalog now answer
+  Discord's typing-time suggestion request (interaction type 4) instead of
+  leaving the user a free-text box. `/providers`, `/models` and
+  `/sessions`/`/resume` filter the running config and the session store, with a
+  prefix match ranked ahead of a coincidence and capped at Discord's 25 choices
+  and 100-character name budget. A command with no catalog, and any catalog
+  that cannot be read, answers with an empty list rather than an error: a
+  failed interaction puts an error in front of the user for a keystroke
+  (FR-005, AC-007, AC-008).
+
 ## [0.5.5] - 2026-10-07
 
 First release cut from this fork. Carries upstream 0.5.4 plus the fork's own
