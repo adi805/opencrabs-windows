@@ -138,25 +138,6 @@ fn parse_inline_items(s: &str, target: &mut Vec<String>) {
     }
 }
 
-/// Resolve the `ContextManifest` to apply after a compaction summary.
-///
-/// Unlike [`parse_context_manifest`], this never returns `None`. A document
-/// that carries no `context-manifest` fence resolves to the pruning-safe
-/// default — keep every active skill, discard none, activate no lazy tool —
-/// and the substitution is warned about, because a missing fence is a
-/// degradation the reload path must not swallow silently (#1933).
-pub fn resolve_context_manifest(summary: &str) -> ContextManifest {
-    if let Some(manifest) = parse_context_manifest(summary) {
-        return manifest;
-    }
-    tracing::warn!(
-        "compaction: continuation document carried no `context-manifest` fence; \
-         substituting the pruning-safe default (keep-all-active, discard none) — \
-         `required_tools` left EMPTY (not derivable from the document)"
-    );
-    ContextManifest::default()
-}
-
 /// One `## N.` section of a continuation document, heading and body verbatim.
 struct SummarySection {
     /// The heading line as written, e.g. `## 1. Chronological Analysis`.
