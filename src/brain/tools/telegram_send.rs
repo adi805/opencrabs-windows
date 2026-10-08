@@ -3335,7 +3335,9 @@ fn resolve_menu_button(input: &Value) -> std::result::Result<Option<TgMenuButton
             let text = get_str(input, "menu_button_text")?.to_string();
             let raw_url = get_str(input, "menu_button_url")?;
             let parsed = url::Url::parse(raw_url).map_err(|e| {
-                ToolResult::error(format!("menu_button_url '{raw_url}' is not a valid URL: {e}"))
+                ToolResult::error(format!(
+                    "menu_button_url '{raw_url}' is not a valid URL: {e}"
+                ))
             })?;
             if parsed.scheme() != "https" {
                 return Err(ToolResult::error(format!(
