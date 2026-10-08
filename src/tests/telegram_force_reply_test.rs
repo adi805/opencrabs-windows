@@ -49,6 +49,21 @@ fn reply_keyboard_omits_force_reply_unless_asked() {
 }
 
 #[test]
+fn the_field_lands_in_the_send_body_under_reply_markup() {
+    let reply_markup = markup_with_force_reply(&inline_markup(), true).expect("serializes");
+    let body = json!({
+        "chat_id": -100200,
+        "text": "hi",
+        "reply_markup": reply_markup,
+    });
+    assert_eq!(body["reply_markup"]["force_reply"], json!(true));
+    assert_eq!(
+        body["reply_markup"]["inline_keyboard"][0][0]["text"],
+        json!("Yes")
+    );
+}
+
+#[test]
 fn stamping_keeps_the_markups_own_fields() {
     let inline = inline_markup();
     let body = markup_with_force_reply(&inline, true).expect("inline markup serializes");
