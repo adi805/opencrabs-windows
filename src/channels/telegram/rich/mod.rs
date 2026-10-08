@@ -24,7 +24,7 @@ pub(crate) mod inline;
 mod list;
 pub(crate) mod mermaid;
 pub(crate) mod parse;
-mod render_html;
+pub(crate) mod render_html;
 pub(crate) mod render_json;
 pub(crate) mod table;
 

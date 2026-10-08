@@ -1093,6 +1093,7 @@ pub mod telegram_reflow_collapsed_table_test;
 pub mod telegram_resume_labels_test;
 pub mod telegram_retain_history_test;
 pub mod telegram_rich_api_test;
+pub mod telegram_rich_blocks_test;
 pub mod telegram_rich_edit_dedup_test;
 pub mod telegram_rich_inline_test;
 pub mod telegram_rich_json_test;

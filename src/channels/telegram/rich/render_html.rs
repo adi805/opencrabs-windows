@@ -38,7 +38,11 @@ fn render_html_inner(blocks: &[Block], wrap_p: bool) -> String {
         .to_string()
 }
 
-fn render_block(block: &Block, wrap_p: bool) -> String {
+/// Render one block to Telegram HTML (the fallback dialect). Crate-visible so
+/// the block renderers can be pinned directly: the 10.3 blocks
+/// (`ExpandableQuote`, `Document`) have no markdown syntax, so a markdown
+/// round-trip cannot reach them.
+pub(crate) fn render_block(block: &Block, wrap_p: bool) -> String {
     match block {
         Block::Heading { level, content } => {
             // No heading tags in Telegram HTML: bold, and italicize deeper
@@ -122,6 +126,33 @@ fn render_block(block: &Block, wrap_p: bool) -> String {
                     .collect::<Vec<_>>()
                     .join("\n")
             )
+        }
+        // Telegram's HTML parse mode has no expandable blockquote, so this
+        // falls back to a plain <blockquote>; the credit line (the API's
+        // <cite>) becomes an italic attribution under it.
+        Block::ExpandableQuote { text, credit } => {
+            let body = render_inlines(text, wrap_p);
+            match credit {
+                Some(credit) => format!(
+                    "<blockquote>{body}</blockquote>\n<i>{}</i>",
+                    render_inlines(credit, wrap_p)
+                ),
+                None => format!("<blockquote>{body}</blockquote>"),
+            }
+        }
+        // No HTML equivalent for a rich document block either. The caption is
+        // the human-readable half, so it leads and the media reference follows
+        // in code style; a link would be wrong for a file_id or an
+        // `attach://` name.
+        Block::Document { media, caption } => {
+            let label = caption
+                .as_ref()
+                .map(|c| render_inlines(c, wrap_p))
+                .filter(|s| !s.is_empty());
+            match label {
+                Some(label) => format!("{label} <code>{}</code>", escape_html(media)),
+                None => format!("<code>{}</code>", escape_html(media)),
+            }
         }
     }
 }

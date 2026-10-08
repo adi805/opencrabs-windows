@@ -14,11 +14,15 @@
 use super::{list, table};
 
 /// Whether `text` is better served by the AST renderer than the legacy
-/// line-based converter: it contains a GitHub-flavored table or a task-list
-/// checkbox, both of which the legacy path renders poorly (raw `| pipes |` and
-/// literal `- [ ]` respectively).
+/// line-based converter: it contains a GitHub-flavored table, a task-list
+/// checkbox, a `<details>` collapse, or a `tg://document?id=` reference, all of
+/// which the legacy path renders poorly (raw `| pipes |`, literal `- [ ]`,
+/// visible `<details>` markup, literal reference text respectively).
 pub(crate) fn prefers_rich_render(text: &str) -> bool {
-    contains_table(text) || contains_task_list(text) || contains_details(text)
+    contains_table(text)
+        || contains_task_list(text)
+        || contains_details(text)
+        || contains_document_ref(text)
 }
 
 /// Whether `text` contains a GitHub-flavored pipe table.
@@ -76,10 +80,11 @@ pub(crate) fn should_send_native_rich_for(text: &str, has_buttons: bool) -> bool
 
 /// Whether `text` contains block-level markdown structure that native rich
 /// rendering handles meaningfully better than plain/HTML: a table, ATX
-/// heading, list item, fenced code block, block math, or a `<details>`
-/// collapse block — matched by `<details>` line prefix so the inline
-/// `<details><summary>` openers count too (the #15 receipt cards emitted that shape before the parser-safe block form).
-/// Plain prose (even
+/// heading, list item, fenced code block, block math, a `<details>`
+/// collapse block, or a `tg://document?id=` reference. The collapse is matched
+/// by `<details>` line prefix so the inline `<details><summary>` openers count
+/// too (the #15 receipt cards emitted that shape before the parser-safe block
+/// form). Plain prose (even
 /// with inline emphasis) returns false, so it stays on the existing path and
 /// is never reinterpreted by Telegram's markdown parser. Gates the native
 /// `sendRichMessage` path (together with the config flag).
@@ -91,6 +96,7 @@ pub(crate) fn should_send_native_rich_for(text: &str, has_buttons: bool) -> bool
 /// native-block serializer (#420 path B), not exclusion.
 pub(crate) fn has_rich_structure(text: &str) -> bool {
     contains_table(text)
+        || contains_document_ref(text)
         || text.lines().any(|line| {
             let t = line.trim_start();
             is_atx_heading(t)
@@ -116,6 +122,38 @@ pub(crate) fn is_details_open(t: &str) -> bool {
 /// Whether `text` opens a `<details>` collapse block on any line.
 pub(crate) fn contains_details(text: &str) -> bool {
     text.lines().any(|line| is_details_open(line.trim_start()))
+}
+
+/// The id of the first `tg://document?id=<id>` reference in `text`.
+///
+/// The document analogue of the `tg://photo?id=` reference the mermaid
+/// transport resolves against its `media` array: rich string mode carries the
+/// reference inside the markdown and the client resolves it server-side, so
+/// the id is the only part a sender has to recognise. The id runs to the first
+/// delimiter ([`ends_document_ref`]), which makes a bare occurrence and one
+/// wrapped in `[caption](...)` or `[caption][...]` yield the same value. A
+/// missing or empty id yields `None`.
+pub(crate) fn document_ref_id(text: &str) -> Option<&str> {
+    const PREFIX: &str = "tg://document?id=";
+    let start = text.find(PREFIX)? + PREFIX.len();
+    let rest = &text[start..];
+    let end = rest.find(ends_document_ref).unwrap_or(rest.len());
+    let id = &rest[..end];
+    (!id.is_empty()).then_some(id)
+}
+
+/// A character that ends a `tg://document?id=` reference: whitespace plus the
+/// delimiters a reference can be wrapped in, and the query separators that
+/// would start a different parameter.
+fn ends_document_ref(c: char) -> bool {
+    c.is_whitespace() || matches!(c, ')' | ']' | '"' | '\'' | '<' | '>' | '`' | '&' | '#')
+}
+
+/// Whether `text` carries a `tg://document?id=` reference. Such a reference is
+/// meaningless outside the rich plane (the HTML ladder shows it as literal
+/// text), so its presence is enough to ask for the native rich send.
+pub(crate) fn contains_document_ref(text: &str) -> bool {
+    document_ref_id(text).is_some()
 }
 
 /// A `# `..`###### ` ATX heading line (1-6 hashes followed by a space).

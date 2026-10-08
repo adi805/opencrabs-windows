@@ -44,6 +44,38 @@ pub enum Block {
         blocks: Vec<Block>,
         open: bool,
     },
+    /// Bot API 10.3 expandable block quotation
+    /// (`InputRichBlockExpandableBlockQuotation`, wire type
+    /// `expandable_blockquote`): a quotation the reader can expand or collapse
+    /// back. Unlike [`Block::Quote`], whose wire class nests `blocks`, this one
+    /// carries flat rich text plus an optional credit line, so the AST mirrors
+    /// the class instead of forcing a flattening step at render time.
+    ///
+    /// Lib-pass dead-code exempt, like [`Block::Mermaid`]: no parser produces
+    /// it yet, so nothing constructs it in the non-test target. The variant
+    /// lands with its serializer and its tests, and a front-end picks it up
+    /// when the rich send path is wired.
+    #[cfg_attr(not(test), allow(dead_code))]
+    ExpandableQuote {
+        text: Vec<Inline>,
+        credit: Option<Vec<Inline>>,
+    },
+    /// Bot API 10.3 document block (`InputRichBlockDocument`, wire type
+    /// `document`): a file delivered inside the rich message. `media` is the
+    /// file reference: a `file_id`, an HTTP URL, `attach://<name>`, or the
+    /// `tg://document?id=<id>` reference the rich transport resolves against
+    /// its `media` array, the same shape [`super::mermaid`] uses for
+    /// `tg://photo?id=`. The caption is carried by the block, not the media
+    /// (the API ignores the media's own caption).
+    ///
+    /// Lib-pass dead-code exempt for the same reason as
+    /// [`Block::ExpandableQuote`]: [`super::detect::contains_document_ref`]
+    /// recognises the reference, but no parser turns it into this block yet.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Document {
+        media: String,
+        caption: Option<Vec<Inline>>,
+    },
 }
 
 /// The outcome of rendering a mermaid diagram via the configured renderer.
@@ -104,6 +136,11 @@ pub struct Table {
     pub header: Vec<Vec<Inline>>,
     /// Body rows; each row is a list of cells.
     pub rows: Vec<Vec<Vec<Inline>>>,
+    /// Bot API 10.3 `is_compact`: `true` asks the client for smaller cell
+    /// indents. The field is optional on the wire and absent means false, so
+    /// the renderer emits it only when set and a table that does not ask for
+    /// the compact layout keeps the body it sent before.
+    pub is_compact: bool,
 }
 
 /// An inline-level element.
