@@ -14,12 +14,16 @@ typed as plain text still works through the message path.
 Both must be right or nothing works, and they fail in different ways.
 
 **Gateway intents** are what events the bot is *told* about. OpenCrabs requests
-`GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT`
-(`src/channels/discord/agent.rs`). Intents are set in the Developer Portal under
-**Bot → Privileged Gateway Intents**. `MESSAGE_CONTENT` must be enabled there or
-the bot receives empty message content and looks deaf. Intents have nothing to do
-with slash commands: leaving them alone does not break `/`, and enabling
-`applications.commands` is not an intent.
+`GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT | GUILD_MESSAGE_REACTIONS |
+DIRECT_MESSAGE_REACTIONS | GUILD_MEMBERS` (`src/channels/discord/agent.rs`).
+Intents are set in the Developer Portal under **Bot → Privileged Gateway
+Intents**. Two of them are privileged and must be enabled there or Discord
+refuses the IDENTIFY: `MESSAGE_CONTENT`, without which the bot receives empty
+message content and looks deaf, and `GUILD_MEMBERS`, which carries member-join
+events (FR-004, the welcome message). OpenCrabs names the missing toggle in the
+log and stops instead of reconnecting forever when that refusal happens.
+Intents have nothing to do with slash commands: leaving them alone does not
+break `/`, and enabling `applications.commands` is not an intent.
 
 **OAuth2 scopes** are what the bot is *allowed to do*, and they are granted at
 invite time, not in the portal. Slash commands need:

@@ -1160,6 +1160,14 @@ pub(crate) async fn handle_message(
     );
     let _typing_guard = super::typing::TypingGuard(typing_cancel);
 
+    // The bot's own activity line, up for exactly as long as this turn runs
+    // (FR-003). The guard counts rather than flags, so a second channel running
+    // a turn at the same time keeps the activity up instead of clearing it when
+    // the first one finishes. Named with a leading underscore like the typing
+    // guard above: it has to live to the end of this function, which is why it
+    // is not `let _ =`, that drops it on the spot and flickers the status.
+    let _presence_guard = super::presence::WorkingGuard::acquire(ctx.shard.clone());
+
     // Per-turn record of intermediate post bodies. The body feeds the
     // final-response dedup: tool_loop emits the last iteration's text BOTH
     // as IntermediateText (so the TUI persists it) AND as response.content,

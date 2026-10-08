@@ -18,6 +18,7 @@ use serenity::async_trait;
 use serenity::model::application::Interaction;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
+use serenity::model::guild::Member;
 use serenity::prelude::*;
 
 /// Discord bot that forwards messages to the AgentService
@@ -81,9 +82,20 @@ impl DiscordAgent {
             let config_rx = self.config_rx;
             let channel_msg_repo = self.channel_msg_repo;
 
+            // Reactions are their own bits, not part of GUILD_MESSAGES: without
+            // them `reaction_add` below compiles, passes its tests and never
+            // fires. `discord_intent_coherence_test` now pins the pairing.
+            //
+            // GUILD_MEMBERS (FR-004) is PRIVILEGED. Requesting it while the
+            // application toggle is off makes Discord refuse the IDENTIFY
+            // outright, which is why the retry loop below stops on that error
+            // instead of reconnecting: see `member_events::refused_identify`.
             let intents = GatewayIntents::GUILD_MESSAGES
                 | GatewayIntents::DIRECT_MESSAGES
-                | GatewayIntents::MESSAGE_CONTENT;
+                | GatewayIntents::MESSAGE_CONTENT
+                | GatewayIntents::GUILD_MESSAGE_REACTIONS
+                | GatewayIntents::DIRECT_MESSAGE_REACTIONS
+                | GatewayIntents::GUILD_MEMBERS;
 
             let make_handler = || Handler {
                 agent: agent.clone(),
@@ -112,6 +124,21 @@ impl DiscordAgent {
             loop {
                 tracing::info!("Discord: starting gateway connection");
                 if let Err(e) = client.start().await {
+                    // NFR-001: a refused IDENTIFY is not transient. Discord
+                    // rejects the connection when a requested privileged intent
+                    // is not enabled on the application, and reconnecting cannot
+                    // flip a Developer Portal toggle, so retrying would log the
+                    // same line every 5 seconds forever on a bot that looks
+                    // alive and answers nothing. Name the missing toggle, then
+                    // stop and let the operator fix it.
+                    if super::member_events::refused_identify(&e) {
+                        tracing::error!(
+                            "{} Gateway error: {}",
+                            super::member_events::MISSING_TOGGLE_HINT,
+                            e
+                        );
+                        return;
+                    }
                     tracing::error!("Discord: client error: {} — reconnecting in 5s", e);
                 } else {
                     tracing::warn!("Discord: client exited unexpectedly — reconnecting in 5s");
@@ -166,6 +193,18 @@ impl EventHandler for Handler {
         });
     }
 
+    /// FR-004: greet a member who just joined.
+    ///
+    /// Delegated the same way `reaction_add` is: the handler is the wiring and
+    /// the module holds the behaviour, so the greeting can await an HTTP round
+    /// trip without blocking the gateway's event loop.
+    async fn guild_member_addition(&self, ctx: Context, new_member: Member) {
+        let config_rx = self.config_rx.clone();
+        tokio::spawn(async move {
+            super::member_events::handle_member_addition(&ctx, &new_member, config_rx).await;
+        });
+    }
+
     async fn ready(&self, ctx: Context, ready: Ready) {
         tracing::info!(
             "Discord: connected as {} (id={})",
@@ -179,17 +218,30 @@ impl EventHandler for Handler {
             .set_bot_user_id(ready.user.id.get())
             .await;
 
+        // FR-003: the bot's own activity line. Discord keeps a presence until
+        // something changes it, so a process that died mid-turn would reconnect
+        // still advertising work it is not doing. `ready` is the only hook that
+        // runs on every connect, which is what makes it the place to reconcile
+        // rather than a place to announce. No intent is involved: this is the
+        // bot's own status (gateway opcode 3), not other members' presence, so
+        // `GUILD_PRESENCES` stays unrequested.
+        ctx.set_activity(super::presence::steady());
+
         // Application commands (#1850): project `commands.toml` onto Discord's
         // slash-command list so the catalog the TUI completes and Telegram
         // menus is the same one this channel autocompletes. `ready` is the only
-        // hook holding both an HTTP handle and the guild list, and the retry
-        // loop above rebuilds the client (not the handler) after a gateway
-        // drop, so a reconnect re-plans and the key comparison decides whether
-        // anything is actually sent. A guild that was joined while the process
-        // was down appears in `ready.guilds` on the next connect and moves the
-        // key, so it gets the menu without a config write. A guild joined while
-        // we are connected is covered the same way, on the next reconnect: the
-        // watcher below only knows the guild list this `ready` reported.
+        // hook holding an HTTP handle, and the retry loop above rebuilds the
+        // client (not the handler) after a gateway drop, so a reconnect
+        // re-plans and the key comparison decides whether anything is actually
+        // sent. Registration is global (FR-002), which is what makes the
+        // commands reachable in a DM: a guild-scoped set is not served there.
+        // The guild list is still collected, because the same sync clears the
+        // guild-scoped set this feature used to write, and a guild joined while
+        // the process was down appears in `ready.guilds` on the next connect,
+        // moving the key and getting its stale set cleared without a config
+        // write. A guild joined while we are connected is covered the same way,
+        // on the next reconnect: the watcher below only knows the guild list
+        // this `ready` reported.
         let guilds: Vec<serenity::model::id::GuildId> =
             ready.guilds.iter().map(|guild| guild.id).collect();
         let http = ctx.http.clone();
@@ -198,10 +250,9 @@ impl EventHandler for Handler {
 
         // First `ready` of the process: sync unconditionally, because the stored
         // key is `None`. A reconnect hands back that stored key instead, so a
-        // gateway that flaps on a short retry loop does not re-PUT
-        // the whole command tree to every guild on each pass; it costs one
-        // `commands.toml` read and nothing else, unless the catalog or the guild
-        // set actually moved.
+        // gateway that flaps on a short retry loop does not re-PUT the whole
+        // command tree on each pass; it costs one `commands.toml` read and
+        // nothing else, unless the catalog or the guild set actually moved.
         let stored = *state.commands_sig.lock().await;
         let key = super::commands::sync_commands(&http, &guilds, stored).await;
         *state.commands_sig.lock().await = key;
@@ -214,8 +265,8 @@ impl EventHandler for Handler {
                 // `telegram::menu_refresh`). Each publish re-plans and compares
                 // the key, so an unrelated config edit costs a file read and no
                 // API call. Guild membership is folded into that key, so a
-                // publish after the bot joined a server re-sends to all of them
-                // rather than only the ones listed here.
+                // publish after the bot joined a server clears that guild's
+                // stale scoped set rather than only the ones listed here.
                 loop {
                     if config_rx.changed().await.is_err() {
                         break;
