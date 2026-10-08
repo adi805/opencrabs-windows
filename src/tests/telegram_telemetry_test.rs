@@ -227,3 +227,142 @@ fn log_request_emits_exactly_one_info_line_under_the_request_prefix() {
         events[0].1
     );
 }
+
+// ---------------------------------------------------------------------------
+// The positional shape of a landing line (#1085 P1a).
+//
+// The landing lines (`log_send_success`, `log_send_failure`, `log_request`) take
+// `session` and `kind` as adjacent `&str` parameters, so swapping them compiles
+// cleanly and no behavioural test notices: both orders emit a line. It shipped
+// swapped at 57 call sites in `src/brain/tools/telegram_send.rs`, where
+// `session` carried the action name and `kind` carried the session uuid. Every
+// landing from the tool path was then attributed to a session called `edit`,
+// which is the one question the schema exists to answer.
+//
+// The rule, enforced below: argument 3 is a session id or the `-` fallback,
+// and argument 4 never names a session.
+// ---------------------------------------------------------------------------
+
+/// Every `.rs` file under `dir`, minus the test tree.
+///
+/// The needles this scan looks for are string literals in this very file, so a
+/// scan that read the test tree would find its own needle list and govern
+/// nothing.
+fn rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let entries = std::fs::read_dir(dir).expect("source tree is readable");
+    for entry in entries {
+        let path = entry.expect("directory entry").path();
+        let dir_name = path.file_name().and_then(|n| n.to_str());
+        if path.is_dir() && dir_name != Some("tests") {
+            rust_sources(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// The arguments of a call, given everything from just after its `(`.
+///
+/// Depth-aware and string-aware: a comma inside a nested call or inside a
+/// string literal is content, not a separator.
+fn call_args(src: &str) -> Vec<String> {
+    let bytes = src.as_bytes();
+    let mut args = Vec::new();
+    let mut depth = 0usize;
+    let mut start: Option<usize> = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                if start.is_none() {
+                    start = Some(i);
+                }
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            b'(' | b'[' | b'{' => {
+                if start.is_none() {
+                    start = Some(i);
+                }
+                depth += 1;
+            }
+            b')' | b']' | b'}' => {
+                if depth == 0 {
+                    if let Some(s) = start {
+                        args.push(src[s..i].trim().to_string());
+                    }
+                    break;
+                }
+                depth -= 1;
+            }
+            b',' if depth == 0 => {
+                if let Some(s) = start.take() {
+                    args.push(src[s..i].trim().to_string());
+                }
+                i += 1;
+                continue;
+            }
+            b if !b.is_ascii_whitespace() && start.is_none() => {
+                start = Some(i);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    args
+}
+
+/// Argument 3 is the session and argument 4 the kind, at every landing line in
+/// the tree.
+#[test]
+fn send_telemetry_never_swaps_session_and_kind() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rust_sources(&root, &mut files);
+
+    let mut checked = 0usize;
+    for path in &files {
+        let src = std::fs::read_to_string(path).expect("source file is readable");
+        for needle in ["log_send_success(", "log_send_failure(", "log_request("] {
+            let mut from = 0usize;
+            while let Some(at) = src[from..].find(needle) {
+                let open = from + at + needle.len();
+                from = open;
+                if src[..open - needle.len()].ends_with("fn ") {
+                    continue; // the definition, not a call site
+                }
+                let args = call_args(&src[open..]);
+                assert!(
+                    args.len() >= 5,
+                    "{}: {needle} call with only {} arguments",
+                    path.display(),
+                    args.len()
+                );
+                let (session, kind) = (args[2].as_str(), args[3].as_str());
+                assert!(
+                    !kind.contains("session"),
+                    "{}: `kind` is `{kind}`, which carries the session; the two are swapped",
+                    path.display()
+                );
+                assert!(
+                    session == "\"-\"" || session.contains("session"),
+                    "{}: `session` is `{session}`, not a session id or the `-` fallback",
+                    path.display()
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 50, "the scan found only {checked} call sites");
+}
