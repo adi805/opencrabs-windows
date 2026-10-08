@@ -1135,8 +1135,6 @@ impl AgentService {
              ` ```context-manifest `.\n\
              This manifest directly instructs the harness which skills to keep active vs discard, \
              and which lazy tools to pre-activate for turn 1.\n\n\
-             ### Current Context Inventory & Budgets:\n\
-             {}\n\n\
              ### Manifest Rules:\n\
              - `active_skills`: Skills that MUST remain active for pending work / ongoing tasks. \
              You may specify the bare `<skill-slug>` (e.g. `opencrabs-dev`) or a specific in-skill document \
@@ -1145,11 +1143,6 @@ impl AgentService {
              - `discard_skills`: Skills or specific auxiliary documents whose tasks are complete and should be pruned to save budget.\n\
              - `required_tools`: Extended lazy tools (e.g. telegram_send, browser_navigate, cron_manage, pg_query) \
              that the agent will need immediately on turn 1.\n\
-             - BUDGET: the retained set you list must fit {budget} tokens — {ratio:.0}% of the \
-             {window}-token context window. The harness MEASURES the rendered set once this compaction \
-             lands and, if it is still over budget, sheds it mechanically: auxiliary documents first, \
-             then whole skills, largest first, and never the last remaining entry. Shedding is what \
-             happens when this budget is ignored, so list only what the next turn actually needs.\n\n\
              Format as YAML:\n\
              ```context-manifest\n\
              active_skills:\n\
