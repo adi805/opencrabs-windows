@@ -163,11 +163,7 @@ pub(crate) async fn handle_invoked_request(
             .map(|m| m.roles.iter().map(|r| r.get()).collect())
             .unwrap_or_default()
     };
-    let owner = crate::config::owner::is_owner(
-        &dc.allowed_users,
-        &dc.bot_owner,
-        &user.to_string(),
-    );
+    let owner = crate::config::owner::is_owner(&dc.allowed_users, &dc.bot_owner, &user.to_string());
     let in_allowlist = dc
         .allowed_users
         .iter()
@@ -183,17 +179,15 @@ pub(crate) async fn handle_invoked_request(
     // Channel scope, with the parent fallback: a thread or forum post carries
     // its own id, so allow-listing a forum admits its posts.
     let channel_str = channel_id.to_string();
-    let mut channel_ok = dc.allowed_channels.is_empty()
-        || dc.allowed_channels.iter().any(|c| c == &channel_str);
+    let mut channel_ok =
+        dc.allowed_channels.is_empty() || dc.allowed_channels.iter().any(|c| c == &channel_str);
     if !channel_ok && !is_dm {
         channel_ok = match command.channel_id.to_channel(&ctx.http).await {
-            Ok(serenity::model::channel::Channel::Guild(gc)) => {
-                gc.parent_id.is_some_and(|p| {
-                    dc.allowed_channels
-                        .iter()
-                        .any(|c| c == &p.get().to_string())
-                })
-            }
+            Ok(serenity::model::channel::Channel::Guild(gc)) => gc.parent_id.is_some_and(|p| {
+                dc.allowed_channels
+                    .iter()
+                    .any(|c| c == &p.get().to_string())
+            }),
             _ => false,
         };
     }

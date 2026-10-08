@@ -107,7 +107,11 @@ pub(crate) fn invocation(command: &CommandInteraction) -> Option<String> {
     let target = command.data.target_id?;
     match command.data.kind {
         CommandType::Message => {
-            let message = command.data.resolved.messages.get(&target.to_message_id())?;
+            let message = command
+                .data
+                .resolved
+                .messages
+                .get(&target.to_message_id())?;
             Some(message_prompt(
                 &message.author.name,
                 message.author.id.get(),

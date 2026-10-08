@@ -132,7 +132,10 @@ fn a_message_request_carries_the_author_the_link_and_the_text_verbatim() {
     // The id travels with the name: a display name is not stable and two
     // members can share one.
     assert!(text.contains("Adi (42)"), "{text}");
-    assert!(text.contains("https://discord.com/channels/1/2/3"), "{text}");
+    assert!(
+        text.contains("https://discord.com/channels/1/2/3"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -149,7 +152,10 @@ fn a_message_with_no_text_says_so_instead_of_looking_truncated() {
 #[test]
 fn a_user_request_carries_the_id_because_a_name_is_not_stable() {
     let text = user_prompt("Adi", 7);
-    assert!(text.contains("Name: Adi"), "the name is for readability: {text}");
+    assert!(
+        text.contains("Name: Adi"),
+        "the name is for readability: {text}"
+    );
     assert!(text.contains("Id: 7"), "the id is the payload: {text}");
 }
 
@@ -210,7 +216,7 @@ fn a_context_menu_is_dispatched_by_its_target_type() {
     );
     assert!(src.contains("CommandType::Message => {"));
     assert!(src.contains("CommandType::User => {"));
-    assert!(src.contains("command.data.resolved.messages.get(&target.to_message_id())?;"));
+    assert!(src.contains(".get(&target.to_message_id())?;"));
     assert!(src.contains("command.data.resolved.users.get(&target.to_user_id())?;"));
 }
 
@@ -237,12 +243,18 @@ fn an_unreadable_target_is_refused_in_place_and_never_panicked() {
     assert!(folded.contains("super::context_menu::invocation(command)"));
     assert!(folded.contains("CommandType::ChatInput=>Some(super::commands::invocation(command))"));
     // A type we never registered is refused rather than guessed at.
-    assert!(folded.contains("_=>None,"), "an unknown kind has no request");
+    assert!(
+        folded.contains("_=>None,"),
+        "an unknown kind has no request"
+    );
     // `None` is answered ephemeral, in place: a refused interaction beats the
     // red "didn't respond" banner, and running a turn on a message nobody can
     // see is worse than both.
     assert!(folded.contains("letSome(request)=requestelse{"));
-    assert!(src.contains("Nothing to ask about"), "the refusal is user-facing");
+    assert!(
+        src.contains("Nothing to ask about"),
+        "the refusal is user-facing"
+    );
     assert!(folded.contains(".ephemeral(true)"));
 }
 
@@ -272,7 +284,10 @@ fn every_interaction_entry_point_shares_one_gate_and_one_dispatch() {
         }
     }
     assert_eq!(definitions, 1, "the rule has one definition");
-    assert_eq!(call_sites, 1, "the rule has one call site in the interaction path");
+    assert_eq!(
+        call_sites, 1,
+        "the rule has one call site in the interaction path"
+    );
 
     // And both interaction kinds share that one call site: one dispatch
     // function, declared once, called once.
