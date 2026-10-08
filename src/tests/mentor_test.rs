@@ -47,8 +47,9 @@ fn ac002_below_the_threshold_injects_nothing() {
         assert_eq!(observe_round(&mut u, Some("grep")), None);
         assert_eq!(observe_round(&mut u, Some("read_file")), None);
     }
-    assert!(
-        !u.fired(),
+    assert_eq!(
+        observe_round(&mut u, Some("glob")),
+        None,
         "a fresh-but-long turn stays quiet below the total"
     );
 }
@@ -88,7 +89,6 @@ fn ac005_two_triggers_in_one_turn_yield_one_review() {
         }
     }
     assert_eq!(fired, 1, "the cap is per turn, not per burst");
-    assert!(t.fired());
 }
 
 /// The total-call backstop catches the loop that never repeats one call.
@@ -105,31 +105,35 @@ fn a_long_cycle_of_distinct_tools_still_triggers_the_total_backstop() {
     assert_eq!(t.total(), TOTAL_CALL_TRIGGER);
 }
 
-/// A replayed turn must not inherit the failed attempt's count.
+/// A new turn starts from a fresh tally, so nothing carries over.
 #[test]
-fn reset_clears_the_turn() {
+fn a_new_turn_starts_clean() {
     let mut t = LoopTally::new();
     for _ in 0..(SAME_TOOL_TRIGGER - 1) {
         observe_round(&mut t, Some("bash"));
     }
-    t.reset();
-    assert_eq!(t.total(), 0);
-    assert!(!t.fired());
-    assert_eq!(observe_round(&mut t, Some("bash")), None);
+    // The loop builds one tally per turn; a fresh one is a fresh turn.
+    let mut next_turn = LoopTally::new();
+    assert_eq!(next_turn.total(), 0);
+    assert_eq!(observe_round(&mut next_turn, Some("bash")), None);
 }
 
 /// A provider swap clears the replayed calls but keeps the per-turn cap.
 #[test]
 fn reset_counts_clears_the_tally_but_keeps_the_latch() {
     let mut t = LoopTally::new();
+    let mut first = 0;
     for _ in 0..SAME_TOOL_TRIGGER {
-        observe_round(&mut t, Some("bash"));
+        if observe_round(&mut t, Some("bash")).is_some() {
+            first += 1;
+        }
     }
-    assert!(t.fired());
+    assert_eq!(first, 1, "the review fired before the swap");
     t.reset_counts();
     assert_eq!(t.total(), 0, "the replayed copies must not stack");
-    assert!(t.fired(), "the cap is per turn, not per provider attempt");
-    // The replay re-issues the same calls; none of them may re-fire the review.
+    // The latch is per turn, not per provider attempt, and the only way to see
+    // it from outside is behaviour: the replay re-issues the same calls and
+    // none of them may re-fire the review.
     for _ in 0..(TOTAL_CALL_TRIGGER * 2) {
         assert_eq!(observe_round(&mut t, Some("bash")), None);
     }

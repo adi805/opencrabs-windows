@@ -121,22 +121,16 @@ impl LoopTally {
         MentorVerdict::Quiet
     }
 
-    /// Forget the turn so far.
-    ///
-    /// Called when a turn is replayed, for the same reason `ToolRepeatTracker`
-    /// resets: a retry or a fallback re-sends the failed attempt's calls, and
-    /// those replayed copies must not stack onto the count for calls the model
-    /// made once.
-    pub(crate) fn reset(&mut self) {
-        *self = Self::default();
-    }
-
     /// Forget the replayed calls but keep the one-per-turn latch.
     ///
     /// What a provider swap wants. The replayed copies must not stack onto the
     /// count (so the counters clear), but the cap is per TURN, not per attempt
     /// (so the latch stays): a second provider does not earn a second review
     /// for work the turn already had reviewed.
+    ///
+    /// A replay inside one turn is the only reset there is. The tally is built
+    /// per turn by the loop, so a NEW turn starts from a fresh one and needs no
+    /// method to get there.
     pub(crate) fn reset_counts(&mut self) {
         self.last_tool = None;
         self.same_tool = 0;
@@ -146,11 +140,6 @@ impl LoopTally {
     /// Total tool calls recorded in this turn.
     pub(crate) fn total(&self) -> u32 {
         self.total
-    }
-
-    /// Whether the review has already fired this turn.
-    pub(crate) fn fired(&self) -> bool {
-        self.fired
     }
 }
 
