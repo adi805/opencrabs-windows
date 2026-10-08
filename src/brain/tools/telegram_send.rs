@@ -28,8 +28,8 @@ use teloxide::payloads::SendVideoSetters;
 use teloxide::payloads::SendVoiceSetters;
 use teloxide::prelude::*;
 use teloxide::types::{
-    ChatId, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, MessageId, ReactionType,
-    ReplyParameters, ThreadId, UserId,
+    ChatId, DiceEmoji, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, MessageId,
+    ReactionType, ReplyParameters, ThreadId, UserId,
 };
 use uuid::Uuid;
 
@@ -100,6 +100,42 @@ pub(crate) fn value_as_i64(v: &Value) -> Option<i64> {
 pub(crate) fn value_as_f64(v: &Value) -> Option<f64> {
     v.as_f64()
         .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+}
+
+/// Map the `send_dice` `emoji` argument onto teloxide's `DiceEmoji`.
+///
+/// `DiceEmoji` is a closed enum whose only derive is serde, so there is no
+/// `FromStr` and no way to hand it a raw string: `req.emoji(String)` is a type
+/// error. Accept both the documented names and the literal emoji character,
+/// case-insensitively, so a caller can pass either form.
+fn parse_dice_emoji(raw: &str) -> Option<DiceEmoji> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "dice" | "🎲" => Some(DiceEmoji::Dice),
+        "darts" | "🎯" => Some(DiceEmoji::Darts),
+        "bowling" | "🎳" => Some(DiceEmoji::Bowling),
+        "basketball" | "🏀" => Some(DiceEmoji::Basketball),
+        "football" | "⚽" => Some(DiceEmoji::Football),
+        "slot_machine" | "slot machine" | "slots" | "🎰" => Some(DiceEmoji::SlotMachine),
+        _ => None,
+    }
+}
+
+/// Read the optional `emoji` argument for `send_dice` and map it onto
+/// `DiceEmoji`, rejecting a name Telegram would not accept rather than
+/// silently falling back to the default die.
+#[allow(clippy::result_large_err)]
+fn resolve_dice_emoji(input: &Value) -> std::result::Result<Option<DiceEmoji>, ToolResult> {
+    let raw = match input.get("emoji").and_then(|v| v.as_str()) {
+        Some(raw) => raw,
+        None => return Ok(None),
+    };
+    match parse_dice_emoji(raw) {
+        Some(parsed) => Ok(Some(parsed)),
+        None => Err(ToolResult::error(format!(
+            "Unknown dice emoji '{raw}'. Use one of: dice, darts, bowling, basketball, \
+             football, slot_machine."
+        ))),
+    }
 }
 
 /// Parse a required integer param as i64.
@@ -592,7 +628,7 @@ impl Tool for TelegramSendTool {
                 },
                 "emoji": {
                     "type": "string",
-                    "description": "Emoji for set_reaction (e.g. \"👍\") or for send_dice (dice, darts, basketball, football, bowling, slot_machine). Defaults to the dice emoji when omitted."
+                    "description": "Emoji for set_reaction (e.g. \"👍\"), or the die for send_dice: one of dice, darts, bowling, basketball, football, slot_machine. The literal emoji character works too. Omitted, send_dice uses the default die."
                 }
             },
             "required": ["action"]
@@ -2082,16 +2118,13 @@ impl TelegramSendTool {
     ) -> Result<ToolResult> {
         let NewTarget { chat_id, thread_id } =
             pget!(resolve_new_target(input, context.session_id, &self.telegram_state).await);
-        let emoji = input
-            .get("emoji")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
+        let emoji = pget!(resolve_dice_emoji(input));
         let reply_to = input.get("message_id").and_then(value_as_i64);
         match send_retrying_rate_limit("telegram_send send_dice", || {
             let mut req =
                 crate::channels::telegram::send::dice_in_thread(bot, ChatId(chat_id), thread_id);
-            if let Some(ref e) = emoji {
-                req = req.emoji(e.clone());
+            if let Some(e) = emoji {
+                req = req.emoji(e);
             }
             if let Some(mid) = reply_to {
                 req = req.reply_parameters(ReplyParameters::new(MessageId(mid as i32)));
@@ -2101,7 +2134,14 @@ impl TelegramSendTool {
         .await
         {
             Ok(m) => {
-                let label = emoji.clone().unwrap_or_else(|| "dice".to_string());
+                let label = match emoji {
+                    Some(DiceEmoji::Darts) => "darts",
+                    Some(DiceEmoji::Bowling) => "bowling",
+                    Some(DiceEmoji::Basketball) => "basketball",
+                    Some(DiceEmoji::Football) => "football",
+                    Some(DiceEmoji::SlotMachine) => "slot_machine",
+                    Some(DiceEmoji::Dice) | None => "dice",
+                };
                 log_send_success(
                     "tool",
                     "send_dice",
@@ -2112,7 +2152,7 @@ impl TelegramSendTool {
                     thread_id.map(|t| t.0.0),
                     m.id.0,
                     label.len(),
-                    &content_hash8(&label),
+                    &content_hash8(label),
                 );
                 Ok(ToolResult::success(format!(
                     "Dice ({label}) sent to chat {chat_id}.{}",
