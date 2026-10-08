@@ -1,7 +1,7 @@
 //! FR-007 (#1880): the mechanical evidence footer on a Discord answer.
 //!
-//! The footer is built from the turn's tool-group entries — the tools that
-//! ACTUALLY ran, appended from `ProgressEvent::ToolStarted` — never from the
+//! The footer is built from the turn's tool-group entries (the tools that
+//! ACTUALLY ran, appended from `ProgressEvent::ToolStarted`), never from the
 //! model's prose (NFR-003). It is assembled at the channel layer after the
 //! agent returned, so the phantom gate never inspects it; the wording is
 //! additionally pinned against every `executed_framings` entry so the line
@@ -52,7 +52,7 @@ fn expect_line(body: &str) -> String {
 }
 
 /// AC-014: an answer that used tools reports the work it did, as category
-/// counts — not as a list of tool identifiers.
+/// counts, not as a list of tool identifiers.
 #[test]
 fn reports_each_category_with_its_count() {
     let names = ["read_file", "bash", "write_file", "web_search"];
@@ -62,7 +62,7 @@ fn reports_each_category_with_its_count() {
 }
 
 /// AC-015: a turn that ran no tools shows NO footer. An empty or invented
-/// line is worse than none — it would read as evidence that does not exist.
+/// line is worse than none: it would read as evidence that does not exist.
 #[test]
 fn no_tools_means_no_footer() {
     assert!(
@@ -139,8 +139,8 @@ fn long_turns_stay_bounded() {
 
 /// AC-016: the footer must not read as a claim that a command ALREADY RAN.
 /// The phantom gate keys on `executed_framings` ("checked with", "verified
-/// with", "ran ", …); the WHOLE rendered line — header and every bucket
-/// label — is pinned against every language's list, so a future rewording
+/// with", "ran ", …); the WHOLE rendered line (header and every bucket
+/// label) is pinned against every language's list, so a future rewording
 /// cannot quietly re-introduce one.
 #[test]
 fn footer_never_frames_a_command_as_already_run() {
