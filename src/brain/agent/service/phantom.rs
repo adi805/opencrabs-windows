@@ -1608,8 +1608,8 @@ fn artifact_name(line: &str) -> Option<String> {
         let run: String = chars[start..i].iter().collect();
         let has_ext = EXTS.iter().any(|e| run.ends_with(*e)) && run.len() > 3;
         let prefix: String = chars[..start].iter().collect::<String>().to_lowercase();
-        let bare_stem = run.chars().any(|c| c.is_ascii_digit())
-            && INTROS.iter().any(|p| prefix.ends_with(*p));
+        let bare_stem =
+            run.chars().any(|c| c.is_ascii_digit()) && INTROS.iter().any(|p| prefix.ends_with(*p));
         if has_ext || bare_stem {
             best = Some(run);
         }

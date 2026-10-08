@@ -12,13 +12,13 @@
 //! (#1933). This test is the drift guard: it fails if either side re-acquires a
 //! literal, which is the one edit that silently restores the 4.44x disagreement.
 
+use crate::brain::agent::service::AgentService;
 use crate::brain::agent::service::context::{parse_context_manifest, resolve_context_manifest};
 use crate::brain::agent::service::request_budget::{
+    COMPACTION_SUMMARY_MAX_TOKENS, COMPACTION_SUMMARY_REASONING_HEADROOM_TOKENS,
     compaction_summary_input_reserve, compaction_summary_output_tokens,
-    compaction_summary_request_allowance, COMPACTION_SUMMARY_MAX_TOKENS,
-    COMPACTION_SUMMARY_REASONING_HEADROOM_TOKENS,
+    compaction_summary_request_allowance,
 };
-use crate::brain::agent::service::AgentService;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -254,8 +254,14 @@ fn a_document_within_budget_is_returned_unchanged() {
     let doc = "## 0. IMMEDIATE TASK\n**Obligation status: OPEN**\n\n\
                ## 10. Context Manifest\n```context-manifest\n\
                active_skills:\n  - opencrabs-dev\n```\n";
-    let out = AgentService::enforce_summary_budget(doc.to_string(), COMPACTION_SUMMARY_MAX_TOKENS as usize);
-    assert_eq!(out, doc, "an under-budget document must pass through untouched");
+    let out = AgentService::enforce_summary_budget(
+        doc.to_string(),
+        COMPACTION_SUMMARY_MAX_TOKENS as usize,
+    );
+    assert_eq!(
+        out, doc,
+        "an under-budget document must pass through untouched"
+    );
 }
 
 /// The guard ships an over-budget document rather than cut the obligation out.
@@ -731,8 +737,7 @@ fn resolve_context_manifest_warns_and_defaults_on_a_missing_fence() {
 
     let capture = EventCapture::default();
     let subscriber = tracing_subscriber::registry().with(capture.clone());
-    let manifest =
-        tracing::subscriber::with_default(subscriber, || resolve_context_manifest(doc));
+    let manifest = tracing::subscriber::with_default(subscriber, || resolve_context_manifest(doc));
 
     assert!(
         manifest.active_skills.is_empty() && manifest.discard_skills.is_empty(),
@@ -773,10 +778,7 @@ fn a_cut_document_surfaces_the_truncation_warn_and_keeps_its_fence() {
             Some(crate::brain::provider::StopReason::MaxTokens),
             &usage,
         );
-        AgentService::enforce_summary_budget(
-            cut.clone(),
-            COMPACTION_SUMMARY_MAX_TOKENS as usize,
-        )
+        AgentService::enforce_summary_budget(cut.clone(), COMPACTION_SUMMARY_MAX_TOKENS as usize)
     });
 
     let warns = capture.warns();

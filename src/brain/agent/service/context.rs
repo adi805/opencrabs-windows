@@ -204,7 +204,8 @@ fn split_summary_sections(summary: &str) -> Vec<SummarySection> {
             _ => {}
         }
 
-        if !in_fence_before && fence.is_none()
+        if !in_fence_before
+            && fence.is_none()
             && let Some(n) = parse_section_number(line)
         {
             if !cur.is_empty() {

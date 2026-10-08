@@ -130,10 +130,7 @@ fn loader_ignores_an_assistant_row_quoting_the_marker() {
 
     let all = vec![
         row("user", "ancient history"),
-        row(
-            "user",
-            &summarised("real anchor").marker(""),
-        ),
+        row("user", &summarised("real anchor").marker("")),
         row("user", "work done after the real compaction"),
         // An assistant row echoing the banner — the 2026-09-12 self-re-anchor.
         row(
