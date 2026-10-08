@@ -18,6 +18,7 @@ use serenity::async_trait;
 use serenity::model::application::Interaction;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
+use serenity::model::guild::Member;
 use serenity::prelude::*;
 
 /// Discord bot that forwards messages to the AgentService
@@ -84,11 +85,17 @@ impl DiscordAgent {
             // Reactions are their own bits, not part of GUILD_MESSAGES: without
             // them `reaction_add` below compiles, passes its tests and never
             // fires. `discord_intent_coherence_test` now pins the pairing.
+            //
+            // GUILD_MEMBERS (FR-004) is PRIVILEGED. Requesting it while the
+            // application toggle is off makes Discord refuse the IDENTIFY
+            // outright, which is why the retry loop below stops on that error
+            // instead of reconnecting: see `member_events::refused_identify`.
             let intents = GatewayIntents::GUILD_MESSAGES
                 | GatewayIntents::DIRECT_MESSAGES
                 | GatewayIntents::MESSAGE_CONTENT
                 | GatewayIntents::GUILD_MESSAGE_REACTIONS
-                | GatewayIntents::DIRECT_MESSAGE_REACTIONS;
+                | GatewayIntents::DIRECT_MESSAGE_REACTIONS
+                | GatewayIntents::GUILD_MEMBERS;
 
             let make_handler = || Handler {
                 agent: agent.clone(),
@@ -117,6 +124,21 @@ impl DiscordAgent {
             loop {
                 tracing::info!("Discord: starting gateway connection");
                 if let Err(e) = client.start().await {
+                    // NFR-001: a refused IDENTIFY is not transient. Discord
+                    // rejects the connection when a requested privileged intent
+                    // is not enabled on the application, and reconnecting cannot
+                    // flip a Developer Portal toggle, so retrying would log the
+                    // same line every 5 seconds forever on a bot that looks
+                    // alive and answers nothing. Name the missing toggle, then
+                    // stop and let the operator fix it.
+                    if super::member_events::refused_identify(&e) {
+                        tracing::error!(
+                            "{} Gateway error: {}",
+                            super::member_events::MISSING_TOGGLE_HINT,
+                            e
+                        );
+                        return;
+                    }
                     tracing::error!("Discord: client error: {} — reconnecting in 5s", e);
                 } else {
                     tracing::warn!("Discord: client exited unexpectedly — reconnecting in 5s");
@@ -168,6 +190,18 @@ impl EventHandler for Handler {
                 config_rx,
             )
             .await;
+        });
+    }
+
+    /// FR-004: greet a member who just joined.
+    ///
+    /// Delegated the same way `reaction_add` is: the handler is the wiring and
+    /// the module holds the behaviour, so the greeting can await an HTTP round
+    /// trip without blocking the gateway's event loop.
+    async fn guild_member_addition(&self, ctx: Context, new_member: Member) {
+        let config_rx = self.config_rx.clone();
+        tokio::spawn(async move {
+            super::member_events::handle_member_addition(&ctx, &new_member, config_rx).await;
         });
     }
 

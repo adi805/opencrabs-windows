@@ -955,6 +955,19 @@ pub struct DiscordConfig {
     /// overrides this either way. Default: false.
     #[serde(default)]
     pub suppress_notifications: bool,
+    /// Template for the greeting posted when a human joins a guild (FR-004).
+    /// `{user}` becomes a real `<@id>` mention and `{name}` the display name,
+    /// so the newcomer is pinged rather than addressed by name only. Unset
+    /// (the default) posts nothing, which is why enabling this feature needs
+    /// no Portal change beyond the `GUILD_MEMBERS` intent: an install that
+    /// never sets it behaves exactly as before.
+    #[serde(default)]
+    pub welcome_message: Option<String>,
+    /// Channel for the welcome message. Unset falls back to the guild's own
+    /// system channel, and a guild without one is logged and skipped.
+    /// Numeric channel ID as a string, e.g. `"1234567890123456789"`.
+    #[serde(default)]
+    pub welcome_channel: Option<String>,
     /// Proactive write-budget governor knobs (#1888 follow-up, PRD FR-003),
     /// `[channels.discord.rate_limiter]`.
     #[serde(default)]
@@ -1090,6 +1103,8 @@ impl Default for DiscordConfig {
             auto_thread_min_chars: 0,
             bang_new_thread: false,
             suppress_notifications: false,
+            welcome_message: None,
+            welcome_channel: None,
             rate_limiter: DiscordRateLimiterConfig::default(),
             progress: ProgressDisplayConfig::default(),
         }
