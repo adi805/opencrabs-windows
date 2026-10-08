@@ -70,6 +70,10 @@
 //! | [`cron`] | Scheduled task execution |
 //! | [`services`] | Session, message, and file services |
 
+// The `telegram_send` input schema is a single `serde_json::json!` literal with
+// ~40 properties; expanding it exceeds the default macro recursion limit of 128.
+#![recursion_limit = "256"]
+
 pub mod app;
 pub mod brain;
 pub mod cli;
