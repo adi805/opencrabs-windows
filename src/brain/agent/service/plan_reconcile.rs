@@ -30,7 +30,7 @@
 //! agent makes the call. That keeps the sensor on the drift without letting a
 //! heuristic close a task nobody did.
 
-use crate::tui::plan::{PlanDocument, PlanTask, TaskStatus, TaskType};
+use crate::tui::plan::{PlanDocument, PlanTask, TaskStatus};
 
 /// Extensions that make a token in task prose a declared artifact.
 ///
@@ -46,18 +46,15 @@ const ARTIFACT_EXTENSIONS: [&str; 24] = [
 
 /// A delta operation on the plan document.
 ///
-/// The vocabulary is the reference implementation's (`subtask_patch.go`): a
-/// patch is a list of small ops, not a replacement document, so a rejected op
-/// costs only itself and the rest of the batch still lands.
+/// Deliberately small. The reference implementation carries add/remove/modify/
+/// reorder, but a vocabulary is only worth its validation branches when
+/// something can construct each op, so this keeps the two the evidence can
+/// actually justify: `Modify` for a row the artifacts say is done, and
+/// `Remove` for a row a resolved sibling already covers. An op with no signal
+/// behind it is a branch nothing can reach, which is a liability in a gate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PatchOp {
-    /// Append a task discovered while the plan was already running.
-    Add {
-        title: String,
-        after_order: usize,
-        reason: String,
-    },
-    /// Drop a task that no longer describes work to be done.
+    /// Drop a task that a resolved sibling already covers.
     Remove { order: usize, reason: String },
     /// Change a task in place. `status` is the only field the generator sets.
     Modify {
@@ -65,49 +62,31 @@ pub(crate) enum PatchOp {
         status: Option<TaskStatus>,
         reason: String,
     },
-    /// Move a task to a different order number.
-    Reorder {
-        order: usize,
-        new_order: usize,
-        reason: String,
-    },
 }
 
 impl PatchOp {
-    /// The task order this op targets. `Add` targets the row it follows.
+    /// The task order this op targets.
     pub(crate) fn order(&self) -> usize {
         match self {
-            PatchOp::Add { after_order, .. } => *after_order,
-            PatchOp::Remove { order, .. }
-            | PatchOp::Modify { order, .. }
-            | PatchOp::Reorder { order, .. } => *order,
+            PatchOp::Remove { order, .. } | PatchOp::Modify { order, .. } => *order,
         }
     }
 
     /// The recorded reason, which every op is required to carry.
     pub(crate) fn reason(&self) -> &str {
         match self {
-            PatchOp::Add { reason, .. }
-            | PatchOp::Remove { reason, .. }
-            | PatchOp::Modify { reason, .. }
-            | PatchOp::Reorder { reason, .. } => reason,
+            PatchOp::Remove { reason, .. } | PatchOp::Modify { reason, .. } => reason,
         }
     }
 
     /// One-line description for the recorded patch log.
     pub(crate) fn describe(&self) -> String {
         match self {
-            PatchOp::Add {
-                title, after_order, ..
-            } => format!("add '{title}' after #{after_order}"),
             PatchOp::Remove { order, .. } => format!("remove #{order}"),
             PatchOp::Modify { order, status, .. } => match status {
                 Some(s) => format!("modify #{order} -> {s}"),
                 None => format!("modify #{order}"),
             },
-            PatchOp::Reorder {
-                order, new_order, ..
-            } => format!("reorder #{order} -> #{new_order}"),
         }
     }
 }
@@ -121,6 +100,17 @@ pub(crate) enum DriftKind {
     DuplicateTitle,
     /// A dependency points at an order no task has.
     DanglingDependency,
+}
+
+impl DriftKind {
+    /// Short label for the notice the operator reads.
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            DriftKind::UnmarkedCompletion => "work done, row still open",
+            DriftKind::DuplicateTitle => "duplicate row",
+            DriftKind::DanglingDependency => "dependency cannot resolve",
+        }
+    }
 }
 
 /// One observation, with the order and the evidence that produced it.
@@ -220,14 +210,27 @@ pub(crate) fn reconcile(plan: &PlanDocument, evidence: &WorkEvidence) -> Reconci
             .iter()
             .find(|t| t.title.trim().eq_ignore_ascii_case(task.title.trim()));
         if let Some(first) = dup_of {
+            let mut reason = format!(
+                "title '{}' duplicates #{}, which is {}",
+                task.title, first.order, first.status
+            );
             findings.push(Finding {
                 order: task.order,
                 kind: DriftKind::DuplicateTitle,
-                reason: format!(
-                    "title '{}' duplicates #{}, which is {}",
-                    task.title, first.order, first.status
-                ),
+                reason: reason.clone(),
             });
+            // Drop the duplicate only when the sibling it duplicates is
+            // already resolved: then the work is genuinely covered and the
+            // open row is a leftover. When neither is resolved the two rows
+            // may be two real pieces of work, so the finding is reported and
+            // the agent decides -- removing one could delete work nobody did.
+            if is_resolved(&first.status) && !is_resolved(&task.status) {
+                reason.push_str("; the resolved sibling already covers it");
+                patch.push(PatchOp::Remove {
+                    order: task.order,
+                    reason,
+                });
+            }
         }
     }
 
@@ -270,8 +273,6 @@ pub(crate) enum RejectReason {
     DropsResolvedTask { order: usize },
     /// The op carries no reason, so nothing would be recorded.
     MissingReason,
-    /// The reorder target is the order it already has.
-    SelfReorder { order: usize },
 }
 
 impl std::fmt::Display for RejectReason {
@@ -286,9 +287,6 @@ impl std::fmt::Display for RejectReason {
                 write!(f, "would drop resolved task #{order}")
             }
             RejectReason::MissingReason => write!(f, "carries no reason to record"),
-            RejectReason::SelfReorder { order } => {
-                write!(f, "reorders #{order} to the order it already has")
-            }
         }
     }
 }
@@ -317,10 +315,6 @@ pub(crate) fn validate_patch(plan: &PlanDocument, patch: &[PatchOp]) -> PatchVer
             None
         };
         let reject = reason.or_else(|| match op {
-            PatchOp::Add { after_order, .. } => {
-                let known = *after_order == 0 || plan.tasks.iter().any(|t| t.order == *after_order);
-                (!known).then_some(RejectReason::UnknownOrder(*after_order))
-            }
             PatchOp::Remove { order, .. } => match plan.get_task_by_order(*order) {
                 None => Some(RejectReason::UnknownOrder(*order)),
                 Some(t) if is_resolved(&t.status) => {
@@ -341,15 +335,6 @@ pub(crate) fn validate_patch(plan: &PlanDocument, patch: &[PatchOp]) -> PatchVer
                     _ => None,
                 },
             },
-            PatchOp::Reorder {
-                order, new_order, ..
-            } => match plan.get_task_by_order(*order) {
-                None => Some(RejectReason::UnknownOrder(*order)),
-                Some(_) if *new_order == *order => {
-                    Some(RejectReason::SelfReorder { order: *order })
-                }
-                Some(_) => None,
-            },
         });
         match reject {
             Some(r) => verdict.rejected.push((op.clone(), r)),
@@ -362,30 +347,10 @@ pub(crate) fn validate_patch(plan: &PlanDocument, patch: &[PatchOp]) -> PatchVer
 /// Apply the accepted ops and return one recorded line per op.
 ///
 /// Every mutation produces a line, so a patch can never be silent (NFR-002).
-/// Renumbering is deliberately NOT done: a `Reorder` sets the order it names
-/// and leaves the rest of the numbering to the caller, because silently
-/// renumbering the whole document would make one op's blast radius the entire
-/// plan.
 pub(crate) fn apply_patch(plan: &mut PlanDocument, accepted: &[PatchOp]) -> Vec<String> {
     let mut recorded = Vec::new();
     for op in accepted {
         match op {
-            PatchOp::Add {
-                title,
-                after_order,
-                reason,
-            } => {
-                let order = plan.tasks.iter().map(|t| t.order).max().unwrap_or(0) + 1;
-                let mut task = PlanTask::new(
-                    order,
-                    title.clone(),
-                    String::new(),
-                    TaskType::Other("reconciled".to_string()),
-                );
-                task.notes = Some(format!("[reconcile] {reason}"));
-                plan.tasks.push(task);
-                recorded.push(format!("{} ({reason})", op.describe()));
-            }
             PatchOp::Remove { order, reason } => {
                 plan.tasks.retain(|t| t.order != *order);
                 recorded.push(format!("{} ({reason})", op.describe()));
@@ -404,16 +369,6 @@ pub(crate) fn apply_patch(plan: &mut PlanDocument, accepted: &[PatchOp]) -> Vec<
                         Some(prev) if !prev.is_empty() => format!("{prev}\n{stamped}"),
                         _ => stamped,
                     });
-                    recorded.push(format!("{} ({reason})", op.describe()));
-                }
-            }
-            PatchOp::Reorder {
-                order,
-                new_order,
-                reason,
-            } => {
-                if let Some(task) = plan.get_task_by_order_mut(*order) {
-                    task.order = *new_order;
                     recorded.push(format!("{} ({reason})", op.describe()));
                 }
             }

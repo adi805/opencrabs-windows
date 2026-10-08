@@ -218,10 +218,10 @@ fn ac006_a_refusal_always_carries_a_reason() {
                 order: 99,
                 reason: "ghost".into(),
             },
-            PatchOp::Reorder {
-                order: 1,
-                new_order: 1,
-                reason: "no-op".into(),
+            PatchOp::Modify {
+                order: 42,
+                status: Some(TaskStatus::Completed),
+                reason: "ghost too".into(),
             },
         ],
     );
@@ -341,6 +341,37 @@ fn duplicate_titles_are_reported_without_a_patch() {
     assert!(
         patch.is_empty(),
         "a duplicate is reported, never auto-dropped"
+    );
+}
+
+#[test]
+fn a_duplicate_of_a_resolved_row_is_removed_with_its_reason() {
+    // The one duplicate case with a safe automatic answer: the sibling is
+    // already done, so the open row is a leftover and removing it cannot
+    // delete work nobody did.
+    let mut plan = plan_with(vec![
+        task(1, "audit", TaskStatus::Completed, "a.rs"),
+        task(2, "Audit", TaskStatus::Pending, "b.rs"),
+    ]);
+    let ReconcileVerdict::Drift { findings, patch } = reconcile(&plan, &evidence(&[], &[])) else {
+        panic!("expected a finding");
+    };
+    assert_eq!(findings.len(), 1);
+    assert_eq!(patch.len(), 1);
+    assert!(matches!(patch[0], PatchOp::Remove { order: 2, .. }));
+    assert!(patch[0].reason().contains("already covers it"));
+
+    let v = validate_patch(&plan, &patch);
+    assert!(
+        v.rejected.is_empty(),
+        "a resolved sibling may cover the row"
+    );
+    let recorded = apply_patch(&mut plan, &v.accepted);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(plan.tasks.len(), 1, "the leftover row is gone");
+    assert_eq!(
+        plan.get_task_by_order(1).unwrap().status,
+        TaskStatus::Completed
     );
 }
 

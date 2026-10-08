@@ -1500,10 +1500,15 @@ pub(crate) fn reconcile_notice(plan: &mut PlanDocument, session_working_dir: &Pa
 
     let mut out = String::from("\n\n🔁 Plan reconciliation: the plan and the artifacts disagreed.");
     for f in &findings {
-        out.push_str(&format!("\n- Task #{}: {}", f.order, f.reason));
+        out.push_str(&format!(
+            "\n- [{}] Task #{}: {}",
+            f.kind.label(),
+            f.order,
+            f.reason
+        ));
     }
     for (op, reason) in &verdict.rejected {
-        out.push_str(&format!("\n- refused {}: {reason}", op.describe()));
+        out.push_str(&format!("\n- refused task #{}: {reason}", op.order()));
     }
     if recorded.is_empty() {
         out.push_str("\nNothing changed automatically: those rows need your call.");
