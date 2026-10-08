@@ -81,9 +81,14 @@ impl DiscordAgent {
             let config_rx = self.config_rx;
             let channel_msg_repo = self.channel_msg_repo;
 
+            // Reactions are their own bits, not part of GUILD_MESSAGES: without
+            // them `reaction_add` below compiles, passes its tests and never
+            // fires. `discord_intent_coherence_test` now pins the pairing.
             let intents = GatewayIntents::GUILD_MESSAGES
                 | GatewayIntents::DIRECT_MESSAGES
-                | GatewayIntents::MESSAGE_CONTENT;
+                | GatewayIntents::MESSAGE_CONTENT
+                | GatewayIntents::GUILD_MESSAGE_REACTIONS
+                | GatewayIntents::DIRECT_MESSAGE_REACTIONS;
 
             let make_handler = || Handler {
                 agent: agent.clone(),
