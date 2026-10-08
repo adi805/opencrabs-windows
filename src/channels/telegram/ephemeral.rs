@@ -34,44 +34,65 @@ use teloxide::types::{ChatId, ThreadId};
 /// no `TelegramState` in hand, and this is the same shape as the raw-message
 /// stash next door: a small bounded process-local map.
 ///
+/// The receiver is stored alongside the id because every
+/// `editEphemeralMessage*` and `deleteEphemeralMessage` call needs it: the
+/// docs mark `receiver_user_id` Required on all of them, and the edit path
+/// here used to omit it, so every tap on a scoped picker was refused by the
+/// server and surfaced only as a warning. Keeping it per entry (rather than
+/// re-deriving it from the chat) also means two members of one group cannot
+/// have their pickers' receivers crossed, which a chat-keyed registry alone
+/// would allow.
+///
 /// Bounded like `RAW_STASH`: a chat that never taps its picker must not grow
 /// this without limit.
-static EPHEMERAL_PICKERS: Mutex<VecDeque<(i64, i64)>> = Mutex::new(VecDeque::new());
+static EPHEMERAL_PICKERS: Mutex<VecDeque<(i64, i64, i64)>> = Mutex::new(VecDeque::new());
 const PICKER_CAP: usize = 64;
 
-/// Remember the ephemeral picker sent to `chat_id`, returning the id of the
-/// one it replaced so the caller can delete that stale bubble.
-pub(crate) fn remember_picker(chat_id: i64, ephemeral_message_id: i64) -> Option<i64> {
+/// Remember the ephemeral picker sent to `chat_id`, returning the id and
+/// receiver of the one it replaced so the caller can delete that stale bubble.
+///
+/// The receiver comes back with the id because deleting the replaced bubble
+/// needs the receiver that bubble was sent to, which is not necessarily the
+/// one being stored now.
+pub(crate) fn remember_picker(
+    chat_id: i64,
+    ephemeral_message_id: i64,
+    receiver_user_id: i64,
+) -> Option<(i64, i64)> {
     let mut q = EPHEMERAL_PICKERS.lock().unwrap_or_else(|e| e.into_inner());
     let replaced = q
         .iter()
-        .find(|(c, _)| *c == chat_id)
-        .map(|(_, id)| *id)
-        .filter(|id| *id != ephemeral_message_id);
-    q.retain(|(c, _)| *c != chat_id);
-    q.push_back((chat_id, ephemeral_message_id));
+        .find(|(c, _, _)| *c == chat_id)
+        .map(|(_, id, rx)| (*id, *rx))
+        .filter(|(id, _)| *id != ephemeral_message_id);
+    q.retain(|(c, _, _)| *c != chat_id);
+    q.push_back((chat_id, ephemeral_message_id, receiver_user_id));
     while q.len() > PICKER_CAP {
         q.pop_front();
     }
     replaced
 }
 
-/// The ephemeral picker id for a chat, if one is on screen.
-pub(crate) fn picker_for(chat_id: i64) -> Option<i64> {
+/// The ephemeral picker id for a chat and the receiver it was scoped to, if
+/// one is on screen.
+pub(crate) fn picker_for(chat_id: i64) -> Option<(i64, i64)> {
     let q = EPHEMERAL_PICKERS.lock().unwrap_or_else(|e| e.into_inner());
-    q.iter().find(|(c, _)| *c == chat_id).map(|(_, id)| *id)
+    q.iter()
+        .find(|(c, _, _)| *c == chat_id)
+        .map(|(_, id, rx)| (*id, *rx))
 }
 
 /// Drop the tracked picker for a chat.
 ///
-/// Returns the id it held so a caller that wants to remove the bubble can.
-/// The edit path only needs the tracking to stop: the picker it just edited
-/// has had its buttons stripped, so nothing can tap it again and keeping the
-/// id would let a later tap edit a message that is already finished.
-pub(crate) fn forget_picker(chat_id: i64) -> Option<i64> {
+/// Returns the id and receiver it held so a caller that wants to remove the
+/// bubble can. The edit path only needs the tracking to stop: the picker it
+/// just edited has had its buttons stripped, so nothing can tap it again and
+/// keeping the id would let a later tap edit a message that is already
+/// finished.
+pub(crate) fn forget_picker(chat_id: i64) -> Option<(i64, i64)> {
     let mut q = EPHEMERAL_PICKERS.lock().unwrap_or_else(|e| e.into_inner());
-    let idx = q.iter().position(|(c, _)| *c == chat_id)?;
-    q.remove(idx).map(|(_, id)| id)
+    let idx = q.iter().position(|(c, _, _)| *c == chat_id)?;
+    q.remove(idx).map(|(_, id, rx)| (id, rx))
 }
 
 /// The user an ephemeral reply should be scoped to, or `None` when the reply
@@ -96,18 +117,28 @@ pub(crate) fn receiver_for(is_dm: bool, user_id: i64) -> Option<i64> {
 /// [`build_body_legacy`] keeps the pre-10.3 one for the fallback in
 /// [`send_one_scoped`]. Both go through [`finish_body`] so the two can only
 /// differ in how they scope, never in how they carry text.
+///
+/// `replace_callback_query_message` makes the ephemeral message appear *in
+/// place of* the message the callback query came from, instead of stacking a
+/// second bubble. It goes inside the scoping object, which is why it is set
+/// after the literal rather than in it.
 pub(crate) fn build_body(
     chat_id: i64,
     thread_id: Option<ThreadId>,
     receiver_user_id: i64,
     text: &str,
     parse_html: bool,
+    replace_callback_query_message: bool,
 ) -> serde_json::Value {
     let mut body = serde_json::json!({
         "chat_id": chat_id,
         "text": text,
         "ephemeral_message_parameters": {"receiver_user_id": receiver_user_id},
     });
+    if replace_callback_query_message {
+        body["ephemeral_message_parameters"]["replace_callback_query_message"] =
+            serde_json::json!(true);
+    }
     finish_body(&mut body, thread_id, parse_html);
     body
 }
@@ -116,6 +147,11 @@ pub(crate) fn build_body(
 /// the one-shot fallback for a server that predates the object, because
 /// whether the replacement kept the old parameter working is not something
 /// this client can settle from here.
+///
+/// `replace_callback_query_message` is deliberately not sent here. It arrived
+/// with 10.3, so a server old enough to need this shape cannot act on it, and
+/// inventing a flat spelling for a field the legacy server has never heard of
+/// would be a guess rather than a fallback.
 pub(crate) fn build_body_legacy(
     chat_id: i64,
     thread_id: Option<ThreadId>,
@@ -191,11 +227,17 @@ pub(crate) async fn send_one_scoped(
     parse_html: bool,
     markup: Option<&serde_json::Value>,
 ) -> ScopedSend {
+    // A slash-command reply has no original message to replace, and the docs
+    // require `replace_callback_query_message` to be `false` for callback
+    // queries that came *from* an ephemeral message, which is the shape this
+    // codebase uses: a tap edits the picker through `editEphemeralMessage*`
+    // rather than sending a new one. So the scoped send never asks for
+    // in-place replacement; the builders expose it for a caller that does.
     let flat = SCOPING_SHAPE.load(Ordering::Relaxed) == SHAPE_FLAT;
     let mut body = if flat {
         build_body_legacy(chat_id, thread_id, receiver_user_id, text, parse_html)
     } else {
-        build_body(chat_id, thread_id, receiver_user_id, text, parse_html)
+        build_body(chat_id, thread_id, receiver_user_id, text, parse_html, false)
     };
     if let Some(m) = markup {
         body["reply_markup"] = m.clone();
@@ -273,14 +315,23 @@ pub(crate) async fn send_one(
 /// Body for `editEphemeralMessageText`, the only way to change a scoped reply
 /// after it was sent. `message_id` is 0 for an ephemeral message, so the
 /// ordinary `editMessageText` cannot address it.
+///
+/// `receiver_user_id` is Required here. Bot API 10.3 replaced the flat
+/// parameter with `ephemeral_message_parameters` on the **send** methods only
+/// (the changelog enumerates `sendMessage`, the media senders and
+/// `sendRichMessage`), so the four `editEphemeralMessage*` methods and
+/// `deleteEphemeralMessage` still take it flat, and still require it. Leaving
+/// it out is what turned every picker tap into a silent rejection.
 pub(crate) fn build_edit_text_body(
     chat_id: i64,
+    receiver_user_id: i64,
     ephemeral_message_id: i64,
     text: &str,
     parse_html: bool,
 ) -> serde_json::Value {
     let mut body = serde_json::json!({
         "chat_id": chat_id,
+        "receiver_user_id": receiver_user_id,
         "ephemeral_message_id": ephemeral_message_id,
         "text": text,
     });
@@ -294,20 +345,27 @@ pub(crate) fn build_edit_text_body(
 /// reply without resending its text.
 pub(crate) fn build_edit_markup_body(
     chat_id: i64,
+    receiver_user_id: i64,
     ephemeral_message_id: i64,
     markup: &serde_json::Value,
 ) -> serde_json::Value {
     serde_json::json!({
         "chat_id": chat_id,
+        "receiver_user_id": receiver_user_id,
         "ephemeral_message_id": ephemeral_message_id,
         "reply_markup": markup,
     })
 }
 
 /// Body for `deleteEphemeralMessage`.
-pub(crate) fn build_delete_body(chat_id: i64, ephemeral_message_id: i64) -> serde_json::Value {
+pub(crate) fn build_delete_body(
+    chat_id: i64,
+    receiver_user_id: i64,
+    ephemeral_message_id: i64,
+) -> serde_json::Value {
     serde_json::json!({
         "chat_id": chat_id,
+        "receiver_user_id": receiver_user_id,
         "ephemeral_message_id": ephemeral_message_id,
     })
 }
@@ -316,11 +374,18 @@ pub(crate) fn build_delete_body(chat_id: i64, ephemeral_message_id: i64) -> serd
 pub(crate) async fn edit_text(
     token: &str,
     chat_id: i64,
+    receiver_user_id: i64,
     ephemeral_message_id: i64,
     text: &str,
     parse_html: bool,
 ) -> bool {
-    let body = build_edit_text_body(chat_id, ephemeral_message_id, text, parse_html);
+    let body = build_edit_text_body(
+        chat_id,
+        receiver_user_id,
+        ephemeral_message_id,
+        text,
+        parse_html,
+    );
     post(token, "editEphemeralMessageText", &body).await == Outcome::Sent
 }
 
@@ -328,18 +393,154 @@ pub(crate) async fn edit_text(
 pub(crate) async fn edit_reply_markup(
     token: &str,
     chat_id: i64,
+    receiver_user_id: i64,
     ephemeral_message_id: i64,
     markup: &serde_json::Value,
 ) -> bool {
-    let body = build_edit_markup_body(chat_id, ephemeral_message_id, markup);
+    let body = build_edit_markup_body(chat_id, receiver_user_id, ephemeral_message_id, markup);
     post(token, "editEphemeralMessageReplyMarkup", &body).await == Outcome::Sent
 }
 
 /// Remove a scoped reply. Used when the command it belonged to is done, so a
 /// finished picker does not linger in the chat it was scoped to.
-pub(crate) async fn delete_message(token: &str, chat_id: i64, ephemeral_message_id: i64) -> bool {
-    let body = build_delete_body(chat_id, ephemeral_message_id);
+pub(crate) async fn delete_message(
+    token: &str,
+    chat_id: i64,
+    receiver_user_id: i64,
+    ephemeral_message_id: i64,
+) -> bool {
+    let body = build_delete_body(chat_id, receiver_user_id, ephemeral_message_id);
     post(token, "deleteEphemeralMessage", &body).await == Outcome::Sent
+}
+
+/// Body for `editEphemeralMessageMedia`: replace the media of a scoped reply
+/// without resending it.
+///
+/// `media` is an `InputMedia` object. 10.3 also allows *uploading a new file*
+/// here (a multipart `attach://<name>`), but that needs a multipart transport
+/// and [`post`] sends JSON, so this takes a JSON `InputMedia` (a file id or a
+/// URL) which is the whole of what this client can supply.
+///
+/// Lib-pass dead-code exempt: completes the `editEphemeralMessage*` set so an
+/// ephemeral reply is editable on every axis its send supports. No production
+/// caller yet, and the cfg(test) suite pins the body shape.
+#[allow(dead_code)]
+pub(crate) fn build_edit_media_body(
+    chat_id: i64,
+    receiver_user_id: i64,
+    ephemeral_message_id: i64,
+    media: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "chat_id": chat_id,
+        "receiver_user_id": receiver_user_id,
+        "ephemeral_message_id": ephemeral_message_id,
+        "media": media,
+    })
+}
+
+/// Rewrite the media of a scoped reply. `true` when the server accepted it.
+#[allow(dead_code)]
+pub(crate) async fn edit_media(
+    token: &str,
+    chat_id: i64,
+    receiver_user_id: i64,
+    ephemeral_message_id: i64,
+    media: &serde_json::Value,
+) -> bool {
+    let body = build_edit_media_body(chat_id, receiver_user_id, ephemeral_message_id, media);
+    post(token, "editEphemeralMessageMedia", &body).await == Outcome::Sent
+}
+
+/// Body for `editEphemeralMessageCaption`: swap the caption of a scoped media
+/// reply.
+///
+/// `show_caption_above_media` is the 10.3 addition and is omitted rather than
+/// sent as `false`, so a server that predates the field never receives a
+/// parameter it has never heard of.
+///
+/// Lib-pass dead-code exempt: same reason as [`build_edit_media_body`].
+#[allow(dead_code)]
+pub(crate) fn build_edit_caption_body(
+    chat_id: i64,
+    receiver_user_id: i64,
+    ephemeral_message_id: i64,
+    caption: &str,
+    parse_html: bool,
+    show_caption_above_media: Option<bool>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "chat_id": chat_id,
+        "receiver_user_id": receiver_user_id,
+        "ephemeral_message_id": ephemeral_message_id,
+        "caption": caption,
+    });
+    if parse_html {
+        body["parse_mode"] = serde_json::json!("HTML");
+    }
+    if let Some(above) = show_caption_above_media {
+        body["show_caption_above_media"] = serde_json::json!(above);
+    }
+    body
+}
+
+/// Rewrite the caption of a scoped media reply. `true` when the server
+/// accepted it.
+#[allow(dead_code)]
+pub(crate) async fn edit_caption(
+    token: &str,
+    chat_id: i64,
+    receiver_user_id: i64,
+    ephemeral_message_id: i64,
+    caption: &str,
+    parse_html: bool,
+    show_caption_above_media: Option<bool>,
+) -> bool {
+    let body = build_edit_caption_body(
+        chat_id,
+        receiver_user_id,
+        ephemeral_message_id,
+        caption,
+        parse_html,
+        show_caption_above_media,
+    );
+    post(token, "editEphemeralMessageCaption", &body).await == Outcome::Sent
+}
+
+/// Body for `editEphemeralMessageText` carrying a rich payload instead of
+/// plain text. The `rich_message` object is built by
+/// [`super::rich::api::build_body`] so an edit and a send cannot disagree about
+/// how markdown is shaped, which is where `enforce_button_fit` lives.
+///
+/// 10.3 made `text` optional on that method precisely because `rich_message`
+/// can stand in for it.
+///
+/// Lib-pass dead-code exempt: same reason as [`build_edit_media_body`].
+#[allow(dead_code)]
+pub(crate) fn build_edit_text_rich_body(
+    chat_id: i64,
+    receiver_user_id: i64,
+    ephemeral_message_id: i64,
+    markdown: &str,
+) -> serde_json::Value {
+    let mut body = super::rich::api::build_body(chat_id, None, markdown, None);
+    body["receiver_user_id"] = serde_json::json!(receiver_user_id);
+    body["ephemeral_message_id"] = serde_json::json!(ephemeral_message_id);
+    body
+}
+
+/// Rewrite a scoped reply with a rich payload, so an edited reply keeps the
+/// same native rendering its send had.
+#[allow(dead_code)]
+pub(crate) async fn edit_text_rich(
+    token: &str,
+    chat_id: i64,
+    receiver_user_id: i64,
+    ephemeral_message_id: i64,
+    markdown: &str,
+) -> bool {
+    let body = build_edit_text_rich_body(chat_id, receiver_user_id, ephemeral_message_id, markdown);
+    post(token, "editEphemeralMessageText", &body).await == Outcome::Sent
 }
 
 /// Build the scoped `sendRichMessage` body: exactly what the public rich path
