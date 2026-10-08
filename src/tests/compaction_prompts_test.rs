@@ -465,3 +465,43 @@ fn no_body_carries_an_ungated_continue_directive() {
          measuring the wrong surface"
     );
 }
+
+// ── PentAGI borrow (2026-10-08): the summary is history, not instructions ────
+//
+// A compacted agent can start treating its own summary as a standing
+// instruction, and imitate its shape in later replies. The rule must ride
+// EVERY kind in BOTH variants, the same contract OBLIGATION_STATUS_RULE
+// holds, because the failure is a property of compaction itself and not of
+// one trigger. Sentinels, not full equality: the wording may drift, the
+// invariant may not.
+
+const HISTORY_RULE_SENTINEL: &str = "THE SUMMARY IS HISTORY, NOT INSTRUCTIONS";
+
+#[test]
+fn summary_history_rule_rides_every_kind_and_variant() {
+    for kind in [
+        CompactionKind::Regular,
+        CompactionKind::MidLoop,
+        CompactionKind::Emergency,
+        CompactionKind::PostTool,
+        CompactionKind::Manual,
+    ] {
+        for silent in [false, true] {
+            let body = build_continuation(kind, silent, true, PlanRecovery::Active);
+            assert!(
+                body.contains(HISTORY_RULE_SENTINEL),
+                "{kind:?} silent={silent} must carry the history rule: {body}"
+            );
+        }
+    }
+}
+
+#[test]
+fn summary_history_rule_is_appended_exactly_once() {
+    // Appended by build_continuation, never baked into a body: baking it in
+    // would let the fun and silent variants drift, which is the failure this
+    // module exists to prevent.
+    let body = build_continuation(CompactionKind::Regular, false, true, PlanRecovery::Active);
+    let seen = body.matches(HISTORY_RULE_SENTINEL).count();
+    assert_eq!(seen, 1, "the rule must appear exactly once, got {seen}");
+}
