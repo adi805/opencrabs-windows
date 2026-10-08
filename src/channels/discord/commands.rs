@@ -15,12 +15,20 @@
 //! own decision about which built-ins belong in a guild menu.
 //!
 //! This module is the projection. It turns the catalog into CHAT_INPUT builders
-//! and pushes them with the *bulk overwrite* route (`GuildId::set_commands`,
-//! which is `PUT /applications/{application.id}/guilds/{guild.id}/commands`), so
-//! a sync replaces the whole set instead of creating commands one by one. That
-//! distinction matters for Discord's budgets: the 200-per-day-per-guild limit
+//! and pushes them with the *bulk overwrite* route
+//! (`Command::set_global_commands`, which is
+//! `PUT /applications/{application.id}/commands`), so a sync replaces the whole
+//! set instead of creating commands one by one. That distinction matters for
+//! Discord's budgets: the 200-per-day-per-guild limit
 //! (`developers/interactions/application-commands.mdx:208`) counts per-command
 //! **creates**, which bulk overwrite does not perform.
+//!
+//! The route is global rather than guild-scoped because a guild-scoped command
+//! is unreachable in a DM: Discord serves a DM's command list only from the
+//! global set. The trade is propagation latency, up to an hour for a global
+//! write against immediate for a guild-scoped one, which is worth paying once
+//! because the guild menu this feature used to write is cleared on the same
+//! sync (see [`sync_commands`]) instead of lingering as a shadowing duplicate.
 //!
 //! Everything here is pure except [`sync_commands`], which takes the HTTP handle
 //! and a guild list. Splitting it that way is what makes the grammar rules
@@ -45,7 +53,7 @@ use std::sync::Arc;
 
 use serenity::builder::{CreateCommand, CreateCommandOption};
 use serenity::http::Http;
-use serenity::model::application::{CommandOptionType, CommandType};
+use serenity::model::application::{Command, CommandOptionType, CommandType};
 use serenity::model::id::GuildId;
 
 use crate::brain::{BrainLoader, CommandLoader, UserCommand};
@@ -266,20 +274,25 @@ pub(crate) fn sync_key(plan_sig: u64, guilds: &[GuildId]) -> u64 {
     hasher.finish()
 }
 
-/// Load `commands.toml` and register it on every guild we share, but only when
-/// the comparison key moved. Returns the key that is live now, for the caller to
-/// store and hand back on the next call, or `None` when nothing could be
-/// registered, which tells the caller not to remember this attempt as done.
+/// Load `commands.toml` and register it globally, but only when the comparison
+/// key moved. Returns the key that is live now, for the caller to store and hand
+/// back on the next call, or `None` when nothing could be registered, which tells
+/// the caller not to remember this attempt as done.
+///
+/// Global rather than guild-scoped because a DM has no guild, and Discord serves
+/// a DM's command list only from the global set. The global write lands first:
+/// if it fails the guild-scoped set is still there to fall back on, whereas
+/// clearing first and then failing would leave the menu empty.
 ///
 /// An empty catalog syncs an empty command list rather than being skipped: the
 /// file is the source of truth on every other surface, so a command the user
 /// deleted must not keep living in Discord's menu pointing at a prompt that no
-/// longer exists. That case is logged, because wiping a guild's menu is visible
-/// enough to be worth a line.
+/// longer exists. That case is logged, because wiping the menu is visible enough
+/// to be worth a line.
 ///
 /// Skipping an unchanged re-read is the point of the key: the config watcher
 /// fires on every write, and a sync that re-sends an identical set costs an API
-/// round-trip per guild for nothing. The 5-per-second per-route bucket
+/// round-trip for nothing. The 5-per-second per-route bucket
 /// (`application-commands.mdx:206`) is what a chatty watcher would hit, not the
 /// 200-per-day create budget, which bulk overwrite does not touch.
 pub(crate) async fn sync_commands(
@@ -290,10 +303,7 @@ pub(crate) async fn sync_commands(
     let catalog = CommandLoader::from_brain_path(&BrainLoader::resolve_path()).load();
 
     if catalog.is_empty() {
-        tracing::info!(
-            "discord: command catalog is empty, syncing an empty command list to {} guild(s)",
-            guilds.len()
-        );
+        tracing::info!("discord: command catalog is empty, syncing an empty global list");
     }
 
     let plan = plan_commands(&catalog);
@@ -306,54 +316,46 @@ pub(crate) async fn sync_commands(
         return Some(key);
     }
 
-    if guilds.is_empty() {
-        tracing::warn!(
-            "discord: no guild to register {} application command(s) in",
-            plan.commands.len()
-        );
-        return Some(key);
-    }
-
-    let mut any_succeeded = false;
-    for guild in guilds {
-        match guild.set_commands(http, plan.commands.clone()).await {
-            Ok(registered) => {
-                any_succeeded = true;
-                tracing::info!(
-                    "discord: synced {} application command(s) to guild {guild}",
-                    registered.len()
-                );
-            }
-            Err(why) => {
-                // A bot invited before this feature existed has the `bot` scope
-                // but not `applications.commands`, and every call here answers
-                // 403. Naming the fix in the log is the only way an operator
-                // reading one line knows to re-invite instead of restart.
-                tracing::error!(
-                    "discord: application command sync failed for guild {guild}: {why}. If \
-                     this is a permissions error, the bot was invited without the \
-                     `applications.commands` OAuth2 scope: re-invite it with \
-                     `bot applications.commands`."
-                );
-            }
+    match Command::set_global_commands(http, plan.commands.clone()).await {
+        Ok(registered) => {
+            tracing::info!(
+                "discord: synced {} application command(s) globally",
+                registered.len()
+            );
+        }
+        Err(why) => {
+            // A bot invited before this feature existed has the `bot` scope but
+            // not `applications.commands`, and every call here answers 403.
+            // Naming the fix in the log is the only way an operator reading one
+            // line knows to re-invite instead of restart. The key stays unset so
+            // the next reconnect retries: the operator usually re-invites
+            // without restarting and without touching `commands.toml`, and
+            // remembering the failure as done would leave the menu empty after a
+            // fix that looks like it did not work.
+            tracing::error!(
+                "discord: global application command sync failed: {why}. If this is \
+                 a permissions error, the bot was invited without the \
+                 `applications.commands` OAuth2 scope: re-invite it with \
+                 `bot applications.commands`."
+            );
+            return None;
         }
     }
 
-    // A sync where every guild answered 403 must not remember itself as done.
-    // The usual cause is the missing `applications.commands` scope, and the
-    // operator fixes that by re-inviting, often without restarting the process
-    // and without touching `commands.toml`. Storing the key on failure would
-    // mean the newly granted scope changes nothing until something else moves
-    // it, so the menu stays empty after a fix that looks like it did not work.
-    // Leaving it unset makes the next reconnect try again, and the error line
-    // keeps naming the fix until it lands.
-    if !any_succeeded {
-        tracing::warn!(
-            "discord: application command sync failed for all {} guild(s); leaving the \
-             comparison key unset so the next reconnect retries",
-            guilds.len()
-        );
-        return None;
+    // The guild-scoped set is what this feature used to write. A guild-scoped
+    // command shadows a global one of the same name, so leaving the old copies
+    // behind would keep a command deleted from `commands.toml` alive in that
+    // guild's menu. Clear it now that the global set is live. Best effort: a
+    // failure here is logged and does not undo the global registration.
+    for guild in guilds {
+        if let Err(why) = guild.set_commands(http, Vec::new()).await {
+            tracing::warn!(
+                "discord: could not clear the guild-scoped command set for \
+                 {guild}: {why}. The global set is live and the menu still \
+                 works, but a command removed from `commands.toml` may \
+                 linger here until the next sync."
+            );
+        }
     }
 
     Some(key)

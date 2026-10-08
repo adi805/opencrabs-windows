@@ -26,12 +26,12 @@ pub struct DiscordState {
     /// Guild ID of the last guild message — needed for guild-scoped actions
     pub(super) guild_id: Mutex<Option<u64>>,
     /// Comparison key of the application command set currently registered with
-    /// Discord (the command set plus guild membership), which also tells us
-    /// whether the watcher that keeps it in sync has been started: `ready`
-    /// fires on every reconnect and the watcher must not be started twice.
-    /// `None` until a sync succeeds, and set back to `None` when every guild
-    /// refused, so a failed attempt is retried rather than remembered as done.
-    /// See `commands::sync_commands`.
+    /// Discord (the command set plus the guild list the stale-set cleanup
+    /// targets), which also tells us whether the watcher that keeps it in sync
+    /// has been started: `ready` fires on every reconnect and the watcher must
+    /// not be started twice. `None` until a sync succeeds, and set back to
+    /// `None` when the global write failed, so a failed attempt is retried
+    /// rather than remembered as done. See `commands::sync_commands`.
     pub(super) commands_sig: Mutex<Option<u64>>,
     /// Whether the config watcher that keeps [`Self::commands_sig`] in sync has
     /// been started. Separate from the key itself because a failed sync leaves

@@ -345,3 +345,75 @@ fn allowed_roles_match_on_the_string_form_of_the_id() {
          empty role list cannot walk past a guild-only allowlist"
     );
 }
+
+// --- FR-002: the registration route is global (AC-003, AC-004) ---------------
+//
+// There is no Discord application in CI, so the route cannot be exercised end
+// to end. What can be pinned is the source: the sync must write the global
+// command set, and the one guild-scoped write left behind must be the clear of
+// the set this feature used to register. A regression back to guild-scoped
+// registration compiles, keeps every pure test above green, and quietly makes
+// the commands unreachable in a DM, which is the whole of FR-002.
+
+const SYNC_SOURCE: &str = include_str!("../channels/discord/commands.rs");
+
+/// The body of `sync_commands`, from its signature to its closing brace at
+/// column zero. Line-based rather than brace-counted because the body holds
+/// braces inside format strings, and those would desynchronize a counter.
+fn sync_body() -> &'static str {
+    let start = SYNC_SOURCE
+        .find("pub(crate) async fn sync_commands(")
+        .expect("sync_commands is missing from commands.rs");
+    let rest = &SYNC_SOURCE[start..];
+    let end = rest
+        .find("\n}\n")
+        .expect("sync_commands has no closing brace on its own line");
+    &rest[..end]
+}
+
+#[test]
+fn the_sync_writes_the_global_command_set() {
+    let body = sync_body();
+    assert!(
+        body.contains("Command::set_global_commands("),
+        "sync_commands must register globally: Discord serves a DM's command \
+         list only from the global set, so a guild-scoped registration is \
+         invisible in a DM (AC-003). Body was:\n{body}"
+    );
+}
+
+#[test]
+fn the_only_guild_scoped_write_left_is_the_clear() {
+    let body = sync_body();
+    let guild_writes: Vec<&str> = body
+        .lines()
+        .filter(|line| line.contains(".set_commands("))
+        .collect();
+    assert_eq!(
+        guild_writes.len(),
+        1,
+        "expected exactly one guild-scoped write, the stale-set clear; found \
+         {guild_writes:?}"
+    );
+    assert!(
+        guild_writes[0].contains("Vec::new()"),
+        "the guild-scoped write must clear the set, not register it, or the \
+         guild copy shadows the global one and a command removed from \
+         `commands.toml` lingers (AC-004): {}",
+        guild_writes[0]
+    );
+}
+
+#[test]
+fn a_guild_less_bot_still_registers_its_commands() {
+    // The old code returned early when the bot shared no guild. A bot that only
+    // ever sees DMs has no guild at all, so that early return is precisely what
+    // would keep FR-002 from working: the global set has to be written whether
+    // or not there is a guild to clear.
+    let body = sync_body();
+    assert!(
+        !body.contains("if guilds.is_empty()"),
+        "sync_commands must not skip registration when the guild list is \
+         empty: the global set is what a DM reads (AC-003). Body was:\n{body}"
+    );
+}

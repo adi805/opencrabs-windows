@@ -187,14 +187,18 @@ impl EventHandler for Handler {
         // Application commands (#1850): project `commands.toml` onto Discord's
         // slash-command list so the catalog the TUI completes and Telegram
         // menus is the same one this channel autocompletes. `ready` is the only
-        // hook holding both an HTTP handle and the guild list, and the retry
-        // loop above rebuilds the client (not the handler) after a gateway
-        // drop, so a reconnect re-plans and the key comparison decides whether
-        // anything is actually sent. A guild that was joined while the process
-        // was down appears in `ready.guilds` on the next connect and moves the
-        // key, so it gets the menu without a config write. A guild joined while
-        // we are connected is covered the same way, on the next reconnect: the
-        // watcher below only knows the guild list this `ready` reported.
+        // hook holding an HTTP handle, and the retry loop above rebuilds the
+        // client (not the handler) after a gateway drop, so a reconnect
+        // re-plans and the key comparison decides whether anything is actually
+        // sent. Registration is global (FR-002), which is what makes the
+        // commands reachable in a DM: a guild-scoped set is not served there.
+        // The guild list is still collected, because the same sync clears the
+        // guild-scoped set this feature used to write, and a guild joined while
+        // the process was down appears in `ready.guilds` on the next connect,
+        // moving the key and getting its stale set cleared without a config
+        // write. A guild joined while we are connected is covered the same way,
+        // on the next reconnect: the watcher below only knows the guild list
+        // this `ready` reported.
         let guilds: Vec<serenity::model::id::GuildId> =
             ready.guilds.iter().map(|guild| guild.id).collect();
         let http = ctx.http.clone();
@@ -203,10 +207,9 @@ impl EventHandler for Handler {
 
         // First `ready` of the process: sync unconditionally, because the stored
         // key is `None`. A reconnect hands back that stored key instead, so a
-        // gateway that flaps on a short retry loop does not re-PUT
-        // the whole command tree to every guild on each pass; it costs one
-        // `commands.toml` read and nothing else, unless the catalog or the guild
-        // set actually moved.
+        // gateway that flaps on a short retry loop does not re-PUT the whole
+        // command tree on each pass; it costs one `commands.toml` read and
+        // nothing else, unless the catalog or the guild set actually moved.
         let stored = *state.commands_sig.lock().await;
         let key = super::commands::sync_commands(&http, &guilds, stored).await;
         *state.commands_sig.lock().await = key;
@@ -219,8 +222,8 @@ impl EventHandler for Handler {
                 // `telegram::menu_refresh`). Each publish re-plans and compares
                 // the key, so an unrelated config edit costs a file read and no
                 // API call. Guild membership is folded into that key, so a
-                // publish after the bot joined a server re-sends to all of them
-                // rather than only the ones listed here.
+                // publish after the bot joined a server clears that guild's
+                // stale scoped set rather than only the ones listed here.
                 loop {
                     if config_rx.changed().await.is_err() {
                         break;
