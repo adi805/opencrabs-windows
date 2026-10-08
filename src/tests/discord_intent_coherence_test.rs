@@ -90,7 +90,7 @@ fn event_handler_body(src: &str) -> String {
     assert!(
         body.iter()
             .any(|l| l.trim_start().starts_with("async fn message")),
-        "the impl body stopped before `message`, so this scan is reading the \
+        "the impl body ended before `message`, so this scan is reading the \
          wrong region: agent.rs is no longer rustfmt-clean at the top level, \
          and a column-0 `}}` now appears inside the block"
     );
@@ -102,8 +102,12 @@ fn wired_handlers(body: &str) -> Vec<String> {
     body.lines()
         .filter_map(|line| {
             let rest = line.trim_start().strip_prefix("async fn ")?;
-            let name = rest.split(['(', '<']).next()?;
-            (!name.is_empty()).then(|| name.to_string())
+            let name = rest.split(|c| c == '(' || c == '<').next()?;
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            }
         })
         .collect()
 }
@@ -124,7 +128,11 @@ fn requested_intents(src: &str) -> Vec<String> {
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
-            (!name.is_empty()).then_some(name)
+            if name.is_empty() {
+                None
+            } else {
+                Some(name)
+            }
         })
         .collect()
 }
@@ -191,7 +199,7 @@ fn the_scan_sees_the_handlers_it_governs() {
     );
     for expected in ["reaction_add", "ready", "message", "interaction_create"] {
         assert!(
-            seen.iter().any(|h| h == expected),
+            seen.iter().any(|h| h.as_str() == expected),
             "`{expected}` is no longer wired, so the scan would pass vacuously: {seen:?}"
         );
     }
