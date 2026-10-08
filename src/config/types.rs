@@ -976,6 +976,15 @@ pub struct DiscordConfig {
     /// `[channels.discord.progress]`.
     #[serde(default)]
     pub progress: ProgressDisplayConfig,
+    /// Forum tag applied to every `discord:<id>:forum` cron post (FR-008),
+    /// written by NAME because tag ids are snowflakes an operator cannot
+    /// read. Resolved against the target channel's `available_tags` at post
+    /// time; a name that resolves to nothing refuses the post instead of
+    /// silently sending an untagged one. Unset (the default) keeps the
+    /// tagless behaviour, so a forum that requires a tag still refuses
+    /// loudly rather than dying on a 400.
+    #[serde(default)]
+    pub forum_report_tag: Option<String>,
 }
 
 /// Proactive Discord write-governor knobs (`[channels.discord.rate_limiter]`).
@@ -1107,6 +1116,7 @@ impl Default for DiscordConfig {
             welcome_channel: None,
             rate_limiter: DiscordRateLimiterConfig::default(),
             progress: ProgressDisplayConfig::default(),
+            forum_report_tag: None,
         }
     }
 }

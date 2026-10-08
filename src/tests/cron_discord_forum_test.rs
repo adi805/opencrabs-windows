@@ -9,8 +9,8 @@
 //! grammar, the tag policy and the title shape without touching the network.
 
 use crate::cron::scheduler::{
-    DiscordDelivery, forum_post_body, forum_post_title, forum_requires_tag, forum_tag_names,
-    is_thread_only_channel, parse_discord_target,
+    DiscordDelivery, forum_applied_tags, forum_post_body, forum_post_title, forum_requires_tag,
+    forum_tag_names, is_thread_only_channel, parse_discord_target, resolve_forum_tag,
 };
 use chrono::{TimeZone, Utc};
 use serde_json::json;
@@ -147,16 +147,127 @@ fn a_stub_job_name_posts_under_the_stamp_alone() {
 
 #[test]
 fn the_post_body_carries_the_name_and_the_first_chunk_only() {
-    let body = forum_post_body("nightly-standup | 2026-10-02 01:30 UTC", "report text");
-    assert_eq!(body["name"], "nightly-standup | 2026-10-02 01:30 UTC");
+    let title = "nightly-standup | 2026-10-02 01:30 UTC";
+    let body = forum_post_body(title, "report text", &[]);
+    assert_eq!(body["name"], title);
     assert_eq!(body["message"]["content"], "report text");
 }
 
 #[test]
-fn the_post_body_sends_no_applied_tags() {
-    // The policy, pinned: we never send `applied_tags`, which is exactly why a
-    // REQUIRE_TAG forum is refused before the request instead of after.
-    let body = forum_post_body("t", "c");
+fn the_post_body_omits_applied_tags_when_none_is_resolved() {
+    // Unset is still the default and still legal, so the field is omitted
+    // rather than sent empty: an empty array is a post carrying no tag, which
+    // is exactly what a REQUIRE_TAG channel rejects.
+    let body = forum_post_body("t", "c", &[]);
     assert!(body.get("applied_tags").is_none(), "got: {body}");
     assert!(body["message"].get("embeds").is_none());
+}
+
+#[test]
+fn the_forum_report_tag_defaults_to_unset() {
+    // The knob is opt-in: an install that never sets it keeps the pre-FR-008
+    // behaviour, and a REQUIRE_TAG forum still refuses loudly instead of 400ing.
+    let discord = crate::config::DiscordConfig::default();
+    assert!(discord.forum_report_tag.is_none());
+}
+
+#[test]
+fn the_configured_tag_name_resolves_to_the_id_the_request_needs() {
+    // The config carries a name because an operator cannot read a snowflake;
+    // the request needs the id. Matching is case-insensitive, because the name
+    // is typed by hand and is not a code identifier.
+    let channel = json!({
+        "type": 15,
+        "available_tags": [{ "id": "1035", "name": "cron-report" }],
+    });
+    assert_eq!(
+        resolve_forum_tag(&channel, "cron-report"),
+        Some("1035".to_string())
+    );
+    assert_eq!(
+        resolve_forum_tag(&channel, "CRON-REPORT"),
+        Some("1035".to_string())
+    );
+    assert_eq!(resolve_forum_tag(&channel, "not-on-offer"), None);
+}
+
+#[test]
+fn a_name_that_is_not_on_offer_resolves_to_nothing() {
+    // The delivery path refuses the post on this empty result rather than
+    // sending an untagged one, so the empty case is load-bearing.
+    let channel = json!({
+        "type": 15,
+        "available_tags": [{ "id": "1035", "name": "cron-report" }],
+    });
+    assert_eq!(
+        forum_applied_tags(&channel, Some("cron-report")),
+        vec!["1035".to_string()]
+    );
+    assert!(forum_applied_tags(&channel, Some("wrong-name")).is_empty());
+    // A blank knob is unset, not a tag whose name is empty.
+    assert!(forum_applied_tags(&channel, Some("   ")).is_empty());
+    assert!(forum_applied_tags(&channel, None).is_empty());
+    // A channel advertising no tags cannot satisfy any name.
+    assert!(forum_applied_tags(&json!({ "type": 15 }), Some("cron-report")).is_empty());
+}
+
+#[test]
+fn a_require_tag_channel_posts_with_the_configured_tag_applied() {
+    // AC-011, the gap #1851 left open: a forum that requires a tag is the whole
+    // reason the knob exists, so this is the case that has to carry a tag id
+    // and not an empty array.
+    let channel = json!({
+        "type": 15,
+        "flags": 1 << 4,
+        "available_tags": [
+            { "id": "1035", "name": "cron-report" },
+            { "id": "1036", "name": "Release" },
+        ],
+    });
+    assert!(forum_requires_tag(&channel));
+
+    let applied = forum_applied_tags(&channel, Some("cron-report"));
+    assert_eq!(applied, vec!["1035".to_string()]);
+
+    let title = "nightly-standup | 2026-10-02 01:30 UTC";
+    let body = forum_post_body(title, "report", &applied);
+    assert_eq!(body["applied_tags"], json!(["1035"]));
+    let tags = body["applied_tags"].as_array().expect("applied_tags array");
+    assert!(!tags.is_empty(), "REQUIRE_TAG post carried no tag: {body}");
+}
+
+#[test]
+fn a_tagless_forum_with_no_knob_still_posts_untagged() {
+    // The pre-FR-008 path has to survive: the knob is opt-in, so a forum that
+    // requires no tag must not start needing one.
+    let channel = json!({
+        "type": 15,
+        "flags": 0,
+        "available_tags": [{ "id": "1035", "name": "cron-report" }],
+    });
+    assert!(!forum_requires_tag(&channel));
+    assert!(forum_applied_tags(&channel, None).is_empty());
+
+    let body = forum_post_body("t", "c", &[]);
+    assert!(body.get("applied_tags").is_none(), "got: {body}");
+}
+
+#[test]
+fn a_require_tag_channel_with_no_knob_is_refused_rather_than_posted_untagged() {
+    // The condition the delivery path refuses on, expressed over the pure
+    // helpers: the channel demands a tag and nothing resolves to one. Sending
+    // the post anyway is a 400 nobody reads, which is why the refusal exists.
+    let channel = json!({
+        "type": 15,
+        "flags": 1 << 4,
+        "available_tags": [{ "id": "1035", "name": "cron-report" }],
+    });
+    assert!(forum_requires_tag(&channel));
+    assert!(forum_applied_tags(&channel, None).is_empty());
+
+    // A knob naming a tag the channel does not offer lands in the same place:
+    // the post would carry nothing, so it is refused, and the operator gets the
+    // list of names that would have worked.
+    assert!(forum_applied_tags(&channel, Some("typo-in-config")).is_empty());
+    assert_eq!(forum_tag_names(&channel), vec!["cron-report"]);
 }
