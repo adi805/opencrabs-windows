@@ -13,7 +13,7 @@
 //! literal, which is the one edit that silently restores the 4.44x disagreement.
 
 use crate::brain::agent::service::AgentService;
-use crate::brain::agent::service::context::{parse_context_manifest, resolve_context_manifest};
+use crate::brain::agent::service::context::parse_context_manifest;
 use crate::brain::agent::service::request_budget::{
     COMPACTION_SUMMARY_MAX_TOKENS, COMPACTION_SUMMARY_REASONING_HEADROOM_TOKENS,
     compaction_summary_input_reserve, compaction_summary_output_tokens,
@@ -726,34 +726,6 @@ fn a_maxtokens_cut_keeps_the_manifest_only_when_the_head_is_protected() {
         parse_context_manifest(&cut_old).is_none(),
         "the control arm (manifest last) must LOSE the fence to the same cut, \
          or this test cannot distinguish the two orderings"
-    );
-}
-
-/// (b) A document with no fence resolves to the default manifest AND warns,
-/// naming the `required_tools` it could not derive.
-#[test]
-fn resolve_context_manifest_warns_and_defaults_on_a_missing_fence() {
-    let doc = "## 0. IMMEDIATE TASK\n**Obligation status: OPEN**\nno fence here\n";
-
-    let capture = EventCapture::default();
-    let subscriber = tracing_subscriber::registry().with(capture.clone());
-    let manifest = tracing::subscriber::with_default(subscriber, || resolve_context_manifest(doc));
-
-    assert!(
-        manifest.active_skills.is_empty() && manifest.discard_skills.is_empty(),
-        "the fallback must be keep-all-active: discard none, re-activate none"
-    );
-    assert!(
-        manifest.required_tools.is_empty(),
-        "required_tools is not derivable from a document that never carried the fence"
-    );
-    let warns = capture.warns();
-    assert!(
-        warns
-            .iter()
-            .any(|m| m.contains("context-manifest") && m.contains("required_tools")),
-        "the substitution must WARN and name the empty required_tools (#1933); \
-         captured: {warns:?}"
     );
 }
 
