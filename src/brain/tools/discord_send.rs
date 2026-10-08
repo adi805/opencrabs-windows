@@ -410,6 +410,7 @@ impl Tool for DiscordSendTool {
             "send" => {
                 use serenity::builder::CreateMessage;
                 let text = pget!(get_str(&input, "message")).to_string();
+                let text = crate::channels::discord::table_convert::tables_to_discord(&text);
                 let channel_id = pget!(channel_or_err(channel_id_opt));
                 let channel = ChannelId::new(channel_id);
                 let chunks = crate::channels::discord::handler::split_message(&text, 2000);
@@ -434,6 +435,7 @@ impl Tool for DiscordSendTool {
                 use serenity::builder::CreateMessage;
                 use serenity::model::channel::MessageReference;
                 let text = pget!(get_str(&input, "message")).to_string();
+                let text = crate::channels::discord::table_convert::tables_to_discord(&text);
                 let channel_id = pget!(channel_or_err(channel_id_opt));
                 let message_id = pget!(get_id(&input, "message_id"));
                 let channel = ChannelId::new(channel_id);
@@ -502,6 +504,7 @@ impl Tool for DiscordSendTool {
                 let channel_id = pget!(channel_or_err(channel_id_opt));
                 let message_id = pget!(get_id(&input, "message_id"));
                 let text = pget!(get_str(&input, "message")).to_string();
+                let text = crate::channels::discord::table_convert::tables_to_discord(&text);
                 let edit = EditMessage::new().content(text.as_str());
                 match http
                     .edit_message(

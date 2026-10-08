@@ -32,6 +32,7 @@ mod connection;
 pub(crate) mod context_menu;
 pub(crate) mod embed;
 pub(crate) mod flags;
+pub(crate) mod formatting_prompt;
 pub(crate) mod governor;
 pub(crate) mod guard;
 pub(crate) mod handler;

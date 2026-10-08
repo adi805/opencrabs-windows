@@ -989,6 +989,7 @@ pub mod discord_evidence_footer_test;
 pub mod discord_flow_ticker_test;
 pub mod discord_followup_tap_tool_loop_test;
 pub mod discord_footer_placement_test;
+pub mod discord_formatting_prompt_test;
 pub mod discord_forward_snapshot_test;
 pub mod discord_fr004_one_message_test;
 pub mod discord_governor_test;
