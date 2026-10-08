@@ -984,6 +984,7 @@ pub mod discord_activity_text_test;
 pub mod discord_application_commands_test;
 pub mod discord_auto_thread_test;
 pub mod discord_autocomplete_test;
+pub mod discord_component_spec_test;
 pub mod discord_context_menu_test;
 pub mod discord_evidence_footer_test;
 pub mod discord_flow_ticker_test;

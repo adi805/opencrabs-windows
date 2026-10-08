@@ -8,6 +8,7 @@
 use super::error::Result;
 use super::r#trait::{Tool, ToolCapability, ToolExecutionContext, ToolHints, ToolResult};
 use crate::channels::discord::DiscordState;
+use crate::channels::discord::component_spec;
 use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::Value;
@@ -278,12 +279,35 @@ impl Tool for DiscordSendTool {
                 },
                 "options": {
                     "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Choices for send_select (max 25). The user's pick is routed back to you as a new turn."
+                    "maxItems": 25,
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "label": {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "emoji": {"type": "string"},
+                                    "default": {"type": "boolean"}
+                                },
+                                "required": ["label"]
+                            }
+                        ]
+                    },
+                    "description": "Choices for send_select (max 25). A bare string is the label; an object adds a description, a unicode emoji, and default (pre-selected when the menu opens). The user's pick is routed back to you as a new turn."
                 },
                 "placeholder": {
                     "type": "string",
                     "description": "Placeholder text for send_select's menu."
+                },
+                "min_values": {
+                    "type": "integer",
+                    "description": "For send_select: fewest options the user may pick (1-25). Defaults to 1."
+                },
+                "max_values": {
+                    "type": "integer",
+                    "description": "For send_select: most options the user may pick (1-25, capped at the option count). multi_select is sugar for this."
                 },
                 "title": {
                     "type": "string",
@@ -291,15 +315,21 @@ impl Tool for DiscordSendTool {
                 },
                 "fields": {
                     "type": "array",
+                    "maxItems": 5,
                     "items": {
                         "type": "object",
                         "properties": {
                             "label": {"type": "string"},
-                            "multiline": {"type": "boolean"}
+                            "multiline": {"type": "boolean"},
+                            "placeholder": {"type": "string"},
+                            "required": {"type": "boolean"},
+                            "min_length": {"type": "integer"},
+                            "max_length": {"type": "integer"},
+                            "value": {"type": "string"}
                         },
                         "required": ["label"]
                     },
-                    "description": "Form fields for send_form (max 5). Submitted values are routed back to you as a new turn."
+                    "description": "Form fields for send_form (max 5). label and multiline are the base shape; placeholder, required (default true), min_length, max_length and value are optional refinements. Submitted values are routed back to you as a new turn."
                 },
                 "poll_question": {
                     "type": "string",
@@ -316,7 +346,7 @@ impl Tool for DiscordSendTool {
                 },
                 "multi_select": {
                     "type": "boolean",
-                    "description": "For send_poll: let voters pick several answers. Default false (single choice)"
+                    "description": "For send_poll: let voters pick several answers. For send_select: sugar for max_values = the option count, so the user may pick any number. Default false (single choice)"
                 },
                 "file_path": {
                     "type": "string",
@@ -865,30 +895,52 @@ impl Tool for DiscordSendTool {
                     CreateActionRow, CreateMessage, CreateSelectMenu, CreateSelectMenuKind,
                     CreateSelectMenuOption,
                 };
+                use serenity::model::channel::ReactionType;
                 let text = pget!(get_str(&input, "message")).to_string();
                 let channel_id = pget!(channel_or_err(channel_id_opt));
-                let options: Vec<String> = input
+                let raw_options = input
                     .get("options")
                     .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .take(25)
-                            .collect()
-                    })
+                    .cloned()
                     .unwrap_or_default();
+                let options = component_spec::parse_select_options(&raw_options);
                 if options.is_empty() {
                     return Ok(ToolResult::error(
-                        "send_select requires a non-empty 'options' array.".to_string(),
+                        "send_select needs a non-empty 'options' array.".to_string(),
                     ));
                 }
+                let multi_select = input
+                    .get("multi_select")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let (min_values, max_values) = component_spec::select_arity(
+                    multi_select,
+                    options.len(),
+                    input
+                        .get("min_values")
+                        .and_then(|v| v.as_u64())
+                        .and_then(|n| u8::try_from(n).ok()),
+                    input
+                        .get("max_values")
+                        .and_then(|v| v.as_u64())
+                        .and_then(|n| u8::try_from(n).ok()),
+                );
                 let select_id = uuid::Uuid::new_v4().to_string();
                 let menu_options: Vec<CreateSelectMenuOption> = options
                     .iter()
                     .enumerate()
                     .map(|(i, o)| {
-                        let label: String = o.chars().take(100).collect();
-                        CreateSelectMenuOption::new(label, i.to_string())
+                        let mut opt = CreateSelectMenuOption::new(o.label.clone(), i.to_string());
+                        if let Some(description) = &o.description {
+                            opt = opt.description(description.clone());
+                        }
+                        if let Some(emoji) = &o.emoji {
+                            opt = opt.emoji(ReactionType::Unicode(emoji.clone()));
+                        }
+                        if o.default {
+                            opt = opt.default_selection(true);
+                        }
+                        opt
                     })
                     .collect();
                 let mut menu = CreateSelectMenu::new(
@@ -900,6 +952,12 @@ impl Tool for DiscordSendTool {
                 if let Some(ph) = input.get("placeholder").and_then(|v| v.as_str()) {
                     menu = menu.placeholder(ph);
                 }
+                if let Some(min) = min_values {
+                    menu = menu.min_values(min);
+                }
+                if let Some(max) = max_values {
+                    menu = menu.max_values(max);
+                }
                 let message = CreateMessage::new()
                     .content(text)
                     .components(vec![CreateActionRow::SelectMenu(menu)]);
@@ -908,7 +966,8 @@ impl Tool for DiscordSendTool {
                     .await
                 {
                     Ok(_) => {
-                        self.discord_state.register_select(select_id, options).await;
+                        let labels = options.iter().map(|o| o.label.clone()).collect();
+                        self.discord_state.register_select(select_id, labels).await;
                         Ok(ToolResult::success(
                             "Select menu posted; the pick will arrive as a new turn.".to_string(),
                         ))
@@ -992,23 +1051,12 @@ impl Tool for DiscordSendTool {
                     .and_then(|v| v.as_str())
                     .unwrap_or("Form")
                     .to_string();
-                let fields: Vec<(String, bool)> = input
+                let raw_fields = input
                     .get("fields")
                     .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|f| {
-                                let label = f.get("label")?.as_str()?.to_string();
-                                let multiline = f
-                                    .get("multiline")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false);
-                                Some((label, multiline))
-                            })
-                            .take(5)
-                            .collect()
-                    })
+                    .cloned()
                     .unwrap_or_default();
+                let fields = component_spec::parse_form_fields(&raw_fields);
                 if fields.is_empty() {
                     return Ok(ToolResult::error(
                         "send_form requires a non-empty 'fields' array (max 5).".to_string(),

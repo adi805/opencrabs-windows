@@ -28,6 +28,7 @@ mod approval;
 pub(crate) mod autocomplete;
 mod cancel;
 pub(crate) mod commands;
+pub(crate) mod component_spec;
 mod connection;
 pub(crate) mod context_menu;
 pub(crate) mod embed;

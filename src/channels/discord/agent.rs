@@ -403,7 +403,7 @@ impl EventHandler for Handler {
                     .fields
                     .iter()
                     .zip(values.iter())
-                    .map(|((label, _), v)| format!("{label}: {v}"))
+                    .map(|(field, v)| format!("{}: {v}", field.label))
                     .collect();
                 let user = modal.user.id.get();
                 let user_name = modal
@@ -534,15 +534,19 @@ impl EventHandler for Handler {
                 let ttl = self.config_rx.borrow().channels.discord.component_ttl_hours;
                 let options = self.discord_state.take_select(sel_id, ttl).await;
                 use serenity::model::application::ComponentInteractionDataKind;
-                let picked: Option<String> = match (&comp.data.kind, options) {
-                    (ComponentInteractionDataKind::StringSelect { values }, Some(opts)) => values
-                        .first()
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .and_then(|i| opts.get(i).cloned()),
-                    (_, None) => None,
+                // A multi-select menu reports every pick, so collect them all
+                // instead of reading only the first (milestone 2).
+                let picked: Option<Vec<String>> = match (&comp.data.kind, options) {
+                    (ComponentInteractionDataKind::StringSelect { values }, Some(opts)) => Some(
+                        values
+                            .iter()
+                            .filter_map(|v| v.parse::<usize>().ok())
+                            .filter_map(|i| opts.get(i).cloned())
+                            .collect(),
+                    ),
                     _ => None,
                 };
-                let Some(choice) = picked else {
+                let Some(choice) = picked.filter(|c| !c.is_empty()) else {
                     // Expired or unknown: say so and strip the dead menu.
                     use serenity::builder::{
                         CreateInteractionResponse, CreateInteractionResponseMessage,
@@ -559,6 +563,7 @@ impl EventHandler for Handler {
                         .await;
                     return;
                 };
+                let choice = choice.join(", ");
                 let user = comp.user.id.get();
                 let user_name = comp
                     .user
@@ -632,18 +637,30 @@ impl EventHandler for Handler {
                     .fields
                     .iter()
                     .enumerate()
-                    .map(|(i, (label, multiline))| {
-                        let style = if *multiline {
+                    .map(|(i, field)| {
+                        let style = if field.multiline {
                             InputTextStyle::Paragraph
                         } else {
                             InputTextStyle::Short
                         };
-                        let short_label: String = label.chars().take(45).collect();
-                        CreateActionRow::InputText(CreateInputText::new(
-                            style,
-                            short_label,
-                            format!("field:{i}"),
-                        ))
+                        let mut input =
+                            CreateInputText::new(style, field.label.clone(), format!("field:{i}"));
+                        if let Some(placeholder) = &field.placeholder {
+                            input = input.placeholder(placeholder.clone());
+                        }
+                        if !field.required {
+                            input = input.required(false);
+                        }
+                        if let Some(min) = field.min_length {
+                            input = input.min_length(min);
+                        }
+                        if let Some(max) = field.max_length {
+                            input = input.max_length(max);
+                        }
+                        if let Some(value) = &field.value {
+                            input = input.value(value.clone());
+                        }
+                        CreateActionRow::InputText(input)
                     })
                     .collect();
                 let modal = CreateModal::new(format!("formsub:{form_id}"), spec.title.clone())
