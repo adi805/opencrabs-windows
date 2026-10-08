@@ -204,7 +204,7 @@ pub(crate) fn raw_update_kind_name(u: &Value) -> &'static str {
     }
     for key in ALLOWED_UPDATES {
         if u.get(*key).is_some() {
-            return *key;
+            return key;
         }
     }
     "unknown"
