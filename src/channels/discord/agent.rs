@@ -184,6 +184,15 @@ impl EventHandler for Handler {
             .set_bot_user_id(ready.user.id.get())
             .await;
 
+        // FR-003: the bot's own activity line. Discord keeps a presence until
+        // something changes it, so a process that died mid-turn would reconnect
+        // still advertising work it is not doing. `ready` is the only hook that
+        // runs on every connect, which is what makes it the place to reconcile
+        // rather than a place to announce. No intent is involved: this is the
+        // bot's own status (gateway opcode 3), not other members' presence, so
+        // `GUILD_PRESENCES` stays unrequested.
+        ctx.set_activity(super::presence::steady());
+
         // Application commands (#1850): project `commands.toml` onto Discord's
         // slash-command list so the catalog the TUI completes and Telegram
         // menus is the same one this channel autocompletes. `ready` is the only
