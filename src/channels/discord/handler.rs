@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use serenity::builder::{CreateAttachment, CreateMessage, EditMessage};
 use serenity::http::Http;
-use serenity::model::channel::{Message, MessageFlags, MessageSnapshot};
+use serenity::model::channel::{ChannelType, Message, MessageFlags, MessageSnapshot};
 use serenity::model::id::ChannelId;
 use serenity::prelude::*;
 
@@ -1797,8 +1797,31 @@ pub(crate) async fn handle_message(
                 // press, so paging cannot re-bury the channel it exists to
                 // keep clean. Exactly one Action Row rides the message
                 // (AC-021).
+                // FR-007 (AC-010): decide the THREAD before the pager. The
+                // pager claims every answer past PAGE_CHARS, which is exactly
+                // the set a thread is for, so gating the thread behind
+                // `!paged` left it reachable only in the narrow band between
+                // the threshold and the page ceiling. The thread is the
+                // primary route; the in-place chunker is the fallback (the
+                // `Err` arm below posts the chunks inline when the thread is
+                // refused).
+                // The threshold decides intent; the destination decides
+                // whether a thread is even possible. Discord refuses to anchor
+                // a thread to a thread, so a message that already arrived in
+                // one — or a `!bang` turn that opened its own — must be
+                // delivered in place, which hands the answer back to the pager
+                // (the right surface inside a thread). DMs have no threads at
+                // all. The lookup runs only once the threshold is cleared, so
+                // a short answer pays nothing.
+                let long_enough = super::long_answer::wants_thread(
+                    dc_cfg.auto_thread_min_chars,
+                    text_only.chars().count(),
+                );
+                let want_thread = long_enough
+                    && !is_dm
+                    && !channel_is_thread(&ctx.http, target).await;
                 let paged =
-                    if chunks.len() > 1 {
+                    if !want_thread && chunks.len() > 1 {
                         let builder = CreateMessage::new().content(&chunks[0]);
                         match writes::send(&ctx.http, target, builder, Class::Final).await {
                             Ok(Some(sent)) => {
@@ -1832,12 +1855,10 @@ pub(crate) async fn handle_message(
                 // Auto-thread (opt-in): long answers post a short teaser in
                 // the channel and the full body in a thread anchored to the
                 // turn's bubble (or the user's message). The channel stays
-                // scannable; the deliverable stays whole.
-                // Mutually exclusive with the pager: an answer that already
-                // went out as page 0 must not also be threaded in full.
-                let auto_thread = !paged
-                    && dc_cfg.auto_thread_min_chars > 0
-                    && text_only.chars().count() >= dc_cfg.auto_thread_min_chars;
+                // scannable; the deliverable stays whole. `want_thread` was
+                // computed before the pager, so a paged answer can never also
+                // be threaded: when a thread is wanted the pager stands down.
+                let auto_thread = want_thread;
                 if auto_thread {
                     let anchor = (*turn_group_mid.lock().await).unwrap_or(msg.id);
                     let title = thread_title(&text_only);
@@ -2240,6 +2261,24 @@ pub(crate) fn make_approval_callback(
 /// through (every word must still match, in order).
 pub(crate) fn norm_key(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether `channel` is itself a thread (or a forum post, which Discord models
+/// as one).
+///
+/// FR-007 (AC-010): Discord refuses to anchor a thread to a thread, so an
+/// answer headed into one has to be delivered in place. Callers use this to
+/// skip the thread attempt entirely rather than firing a request Discord is
+/// guaranteed to reject. A DM resolves to `Channel::Private` and returns false,
+/// but callers gate on `is_dm` first because a DM has no threads at all.
+async fn channel_is_thread(http: &Http, channel: ChannelId) -> bool {
+    match channel.to_channel(http).await {
+        Ok(serenity::model::channel::Channel::Guild(gc)) => matches!(
+            gc.kind,
+            ChannelType::PublicThread | ChannelType::PrivateThread | ChannelType::NewsThread
+        ),
+        _ => false,
+    }
 }
 
 /// Short, recognizable thread title: drops a leading bang, collapses

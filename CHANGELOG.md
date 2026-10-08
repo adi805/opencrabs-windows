@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ProgressEvent::ToolStarted` executions, one implementation shared by Discord
   and Telegram (#121).
 
+- discord: a long answer now routes into a thread when it clears
+  `auto_thread_min_chars`, with the in-place chunker as the fallback when
+  thread creation is refused. The gate used to run the pager first, so a
+  thread was only created for answers between the threshold and the 2000-char
+  page ceiling: the answers that most need a thread could never get one. The
+  default threshold moves from 0 (disabled) to 1800 (FR-007, AC-010).
+
 ## [0.5.5] - 2026-10-07
 
 First release cut from this fork. Carries upstream 0.5.4 plus the fork's own

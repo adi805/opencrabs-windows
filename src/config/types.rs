@@ -939,7 +939,7 @@ pub struct DiscordConfig {
     /// Post answers longer than this many characters as a short teaser in
     /// the channel plus an anchored thread carrying the full body. 0
     /// disables. Discord's own message cap is 2000, so 1800 is a sensible
-    /// threshold. Default: 0 (disabled).
+    /// threshold. Default: 1800 (FR-007).
     #[serde(default)]
     pub auto_thread_min_chars: usize,
     /// Treat messages starting with `!` as thread requests: strip the `!`,
@@ -1100,7 +1100,7 @@ impl Default for DiscordConfig {
             session_idle_hours: None,
             bot_owner: Vec::new(),
             trace_narration: default_true(),
-            auto_thread_min_chars: 0,
+            auto_thread_min_chars: 1800,
             bang_new_thread: false,
             suppress_notifications: false,
             welcome_message: None,
