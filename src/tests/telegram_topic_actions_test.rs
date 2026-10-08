@@ -66,10 +66,18 @@ fn telegram_send_schema_declares_topic_actions_and_params() {
         enum_strs.contains(&"edit_forum_topic"),
         "action enum missing edit_forum_topic"
     );
+    assert!(
+        enum_strs.contains(&"approve_chat_join_request"),
+        "action enum missing approve_chat_join_request"
+    );
+    assert!(
+        enum_strs.contains(&"decline_chat_join_request"),
+        "action enum missing decline_chat_join_request"
+    );
     assert_eq!(
         enum_strs.len(),
-        44,
-        "action enum should contain exactly 44 actions"
+        46,
+        "action enum should contain exactly 46 actions"
     );
 
     let name = props.get("name").expect("schema has name property");
