@@ -50,10 +50,26 @@ fn telegram_send_schema_declares_topic_actions_and_params() {
         enum_strs.contains(&"bind_topic"),
         "action enum missing bind_topic"
     );
+    assert!(
+        enum_strs.contains(&"delete_forum_topic"),
+        "action enum missing delete_forum_topic"
+    );
+    assert!(
+        enum_strs.contains(&"close_forum_topic"),
+        "action enum missing close_forum_topic"
+    );
+    assert!(
+        enum_strs.contains(&"reopen_forum_topic"),
+        "action enum missing reopen_forum_topic"
+    );
+    assert!(
+        enum_strs.contains(&"edit_forum_topic"),
+        "action enum missing edit_forum_topic"
+    );
     assert_eq!(
         enum_strs.len(),
-        40,
-        "action enum should contain exactly 40 actions"
+        44,
+        "action enum should contain exactly 44 actions"
     );
 
     let name = props.get("name").expect("schema has name property");

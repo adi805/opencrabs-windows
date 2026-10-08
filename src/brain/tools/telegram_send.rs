@@ -43,8 +43,9 @@ use uuid::Uuid;
 type TgMenuButton = teloxide::types::MenuButton;
 type TgChatPermissions = teloxide::types::ChatPermissions;
 type TgWebAppInfo = teloxide::types::WebAppInfo;
+type TgCustomEmojiId = teloxide::types::CustomEmojiId;
 
-/// Tool for comprehensive Telegram bot control (40 actions).
+/// Tool for comprehensive Telegram bot control (44 actions).
 pub struct TelegramSendTool {
     telegram_state: Arc<TelegramState>,
 }
@@ -497,6 +498,8 @@ impl Tool for TelegramSendTool {
                         "get_chat_administrators", "get_chat_member_count", "get_chat_member",
                         "ban_user", "unban_user", "set_reaction", "list_topics",
                         "create_topic", "rename_topic", "bind_topic",
+                        "delete_forum_topic", "close_forum_topic", "reopen_forum_topic",
+                        "edit_forum_topic",
                         "set_chat_menu_button", "set_chat_title", "set_chat_photo",
                         "set_chat_description", "promote_chat_member",
                         "restrict_chat_member", "unpin_all_chat_messages"
@@ -523,11 +526,22 @@ impl Tool for TelegramSendTool {
                         MTProto forum enumeration, use MTProto client tools (e.g. fast-mcp-telegram tg_get_chat_info). \
                         `create_topic` creates a new forum topic (requires `name`, 1-128 chars). Optionally accepts `bind: true` to bind the calling session immediately. \
                         `rename_topic` renames an existing forum topic (requires `thread_id` and `name`, 1-128 chars). \
-                        `bind_topic` binds the calling session to a forum topic (requires `thread_id`, optional `chat_id`)."
+                        `bind_topic` binds the calling session to a forum topic (requires `thread_id`, optional `chat_id`). \
+                        Topic lifecycle actions (all require `thread_id`): `delete_forum_topic` removes the topic \
+                        and every message in it, `close_forum_topic` freezes it and `reopen_forum_topic` unfreezes \
+                        it (both take no other parameter), and `edit_forum_topic` changes the topic's `name` \
+                        and/or `icon_custom_emoji_id` — pass an empty string as the emoji id to drop the icon, \
+                        and supply at least one of the two. Delete needs the bot to be an admin with \
+                        can_delete_messages; close/reopen/edit need can_manage_topics, unless the bot created \
+                        the topic."
                 },
                 "name": {
                     "type": "string",
-                    "description": "Topic name (1–128 characters) for create_topic and rename_topic"
+                    "description": "Topic name (1–128 characters) for create_topic, rename_topic and edit_forum_topic"
+                },
+                "icon_custom_emoji_id": {
+                    "type": "string",
+                    "description": "Custom emoji id for the edit_forum_topic icon (getForumTopicIconStickers lists the ids Telegram accepts). An empty string removes the icon; omit it to keep the current one."
                 },
                 "title": {
                     "type": "string",
@@ -781,6 +795,10 @@ impl Tool for TelegramSendTool {
             "create_topic" => self.action_create_topic(&bot, input, context).await,
             "rename_topic" => self.action_rename_topic(&bot, input, context).await,
             "bind_topic" => self.action_bind_topic(input, context).await,
+            "delete_forum_topic" => self.action_delete_forum_topic(&bot, input, context).await,
+            "close_forum_topic" => self.action_close_forum_topic(&bot, input, context).await,
+            "reopen_forum_topic" => self.action_reopen_forum_topic(&bot, input, context).await,
+            "edit_forum_topic" => self.action_edit_forum_topic(&bot, input, context).await,
             "set_chat_menu_button" => self.action_set_chat_menu_button(&bot, input, context).await,
             "set_chat_title" => self.action_set_chat_title(&bot, input, context).await,
             "set_chat_photo" => self.action_set_chat_photo(&bot, input, context).await,
@@ -798,6 +816,7 @@ impl Tool for TelegramSendTool {
                  send_contact, send_venue, send_dice, send_poll, send_buttons, get_chat, \
                  get_chat_administrators, get_chat_member_count, get_chat_member, ban_user, \
                  unban_user, set_reaction, list_topics, create_topic, rename_topic, bind_topic, \
+                 delete_forum_topic, close_forum_topic, reopen_forum_topic, edit_forum_topic, \
                  set_chat_menu_button, set_chat_title, set_chat_photo, set_chat_description, \
                  promote_chat_member, restrict_chat_member, unpin_all_chat_messages"
             ))),
@@ -2950,6 +2969,284 @@ impl TelegramSendTool {
                     &e.to_string(),
                 );
                 Ok(ToolResult::error(format!("Failed to rename topic: {e}")))
+            }
+        }
+    }
+
+    /// `delete_forum_topic` — delete a forum topic and every message in it.
+    async fn action_delete_forum_topic(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ChatTarget { chat_id } =
+            pget!(resolve_chat_target(input, context.session_id, &self.telegram_state).await);
+        let thread_id_raw = pget!(get_id(input, "thread_id"));
+        let thread_id = ThreadId(MessageId(thread_id_raw as i32));
+
+        match send_retrying_rate_limit("telegram_send delete_forum_topic", || {
+            bot.delete_forum_topic(ChatId(chat_id), thread_id)
+        })
+        .await
+        {
+            Ok(_) => {
+                // The API accepted the call, so this chat IS a forum: the
+                // evidence is API-proven rather than inferred.
+                self.telegram_state
+                    .note_thread_evidence(chat_id, true, Some(thread_id_raw as i32))
+                    .await;
+                log_send_success(
+                    "tool",
+                    "delete_forum_topic",
+                    "delete_forum_topic",
+                    &context.session_id.to_string(),
+                    "action",
+                    chat_id,
+                    Some(thread_id_raw as i32),
+                    0,
+                    0,
+                    "-",
+                );
+                let res = serde_json::json!({
+                    "status": "success",
+                    "chat_id": chat_id,
+                    "thread_id": thread_id_raw,
+                    "deleted": true
+                });
+                Ok(ToolResult::success(res.to_string()))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "delete_forum_topic",
+                    "delete_forum_topic",
+                    &context.session_id.to_string(),
+                    "action",
+                    chat_id,
+                    Some(thread_id_raw as i32),
+                    0,
+                    "-",
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to delete topic: {e}")))
+            }
+        }
+    }
+
+    /// `close_forum_topic` — close (freeze) a forum topic.
+    async fn action_close_forum_topic(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ChatTarget { chat_id } =
+            pget!(resolve_chat_target(input, context.session_id, &self.telegram_state).await);
+        let thread_id_raw = pget!(get_id(input, "thread_id"));
+        let thread_id = ThreadId(MessageId(thread_id_raw as i32));
+
+        match send_retrying_rate_limit("telegram_send close_forum_topic", || {
+            bot.close_forum_topic(ChatId(chat_id), thread_id)
+        })
+        .await
+        {
+            Ok(_) => {
+                self.telegram_state
+                    .note_thread_evidence(chat_id, true, Some(thread_id_raw as i32))
+                    .await;
+                log_send_success(
+                    "tool",
+                    "close_forum_topic",
+                    "close_forum_topic",
+                    &context.session_id.to_string(),
+                    "action",
+                    chat_id,
+                    Some(thread_id_raw as i32),
+                    0,
+                    0,
+                    "-",
+                );
+                let res = serde_json::json!({
+                    "status": "success",
+                    "chat_id": chat_id,
+                    "thread_id": thread_id_raw,
+                    "closed": true
+                });
+                Ok(ToolResult::success(res.to_string()))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "close_forum_topic",
+                    "close_forum_topic",
+                    &context.session_id.to_string(),
+                    "action",
+                    chat_id,
+                    Some(thread_id_raw as i32),
+                    0,
+                    "-",
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to close topic: {e}")))
+            }
+        }
+    }
+
+    /// `reopen_forum_topic` — reopen a previously closed forum topic.
+    async fn action_reopen_forum_topic(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ChatTarget { chat_id } =
+            pget!(resolve_chat_target(input, context.session_id, &self.telegram_state).await);
+        let thread_id_raw = pget!(get_id(input, "thread_id"));
+        let thread_id = ThreadId(MessageId(thread_id_raw as i32));
+
+        match send_retrying_rate_limit("telegram_send reopen_forum_topic", || {
+            bot.reopen_forum_topic(ChatId(chat_id), thread_id)
+        })
+        .await
+        {
+            Ok(_) => {
+                self.telegram_state
+                    .note_thread_evidence(chat_id, true, Some(thread_id_raw as i32))
+                    .await;
+                log_send_success(
+                    "tool",
+                    "reopen_forum_topic",
+                    "reopen_forum_topic",
+                    &context.session_id.to_string(),
+                    "action",
+                    chat_id,
+                    Some(thread_id_raw as i32),
+                    0,
+                    0,
+                    "-",
+                );
+                let res = serde_json::json!({
+                    "status": "success",
+                    "chat_id": chat_id,
+                    "thread_id": thread_id_raw,
+                    "reopened": true
+                });
+                Ok(ToolResult::success(res.to_string()))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "reopen_forum_topic",
+                    "reopen_forum_topic",
+                    &context.session_id.to_string(),
+                    "action",
+                    chat_id,
+                    Some(thread_id_raw as i32),
+                    0,
+                    "-",
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to reopen topic: {e}")))
+            }
+        }
+    }
+
+    /// `edit_forum_topic` — change a topic's name and/or icon in one call.
+    async fn action_edit_forum_topic(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ChatTarget { chat_id } =
+            pget!(resolve_chat_target(input, context.session_id, &self.telegram_state).await);
+        let thread_id_raw = pget!(get_id(input, "thread_id"));
+
+        // An absent or empty `name` means "keep the current name" per the Bot
+        // API, so it is folded into None rather than rejected.
+        let new_name = input
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|n| !n.is_empty());
+        let icon = input.get("icon_custom_emoji_id").and_then(|v| v.as_str());
+
+        if new_name.is_none() && icon.is_none() {
+            return Ok(ToolResult::error(
+                "edit_forum_topic needs at least one of 'name' or 'icon_custom_emoji_id'."
+                    .to_string(),
+            ));
+        }
+        if new_name.is_some_and(|name| name.chars().count() > 128) {
+            return Ok(ToolResult::error(
+                "Parameter 'name' must be between 1 and 128 characters.".to_string(),
+            ));
+        }
+
+        let thread_id = ThreadId(MessageId(thread_id_raw as i32));
+        use teloxide::payloads::EditForumTopicSetters;
+        match send_retrying_rate_limit("telegram_send edit_forum_topic", || {
+            let mut req = bot.edit_forum_topic(ChatId(chat_id), thread_id);
+            if let Some(name) = new_name {
+                req = req.name(name.to_string());
+            }
+            if let Some(icon) = icon {
+                req = req.icon_custom_emoji_id(TgCustomEmojiId(icon.to_string()));
+            }
+            req
+        })
+        .await
+        {
+            Ok(_) => {
+                self.telegram_state
+                    .note_thread_evidence(chat_id, true, Some(thread_id_raw as i32))
+                    .await;
+                if let Some(name) = new_name {
+                    crate::channels::telegram::record_topic_created(
+                        None,
+                        chat_id,
+                        thread_id_raw as i32,
+                        name,
+                        true,
+                    )
+                    .await;
+                }
+                log_send_success(
+                    "tool",
+                    "edit_forum_topic",
+                    "edit_forum_topic",
+                    &context.session_id.to_string(),
+                    "action",
+                    chat_id,
+                    Some(thread_id_raw as i32),
+                    0,
+                    new_name.map_or(0, str::len),
+                    "-",
+                );
+                let res = serde_json::json!({
+                    "status": "success",
+                    "chat_id": chat_id,
+                    "thread_id": thread_id_raw,
+                    "name": new_name,
+                    "icon_custom_emoji_id": icon
+                });
+                Ok(ToolResult::success(res.to_string()))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "edit_forum_topic",
+                    "edit_forum_topic",
+                    &context.session_id.to_string(),
+                    "action",
+                    chat_id,
+                    Some(thread_id_raw as i32),
+                    new_name.map_or(0, str::len),
+                    "-",
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to edit topic: {e}")))
             }
         }
     }
