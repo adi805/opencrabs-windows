@@ -52,8 +52,8 @@ fn telegram_send_schema_declares_topic_actions_and_params() {
     );
     assert_eq!(
         enum_strs.len(),
-        33,
-        "action enum should contain exactly 33 actions"
+        40,
+        "action enum should contain exactly 40 actions"
     );
 
     let name = props.get("name").expect("schema has name property");
