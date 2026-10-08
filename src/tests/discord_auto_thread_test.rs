@@ -54,9 +54,7 @@ fn the_thread_is_decided_before_the_pager() {
     let decide = src
         .find("super::long_answer::wants_thread(")
         .expect("the thread decision is gone (AC-010)");
-    let pager = src
-        .find("let paged =")
-        .expect("the pager is gone (AC-020)");
+    let pager = src.find("let paged =").expect("the pager is gone (AC-020)");
     assert!(
         decide < pager,
         "the thread decision now runs after the pager, which is the ordering \
@@ -89,8 +87,8 @@ fn a_refused_thread_falls_back_to_the_in_place_chunker() {
         "the thread is no longer created, so the fallback it guards is \
          unreachable (AC-010)"
     );
-    let refused = src.contains("auto-thread refused")
-        || src.contains("auto-thread failed, posting inline");
+    let refused =
+        src.contains("auto-thread refused") || src.contains("auto-thread failed, posting inline");
     assert!(
         refused,
         "the thread-refused arm is gone: a refused thread now has no \

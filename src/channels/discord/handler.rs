@@ -1817,9 +1817,8 @@ pub(crate) async fn handle_message(
                     dc_cfg.auto_thread_min_chars,
                     text_only.chars().count(),
                 );
-                let want_thread = long_enough
-                    && !is_dm
-                    && !channel_is_thread(&ctx.http, target).await;
+                let want_thread =
+                    long_enough && !is_dm && !channel_is_thread(&ctx.http, target).await;
                 let paged =
                     if !want_thread && chunks.len() > 1 {
                         let builder = CreateMessage::new().content(&chunks[0]);

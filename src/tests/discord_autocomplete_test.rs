@@ -214,8 +214,7 @@ fn the_interaction_arm_answers_autocomplete() {
          times out and Discord shows the user an error (AC-007)"
     );
     assert!(
-        flat_src
-            .contains("super::autocomplete::answer(&ctx.http,command,&cfg,&self.session_svc)"),
+        flat_src.contains("super::autocomplete::answer(&ctx.http,command,&cfg,&self.session_svc)"),
         "the arm no longer routes to the module that owns the decision, so the \
          answer can drift from the catalog it is supposed to read (AC-007)"
     );
