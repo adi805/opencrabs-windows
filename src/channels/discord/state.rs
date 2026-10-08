@@ -62,6 +62,20 @@ pub struct DiscordState {
     /// `resume.rs` can find the waiting group after the turn's closures are
     /// gone and flip it once both registries drain.
     pub(super) waiting_groups: Mutex<HashMap<Uuid, u64>>,
+    /// Sessions with a live turn for this process's lifetime (#1990): an
+    /// inbound message arriving while the slot is held queues as a
+    /// follow-up instead of forking a second concurrent tool loop. The
+    /// Telegram twin (#501); std Mutex, not tokio's, because the claim must
+    /// be atomic and no await may run under the lock, and because the
+    /// guard's Drop fires synchronously on any unwind.
+    pub(super) active_turns: std::sync::Mutex<std::collections::HashSet<Uuid>>,
+    /// Per-session follow-ups queued while the slot is held (#1990).
+    /// Consumed between tool rounds by the queue callback wired in
+    /// manager.rs, and flushed into a fresh tracked turn by whoever held
+    /// the slot last.
+    pub(super) pending_followups: std::sync::Mutex<
+        HashMap<Uuid, std::collections::VecDeque<crate::brain::agent::QueuedUserMessage>>,
+    >,
 }
 
 impl Default for DiscordState {
@@ -87,6 +101,8 @@ impl DiscordState {
             pending_forms: Mutex::new(HashMap::new()),
             tool_groups: Mutex::new((Vec::new(), HashMap::new())),
             waiting_groups: Mutex::new(HashMap::new()),
+            active_turns: std::sync::Mutex::new(std::collections::HashSet::new()),
+            pending_followups: std::sync::Mutex::new(HashMap::new()),
         }
     }
 }

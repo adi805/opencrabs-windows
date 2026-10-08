@@ -963,11 +963,13 @@ pub mod discord_interaction_ack_test;
 pub mod discord_mention_only_test;
 pub mod discord_norm_key_test;
 pub mod discord_resume_chunk_test;
+pub mod discord_resume_turn_tracking_test;
 pub mod discord_split_message_test;
 pub mod discord_table_convert_test;
 pub mod discord_thread_title_test;
 pub mod discord_trace_answer_test;
 pub mod discord_trace_narration_default_test;
+pub mod discord_turn_slot_test;
 pub mod discord_voice_message_test;
 #[cfg(unix)]
 pub mod flock_retry_test;

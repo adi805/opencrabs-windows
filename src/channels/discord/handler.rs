@@ -1061,6 +1061,34 @@ pub(crate) async fn handle_message(
         .register_session_channel(session_id, msg.channel_id.get())
         .await;
 
+    // Mid-turn follow-up claim (#1990): if a turn already owns this session,
+    // this message must NOT fork a second concurrent loop. Queue it, ack with
+    // 👀, and let the live loop inject it between rounds (the queue callback
+    // wired in manager.rs) or this turn's end-of-turn flush pick it up. The
+    // claim precedes `store_cancel_token` below on purpose: that call CANCELS
+    // any token it finds (`cancel.rs`), and a lost claim must never kill the
+    // turn it meant to join.
+    let Some(_turn_guard) = discord_state.try_begin_turn(session_id) else {
+        tracing::info!("Discord: mid-turn follow-up queued for session {session_id} (#1990)");
+        discord_state.enqueue_followup(
+            session_id,
+            crate::brain::agent::QueuedUserMessage {
+                context_text: agent_input.clone(),
+                display_text: display_text.clone(),
+                origin: crate::brain::agent::PushOrigin::Ingress,
+                bg_meta: None,
+            },
+        );
+        use serenity::model::channel::ReactionType;
+        if let Err(e) = msg
+            .react(&ctx.http, ReactionType::Unicode("👀".to_string()))
+            .await
+        {
+            tracing::debug!("Discord: 👀 ack on queued follow-up failed: {e}");
+        }
+        return;
+    };
+
     // Claim this session's background-task completions for Discord: a completion
     // must be delivered by the surface that OWNS the session, not by whichever
     // service happened to run the command (#940).
@@ -1795,6 +1823,40 @@ pub(crate) async fn handle_message(
                 }
             }
         }
+    }
+
+    // End-of-turn flush (#1990, Telegram's #201 rule): a message enqueued
+    // after the loop's last between-rounds drain has no consumer left on
+    // this path. Release the slot first so the flushed follow-up can claim
+    // it as a fresh visible turn; if it loses that brand-new race, the
+    // winner's queue takes the message back, so nothing is ever dropped.
+    drop(_turn_guard);
+    if let Some(joined) = discord_state.drain_followups(session_id) {
+        let http = ctx.http.clone();
+        let dstate = discord_state.clone();
+        let agent = agent.clone();
+        let channel = target;
+        let text = joined.context_text.clone();
+        let display = joined.display_text.clone();
+        tokio::spawn(async move {
+            if matches!(
+                super::tracked_turn::run_tracked_resume_turn(
+                    http,
+                    channel,
+                    session_id,
+                    dstate.clone(),
+                    agent,
+                    super::tracked_turn::ResumeDispatch::Display {
+                        text,
+                        display_tag: Some(display),
+                    },
+                )
+                .await,
+                super::tracked_turn::ResumeTurnOutcome::Queued
+            ) {
+                dstate.enqueue_followup(session_id, joined);
+            }
+        });
     }
 }
 

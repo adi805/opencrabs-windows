@@ -1618,6 +1618,92 @@ async fn cmd_chat_inner(
                             });
                             continue;
                         }
+                        // Discord (#1990): boot recovery rides the tracked
+                        // runner, not the blind `resume_delivery_task`: the
+                        // revived turn gets the visible tool-group shell, the
+                        // live clock, progress events and the session slot,
+                        // so a message sent meanwhile queues as a follow-up
+                        // instead of forking a concurrent loop. Sessions a
+                        // live agent already owns stay on the catch-all path
+                        // (#110's revive semantics).
+                        #[cfg(feature = "discord")]
+                        if channel == "discord"
+                            && let Some(ref cid) = channel_chat_id
+                            && let Ok(discord_ch) = cid.parse::<u64>()
+                            && crate::brain::agent::service::work_status::WorkStatus::find_agent_by_session(
+                                &session_id.to_string(),
+                            )
+                            .is_none()
+                        {
+                            let dstate = discord_state.clone();
+                            let agent = agent.clone();
+                            let ev_tx = ev_tx.clone();
+                            tokio::spawn(async move {
+                                let _presence = crate::cli::resume_delivery::ResumePresence::start(
+                                    &ev_tx,
+                                    session_id,
+                                    "discord",
+                                );
+                                let Some(http) = crate::channels::transport_ready::await_transport(
+                                    "discord",
+                                    session_id,
+                                    || dstate.http(),
+                                )
+                                .await
+                                else {
+                                    tracing::warn!(
+                                        "Discord startup resume: no http within the ready bound, session {session_id} left failed (#1990)"
+                                    );
+                                    boot_report::record_failed();
+                                    return;
+                                };
+                                // The canonical replay prompt plus the promise
+                                // this path now keeps (#1990): a mid-turn
+                                // arrival holds, it does not interrupt.
+                                let prompt = "[System: A restart just occurred while you were \
+                                        processing a request. Read the conversation context and continue \
+                                        where you left off naturally. Do not mention the restart or \
+                                        any interruption - just pick up seamlessly. If a new message \
+                                        arrives while this recovered work continues, it is held for \
+                                        you and reaches you as a follow-up when your turn ends.]"
+                                        .to_string();
+                                match crate::channels::discord::tracked_turn::run_tracked_resume_turn(
+                                    http,
+                                    serenity::model::id::ChannelId::new(discord_ch),
+                                    session_id,
+                                    dstate.clone(),
+                                    agent,
+                                    crate::channels::discord::tracked_turn::ResumeDispatch::Recovery {
+                                        prompt: prompt.clone(),
+                                    },
+                                )
+                                .await
+                                {
+                                    crate::channels::discord::tracked_turn::ResumeTurnOutcome::Delivered => {
+                                        boot_report::record_delivered();
+                                    }
+                                    crate::channels::discord::tracked_turn::ResumeTurnOutcome::Queued => {
+                                        // A turn claimed the slot first (a
+                                        // message arrived before this resume
+                                        // finished wiring): the replay joins
+                                        // its queue, parked in the ledger,
+                                        // never forked.
+                                        tracing::info!(
+                                            "Discord startup resume: session {session_id} already mid-turn, replay held as a follow-up (#1990)"
+                                        );
+                                        dstate.enqueue_followup(
+                                            session_id,
+                                            crate::brain::agent::QueuedUserMessage::plain(prompt),
+                                        );
+                                        boot_report::record_parked();
+                                    }
+                                    crate::channels::discord::tracked_turn::ResumeTurnOutcome::Failed => {
+                                        boot_report::record_failed();
+                                    }
+                                }
+                            });
+                            continue;
+                        }
                         tokio::spawn(crate::cli::resume_delivery::resume_delivery_task(
                             agent,
                             ev_tx,

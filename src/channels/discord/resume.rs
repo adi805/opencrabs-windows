@@ -2,8 +2,11 @@
 //!
 //! Mirrors Telegram's `build_enqueue_callback`: when a detached long command
 //! finishes, resume the originating session and deliver the result to its
-//! Discord channel. Discord has no streaming resume pipeline, so this sends the
-//! completed turn's final text (like the crash-recovery path in `cli/ui.rs`).
+//! Discord channel. Since #1990 the delivery rides the tracked runner
+//! (`tracked_turn::run_tracked_resume_turn`), the same visible, slot-holding
+//! turn shape ingress and boot recovery use; a completion that loses the
+//! slot claim queues its text as a follow-up instead of forking a second
+//! tool loop on the busy session.
 
 use super::DiscordState;
 use crate::brain::agent::service::MessageEnqueueCallback;
@@ -78,34 +81,34 @@ pub(crate) fn build_enqueue_callback(
                     state.clear_waiting_group(session_id).await;
                 }
             }
-            let target = channel_id.to_string();
-            if let Some(content) =
-                bg_resume::run_resume_turn(agent, session_id, msg.context_text, "discord", &target)
-                    .await
-            {
-                let chunks = resume_delivery_chunks(&content);
-                let total = chunks.len();
-                if total == 0 {
-                    tracing::debug!("[bg-resume] discord: blank verdict, nothing sent");
-                    return;
+            // #1990: run the completion turn through the tracked runner
+            // (tool-group shell, live clock, progress events, approvals)
+            // instead of the invisible all-None `run_resume_turn` followed
+            // by plain chunks. If a turn already owns the session, this
+            // text joins its injection queue rather than racing it; only
+            // the caller holds the whole message with origin and receipt
+            // payload, so the enqueue happens HERE, not in the runner.
+            let outcome = super::tracked_turn::run_tracked_resume_turn(
+                http,
+                serenity::model::id::ChannelId::new(channel_id),
+                session_id,
+                state.clone(),
+                agent,
+                super::tracked_turn::ResumeDispatch::Push {
+                    context_text: msg.context_text.clone(),
+                },
+            )
+            .await;
+            match outcome {
+                super::tracked_turn::ResumeTurnOutcome::Queued => {
+                    state.enqueue_followup(session_id, msg);
                 }
-                let verdict_chars = content.chars().count();
-                let ch = serenity::model::id::ChannelId::new(channel_id);
-                for (index, chunk) in chunks.into_iter().enumerate() {
-                    if let Err(e) = ch.say(&http, &chunk).await {
-                        if index == 0 {
-                            tracing::error!(
-                                "[bg-resume] discord: first of {total} chunks failed, the whole verdict was lost ({verdict_chars} chars): {e}"
-                            );
-                        } else {
-                            tracing::warn!(
-                                "[bg-resume] discord: chunk {}/{total} failed, the rest of the verdict was dropped: {e}",
-                                index + 1
-                            );
-                        }
-                        break;
-                    }
+                super::tracked_turn::ResumeTurnOutcome::Failed => {
+                    tracing::warn!(
+                        "[bg-resume] discord: tracked resume turn failed for session {session_id}"
+                    );
                 }
+                super::tracked_turn::ResumeTurnOutcome::Delivered => {}
             }
         });
     })

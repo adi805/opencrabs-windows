@@ -437,9 +437,13 @@ impl ChannelManager {
                         self.discord_state.clone(),
                         agent_holder.clone(),
                     );
+                    // #1990: follow-ups that arrive mid-turn queue in the
+                    // Discord state; the tool loop drains them between
+                    // rounds through this callback (Telegram's #302 rail).
+                    let followup_cb = self.discord_state.followup_queue_callback();
                     let dc_agent_service = self
                         .channel_factory
-                        .create_agent_service_full(None, Some(enqueue_cb))
+                        .create_agent_service_full(Some(followup_cb), Some(enqueue_cb))
                         .await;
                     crate::channels::bg_resume::fill(&agent_holder, &dc_agent_service);
                     let agent = crate::channels::discord::DiscordAgent::new(
