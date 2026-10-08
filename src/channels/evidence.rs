@@ -92,7 +92,12 @@ where
     // `🛠️ baca 2 file` rather than a row of zeros. The array is the render
     // order and must stay in step with the enum.
     let mut parts: Vec<String> = Vec::new();
-    for cat in [Category::Read, Category::Run, Category::Write, Category::Other] {
+    for cat in [
+        Category::Read,
+        Category::Run,
+        Category::Write,
+        Category::Other,
+    ] {
         let n = counts[cat as usize];
         if n > 0 {
             parts.push(cat.phrase(n));
