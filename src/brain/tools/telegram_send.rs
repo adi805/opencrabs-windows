@@ -3809,7 +3809,7 @@ impl TelegramSendTool {
                     &content_hash8(&coords),
                 );
                 Ok(ToolResult::success(format!(
-                    "Live location on message {message_id} moved to ({lat}, {lng}) in chat {chat_id}."
+                    "Live location {message_id} moved to ({lat}, {lng}) in chat {chat_id}."
                 )))
             }
             Err(e) => {

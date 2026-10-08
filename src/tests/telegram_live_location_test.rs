@@ -6,19 +6,17 @@
 //!
 //! Neither payload carries a `message_thread_id` setter at all: a `message_id`
 //! is unique within its chat, so the topic is implied by the message being
-//! edited. That is why these two are pinned against `message_id` here rather
-//! than `thread_id` like the `send_*` family.
+//! edited. That is why these two are addressed by `message_id` rather than
+//! `thread_id` like the `send_*` family.
+//!
+//! The resolver's own refusal is already pinned in
+//! `telegram_target_resolver_test`, so nothing here re-tests it: these tests
+//! cover only what is specific to the two new actions.
 
 use crate::brain::tools::r#trait::Tool;
-use crate::brain::tools::telegram_send::{TelegramSendTool, resolve_existing_target};
+use crate::brain::tools::telegram_send::TelegramSendTool;
 use crate::channels::telegram::TelegramState;
-use serde_json::json;
 use std::sync::Arc;
-use uuid::Uuid;
-
-fn empty_state() -> TelegramState {
-    TelegramState::new()
-}
 
 fn action_enum(tool: &TelegramSendTool) -> Vec<String> {
     tool.input_schema()["properties"]["action"]["enum"]
@@ -66,17 +64,21 @@ fn the_schema_offers_the_live_location_tuning_parameters() {
     }
 }
 
-#[tokio::test]
-async fn a_live_location_edit_needs_a_message_id() {
-    // Both actions edit an existing message, so the shared seam refuses a call
-    // that names no target. Without this the tool would have to guess which
-    // live location to move.
-    let err = resolve_existing_target(&json!({}), Uuid::nil(), &empty_state())
-        .await
-        .expect_err("a call with no message_id must not resolve");
-    let text = err.error.unwrap_or_default();
-    assert!(
-        text.contains("message_id"),
-        "refusal should name the missing field: {text}"
-    );
+#[test]
+fn the_action_description_names_both_live_location_actions() {
+    // The enum decides what dispatch accepts; the description is what tells
+    // the model the pair exists at all. An action that is dispatchable but
+    // never described is one the model does not reach for, which reads as the
+    // capability being absent even though the arm is there.
+    let tool = TelegramSendTool::new(Arc::new(TelegramState::new()));
+    let schema = tool.input_schema();
+    let description = schema["properties"]["action"]["description"]
+        .as_str()
+        .expect("the action property carries a description");
+    for action in ["edit_message_live_location", "stop_message_live_location"] {
+        assert!(
+            description.contains(action),
+            "{action} is dispatchable but the action description never names it"
+        );
+    }
 }
