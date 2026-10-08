@@ -120,7 +120,7 @@ pub fn edit_text_ui(
     // When this chat has a tracked scoped picker, edit THAT instead: it is the
     // bubble the user is actually looking at.
     if message_id.0 == 0
-        && let Some(ephemeral_id) = super::ephemeral::picker_for(chat_id.0)
+        && let Some((ephemeral_id, ephemeral_rx)) = super::ephemeral::picker_for(chat_id.0)
     {
         // Serialize the keyboard once: the same value decides whether the
         // picker is finished and is what the markup edit sends.
@@ -138,9 +138,13 @@ pub fn edit_text_ui(
             .is_some_and(|rows| rows.is_empty());
         let bot = bot.clone();
         tokio::spawn(async move {
+            // `ephemeral_rx` travels with the id: the receiver is a Required
+            // parameter of every `editEphemeralMessage*` method, so an edit
+            // without it is refused by the server.
             let edited = super::ephemeral::edit_text(
                 bot.token(),
                 chat_id.0,
+                ephemeral_rx,
                 ephemeral_id,
                 &text,
                 parse_html,
@@ -153,6 +157,7 @@ pub fn edit_text_ui(
                 let marked = super::ephemeral::edit_reply_markup(
                     bot.token(),
                     chat_id.0,
+                    ephemeral_rx,
                     ephemeral_id,
                     &value,
                 )

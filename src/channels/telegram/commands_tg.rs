@@ -65,13 +65,18 @@ async fn send_picker_reply(
         )
         .await;
         if scoped.landed {
-            // `remember_picker` returns the id it replaced, and never reports
-            // the id it was just handed, so the guard against deleting the
-            // message we are about to keep lives in there.
+            // `remember_picker` returns the id and receiver it replaced, and
+            // never reports the one it was just handed, so the guard against
+            // deleting the message we are about to keep lives in there. The
+            // replaced bubble is deleted with ITS receiver, which is not
+            // necessarily the one being stored now.
             if let Some(eid) = scoped.ephemeral_message_id
-                && let Some(old) = super::ephemeral::remember_picker(msg.chat.id.0, eid)
+                && let Some((old_id, old_rx)) =
+                    super::ephemeral::remember_picker(msg.chat.id.0, eid, rx)
             {
-                let _ = super::ephemeral::delete_message(bot.token(), msg.chat.id.0, old).await;
+                let _ =
+                    super::ephemeral::delete_message(bot.token(), msg.chat.id.0, old_rx, old_id)
+                        .await;
             }
             return Ok(());
         }

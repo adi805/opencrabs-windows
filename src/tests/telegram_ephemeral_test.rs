@@ -6,7 +6,8 @@
 //! transport itself needs a live bot.
 
 use crate::channels::telegram::ephemeral::{
-    build_body, build_body_legacy, build_delete_body, build_edit_markup_body, build_edit_text_body,
+    build_body, build_body_legacy, build_delete_body, build_edit_caption_body,
+    build_edit_markup_body, build_edit_media_body, build_edit_text_body, build_edit_text_rich_body,
     build_rich_body, ephemeral_id_from, forget_picker, picker_for, receiver_for, remember_picker,
 };
 use serde_json::json;
@@ -18,6 +19,9 @@ use teloxide::types::{MessageId, ThreadId};
 const PICKER_CHAT_A: i64 = -1_000_900_001;
 const PICKER_CHAT_B: i64 = -1_000_900_002;
 const PICKER_CHAT_C: i64 = -1_000_900_003;
+// The receiver the picker was scoped to, carried alongside the id because
+// every `editEphemeralMessage*` call needs it.
+const PICKER_RX: i64 = 555_000_111;
 
 #[test]
 fn picker_round_trips_for_one_chat() {
@@ -26,9 +30,9 @@ fn picker_round_trips_for_one_chat() {
         None,
         "test starts from no picker"
     );
-    assert_eq!(remember_picker(PICKER_CHAT_A, 41), None);
-    assert_eq!(picker_for(PICKER_CHAT_A), Some(41));
-    assert_eq!(forget_picker(PICKER_CHAT_A), Some(41));
+    assert_eq!(remember_picker(PICKER_CHAT_A, 41, PICKER_RX), None);
+    assert_eq!(picker_for(PICKER_CHAT_A), Some((41, PICKER_RX)));
+    assert_eq!(forget_picker(PICKER_CHAT_A), Some((41, PICKER_RX)));
     assert_eq!(picker_for(PICKER_CHAT_A), None);
 }
 
@@ -36,19 +40,24 @@ fn picker_round_trips_for_one_chat() {
 fn remember_picker_reports_the_bubble_it_replaced() {
     // The returned id is what the caller deletes: a second picker in the same
     // chat must supersede the first rather than leave two live keyboards whose
-    // ids the registry has already forgotten.
-    let _ = remember_picker(PICKER_CHAT_B, 7);
-    assert_eq!(remember_picker(PICKER_CHAT_B, 8), Some(7));
-    assert_eq!(picker_for(PICKER_CHAT_B), Some(8));
+    // ids the registry has already forgotten. The receiver of the replaced
+    // bubble comes back with it, because deleting that bubble needs the
+    // receiver *it* was sent to, not the one being stored now.
+    let _ = remember_picker(PICKER_CHAT_B, 7, PICKER_RX);
+    assert_eq!(
+        remember_picker(PICKER_CHAT_B, 8, PICKER_RX + 1),
+        Some((7, PICKER_RX))
+    );
+    assert_eq!(picker_for(PICKER_CHAT_B), Some((8, PICKER_RX + 1)));
 }
 
 #[test]
 fn remembering_the_same_picker_is_not_a_replacement() {
     // Re-sending the same id (a retry) must not tell the caller to delete the
     // message it just sent.
-    let _ = remember_picker(PICKER_CHAT_C, 9);
-    assert_eq!(remember_picker(PICKER_CHAT_C, 9), None);
-    assert_eq!(picker_for(PICKER_CHAT_C), Some(9));
+    let _ = remember_picker(PICKER_CHAT_C, 9, PICKER_RX);
+    assert_eq!(remember_picker(PICKER_CHAT_C, 9, PICKER_RX), None);
+    assert_eq!(picker_for(PICKER_CHAT_C), Some((9, PICKER_RX)));
     let _ = forget_picker(PICKER_CHAT_C);
 }
 
@@ -68,7 +77,7 @@ fn group_scopes_the_reply_to_the_invoker() {
 fn body_scopes_with_the_10_3_object() {
     // Bot API 10.3 replaced the flat parameter with this object, so the body
     // has to nest the receiver rather than set it at the top level.
-    let body = build_body(-100200, None, 12345, "hello", false);
+    let body = build_body(-100200, None, 12345, "hello", false, false);
     assert_eq!(body["chat_id"], -100200);
     assert_eq!(body["text"], "hello");
     assert_eq!(
@@ -78,6 +87,31 @@ fn body_scopes_with_the_10_3_object() {
     assert!(
         body.get("receiver_user_id").is_none(),
         "the flat parameter must not also be present, got {body}"
+    );
+}
+
+#[test]
+fn replace_callback_query_message_is_omitted_unless_asked() {
+    // The field lives inside the scoping object, and a body that did not ask
+    // for in-place replacement must not carry it: sending `false` explicitly
+    // would be a parameter the caller never requested.
+    let plain = build_body(-100200, None, 12345, "hello", false, false);
+    assert!(
+        plain["ephemeral_message_parameters"]
+            .get("replace_callback_query_message")
+            .is_none(),
+        "not requested, must be absent: {plain}"
+    );
+
+    let replace = build_body(-100200, None, 12345, "hello", false, true);
+    assert_eq!(
+        replace["ephemeral_message_parameters"]["replace_callback_query_message"],
+        true
+    );
+    // The receiver must survive alongside it, or the request loses its scope.
+    assert_eq!(
+        replace["ephemeral_message_parameters"]["receiver_user_id"],
+        12345
     );
 }
 
@@ -102,6 +136,7 @@ fn both_shapes_carry_the_same_text_and_thread() {
         12345,
         "<b>hi</b>",
         true,
+        false,
     );
     let legacy = build_body_legacy(
         -100200,
@@ -122,13 +157,13 @@ fn both_shapes_carry_the_same_text_and_thread() {
 fn plain_body_has_no_parse_mode() {
     // Acks like "New session started." are literal text, and an HTML parse
     // mode would swallow any `<` or `&` they happen to contain.
-    let body = build_body(-100200, None, 12345, "a < b & c", false);
+    let body = build_body(-100200, None, 12345, "a < b & c", false, false);
     assert!(body.get("parse_mode").is_none());
 }
 
 #[test]
 fn html_body_sets_parse_mode() {
-    let body = build_body(-100200, None, 12345, "<b>hi</b>", true);
+    let body = build_body(-100200, None, 12345, "<b>hi</b>", true, false);
     assert_eq!(body["parse_mode"], "HTML");
 }
 
@@ -159,9 +194,12 @@ fn rich_body_keeps_the_forum_topic() {
 #[test]
 fn edit_text_body_targets_the_ephemeral_id() {
     // `message_id` is 0 for an ephemeral message, so the ordinary edit method
-    // cannot address one: the id has to be this field.
-    let body = build_edit_text_body(-100200, 4242, "new text", false);
+    // cannot address one: the id has to be this field. The receiver is a
+    // Required parameter of every `editEphemeralMessage*` method, so a body
+    // without it is refused by the server, not merely scoped wrong.
+    let body = build_edit_text_body(-100200, 555_000_111, 4242, "new text", false);
     assert_eq!(body["chat_id"], -100200);
+    assert_eq!(body["receiver_user_id"], 555_000_111);
     assert_eq!(body["ephemeral_message_id"], 4242);
     assert_eq!(body["text"], "new text");
     assert!(body.get("message_id").is_none(), "got {body}");
@@ -170,11 +208,11 @@ fn edit_text_body_targets_the_ephemeral_id() {
 #[test]
 fn edit_text_body_sets_parse_mode_only_when_asked() {
     assert_eq!(
-        build_edit_text_body(-1, 7, "<b>x</b>", true)["parse_mode"],
+        build_edit_text_body(-1, 555_000_111, 7, "<b>x</b>", true)["parse_mode"],
         "HTML"
     );
     assert!(
-        build_edit_text_body(-1, 7, "a < b", false)
+        build_edit_text_body(-1, 555_000_111, 7, "a < b", false)
             .get("parse_mode")
             .is_none()
     );
@@ -183,7 +221,8 @@ fn edit_text_body_sets_parse_mode_only_when_asked() {
 #[test]
 fn edit_markup_body_carries_only_the_markup() {
     let markup = json!({"inline_keyboard": [[{"text": "x", "callback_data": "y"}]]});
-    let body = build_edit_markup_body(-100200, 4242, &markup);
+    let body = build_edit_markup_body(-100200, 555_000_111, 4242, &markup);
+    assert_eq!(body["receiver_user_id"], 555_000_111);
     assert_eq!(body["ephemeral_message_id"], 4242);
     assert_eq!(body["reply_markup"], markup);
     assert!(
@@ -193,11 +232,74 @@ fn edit_markup_body_carries_only_the_markup() {
 }
 
 #[test]
-fn delete_body_carries_chat_and_ephemeral_id() {
-    let body = build_delete_body(-100200, 4242);
+fn delete_body_carries_chat_receiver_and_ephemeral_id() {
+    let body = build_delete_body(-100200, 555_000_111, 4242);
     assert_eq!(body["chat_id"], -100200);
+    assert_eq!(body["receiver_user_id"], 555_000_111);
     assert_eq!(body["ephemeral_message_id"], 4242);
-    assert_eq!(body.as_object().map(serde_json::Map::len), Some(2));
+    // chat_id + receiver_user_id + ephemeral_message_id, and nothing else: a
+    // stray field would be a parameter the delete method does not take.
+    assert_eq!(body.as_object().map(serde_json::Map::len), Some(3));
+}
+
+#[test]
+fn edit_media_body_carries_the_media() {
+    let media = json!({"type": "photo", "media": "https://example.test/a.png"});
+    let body = build_edit_media_body(-100200, 555_000_111, 4242, &media);
+    assert_eq!(body["chat_id"], -100200);
+    assert_eq!(body["receiver_user_id"], 555_000_111);
+    assert_eq!(body["ephemeral_message_id"], 4242);
+    assert_eq!(body["media"], media);
+    assert!(
+        body.get("text").is_none(),
+        "a media edit replaces the content, it does not add text: {body}"
+    );
+}
+
+#[test]
+fn edit_caption_body_omits_the_placement_unless_asked() {
+    // The field arrived with 10.3: sending `false` to a server that predates
+    // it would be an unknown parameter, so an unset placement stays absent.
+    let plain = build_edit_caption_body(-100200, 555_000_111, 4242, "cap", false, None);
+    assert_eq!(plain["caption"], "cap");
+    assert_eq!(plain["receiver_user_id"], 555_000_111);
+    assert!(
+        plain.get("show_caption_above_media").is_none(),
+        "an unset placement must not be sent as false: {plain}"
+    );
+
+    let above = build_edit_caption_body(-100200, 555_000_111, 4242, "cap", false, Some(true));
+    assert_eq!(above["show_caption_above_media"], true);
+    assert_eq!(above["receiver_user_id"], 555_000_111);
+}
+
+#[test]
+fn edit_caption_body_sets_parse_mode_only_when_asked() {
+    assert_eq!(
+        build_edit_caption_body(-1, 555_000_111, 7, "<b>x</b>", true, None)["parse_mode"],
+        "HTML"
+    );
+    assert!(
+        build_edit_caption_body(-1, 555_000_111, 7, "a < b", false, None)
+            .get("parse_mode")
+            .is_none()
+    );
+}
+
+#[test]
+fn edit_text_rich_body_matches_the_public_rich_body() {
+    // An ephemeral rich edit has to render like the public one, or the same
+    // markdown would look different depending on where it was sent. The rich
+    // object is reused wholesale, so only the addressing may differ.
+    let public = crate::channels::telegram::rich::api::build_body(-100200, None, "# hi", None);
+    let body = build_edit_text_rich_body(-100200, 555_000_111, 4242, "# hi");
+    assert_eq!(body["rich_message"], public["rich_message"]);
+    assert_eq!(body["chat_id"], -100200);
+    assert_eq!(body["receiver_user_id"], 555_000_111);
+    assert_eq!(body["ephemeral_message_id"], 4242);
+    // 10.3 made `text` optional on this method precisely so `rich_message`
+    // can stand in for it.
+    assert!(body.get("text").is_none(), "got {body}");
 }
 
 #[test]
@@ -220,7 +322,14 @@ fn ephemeral_id_absent_is_none_not_zero() {
 
 #[test]
 fn thread_id_targets_the_forum_topic() {
-    let body = build_body(-100200, Some(ThreadId(MessageId(77))), 12345, "hi", true);
+    let body = build_body(
+        -100200,
+        Some(ThreadId(MessageId(77))),
+        12345,
+        "hi",
+        true,
+        false,
+    );
     assert_eq!(body["message_thread_id"], 77);
 }
 
@@ -228,6 +337,6 @@ fn thread_id_targets_the_forum_topic() {
 fn no_thread_id_omits_the_field() {
     // Sending `message_thread_id: null` to a non-forum chat is an API error,
     // so the field has to be absent rather than explicitly empty.
-    let body = build_body(-100200, None, 12345, "hi", true);
+    let body = build_body(-100200, None, 12345, "hi", true, false);
     assert!(body.get("message_thread_id").is_none());
 }
