@@ -59,6 +59,157 @@ pub(crate) fn peek_raw_message(chat_id: i64, message_id: i32) -> Option<Value> {
         .map(|(_, v)| v.clone())
 }
 
+/// Bot API 10.3 `stopped_message_generation`: the key an update carries when
+/// the user pressed the bot's stop button while a draft was streaming.
+///
+/// Deliberately NOT a [`KNOWN_CONTENT_KEYS`] entry. That list decides how a
+/// *message* payload is rewritten into agent text, and this key sits on the
+/// update envelope, one level above the message. It is read before the typed
+/// parse, which cannot carry it (see [`stopped_message_generation`]).
+pub(crate) const STOPPED_GENERATION_KEY: &str = "stopped_message_generation";
+
+/// Bounded parking lot for `stopped_message_generation` updates.
+///
+/// The raw poll loop cannot act on one: it holds no chat handle and no bot to
+/// answer with. The typed dispatcher cannot carry one: teloxide-core 0.13 has
+/// no variant, so the parse yields `UpdateKind::Error`. The turn's own
+/// streaming edit loop knows both the chat and the session, so it drains its
+/// entry and cancels there.
+///
+/// Bounded like [`RAW_STASH`], and time-limited by [`STOP_TTL`]: a stop parked
+/// while no turn is running is NOT inert, because the chat's next turn would
+/// drain it and cancel itself. The TTL is what makes a leftover stop expire
+/// instead of killing work the user never asked to stop.
+static GENERATION_STOPS: Mutex<VecDeque<GenerationStop>> = Mutex::new(VecDeque::new());
+pub(crate) const STOP_CAP: usize = 64;
+
+/// A user pressing the bot's stop button (Bot API 10.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GenerationStop {
+    /// The chat whose generation was stopped.
+    pub chat_id: i64,
+    /// The forum topic, when the draft lived in one.
+    pub message_thread_id: Option<i32>,
+    /// The stopped draft's id. Carried for the log line only: this fork
+    /// streams by editing a real message rather than by draft, so there is no
+    /// draft to address by it.
+    pub draft_id: i64,
+    /// When the poll loop parked it, for [`STOP_TTL`].
+    parked_at: std::time::Instant,
+}
+
+/// How long a parked stop request stays actionable.
+///
+/// A stop with no live turn to cancel would otherwise sit in the lot and kill
+/// the chat's NEXT turn the moment it starts. That is the exact opposite of
+/// what the user asked for, so a stop is only honoured while the generation it
+/// belonged to could still be running.
+pub(crate) const STOP_TTL: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Read a `stopped_message_generation` payload off a raw update, or `None`
+/// when the update is an ordinary one. A payload without a chat id or a draft
+/// id is not usable as a stop request, so it yields `None` too.
+pub(crate) fn stopped_message_generation(u: &Value) -> Option<GenerationStop> {
+    let stop = u.get(STOPPED_GENERATION_KEY)?;
+    let chat_id = stop.get("chat")?.get("id")?.as_i64()?;
+    let draft_id = stop.get("draft_id")?.as_i64()?;
+    let message_thread_id = stop
+        .get("message_thread_id")
+        .and_then(Value::as_i64)
+        .map(|t| t as i32);
+    Some(GenerationStop {
+        chat_id,
+        message_thread_id,
+        draft_id,
+        parked_at: std::time::Instant::now(),
+    })
+}
+
+/// Park a stop request. Returns false when the lot was full, so the caller can
+/// log that an older stop was dropped rather than let it vanish silently.
+pub(crate) fn stash_generation_stop(stop: GenerationStop) -> bool {
+    let mut q = GENERATION_STOPS.lock().unwrap_or_else(|e| e.into_inner());
+    // Expired entries are dead weight: dropping them here keeps a stale stop
+    // from crowding out a live one.
+    let now = std::time::Instant::now();
+    q.retain(|s| now.duration_since(s.parked_at) < STOP_TTL);
+    let dropped = q.len() >= STOP_CAP;
+    q.push_back(stop);
+    while q.len() > STOP_CAP {
+        q.pop_front();
+    }
+    !dropped
+}
+
+/// Take the parked stop request for a chat, preferring an exact topic match.
+/// A payload that names no thread matches either way, so a stop pressed in a
+/// DM or in the General topic still reaches the turn that owns it.
+///
+/// Entries older than [`STOP_TTL`] are dropped on sight, so a stop pressed
+/// with no generation running cannot cancel the chat's next turn.
+pub(crate) fn take_generation_stop(chat_id: i64, topic_id: Option<i32>) -> Option<GenerationStop> {
+    let mut q = GENERATION_STOPS.lock().unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    q.retain(|s| now.duration_since(s.parked_at) < STOP_TTL);
+    let idx = q
+        .iter()
+        .position(|s| s.chat_id == chat_id && s.message_thread_id == topic_id)
+        .or_else(|| {
+            q.iter()
+                .position(|s| s.chat_id == chat_id && s.message_thread_id.is_none())
+        })?;
+    q.remove(idx)
+}
+
+/// How many stop requests are parked. Test and observability seam, so it only
+/// exists in the test build: the lib pass has no caller for it and the crate
+/// denies warnings.
+#[cfg(test)]
+pub(crate) fn generation_stops_pending() -> usize {
+    GENERATION_STOPS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .len()
+}
+
+/// Backdate every parked stop by `age`, so a test can drive the [`STOP_TTL`]
+/// expiry without sleeping. Test-only, like [`generation_stops_pending`].
+#[cfg(test)]
+pub(crate) fn age_generation_stops(age: std::time::Duration) {
+    let mut q = GENERATION_STOPS.lock().unwrap_or_else(|e| e.into_inner());
+    for s in q.iter_mut() {
+        s.parked_at = std::time::Instant::now() - age;
+    }
+}
+
+/// Drop every parked stop. The lot is process-global, so a test that parks one
+/// has to hand it back or the next test inherits it.
+#[cfg(test)]
+pub(crate) fn clear_generation_stops() {
+    GENERATION_STOPS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
+/// Name an update from its RAW payload, before the typed parse.
+///
+/// [`update_kind_name`] can only name the kinds teloxide-core 0.13 models, so
+/// a 10.3 update would otherwise log as `ERROR(unparsed)` with no way to tell
+/// which new kind the API sent. Reading the envelope directly keeps a stop
+/// button press legible in the logs.
+pub(crate) fn raw_update_kind_name(u: &Value) -> &'static str {
+    if u.get(STOPPED_GENERATION_KEY).is_some() {
+        return STOPPED_GENERATION_KEY;
+    }
+    for key in ALLOWED_UPDATES {
+        if u.get(*key).is_some() {
+            return *key;
+        }
+    }
+    "unknown"
+}
+
 /// Forward origin from a RAW message payload — works even when teloxide's
 /// typed parse dropped it along with the unknown content type.
 pub(crate) fn raw_forward_origin(raw: &Value) -> Option<String> {
@@ -230,6 +381,14 @@ async fn poll_once(st: &mut RawPollState) {
 /// serving a chat, so it is also the one kind that can arrive from a chat the
 /// bot was never added to. See [`super::inline`] for the owner gate and the
 /// bounded result set that keeps it from becoming a second agent loop.
+///
+/// `stopped_message_generation` (Bot API 10.3) is the one kind with no branch
+/// and no name in [`update_kind_name`], because teloxide-core 0.13 does not
+/// model it: the typed parse lands on `UpdateKind::Error`, so there is no
+/// filter to write. It is subscribed to anyway, and read straight off the raw
+/// payload by [`poll_once_inner`], because a stop request that never arrives
+/// is worse than one the dispatcher cannot route. Adding it here is what makes
+/// Telegram deliver it at all.
 pub(crate) const ALLOWED_UPDATES: &[&str] = &[
     "message",
     "edited_message",
@@ -238,6 +397,7 @@ pub(crate) const ALLOWED_UPDATES: &[&str] = &[
     "my_chat_member",
     "chat_join_request",
     "inline_query",
+    STOPPED_GENERATION_KEY,
 ];
 
 /// One getUpdates long-poll: stash raw message payloads, queue the typed
@@ -316,6 +476,28 @@ async fn poll_once_inner(st: &mut RawPollState) -> usize {
         let update_id = u.get("update_id").and_then(|v| v.as_i64()).unwrap_or(-1);
         st.offset = st.offset.max(update_id + 1);
         let mut u = u.clone();
+        // Bot API 10.3 stop button. teloxide-core 0.13 has no variant for
+        // `stopped_message_generation`, so the typed parse below would turn it
+        // into `UpdateKind::Error` and the dispatcher would drop, in silence,
+        // the one update whose entire purpose is to stop work. Read it off the
+        // raw envelope and park it for the turn's own streaming edit loop,
+        // which holds both the chat and the session.
+        if let Some(stop) = stopped_message_generation(&u) {
+            tracing::info!(
+                "Telegram raw poll: update {update_id} kind={} chat={} thread={:?} draft={}",
+                raw_update_kind_name(&u),
+                stop.chat_id,
+                stop.message_thread_id,
+                stop.draft_id,
+            );
+            if !stash_generation_stop(stop) {
+                tracing::warn!(
+                    "Telegram raw poll: stop-request lot full ({} entries), oldest dropped",
+                    STOP_CAP
+                );
+            }
+            continue;
+        }
         // Stash the raw message BEFORE the typed parse can lose content, and
         // SYNTHESIZE readable text into messages whose content type this Bot
         // API client does not know: without a known content field the update

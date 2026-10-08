@@ -20,6 +20,7 @@ use super::flow::{
 };
 use super::handler::{fire_reaction, thinking_status_excerpt};
 use super::markdown::markdown_to_telegram_html;
+use super::raw_updates::take_generation_stop;
 use super::send::{best_effort_delete, fire_chat_action, message_in_thread};
 use super::state::TelegramState;
 use crate::brain::AgentService;
@@ -46,6 +47,26 @@ pub(crate) fn spawn_edit_loop(
         let sid = session_id;
         async move {
             loop {
+                // Bot API 10.3 stop button (#98 follow-up): the raw poll loop
+                // parked a `stopped_message_generation` update for this chat
+                // because it holds neither the session nor a bot to answer
+                // with. This loop runs for the length of the turn and holds
+                // both, so it is the one place the stop can be honoured:
+                // cancelling the session token aborts the generation, and the
+                // agent's own Cancelled arm in `delivery.rs` deletes the
+                // streaming message. `edit_cancel` is cancelled here too, since
+                // it is this loop that would otherwise keep editing a message
+                // nobody is watching any more.
+                if take_generation_stop(chat.0, thread_id.map(|t| t.0.0)).is_some() {
+                    tracing::info!(
+                        "Telegram: stop button pressed in chat {}: cancelling session {}",
+                        chat.0,
+                        sid
+                    );
+                    tg.cancel_session(sid).await;
+                    cancel.cancel();
+                    break;
+                }
                 tokio::select! {
                     _ = cancel.cancelled() => break,
                     _ = tokio::time::sleep(std::time::Duration::from_millis(1500)) => {
