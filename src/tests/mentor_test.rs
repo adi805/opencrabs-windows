@@ -41,9 +41,11 @@ fn ac002_below_the_threshold_injects_nothing() {
     for _ in 0..(SAME_TOOL_TRIGGER - 1) {
         assert_eq!(observe_round(&mut t, Some("bash")), None);
     }
-    // Alternating tools stay fresh for far longer than the same-tool trigger.
+    // Alternating tools never trip the same-tool trigger, so the total
+    // backstop is the only thing that can fire here: stay one call below it,
+    // or this test would be asserting silence at the exact call that breaks it.
     let mut u = LoopTally::new();
-    for _ in 0..(TOTAL_CALL_TRIGGER - 1) {
+    for _ in 0..((TOTAL_CALL_TRIGGER / 2) - 1) {
         assert_eq!(observe_round(&mut u, Some("grep")), None);
         assert_eq!(observe_round(&mut u, Some("read_file")), None);
     }
@@ -52,6 +54,7 @@ fn ac002_below_the_threshold_injects_nothing() {
         None,
         "a fresh-but-long turn stays quiet below the total"
     );
+    assert_eq!(u.total(), TOTAL_CALL_TRIGGER - 1);
 }
 
 /// AC-002, second arm: the review must not trap a turn that is genuinely done.
