@@ -13,8 +13,11 @@ use crate::channels::telegram::telemetry::{
     content_hash8, log_request, log_send_failure, log_send_success,
 };
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::sync::Arc;
+use teloxide::payloads::PromoteChatMemberSetters;
+use teloxide::payloads::RestrictChatMemberSetters;
 use teloxide::payloads::SendAnimationSetters;
 use teloxide::payloads::SendAudioSetters;
 use teloxide::payloads::SendContactSetters;
@@ -26,6 +29,8 @@ use teloxide::payloads::SendVenueSetters;
 use teloxide::payloads::SendVideoNoteSetters;
 use teloxide::payloads::SendVideoSetters;
 use teloxide::payloads::SendVoiceSetters;
+use teloxide::payloads::SetChatDescriptionSetters;
+use teloxide::payloads::SetChatMenuButtonSetters;
 use teloxide::prelude::*;
 use teloxide::types::{
     ChatId, DiceEmoji, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, MessageId,
@@ -33,7 +38,13 @@ use teloxide::types::{
 };
 use uuid::Uuid;
 
-/// Tool for comprehensive Telegram bot control (33 actions).
+/// teloxide types the chat-admin actions need, aliased so their signatures
+/// stay on one line without widening the `types` brace import above.
+type TgMenuButton = teloxide::types::MenuButton;
+type TgChatPermissions = teloxide::types::ChatPermissions;
+type TgWebAppInfo = teloxide::types::WebAppInfo;
+
+/// Tool for comprehensive Telegram bot control (40 actions).
 pub struct TelegramSendTool {
     telegram_state: Arc<TelegramState>,
 }
@@ -465,6 +476,8 @@ impl Tool for TelegramSendTool {
          send photos/documents/locations/polls, stickers, videos, animations, audio, voice notes, \
          video notes, contacts, venues, dice, inline buttons, get chat info, list admins, \
          check member count/status, ban/unban users, and set emoji reactions. \
+         Also configures the chat itself: its title, photo and description, the menu \
+         button, admin promotion, member restriction, and clearing pinned messages. \
          Always use telegram_send instead of http_request — credentials handled securely. \
          Requires Telegram to be connected first."
     }
@@ -483,7 +496,10 @@ impl Tool for TelegramSendTool {
                         "send_poll", "send_buttons", "get_chat",
                         "get_chat_administrators", "get_chat_member_count", "get_chat_member",
                         "ban_user", "unban_user", "set_reaction", "list_topics",
-                        "create_topic", "rename_topic", "bind_topic"
+                        "create_topic", "rename_topic", "bind_topic",
+                        "set_chat_menu_button", "set_chat_title", "set_chat_photo",
+                        "set_chat_description", "promote_chat_member",
+                        "restrict_chat_member", "unpin_all_chat_messages"
                     ],
                     "description": "The Telegram action to perform. \
                         `send_sticker` / `send_video` / `send_animation` / `send_audio` / `send_voice` / \
@@ -492,6 +508,13 @@ impl Tool for TelegramSendTool {
                         `send_contact` needs `phone_number` + `first_name`; `send_venue` needs \
                         `latitude`, `longitude`, `venue_title` + `address`; `send_dice` optionally \
                         takes `emoji` (dice, darts, basketball, football, bowling, slot_machine). \
+                        Chat-admin actions: `set_chat_menu_button` (`menu_button` = default|commands|web_app, \
+                        with `menu_button_text` + `menu_button_url` for web_app and `menu_button_scope` = \
+                        chat|default), `set_chat_title` (`title`), `set_chat_photo` (`photo_url`), \
+                        `set_chat_description` (`description`, an empty string clears it), \
+                        `promote_chat_member` (`user_id` + `admin_rights`), `restrict_chat_member` \
+                        (`user_id` + `permissions`, optional `until_date` / `use_independent_chat_permissions`), \
+                        and `unpin_all_chat_messages`. \
                         `list_topics` returns ONLY the bot-observed (thread_id, topic_name) pairs \
                         recorded in local DB for a forum-enabled supergroup — it does NOT enumerate \
                         the full forum surface (Telegram Bot API has no getForumTopics endpoint). \
@@ -505,6 +528,48 @@ impl Tool for TelegramSendTool {
                 "name": {
                     "type": "string",
                     "description": "Topic name (1–128 characters) for create_topic and rename_topic"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "New chat title for set_chat_title (1-128 characters)."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "New chat description for set_chat_description (0-255 characters). An empty string clears it."
+                },
+                "menu_button": {
+                    "type": "string",
+                    "enum": ["default", "commands", "web_app"],
+                    "description": "Menu button for set_chat_menu_button. `default` restores Telegram's own button, `commands` opens the bot's command list, `web_app` opens `menu_button_url` (which needs `menu_button_text` too). Omit to reset to the default."
+                },
+                "menu_button_text": {
+                    "type": "string",
+                    "description": "Button label for a `web_app` menu button (required for web_app, 1-64 characters)."
+                },
+                "menu_button_url": {
+                    "type": "string",
+                    "description": "HTTPS URL the `web_app` menu button opens (required for web_app)."
+                },
+                "menu_button_scope": {
+                    "type": "string",
+                    "enum": ["chat", "default"],
+                    "description": "For set_chat_menu_button: `chat` (the default) sets the button on the resolved chat only; `default` omits chat_id and changes it for every private chat the bot has."
+                },
+                "admin_rights": {
+                    "type": "object",
+                    "description": "Rights for promote_chat_member: a JSON object of boolean rights, e.g. {\"can_delete_messages\": true}. Each key is tri-state: omit it to leave that right alone, true to grant, false to revoke. Pass false for every right to demote. Valid keys: is_anonymous, can_manage_chat, can_post_messages, can_edit_messages, can_delete_messages, can_post_stories, can_edit_stories, can_delete_stories, can_manage_video_chats, can_restrict_members, can_promote_members, can_change_info, can_invite_users, can_pin_messages, can_manage_topics."
+                },
+                "permissions": {
+                    "type": "object",
+                    "description": "Permissions for restrict_chat_member: a JSON object of boolean permissions, e.g. {\"can_send_messages\": false} to mute. Valid keys: can_send_messages, can_send_audios, can_send_documents, can_send_photos, can_send_videos, can_send_video_notes, can_send_voice_notes, can_send_polls, can_send_other_messages, can_add_web_page_previews, can_change_info, can_invite_users, can_pin_messages, can_manage_topics."
+                },
+                "until_date": {
+                    "type": "integer",
+                    "description": "Unix timestamp for restrict_chat_member: when the restriction lifts. More than 366 days out (or under 30 seconds) counts as forever."
+                },
+                "use_independent_chat_permissions": {
+                    "type": "boolean",
+                    "description": "For restrict_chat_member: true applies each permission on its own instead of letting Telegram infer send-message rights from `can_send_other_messages` / `can_add_web_page_previews`."
                 },
                 "bind": {
                     "type": "boolean",
@@ -536,7 +601,7 @@ impl Tool for TelegramSendTool {
                 },
                 "photo_url": {
                     "type": "string",
-                    "description": "Photo for send_photo: an HTTPS URL or a local file path (e.g. /tmp/chart.png or ~/.opencrabs/out.png)"
+                    "description": "Photo for send_photo or set_chat_photo: an HTTPS URL or a local file path (e.g. /tmp/chart.png or ~/.opencrabs/out.png)"
                 },
                 "photo_urls": {
                     "type": "array",
@@ -624,7 +689,7 @@ impl Tool for TelegramSendTool {
                 },
                 "user_id": {
                     "type": "integer",
-                    "description": "Telegram user ID for ban_user/unban_user"
+                    "description": "Telegram user ID for ban_user / unban_user / promote_chat_member / restrict_chat_member"
                 },
                 "emoji": {
                     "type": "string",
@@ -716,13 +781,25 @@ impl Tool for TelegramSendTool {
             "create_topic" => self.action_create_topic(&bot, input, context).await,
             "rename_topic" => self.action_rename_topic(&bot, input, context).await,
             "bind_topic" => self.action_bind_topic(input, context).await,
+            "set_chat_menu_button" => self.action_set_chat_menu_button(&bot, input, context).await,
+            "set_chat_title" => self.action_set_chat_title(&bot, input, context).await,
+            "set_chat_photo" => self.action_set_chat_photo(&bot, input, context).await,
+            "set_chat_description" => self.action_set_chat_description(&bot, input, context).await,
+            "promote_chat_member" => self.action_promote_chat_member(&bot, input, context).await,
+            "restrict_chat_member" => self.action_restrict_chat_member(&bot, input, context).await,
+            "unpin_all_chat_messages" => {
+                self.action_unpin_all_chat_messages(&bot, input, context)
+                    .await
+            }
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{unknown}'. Valid actions: send, reply, edit, delete, pin, \
                  unpin, forward, send_photo, send_document, send_location, send_sticker, \
                  send_video, send_animation, send_audio, send_voice, send_video_note, \
                  send_contact, send_venue, send_dice, send_poll, send_buttons, get_chat, \
                  get_chat_administrators, get_chat_member_count, get_chat_member, ban_user, \
-                 unban_user, set_reaction, list_topics, create_topic, rename_topic, bind_topic"
+                 unban_user, set_reaction, list_topics, create_topic, rename_topic, bind_topic, \
+                 set_chat_menu_button, set_chat_title, set_chat_photo, set_chat_description, \
+                 promote_chat_member, restrict_chat_member, unpin_all_chat_messages"
             ))),
         }
     }
@@ -2937,6 +3014,458 @@ impl TelegramSendTool {
                 Ok(ToolResult::error(format!("Failed to bind topic: {e}")))
             }
         }
+    }
+
+    /// `set_chat_menu_button`: set the bot's menu button for one chat, or the
+    /// default button across every private chat (§9.1-6). Both payload fields
+    /// are optional, so the only way to reach Telegram's global button is to
+    /// omit `chat_id` entirely; passing the resolved chat would pin the change
+    /// to a single conversation.
+    async fn action_set_chat_menu_button(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let scope = input
+            .get("menu_button_scope")
+            .and_then(|v| v.as_str())
+            .unwrap_or("chat");
+        let ChatTarget { chat_id } =
+            pget!(resolve_chat_target(input, context.session_id, &self.telegram_state).await);
+        let button = pget!(resolve_menu_button(input));
+        let target = match scope {
+            "default" => None,
+            "chat" => Some(chat_id),
+            other => {
+                return Ok(ToolResult::error(format!(
+                    "Unknown menu_button_scope '{other}'. Use 'chat' or 'default'."
+                )));
+            }
+        };
+        match send_retrying_rate_limit("telegram_send set_chat_menu_button", || {
+            let mut req = bot.set_chat_menu_button();
+            if let Some(id) = target {
+                req = req.chat_id(ChatId(id));
+            }
+            if let Some(b) = button.clone() {
+                req = req.menu_button(b);
+            }
+            req
+        })
+        .await
+        {
+            Ok(_) => {
+                let where_ = match target {
+                    Some(id) => format!("chat {id}"),
+                    None => "every private chat (default button)".to_string(),
+                };
+                Ok(ToolResult::success(format!(
+                    "Menu button updated for {where_}."
+                )))
+            }
+            Err(e) => Ok(ToolResult::error(format!("Failed to set menu button: {e}"))),
+        }
+    }
+
+    /// `set_chat_title`: rename a group, supergroup or channel. The bot must
+    /// be an administrator there; Telegram otherwise answers with a bare
+    /// "not enough rights" that says nothing about which chat was meant.
+    async fn action_set_chat_title(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ChatTarget { chat_id } =
+            pget!(resolve_chat_target(input, context.session_id, &self.telegram_state).await);
+        let title = pget!(get_str(input, "title")).to_string();
+        match send_retrying_rate_limit("telegram_send set_chat_title", || {
+            bot.set_chat_title(ChatId(chat_id), title.clone())
+        })
+        .await
+        {
+            Ok(_) => Ok(ToolResult::success(format!(
+                "Chat {chat_id} title set to \"{title}\"."
+            ))),
+            Err(e) => Ok(ToolResult::error(format!("Failed to set chat title: {e}"))),
+        }
+    }
+
+    /// `set_chat_photo`: replace a chat's photo. Reads the same
+    /// URL-or-local-path input as `send_photo`, so a generated chart can become
+    /// the group avatar without a manual upload.
+    async fn action_set_chat_photo(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ChatTarget { chat_id } =
+            pget!(resolve_chat_target(input, context.session_id, &self.telegram_state).await);
+        let reference = pget!(get_str(input, "photo_url")).to_string();
+        let file = pget!(resolve_input_file(&reference, "photo_url").await);
+        match send_retrying_rate_limit("telegram_send set_chat_photo", || {
+            bot.set_chat_photo(ChatId(chat_id), file.clone())
+        })
+        .await
+        {
+            Ok(_) => Ok(ToolResult::success(format!(
+                "Chat {chat_id} photo updated ({}-byte source).",
+                reference.len()
+            ))),
+            Err(e) => Ok(ToolResult::error(format!("Failed to set chat photo: {e}"))),
+        }
+    }
+
+    /// `set_chat_description`: set or clear a chat's description. An empty
+    /// string is deliberately allowed because it clears the field, which is why
+    /// this reads `description` directly instead of through `get_str`, whose
+    /// empty-string guard would reject the clear.
+    async fn action_set_chat_description(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ChatTarget { chat_id } =
+            pget!(resolve_chat_target(input, context.session_id, &self.telegram_state).await);
+        let description = input
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        match send_retrying_rate_limit("telegram_send set_chat_description", || {
+            let mut req = bot.set_chat_description(ChatId(chat_id));
+            if let Some(d) = description.clone() {
+                req = req.description(d);
+            }
+            req
+        })
+        .await
+        {
+            Ok(_) => {
+                let what = match description {
+                    Some(_) => "updated",
+                    None => "cleared",
+                };
+                Ok(ToolResult::success(format!(
+                    "Chat {chat_id} description {what}."
+                )))
+            }
+            Err(e) => Ok(ToolResult::error(format!(
+                "Failed to set chat description: {e}"
+            ))),
+        }
+    }
+
+    /// `promote_chat_member`: grant or revoke administrator rights. teloxide
+    /// 0.17 takes these as individual booleans rather than one
+    /// `ChatAdministratorRights`, so each key in `admin_rights` maps onto one
+    /// setter; an omitted key stays absent on the wire, which is what makes a
+    /// partial update possible instead of a full overwrite.
+    async fn action_promote_chat_member(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ChatTarget { chat_id } =
+            pget!(resolve_chat_target(input, context.session_id, &self.telegram_state).await);
+        let user_id = pget!(get_id(input, "user_id"));
+        let rights = pget!(resolve_admin_rights(input));
+        match send_retrying_rate_limit("telegram_send promote_chat_member", || {
+            let mut req = bot.promote_chat_member(ChatId(chat_id), UserId(user_id as u64));
+            for (key, value) in rights.iter().copied() {
+                req = match key {
+                    "is_anonymous" => req.is_anonymous(value),
+                    "can_manage_chat" => req.can_manage_chat(value),
+                    "can_post_messages" => req.can_post_messages(value),
+                    "can_edit_messages" => req.can_edit_messages(value),
+                    "can_delete_messages" => req.can_delete_messages(value),
+                    "can_post_stories" => req.can_post_stories(value),
+                    "can_edit_stories" => req.can_edit_stories(value),
+                    "can_delete_stories" => req.can_delete_stories(value),
+                    "can_manage_video_chats" => req.can_manage_video_chats(value),
+                    "can_restrict_members" => req.can_restrict_members(value),
+                    "can_promote_members" => req.can_promote_members(value),
+                    "can_change_info" => req.can_change_info(value),
+                    "can_invite_users" => req.can_invite_users(value),
+                    "can_pin_messages" => req.can_pin_messages(value),
+                    _ => req.can_manage_topics(value),
+                };
+            }
+            req
+        })
+        .await
+        {
+            Ok(_) => {
+                let granted = rights.iter().filter(|(_, v)| *v).count();
+                let revoked = rights.len() - granted;
+                Ok(ToolResult::success(format!(
+                    "User {user_id} in chat {chat_id}: {granted} right(s) granted, \
+                     {revoked} revoked."
+                )))
+            }
+            Err(e) => Ok(ToolResult::error(format!("Failed to promote user: {e}"))),
+        }
+    }
+
+    /// `restrict_chat_member`: apply per-member permissions, optionally until
+    /// a timestamp. `permissions` is validated key-by-key before deserializing,
+    /// because `ChatPermissions` reads through a `#[serde(default)]` bridge that
+    /// would otherwise drop a mistyped key and restrict less than asked for.
+    async fn action_restrict_chat_member(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ChatTarget { chat_id } =
+            pget!(resolve_chat_target(input, context.session_id, &self.telegram_state).await);
+        let user_id = pget!(get_id(input, "user_id"));
+        let permissions = pget!(resolve_chat_permissions(input));
+        let until = pget!(resolve_until_date(input));
+        let independent = input
+            .get("use_independent_chat_permissions")
+            .and_then(|v| v.as_bool());
+        let until_note = match until {
+            Some(d) => format!(" until {}", d.to_rfc3339()),
+            None => String::new(),
+        };
+        match send_retrying_rate_limit("telegram_send restrict_chat_member", || {
+            let mut req = bot.restrict_chat_member(
+                ChatId(chat_id),
+                UserId(user_id as u64),
+                permissions.clone(),
+            );
+            if let Some(d) = until {
+                req = req.until_date(d);
+            }
+            if let Some(i) = independent {
+                req = req.use_independent_chat_permissions(i);
+            }
+            req
+        })
+        .await
+        {
+            Ok(_) => Ok(ToolResult::success(format!(
+                "User {user_id} restricted in chat {chat_id}{until_note}."
+            ))),
+            Err(e) => Ok(ToolResult::error(format!("Failed to restrict user: {e}"))),
+        }
+    }
+
+    /// `unpin_all_chat_messages`: clear every pinned message in a chat in one
+    /// call, instead of unpinning one `message_id` at a time.
+    async fn action_unpin_all_chat_messages(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ChatTarget { chat_id } =
+            pget!(resolve_chat_target(input, context.session_id, &self.telegram_state).await);
+        match send_retrying_rate_limit("telegram_send unpin_all_chat_messages", || {
+            bot.unpin_all_chat_messages(ChatId(chat_id))
+        })
+        .await
+        {
+            Ok(_) => Ok(ToolResult::success(format!(
+                "All pinned messages cleared in chat {chat_id}."
+            ))),
+            Err(e) => Ok(ToolResult::error(format!(
+                "Failed to unpin all messages: {e}"
+            ))),
+        }
+    }
+}
+
+/// Rights `promote_chat_member` accepts, in the order Telegram documents them.
+/// A key outside this list is rejected, so a mistyped name cannot quietly
+/// promote someone with fewer rights than the caller believed they granted.
+const ADMIN_RIGHTS: [&str; 15] = [
+    "is_anonymous",
+    "can_manage_chat",
+    "can_post_messages",
+    "can_edit_messages",
+    "can_delete_messages",
+    "can_post_stories",
+    "can_edit_stories",
+    "can_delete_stories",
+    "can_manage_video_chats",
+    "can_restrict_members",
+    "can_promote_members",
+    "can_change_info",
+    "can_invite_users",
+    "can_pin_messages",
+    "can_manage_topics",
+];
+
+/// Permissions `restrict_chat_member` accepts.
+const CHAT_PERMISSIONS: [&str; 14] = [
+    "can_send_messages",
+    "can_send_audios",
+    "can_send_documents",
+    "can_send_photos",
+    "can_send_videos",
+    "can_send_video_notes",
+    "can_send_voice_notes",
+    "can_send_polls",
+    "can_send_other_messages",
+    "can_add_web_page_previews",
+    "can_change_info",
+    "can_invite_users",
+    "can_pin_messages",
+    "can_manage_topics",
+];
+
+/// Read the `menu_button` argument for `set_chat_menu_button`. `web_app` needs
+/// both a label and an HTTPS URL; a bad URL is rejected here rather than sent,
+/// because Telegram only answers one with a bare `BUTTON_URL_INVALID`.
+#[allow(clippy::result_large_err)]
+fn resolve_menu_button(input: &Value) -> std::result::Result<Option<TgMenuButton>, ToolResult> {
+    let kind = match input.get("menu_button").and_then(|v| v.as_str()) {
+        Some(k) if !k.is_empty() => k,
+        _ => return Ok(None),
+    };
+    match kind {
+        "default" => Ok(Some(TgMenuButton::Default)),
+        "commands" => Ok(Some(TgMenuButton::Commands)),
+        "web_app" => {
+            let text = get_str(input, "menu_button_text")?.to_string();
+            let raw_url = get_str(input, "menu_button_url")?;
+            let parsed = url::Url::parse(raw_url).map_err(|e| {
+                ToolResult::error(format!(
+                    "menu_button_url '{raw_url}' is not a valid URL: {e}"
+                ))
+            })?;
+            if parsed.scheme() != "https" {
+                return Err(ToolResult::error(format!(
+                    "menu_button_url must be https, got '{}'.",
+                    parsed.scheme()
+                )));
+            }
+            Ok(Some(TgMenuButton::WebApp {
+                text,
+                web_app: TgWebAppInfo { url: parsed },
+            }))
+        }
+        other => Err(ToolResult::error(format!(
+            "Unknown menu_button '{other}'. Use one of: default, commands, web_app."
+        ))),
+    }
+}
+
+/// Read `admin_rights` for `promote_chat_member`. Every key is tri-state:
+/// omitted leaves the right untouched on the wire, `true` grants it and `false`
+/// revokes it, which is the whole difference between promoting and demoting.
+#[allow(clippy::result_large_err)]
+fn resolve_admin_rights(
+    input: &Value,
+) -> std::result::Result<Vec<(&'static str, bool)>, ToolResult> {
+    let obj = match input.get("admin_rights").and_then(|v| v.as_object()) {
+        Some(o) => o,
+        None => {
+            return Err(ToolResult::error(
+                "promote_chat_member needs 'admin_rights': a JSON object of boolean rights, \
+                 e.g. {\"can_delete_messages\": true}. Pass false for every right to demote."
+                    .to_string(),
+            ));
+        }
+    };
+    if obj.is_empty() {
+        return Err(ToolResult::error(
+            "admin_rights was empty; pass at least one right, or false for every right to \
+             demote."
+                .to_string(),
+        ));
+    }
+    let mut out = Vec::with_capacity(obj.len());
+    for (key, value) in obj {
+        let known = match ADMIN_RIGHTS.iter().copied().find(|k| *k == key.as_str()) {
+            Some(k) => k,
+            None => {
+                return Err(ToolResult::error(format!(
+                    "Unknown admin right '{key}'. Valid rights: {}.",
+                    ADMIN_RIGHTS.join(", ")
+                )));
+            }
+        };
+        let flag = match value.as_bool() {
+            Some(f) => f,
+            None => {
+                return Err(ToolResult::error(format!(
+                    "admin right '{key}' must be a boolean, got {value}."
+                )));
+            }
+        };
+        out.push((known, flag));
+    }
+    Ok(out)
+}
+
+/// Read `permissions` for `restrict_chat_member`. Keys are validated before
+/// deserializing because `ChatPermissions` reads through a `#[serde(default)]`
+/// bridge: an unknown key would be dropped silently and the restriction would
+/// apply with fewer limits than the caller asked for.
+#[allow(clippy::result_large_err)]
+fn resolve_chat_permissions(input: &Value) -> std::result::Result<TgChatPermissions, ToolResult> {
+    let obj = match input.get("permissions").and_then(|v| v.as_object()) {
+        Some(o) => o,
+        None => {
+            return Err(ToolResult::error(
+                "restrict_chat_member needs 'permissions': a JSON object of boolean \
+                 permissions, e.g. {\"can_send_messages\": false} to mute."
+                    .to_string(),
+            ));
+        }
+    };
+    if obj.is_empty() {
+        return Err(ToolResult::error(
+            "permissions was empty; pass at least one permission, e.g. \
+             {\"can_send_messages\": false} to mute."
+                .to_string(),
+        ));
+    }
+    for key in obj.keys() {
+        if !CHAT_PERMISSIONS.contains(&key.as_str()) {
+            return Err(ToolResult::error(format!(
+                "Unknown permission '{key}'. Valid permissions: {}.",
+                CHAT_PERMISSIONS.join(", ")
+            )));
+        }
+    }
+    match serde_json::from_value::<TgChatPermissions>(Value::Object(obj.clone())) {
+        Ok(perms) => Ok(perms),
+        Err(e) => Err(ToolResult::error(format!(
+            "Could not read 'permissions': {e}"
+        ))),
+    }
+}
+
+/// Read the optional `until_date` (unix seconds) for `restrict_chat_member`.
+/// An out-of-range value is rejected rather than clamped: Telegram reads more
+/// than 366 days out (or under 30 seconds) as a permanent restriction, so a
+/// caller who meant a short mute must not silently get a forever one.
+#[allow(clippy::result_large_err)]
+fn resolve_until_date(input: &Value) -> std::result::Result<Option<DateTime<Utc>>, ToolResult> {
+    let raw = match input.get("until_date") {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    let secs = match value_as_i64(raw) {
+        Some(s) => s,
+        None => {
+            return Err(ToolResult::error(format!(
+                "until_date must be a unix timestamp in seconds, got {raw}."
+            )));
+        }
+    };
+    match DateTime::from_timestamp(secs, 0) {
+        Some(dt) => Ok(Some(dt)),
+        None => Err(ToolResult::error(format!(
+            "until_date {secs} is not a valid unix timestamp."
+        ))),
     }
 }
 
