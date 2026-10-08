@@ -236,6 +236,7 @@ pub(crate) const ALLOWED_UPDATES: &[&str] = &[
     "callback_query",
     "message_reaction",
     "my_chat_member",
+    "chat_join_request",
     "inline_query",
 ];
 
@@ -549,6 +550,7 @@ fn update_kind_name(u: &Update) -> &'static str {
         UpdateKind::CallbackQuery(_) => "callback_query",
         UpdateKind::MessageReaction(_) => "message_reaction",
         UpdateKind::MyChatMember(_) => "my_chat_member",
+        UpdateKind::ChatJoinRequest(_) => "chat_join_request",
         UpdateKind::InlineQuery(_) => "inline_query",
         UpdateKind::Error(_) => "ERROR(unparsed)",
         _ => "other",

@@ -2105,6 +2105,25 @@ impl TelegramAgent {
                 }
             });
 
+            // Chat join requests (#PR4). A join request comes from a user who
+            // is not in the chat yet, and the Bot API never delivers it as a
+            // `message`, so it needs its own branch: without one the request is
+            // dropped silently and the owner never learns anyone is waiting.
+            // The handler observes and reports only. Approving grants chat
+            // access, so it stays a deliberate `telegram_send`
+            // approve_chat_join_request / decline_chat_join_request call.
+            let join_request_handler = Update::filter_chat_join_request().endpoint({
+                let deps = deps.clone();
+                move |bot: Bot, req: teloxide::types::ChatJoinRequest| {
+                    let deps = deps.clone();
+                    async move {
+                        let cfg = deps.config_rx.borrow().clone();
+                        super::join_requests::handle_join_request(&bot, &req, &cfg).await;
+                        ResponseResult::Ok(())
+                    }
+                }
+            });
+
             // Inline mode (#99, #109). The only update kind that can arrive
             // from a chat the bot was never added to, which is why it gets its
             // own gate instead of riding the group and message allowlists: a
@@ -2145,6 +2164,7 @@ impl TelegramAgent {
                 .branch(cb_handler)
                 .branch(reaction_handler)
                 .branch(my_chat_member_handler)
+                .branch(join_request_handler)
                 .branch(inline_handler);
 
             // Retry loop: if the dispatcher exits (network hiccup, Telegram conflict

@@ -19,6 +19,7 @@ const EXPECTED_FILTERS: &[(&str, &str)] = &[
     ("callback_query", "filter_callback_query"),
     ("message_reaction", "filter_message_reaction_updated"),
     ("my_chat_member", "filter_my_chat_member"),
+    ("chat_join_request", "filter_chat_join_request"),
     ("inline_query", "filter_inline_query"),
 ];
 

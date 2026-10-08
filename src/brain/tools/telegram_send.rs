@@ -44,7 +44,7 @@ type TgMenuButton = teloxide::types::MenuButton;
 type TgChatPermissions = teloxide::types::ChatPermissions;
 type TgWebAppInfo = teloxide::types::WebAppInfo;
 
-/// Tool for comprehensive Telegram bot control (44 actions).
+/// Tool for comprehensive Telegram bot control (46 actions).
 pub struct TelegramSendTool {
     telegram_state: Arc<TelegramState>,
 }
@@ -499,6 +499,7 @@ impl Tool for TelegramSendTool {
                         "create_topic", "rename_topic", "bind_topic",
                         "delete_forum_topic", "close_forum_topic", "reopen_forum_topic",
                         "edit_forum_topic",
+                        "approve_chat_join_request", "decline_chat_join_request",
                         "set_chat_menu_button", "set_chat_title", "set_chat_photo",
                         "set_chat_description", "promote_chat_member",
                         "restrict_chat_member", "unpin_all_chat_messages"
@@ -532,7 +533,11 @@ impl Tool for TelegramSendTool {
                         and/or `icon_custom_emoji_id` — pass an empty string as the emoji id to drop the icon, \
                         and supply at least one of the two. Delete needs the bot to be an admin with \
                         can_delete_messages; close/reopen/edit need can_manage_topics, unless the bot created \
-                        the topic."
+                        the topic. \
+                        Join-request actions: `approve_chat_join_request` and `decline_chat_join_request` \
+                        (each requires `chat_id` + `user_id`) accept or refuse a pending join request. \
+                        The bot needs can_invite_users, and the two ids are exactly the ones in the \
+                        owner notice the join-request handler sends."
                 },
                 "name": {
                     "type": "string",
@@ -702,7 +707,7 @@ impl Tool for TelegramSendTool {
                 },
                 "user_id": {
                     "type": "integer",
-                    "description": "Telegram user ID for ban_user / unban_user / promote_chat_member / restrict_chat_member"
+                    "description": "Telegram user ID for ban_user / unban_user / promote_chat_member / restrict_chat_member / approve_chat_join_request / decline_chat_join_request"
                 },
                 "emoji": {
                     "type": "string",
@@ -798,6 +803,14 @@ impl Tool for TelegramSendTool {
             "close_forum_topic" => self.action_close_forum_topic(&bot, input, context).await,
             "reopen_forum_topic" => self.action_reopen_forum_topic(&bot, input, context).await,
             "edit_forum_topic" => self.action_edit_forum_topic(&bot, input, context).await,
+            "approve_chat_join_request" => {
+                self.action_approve_chat_join_request(&bot, input, context)
+                    .await
+            }
+            "decline_chat_join_request" => {
+                self.action_decline_chat_join_request(&bot, input, context)
+                    .await
+            }
             "set_chat_menu_button" => self.action_set_chat_menu_button(&bot, input, context).await,
             "set_chat_title" => self.action_set_chat_title(&bot, input, context).await,
             "set_chat_photo" => self.action_set_chat_photo(&bot, input, context).await,
@@ -816,6 +829,7 @@ impl Tool for TelegramSendTool {
                  get_chat_administrators, get_chat_member_count, get_chat_member, ban_user, \
                  unban_user, set_reaction, list_topics, create_topic, rename_topic, bind_topic, \
                  delete_forum_topic, close_forum_topic, reopen_forum_topic, edit_forum_topic, \
+                 approve_chat_join_request, decline_chat_join_request, \
                  set_chat_menu_button, set_chat_title, set_chat_photo, set_chat_description, \
                  promote_chat_member, restrict_chat_member, unpin_all_chat_messages"
             ))),
@@ -3247,6 +3261,124 @@ impl TelegramSendTool {
                     &e.to_string(),
                 );
                 Ok(ToolResult::error(format!("Failed to edit topic: {e}")))
+            }
+        }
+    }
+
+    /// `approve_chat_join_request` — accept a pending join request.
+    ///
+    /// Takes the same `chat_id` + `user_id` pair the join-request owner notice
+    /// prints. The bot needs can_invite_users in the chat.
+    async fn action_approve_chat_join_request(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ChatTarget { chat_id } =
+            pget!(resolve_chat_target(input, context.session_id, &self.telegram_state).await);
+        let user_id = pget!(get_id(input, "user_id"));
+        match send_retrying_rate_limit("telegram_send approve_chat_join_request", || {
+            bot.approve_chat_join_request(ChatId(chat_id), UserId(user_id as u64))
+        })
+        .await
+        {
+            Ok(_) => {
+                log_send_success(
+                    "tool",
+                    "approve_chat_join_request",
+                    "approve_chat_join_request",
+                    &context.session_id.to_string(),
+                    "action",
+                    chat_id,
+                    None,
+                    0,
+                    0,
+                    "-",
+                );
+                let res = serde_json::json!({
+                    "status": "success",
+                    "chat_id": chat_id,
+                    "user_id": user_id,
+                    "approved": true
+                });
+                Ok(ToolResult::success(res.to_string()))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "approve_chat_join_request",
+                    "approve_chat_join_request",
+                    &context.session_id.to_string(),
+                    "action",
+                    chat_id,
+                    None,
+                    0,
+                    "-",
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!(
+                    "Failed to approve join request: {e}"
+                )))
+            }
+        }
+    }
+
+    /// `decline_chat_join_request` — refuse a pending join request.
+    ///
+    /// Mirror of `approve_chat_join_request`; the user is not added and may
+    /// request again later, so this is the reversible half of the pair.
+    async fn action_decline_chat_join_request(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ChatTarget { chat_id } =
+            pget!(resolve_chat_target(input, context.session_id, &self.telegram_state).await);
+        let user_id = pget!(get_id(input, "user_id"));
+        match send_retrying_rate_limit("telegram_send decline_chat_join_request", || {
+            bot.decline_chat_join_request(ChatId(chat_id), UserId(user_id as u64))
+        })
+        .await
+        {
+            Ok(_) => {
+                log_send_success(
+                    "tool",
+                    "decline_chat_join_request",
+                    "decline_chat_join_request",
+                    &context.session_id.to_string(),
+                    "action",
+                    chat_id,
+                    None,
+                    0,
+                    0,
+                    "-",
+                );
+                let res = serde_json::json!({
+                    "status": "success",
+                    "chat_id": chat_id,
+                    "user_id": user_id,
+                    "declined": true
+                });
+                Ok(ToolResult::success(res.to_string()))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "decline_chat_join_request",
+                    "decline_chat_join_request",
+                    &context.session_id.to_string(),
+                    "action",
+                    chat_id,
+                    None,
+                    0,
+                    "-",
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!(
+                    "Failed to decline join request: {e}"
+                )))
             }
         }
     }
