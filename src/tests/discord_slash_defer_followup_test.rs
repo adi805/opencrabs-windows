@@ -7,11 +7,15 @@
 //! loop — the slash arm defers (kind 5), hands the interaction token to the
 //! turn, and the turn edits that deferred message into the answer.
 //!
-//! These guards hold the wiring structurally, the same way
-//! `discord_followup_tap_tool_loop_test.rs` guards #1852.
+//! FR-006 moved the ack and the token hand-off out of `agent.rs` and into
+//! `interactions::handle_invoked_request`, which now serves the slash arm and
+//! both right-click context menus. These guards follow the behaviour into its
+//! new home, the same way `discord_followup_tap_tool_loop_test.rs` guards
+//! #1852.
 
-/// The slash arm must defer, never acknowledge: `Acknowledge` (kind 6) is
-/// only valid for component interactions, which is the original #27 bug.
+/// The slash arm must delegate to the shared invoked-request helper, and that
+/// helper must defer, never acknowledge: `Acknowledge` (kind 6) is only valid
+/// for component interactions, which is the original #27 bug.
 #[test]
 fn slash_arm_defers_instead_of_acknowledging() {
     let agent = include_str!("../channels/discord/agent.rs");
@@ -22,38 +26,51 @@ fn slash_arm_defers_instead_of_acknowledging() {
     let end = rest
         .find("// Modal submissions (#383)")
         .expect("modal arm terminates the slash arm");
-    let branch = &rest[..end];
-
+    let arm = &rest[..end];
     assert!(
-        branch.contains("CreateInteractionResponse::Defer("),
-        "FR-002: the slash arm must defer (kind 5) so the answer can replace it"
+        arm.contains("handle_invoked_request("),
+        "FR-006: the slash arm must delegate to the shared invoked-request path"
+    );
+
+    let interactions = include_str!("../channels/discord/interactions.rs");
+    let helper_start = interactions
+        .find("pub(crate) async fn handle_invoked_request(")
+        .expect("the shared invoked-request helper must exist");
+    let helper_rest = &interactions[helper_start..];
+    let helper_end = helper_rest
+        .find("pub(crate) async fn route_followup_turn(")
+        .expect("route_followup_turn terminates the invoked-request helper");
+    let helper = &helper_rest[..helper_end];
+    assert!(
+        helper.contains("CreateInteractionResponse::Defer("),
+        "FR-002: the slash path must defer (kind 5) so the answer can replace it"
     );
     assert!(
-        !branch.contains("CreateInteractionResponse::Acknowledge"),
+        !helper.contains("CreateInteractionResponse::Acknowledge"),
         "FR-001: `Acknowledge` is invalid on a slash command — it is the #27 banner"
     );
 }
 
-/// The token must reach the turn, and only the slash arm may supply one: a
-/// tapped component already resolved its interaction with `UpdateMessage`.
+/// The token must reach the turn, and only the invoked-request path may supply
+/// one: a tapped component already resolved its interaction with `UpdateMessage`.
 #[test]
 fn only_the_slash_arm_supplies_an_interaction_token() {
-    let agent = include_str!("../channels/discord/agent.rs");
-
-    let start = agent
-        .find("if let Interaction::Command(command) = &interaction {")
-        .expect("slash-command arm present");
-    let rest = &agent[start..];
+    let interactions = include_str!("../channels/discord/interactions.rs");
+    let start = interactions
+        .find("pub(crate) async fn handle_invoked_request(")
+        .expect("the shared invoked-request helper must exist");
+    let rest = &interactions[start..];
     let end = rest
-        .find("// Modal submissions (#383)")
-        .expect("modal arm terminates the slash arm");
-    let slash = &rest[..end];
+        .find("pub(crate) async fn route_followup_turn(")
+        .expect("route_followup_turn terminates the invoked-request helper");
+    let helper = &rest[..end];
     assert!(
-        slash.contains("Some(command.token.clone())"),
-        "FR-002: the slash arm must hand the turn the interaction token"
+        helper.contains("Some(command.token.clone())"),
+        "FR-002: the invoked path must hand the turn the interaction token"
     );
 
     // The tap branch is terminated by the select-menu arm.
+    let agent = include_str!("../channels/discord/agent.rs");
     let tap_start = agent
         .find("FOLLOWUP_PREFIX)")
         .expect("follow-up tap branch present");
