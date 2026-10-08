@@ -211,15 +211,18 @@ impl Tool for DiscordSendTool {
                 },
                 "message": {
                     "type": "string",
-                    "description": "Message text (send, reply, edit) or embed description (send_embed)"
+                    "description": "Message text (send, reply, edit) or embed description \
+                                    (send_embed)"
                 },
                 "channel_id": {
                     "type": "string",
-                    "description": "Discord channel ID (numeric string). Omit to use owner's last channel."
+                    "description": "Discord channel ID (numeric string). Omit to use owner's last \
+                                    channel."
                 },
                 "message_id": {
                     "type": "string",
-                    "description": "Target message ID for reply/react/unreact/edit/delete/pin/unpin/create_thread"
+                    "description": "Target message ID for \
+                                    reply/react/unreact/edit/delete/pin/unpin/create_thread"
                 },
                 "emoji": {
                     "type": "string",
@@ -231,7 +234,8 @@ impl Tool for DiscordSendTool {
                 },
                 "embed_description": {
                     "type": "string",
-                    "description": "Body text for send_embed (single-embed path; ignored when 'embeds' is given)"
+                    "description": "Body text for send_embed (single-embed path; ignored when \
+                                    'embeds' is given)"
                 },
                 "embed_color": {
                     "type": "integer",
@@ -247,7 +251,13 @@ impl Tool for DiscordSendTool {
                             "color": {"type": "integer"}
                         }
                     },
-                    "description": "Multi-embed layout for send_embed (max 10 blocks). When present and non-empty it replaces embed_title/embed_description/embed_color. Each block: title (<=256 chars), description (<=4096), color (RGB int, default Discord blurple). Discord caps the combined title+description text across all blocks at 6000 chars; overflow is trimmed from the tail and reported."
+                    "description": "Multi-embed layout for send_embed (max 10 blocks). When \
+                                    present and non-empty it replaces \
+                                    embed_title/embed_description/embed_color. Each block: title \
+                                    (<=256 chars), description (<=4096), color (RGB int, default \
+                                    Discord blurple). Discord caps the combined title+description \
+                                    text across all blocks at 6000 chars; overflow is trimmed \
+                                    from the tail and reported."
                 },
                 "thread_name": {
                     "type": "string",
@@ -255,7 +265,8 @@ impl Tool for DiscordSendTool {
                 },
                 "user_id": {
                     "type": "string",
-                    "description": "Target user ID (numeric string) for add_role/remove_role/kick/ban/timeout/nickname"
+                    "description": "Target user ID (numeric string) for \
+                                    add_role/remove_role/kick/ban/timeout/nickname"
                 },
                 "role_id": {
                     "type": "string",
@@ -263,19 +274,26 @@ impl Tool for DiscordSendTool {
                 },
                 "duration": {
                     "type": "string",
-                    "description": "Timeout length for the timeout action: 30s, 10m, 2h or 7d, or a count of seconds. Discord caps a timeout at 28 days; anything longer is refused, so use the ban action for a permanent removal."
+                    "description": "Timeout length for the timeout action: 30s, 10m, 2h or 7d, or \
+                                    a count of seconds. Discord caps a timeout at 28 days; \
+                                    anything longer is refused, so use the ban action for a \
+                                    permanent removal."
                 },
                 "nickname": {
                     "type": "string",
-                    "description": "New nickname for the nickname action (1-32 characters; Discord refuses 'everyone', 'here' and 'discord')."
+                    "description": "New nickname for the nickname action (1-32 characters; \
+                                    Discord refuses 'everyone', 'here' and 'discord')."
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Optional audit-log reason recorded for timeout/nickname/kick/ban/add_role/remove_role. Discord shows it in the guild audit log."
+                    "description": "Optional audit-log reason recorded for \
+                                    timeout/nickname/kick/ban/add_role/remove_role. Discord shows \
+                                    it in the guild audit log."
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Number of messages to fetch for get_messages (1-100, default 10)"
+                    "description": "Number of messages to fetch for get_messages (1-100, default \
+                                    10)"
                 },
                 "options": {
                     "type": "array",
@@ -295,7 +313,10 @@ impl Tool for DiscordSendTool {
                             }
                         ]
                     },
-                    "description": "Choices for send_select (max 25). A bare string is the label; an object adds a description, a unicode emoji, and default (pre-selected when the menu opens). The user's pick is routed back to you as a new turn."
+                    "description": "Choices for send_select (max 25). A bare string is the label; \
+                                    an object adds a description, a unicode emoji, and default \
+                                    (pre-selected when the menu opens). The user's pick is routed \
+                                    back to you as a new turn."
                 },
                 "placeholder": {
                     "type": "string",
@@ -303,11 +324,13 @@ impl Tool for DiscordSendTool {
                 },
                 "min_values": {
                     "type": "integer",
-                    "description": "For send_select: fewest options the user may pick (1-25). Defaults to 1."
+                    "description": "For send_select: fewest options the user may pick (1-25). \
+                                    Defaults to 1."
                 },
                 "max_values": {
                     "type": "integer",
-                    "description": "For send_select: most options the user may pick (1-25, capped at the option count). multi_select is sugar for this."
+                    "description": "For send_select: most options the user may pick (1-25, capped \
+                                    at the option count). multi_select is sugar for this."
                 },
                 "title": {
                     "type": "string",
@@ -329,28 +352,39 @@ impl Tool for DiscordSendTool {
                         },
                         "required": ["label"]
                     },
-                    "description": "Form fields for send_form (max 5). label and multiline are the base shape; placeholder, required (default true), min_length, max_length and value are optional refinements. Submitted values are routed back to you as a new turn."
+                    "description": "Form fields for send_form (max 5). label and multiline are \
+                                    the base shape; placeholder, required (default true), \
+                                    min_length, max_length and value are optional refinements. \
+                                    Submitted values are routed back to you as a new turn."
                 },
                 "poll_question": {
                     "type": "string",
-                    "description": "Poll question text for send_poll. Discord caps it at 300 chars; longer is truncated"
+                    "description": "Poll question text for send_poll. Discord caps it at 300 \
+                                    chars; longer is truncated"
                 },
                 "poll_options": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Poll answer strings for send_poll. Discord allows up to 10 answers; blank entries are dropped and labels over 55 chars are truncated"
+                    "description": "Poll answer strings for send_poll. Discord allows up to 10 \
+                                    answers; blank entries are dropped and labels over 55 chars \
+                                    are truncated"
                 },
                 "poll_duration_hours": {
                     "type": "integer",
-                    "description": "How long a send_poll stays open, in hours (1-768, the platform 32-day ceiling). Defaults to 24"
+                    "description": "How long a send_poll stays open, in hours (1-768, the \
+                                    platform 32-day ceiling). Defaults to 24"
                 },
                 "multi_select": {
                     "type": "boolean",
-                    "description": "For send_poll: let voters pick several answers. For send_select: sugar for max_values = the option count, so the user may pick any number. Default false (single choice)"
+                    "description": "For send_poll: let voters pick several answers. For \
+                                    send_select: sugar for max_values = the option count, so the \
+                                    user may pick any number. Default false (single choice)"
                 },
                 "file_path": {
                     "type": "string",
-                    "description": "Local file path to upload (required for send_file). Refused locally if over Discord's 20 MiB per-attachment default or 25 MiB request limit."
+                    "description": "Local file path to upload (required for send_file). Refused \
+                                    locally if over Discord's 20 MiB per-attachment default or 25 \
+                                    MiB request limit."
                 },
                 "caption": {
                     "type": "string",
@@ -358,7 +392,12 @@ impl Tool for DiscordSendTool {
                 },
                 "silent": {
                     "type": "boolean",
-                    "description": "Post with SUPPRESS_NOTIFICATIONS: recipients get the unread badge but no push/desktop notification. Applies to send, reply, send_embed, send_file. Omit to use the channel default (channels.discord.suppress_notifications, false). Set true for scheduled/report output that should not ping the server; set false to force a loud send on a quiet channel."
+                    "description": "Post with SUPPRESS_NOTIFICATIONS: recipients get the unread \
+                                    badge but no push/desktop notification. Applies to send, \
+                                    reply, send_embed, send_file. Omit to use the channel default \
+                                    (channels.discord.suppress_notifications, false). Set true \
+                                    for scheduled/report output that should not ping the server; \
+                                    set false to force a loud send on a quiet channel."
                 }
             },
             "required": ["action"]
@@ -1150,7 +1189,8 @@ impl Tool for DiscordSendTool {
             }
 
             unknown => Ok(ToolResult::error(format!(
-                "Unknown action '{unknown}'. Valid: send, reply, react, unreact, edit, delete, send_select, send_form, \
+                "Unknown action '{unknown}'. Valid: send, reply, react, unreact, edit, delete, \
+                 send_select, send_form, \
                  send_poll, pin, unpin, create_thread, send_embed, get_messages, \
                  list_channels, add_role, remove_role, kick, ban, timeout, nickname, send_file"
             ))),
