@@ -13,8 +13,8 @@
 //! `telegram_target_resolver_test`, so nothing here re-tests it: these tests
 //! cover only what is specific to the two new actions.
 
-use crate::brain::tools::r#trait::Tool;
 use crate::brain::tools::telegram_send::TelegramSendTool;
+use crate::brain::tools::r#trait::Tool;
 use crate::channels::telegram::TelegramState;
 use std::sync::Arc;
 
