@@ -2,9 +2,11 @@
 //!
 //! Serializes the schema-independent [`super::ast`] into the Bot API's
 //! rich-block JSON so a rich send can carry native blocks — including
-//! `RichBlockDetails` collapse (`summary` / `blocks` / `is_open`) — instead
-//! of re-encoded markdown or HTML text. Every block is a type-tagged object
-//! (`{"type": "details", ...}`) with the Bot API's snake_case field names.
+//! `RichBlockDetails` collapse (`summary` / `blocks` / `is_open`) and the 10.3
+//! additions (`is_compact` on a table, `expandable_blockquote`, `document`) —
+//! instead of re-encoded markdown or HTML text. Every block is a type-tagged
+//! object (`{"type": "details", ...}`) with the Bot API's snake_case field
+//! names.
 //!
 //! Not yet wired into the send path: the HTML input mode (#420 path A) ships
 //! first because the server parses it into the same native blocks with zero
@@ -73,6 +75,30 @@ pub(crate) fn render_block(b: &Block) -> Value {
             "blocks": render_blocks(blocks),
             "is_open": open,
         }),
+        Block::ExpandableQuote { text, credit } => {
+            let mut value = json!({
+                "type": "expandable_blockquote",
+                "text": render_inlines(text),
+            });
+            // `credit` is optional on the wire, so an absent one leaves the key
+            // out entirely instead of sending a null.
+            if let Some(credit) = credit {
+                value["credit"] = json!(render_inlines(credit));
+            }
+            value
+        }
+        Block::Document { media, caption } => {
+            let mut value = json!({
+                "type": "document",
+                // The API ignores the media's own caption; the block carries it.
+                "document": { "type": "document", "media": media },
+            });
+            if let Some(caption) = caption {
+                // RichBlockCaption is {text, credit}; only `text` is set here.
+                value["caption"] = json!({ "text": render_inlines(caption) });
+            }
+            value
+        }
     }
 }
 
@@ -100,12 +126,18 @@ fn render_table(table: &Table) -> Value {
     let cells = |row: &[Vec<Inline>]| -> Vec<Value> {
         row.iter().map(|cell| json!(render_inlines(cell))).collect()
     };
-    json!({
+    let mut value = json!({
         "type": "table",
         "align": table.align.iter().map(|a| render_align(*a)).collect::<Vec<_>>(),
         "header": cells(&table.header),
         "rows": table.rows.iter().map(|r| json!(cells(r))).collect::<Vec<_>>(),
-    })
+    });
+    // 10.3 `is_compact` is optional and absent means false, so a table that
+    // does not ask for the tighter layout keeps the body it sent before.
+    if table.is_compact {
+        value["is_compact"] = json!(true);
+    }
+    value
 }
 
 fn render_align(align: Align) -> &'static str {

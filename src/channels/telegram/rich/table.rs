@@ -245,6 +245,10 @@ pub(super) fn try_parse(lines: &[String], start: usize) -> Option<(Table, usize)
             align,
             header,
             rows,
+            // The pipe-table parser reads no compact request out of the
+            // markdown, so a parsed table keeps the default. The flag is set
+            // by a caller that wants the tighter 10.3 layout.
+            is_compact: false,
         },
         i,
     ))
