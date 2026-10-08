@@ -237,7 +237,14 @@ pub(crate) async fn send_one_scoped(
     let mut body = if flat {
         build_body_legacy(chat_id, thread_id, receiver_user_id, text, parse_html)
     } else {
-        build_body(chat_id, thread_id, receiver_user_id, text, parse_html, false)
+        build_body(
+            chat_id,
+            thread_id,
+            receiver_user_id,
+            text,
+            parse_html,
+            false,
+        )
     };
     if let Some(m) = markup {
         body["reply_markup"] = m.clone();

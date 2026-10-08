@@ -74,13 +74,9 @@ async fn send_picker_reply(
                 && let Some((old_id, old_rx)) =
                     super::ephemeral::remember_picker(msg.chat.id.0, eid, rx)
             {
-                let _ = super::ephemeral::delete_message(
-                    bot.token(),
-                    msg.chat.id.0,
-                    old_rx,
-                    old_id,
-                )
-                .await;
+                let _ =
+                    super::ephemeral::delete_message(bot.token(), msg.chat.id.0, old_rx, old_id)
+                        .await;
             }
             return Ok(());
         }
