@@ -15,8 +15,17 @@ use crate::channels::telegram::telemetry::{
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
+use teloxide::payloads::SendAnimationSetters;
+use teloxide::payloads::SendAudioSetters;
+use teloxide::payloads::SendContactSetters;
+use teloxide::payloads::SendDiceSetters;
 use teloxide::payloads::SendDocumentSetters;
 use teloxide::payloads::SendPhotoSetters;
+use teloxide::payloads::SendStickerSetters;
+use teloxide::payloads::SendVenueSetters;
+use teloxide::payloads::SendVideoNoteSetters;
+use teloxide::payloads::SendVideoSetters;
+use teloxide::payloads::SendVoiceSetters;
 use teloxide::prelude::*;
 use teloxide::types::{
     ChatId, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, MessageId, ReactionType,
@@ -24,7 +33,7 @@ use teloxide::types::{
 };
 use uuid::Uuid;
 
-/// Tool for comprehensive Telegram bot control (24 actions).
+/// Tool for comprehensive Telegram bot control (33 actions).
 pub struct TelegramSendTool {
     telegram_state: Arc<TelegramState>,
 }
@@ -417,7 +426,8 @@ impl Tool for TelegramSendTool {
 
     fn description(&self) -> &str {
         "Full Telegram control: send messages, reply, edit, delete, pin/unpin, forward, copy, \
-         send photos/documents/locations/polls, inline buttons, get chat info, list admins, \
+         send photos/documents/locations/polls, stickers, videos, animations, audio, voice notes, \
+         video notes, contacts, venues, dice, inline buttons, get chat info, list admins, \
          check member count/status, ban/unban users, and set emoji reactions. \
          Always use telegram_send instead of http_request — credentials handled securely. \
          Requires Telegram to be connected first."
@@ -432,12 +442,20 @@ impl Tool for TelegramSendTool {
                     "enum": [
                         "send", "reply", "edit", "delete", "pin", "unpin",
                         "forward", "copy_message", "send_photo", "send_document", "send_location",
+                        "send_sticker", "send_video", "send_animation", "send_audio", "send_voice",
+                        "send_video_note", "send_contact", "send_venue", "send_dice",
                         "send_poll", "send_buttons", "get_chat",
                         "get_chat_administrators", "get_chat_member_count", "get_chat_member",
                         "ban_user", "unban_user", "set_reaction", "list_topics",
                         "create_topic", "rename_topic", "bind_topic"
                     ],
                     "description": "The Telegram action to perform. \
+                        `send_sticker` / `send_video` / `send_animation` / `send_audio` / `send_voice` / \
+                        `send_video_note` take their file from the matching `*_url` parameter \
+                        (`send_sticker` reads `sticker_url`, `send_audio` reads `audio_url`, and so on). \
+                        `send_contact` needs `phone_number` + `first_name`; `send_venue` needs \
+                        `latitude`, `longitude`, `venue_title` + `address`; `send_dice` optionally \
+                        takes `emoji` (dice, darts, basketball, football, bowling, slot_machine). \
                         `list_topics` returns ONLY the bot-observed (thread_id, topic_name) pairs \
                         recorded in local DB for a forum-enabled supergroup — it does NOT enumerate \
                         the full forum surface (Telegram Bot API has no getForumTopics endpoint). \
@@ -470,7 +488,7 @@ impl Tool for TelegramSendTool {
                 },
                 "caption": {
                     "type": "string",
-                    "description": "Caption for send_photo / send_document (0-1024 chars). Attaches text context to the media."
+                    "description": "Caption for send_photo / send_document / send_video / send_animation / send_audio / send_voice (0-1024 chars). Attaches text context to the media."
                 },
                 "message_id": {
                     "type": "integer",
@@ -493,13 +511,57 @@ impl Tool for TelegramSendTool {
                     "type": "string",
                     "description": "Document for send_document: an HTTPS URL or a local file path (e.g. /tmp/report.pdf or ~/.opencrabs/data.csv)"
                 },
+                "sticker_url": {
+                    "type": "string",
+                    "description": "Sticker for send_sticker: an HTTPS URL or a local file path (.webp, .png, .tgs). Telegram may re-encode a non-webp upload."
+                },
+                "video_url": {
+                    "type": "string",
+                    "description": "Video for send_video: an HTTPS URL or a local file path (.mp4)."
+                },
+                "animation_url": {
+                    "type": "string",
+                    "description": "Animation for send_animation: an HTTPS URL or a local file path (.mp4 or .gif). Renders autoplaying inline, unlike send_video."
+                },
+                "audio_url": {
+                    "type": "string",
+                    "description": "Audio for send_audio: an HTTPS URL or a local file path. Renders as a music player with title/performer metadata, not a voice note."
+                },
+                "voice_url": {
+                    "type": "string",
+                    "description": "Voice note for send_voice: an HTTPS URL or a local file path (.ogg/opus recommended)."
+                },
+                "video_note_url": {
+                    "type": "string",
+                    "description": "Video note for send_video_note: an HTTPS URL or a local file path. Must be square (1:1) or Telegram rejects it."
+                },
+                "phone_number": {
+                    "type": "string",
+                    "description": "Phone number for send_contact (required)."
+                },
+                "first_name": {
+                    "type": "string",
+                    "description": "First name for send_contact (required)."
+                },
+                "last_name": {
+                    "type": "string",
+                    "description": "Optional last name for send_contact."
+                },
+                "venue_title": {
+                    "type": "string",
+                    "description": "Venue name for send_venue (required, distinct from `title`)."
+                },
+                "address": {
+                    "type": "string",
+                    "description": "Street address for send_venue (required)."
+                },
                 "latitude": {
                     "type": "number",
-                    "description": "Latitude for send_location"
+                    "description": "Latitude for send_location / send_venue"
                 },
                 "longitude": {
                     "type": "number",
-                    "description": "Longitude for send_location"
+                    "description": "Longitude for send_location / send_venue"
                 },
                 "poll_question": {
                     "type": "string",
@@ -530,7 +592,7 @@ impl Tool for TelegramSendTool {
                 },
                 "emoji": {
                     "type": "string",
-                    "description": "Emoji for set_reaction (e.g. \"👍\")"
+                    "description": "Emoji for set_reaction (e.g. \"👍\") or for send_dice (dice, darts, basketball, football, bowling, slot_machine). Defaults to the dice emoji when omitted."
                 }
             },
             "required": ["action"]
@@ -590,6 +652,15 @@ impl Tool for TelegramSendTool {
             "send_photo" => self.action_send_photo(&bot, input, context).await,
             "send_document" => self.action_send_document(&bot, input, context).await,
             "send_location" => self.action_send_location(&bot, input, context).await,
+            "send_sticker" => self.action_send_sticker(&bot, input, context).await,
+            "send_video" => self.action_send_video(&bot, input, context).await,
+            "send_animation" => self.action_send_animation(&bot, input, context).await,
+            "send_audio" => self.action_send_audio(&bot, input, context).await,
+            "send_voice" => self.action_send_voice(&bot, input, context).await,
+            "send_video_note" => self.action_send_video_note(&bot, input, context).await,
+            "send_contact" => self.action_send_contact(&bot, input, context).await,
+            "send_venue" => self.action_send_venue(&bot, input, context).await,
+            "send_dice" => self.action_send_dice(&bot, input, context).await,
             "send_poll" => self.action_send_poll(&bot, input, context).await,
             "send_buttons" => self.action_send_buttons(&bot, input, context).await,
             "get_chat" => self.action_get_chat(&bot, input, context).await,
@@ -611,10 +682,11 @@ impl Tool for TelegramSendTool {
             "bind_topic" => self.action_bind_topic(input, context).await,
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{unknown}'. Valid actions: send, reply, edit, delete, pin, \
-                 unpin, forward, send_photo, send_document, send_location, send_poll, \
-                 send_buttons, get_chat, get_chat_administrators, get_chat_member_count, \
-                 get_chat_member, ban_user, unban_user, set_reaction, list_topics, \
-                 create_topic, rename_topic, bind_topic"
+                 unpin, forward, send_photo, send_document, send_location, send_sticker, \
+                 send_video, send_animation, send_audio, send_voice, send_video_note, \
+                 send_contact, send_venue, send_dice, send_poll, send_buttons, get_chat, \
+                 get_chat_administrators, get_chat_member_count, get_chat_member, ban_user, \
+                 unban_user, set_reaction, list_topics, create_topic, rename_topic, bind_topic"
             ))),
         }
     }
@@ -1357,6 +1429,704 @@ impl TelegramSendTool {
                     &e.to_string(),
                 );
                 Ok(ToolResult::error(format!("Failed to send document: {e}")))
+            }
+        }
+    }
+
+    /// `send_sticker` — a sticker file into a (possibly forum) chat (#1079).
+    /// Telegram re-encodes a non-webp upload, so the caller's file need not
+    /// already be `.webp`.
+    async fn action_send_sticker(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let NewTarget { chat_id, thread_id } =
+            pget!(resolve_new_target(input, context.session_id, &self.telegram_state).await);
+        let reference = pget!(get_str(input, "sticker_url")).to_string();
+        // Collapse an identical re-send to the same chat within the dedup
+        // window (#721) — a repeat lands the same sticker twice otherwise.
+        if !self.telegram_state.claim_media_send("send_sticker", chat_id, &reference, None) {
+            tracing::info!(
+                "telegram_send: suppressed duplicate send_sticker to chat {chat_id} ({reference})"
+            );
+            return Ok(ToolResult::success(format!(
+                "Sticker already sent to chat {chat_id} moments ago — skipped the duplicate."
+            )));
+        }
+        let file = pget!(resolve_input_file(&reference, "sticker_url").await);
+        let reply_to = input.get("message_id").and_then(value_as_i64);
+        match send_retrying_rate_limit("telegram_send send_sticker", || {
+            let mut req = crate::channels::telegram::send::sticker_in_thread(
+                bot,
+                ChatId(chat_id),
+                thread_id,
+                file.clone(),
+            );
+            if let Some(mid) = reply_to {
+                req = req.reply_parameters(ReplyParameters::new(MessageId(mid as i32)));
+            }
+            req
+        })
+        .await
+        {
+            Ok(m) => {
+                log_send_success(
+                    "tool",
+                    "send_sticker",
+                    "send_sticker",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    m.id.0,
+                    reference.len(),
+                    &content_hash8(&reference),
+                );
+                Ok(ToolResult::success(format!(
+                    "Sticker sent to chat {chat_id}.{}",
+                    landing_echo(chat_id, thread_id).await
+                )))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "send_sticker",
+                    "send_sticker",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    reference.len(),
+                    &content_hash8(&reference),
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to send sticker: {e}")))
+            }
+        }
+    }
+
+    /// `send_video` — a video file with an optional caption (#1079).
+    async fn action_send_video(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let NewTarget { chat_id, thread_id } =
+            pget!(resolve_new_target(input, context.session_id, &self.telegram_state).await);
+        let reference = pget!(get_str(input, "video_url")).to_string();
+        let caption = input
+            .get("caption")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if !self.telegram_state.claim_media_send(
+            "send_video",
+            chat_id,
+            &reference,
+            caption.as_deref(),
+        ) {
+            tracing::info!(
+                "telegram_send: suppressed duplicate send_video to chat {chat_id} ({reference})"
+            );
+            return Ok(ToolResult::success(format!(
+                "Video already sent to chat {chat_id} moments ago — skipped the duplicate."
+            )));
+        }
+        let file = pget!(resolve_input_file(&reference, "video_url").await);
+        let reply_to = input.get("message_id").and_then(value_as_i64);
+        match send_retrying_rate_limit("telegram_send send_video", || {
+            let mut req = crate::channels::telegram::send::video_in_thread(
+                bot,
+                ChatId(chat_id),
+                thread_id,
+                file.clone(),
+            );
+            if let Some(ref c) = caption {
+                req = req.caption(c.clone());
+            }
+            if let Some(mid) = reply_to {
+                req = req.reply_parameters(ReplyParameters::new(MessageId(mid as i32)));
+            }
+            req
+        })
+        .await
+        {
+            Ok(m) => {
+                log_send_success(
+                    "tool",
+                    "send_video",
+                    "send_video",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    m.id.0,
+                    reference.len(),
+                    &content_hash8(&reference),
+                );
+                Ok(ToolResult::success(format!(
+                    "Video sent to chat {chat_id}.{}",
+                    landing_echo(chat_id, thread_id).await
+                )))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "send_video",
+                    "send_video",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    reference.len(),
+                    &content_hash8(&reference),
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to send video: {e}")))
+            }
+        }
+    }
+
+    /// `send_animation` — a GIF/MP4 that autoplays inline (#1079). Distinct
+    /// from `send_video`: the same bytes render differently per method.
+    async fn action_send_animation(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let NewTarget { chat_id, thread_id } =
+            pget!(resolve_new_target(input, context.session_id, &self.telegram_state).await);
+        let reference = pget!(get_str(input, "animation_url")).to_string();
+        let caption = input
+            .get("caption")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if !self.telegram_state.claim_media_send(
+            "send_animation",
+            chat_id,
+            &reference,
+            caption.as_deref(),
+        ) {
+            tracing::info!(
+                "telegram_send: suppressed duplicate send_animation to chat {chat_id} ({reference})"
+            );
+            return Ok(ToolResult::success(format!(
+                "Animation already sent to chat {chat_id} moments ago — skipped the duplicate."
+            )));
+        }
+        let file = pget!(resolve_input_file(&reference, "animation_url").await);
+        let reply_to = input.get("message_id").and_then(value_as_i64);
+        match send_retrying_rate_limit("telegram_send send_animation", || {
+            let mut req = crate::channels::telegram::send::animation_in_thread(
+                bot,
+                ChatId(chat_id),
+                thread_id,
+                file.clone(),
+            );
+            if let Some(ref c) = caption {
+                req = req.caption(c.clone());
+            }
+            if let Some(mid) = reply_to {
+                req = req.reply_parameters(ReplyParameters::new(MessageId(mid as i32)));
+            }
+            req
+        })
+        .await
+        {
+            Ok(m) => {
+                log_send_success(
+                    "tool",
+                    "send_animation",
+                    "send_animation",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    m.id.0,
+                    reference.len(),
+                    &content_hash8(&reference),
+                );
+                Ok(ToolResult::success(format!(
+                    "Animation sent to chat {chat_id}.{}",
+                    landing_echo(chat_id, thread_id).await
+                )))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "send_animation",
+                    "send_animation",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    reference.len(),
+                    &content_hash8(&reference),
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to send animation: {e}")))
+            }
+        }
+    }
+
+    /// `send_audio` — an audio file rendered as a music player (#1079),
+    /// unlike `send_voice` which renders as a voice note.
+    async fn action_send_audio(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let NewTarget { chat_id, thread_id } =
+            pget!(resolve_new_target(input, context.session_id, &self.telegram_state).await);
+        let reference = pget!(get_str(input, "audio_url")).to_string();
+        let caption = input
+            .get("caption")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if !self.telegram_state.claim_media_send(
+            "send_audio",
+            chat_id,
+            &reference,
+            caption.as_deref(),
+        ) {
+            tracing::info!(
+                "telegram_send: suppressed duplicate send_audio to chat {chat_id} ({reference})"
+            );
+            return Ok(ToolResult::success(format!(
+                "Audio already sent to chat {chat_id} moments ago — skipped the duplicate."
+            )));
+        }
+        let file = pget!(resolve_input_file(&reference, "audio_url").await);
+        let reply_to = input.get("message_id").and_then(value_as_i64);
+        match send_retrying_rate_limit("telegram_send send_audio", || {
+            let mut req = crate::channels::telegram::send::audio_in_thread(
+                bot,
+                ChatId(chat_id),
+                thread_id,
+                file.clone(),
+            );
+            if let Some(ref c) = caption {
+                req = req.caption(c.clone());
+            }
+            if let Some(mid) = reply_to {
+                req = req.reply_parameters(ReplyParameters::new(MessageId(mid as i32)));
+            }
+            req
+        })
+        .await
+        {
+            Ok(m) => {
+                log_send_success(
+                    "tool",
+                    "send_audio",
+                    "send_audio",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    m.id.0,
+                    reference.len(),
+                    &content_hash8(&reference),
+                );
+                Ok(ToolResult::success(format!(
+                    "Audio sent to chat {chat_id}.{}",
+                    landing_echo(chat_id, thread_id).await
+                )))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "send_audio",
+                    "send_audio",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    reference.len(),
+                    &content_hash8(&reference),
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to send audio: {e}")))
+            }
+        }
+    }
+
+    /// `send_voice` — a voice note with an optional caption (#1079). The
+    /// channel handler already had `voice_in_thread` for TTS; this exposes
+    /// the same path to the agent tool.
+    async fn action_send_voice(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let NewTarget { chat_id, thread_id } =
+            pget!(resolve_new_target(input, context.session_id, &self.telegram_state).await);
+        let reference = pget!(get_str(input, "voice_url")).to_string();
+        let caption = input
+            .get("caption")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if !self.telegram_state.claim_media_send(
+            "send_voice",
+            chat_id,
+            &reference,
+            caption.as_deref(),
+        ) {
+            tracing::info!(
+                "telegram_send: suppressed duplicate send_voice to chat {chat_id} ({reference})"
+            );
+            return Ok(ToolResult::success(format!(
+                "Voice note already sent to chat {chat_id} moments ago — skipped the duplicate."
+            )));
+        }
+        let file = pget!(resolve_input_file(&reference, "voice_url").await);
+        let reply_to = input.get("message_id").and_then(value_as_i64);
+        match send_retrying_rate_limit("telegram_send send_voice", || {
+            let mut req = crate::channels::telegram::send::voice_in_thread(
+                bot,
+                ChatId(chat_id),
+                thread_id,
+                file.clone(),
+            );
+            if let Some(ref c) = caption {
+                req = req.caption(c.clone());
+            }
+            if let Some(mid) = reply_to {
+                req = req.reply_parameters(ReplyParameters::new(MessageId(mid as i32)));
+            }
+            req
+        })
+        .await
+        {
+            Ok(m) => {
+                log_send_success(
+                    "tool",
+                    "send_voice",
+                    "send_voice",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    m.id.0,
+                    reference.len(),
+                    &content_hash8(&reference),
+                );
+                Ok(ToolResult::success(format!(
+                    "Voice note sent to chat {chat_id}.{}",
+                    landing_echo(chat_id, thread_id).await
+                )))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "send_voice",
+                    "send_voice",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    reference.len(),
+                    &content_hash8(&reference),
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to send voice note: {e}")))
+            }
+        }
+    }
+
+    /// `send_video_note` — the round "telescope" message (#1079). Telegram
+    /// requires a square upload; a non-square file comes back as a request
+    /// error and is surfaced as-is.
+    async fn action_send_video_note(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let NewTarget { chat_id, thread_id } =
+            pget!(resolve_new_target(input, context.session_id, &self.telegram_state).await);
+        let reference = pget!(get_str(input, "video_note_url")).to_string();
+        if !self.telegram_state.claim_media_send("send_video_note", chat_id, &reference, None) {
+            tracing::info!(
+                "telegram_send: suppressed duplicate send_video_note to chat {chat_id} ({reference})"
+            );
+            return Ok(ToolResult::success(format!(
+                "Video note already sent to chat {chat_id} moments ago — skipped the duplicate."
+            )));
+        }
+        let file = pget!(resolve_input_file(&reference, "video_note_url").await);
+        let reply_to = input.get("message_id").and_then(value_as_i64);
+        match send_retrying_rate_limit("telegram_send send_video_note", || {
+            let mut req = crate::channels::telegram::send::video_note_in_thread(
+                bot,
+                ChatId(chat_id),
+                thread_id,
+                file.clone(),
+            );
+            if let Some(mid) = reply_to {
+                req = req.reply_parameters(ReplyParameters::new(MessageId(mid as i32)));
+            }
+            req
+        })
+        .await
+        {
+            Ok(m) => {
+                log_send_success(
+                    "tool",
+                    "send_video_note",
+                    "send_video_note",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    m.id.0,
+                    reference.len(),
+                    &content_hash8(&reference),
+                );
+                Ok(ToolResult::success(format!(
+                    "Video note sent to chat {chat_id}.{}",
+                    landing_echo(chat_id, thread_id).await
+                )))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "send_video_note",
+                    "send_video_note",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    reference.len(),
+                    &content_hash8(&reference),
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to send video note: {e}")))
+            }
+        }
+    }
+
+    /// `send_contact` — a phone contact card (#1079). Pure JSON payload, so
+    /// no dedup claim: a contact re-send is cheap and rarely accidental.
+    async fn action_send_contact(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let NewTarget { chat_id, thread_id } =
+            pget!(resolve_new_target(input, context.session_id, &self.telegram_state).await);
+        let phone_number = pget!(get_str(input, "phone_number")).to_string();
+        let first_name = pget!(get_str(input, "first_name")).to_string();
+        let last_name = input
+            .get("last_name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let reply_to = input.get("message_id").and_then(value_as_i64);
+        match send_retrying_rate_limit("telegram_send send_contact", || {
+            let mut req = crate::channels::telegram::send::contact_in_thread(
+                bot,
+                ChatId(chat_id),
+                thread_id,
+                phone_number.clone(),
+                first_name.clone(),
+            );
+            if let Some(ref ln) = last_name {
+                req = req.last_name(ln.clone());
+            }
+            if let Some(mid) = reply_to {
+                req = req.reply_parameters(ReplyParameters::new(MessageId(mid as i32)));
+            }
+            req
+        })
+        .await
+        {
+            Ok(m) => {
+                let desc = format!("{phone_number} {first_name}");
+                log_send_success(
+                    "tool",
+                    "send_contact",
+                    "send_contact",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    m.id.0,
+                    desc.len(),
+                    &content_hash8(&desc),
+                );
+                Ok(ToolResult::success(format!(
+                    "Contact ({first_name}) sent to chat {chat_id}.{}",
+                    landing_echo(chat_id, thread_id).await
+                )))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "send_contact",
+                    "send_contact",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    phone_number.len(),
+                    &content_hash8(&phone_number),
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to send contact: {e}")))
+            }
+        }
+    }
+
+    /// `send_venue` — a location with a name and street address (#1079), so
+    /// it renders as a place card rather than a bare pin.
+    async fn action_send_venue(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let NewTarget { chat_id, thread_id } =
+            pget!(resolve_new_target(input, context.session_id, &self.telegram_state).await);
+        let lat = match input.get("latitude").and_then(value_as_f64) {
+            Some(v) => v,
+            None => {
+                return Ok(ToolResult::error(
+                    "Missing required 'latitude' parameter.".to_string(),
+                ));
+            }
+        };
+        let lng = match input.get("longitude").and_then(value_as_f64) {
+            Some(v) => v,
+            None => {
+                return Ok(ToolResult::error(
+                    "Missing required 'longitude' parameter.".to_string(),
+                ));
+            }
+        };
+        let title = pget!(get_str(input, "venue_title")).to_string();
+        let address = pget!(get_str(input, "address")).to_string();
+        let reply_to = input.get("message_id").and_then(value_as_i64);
+        match send_retrying_rate_limit("telegram_send send_venue", || {
+            let mut req = crate::channels::telegram::send::venue_in_thread(
+                bot,
+                ChatId(chat_id),
+                thread_id,
+                lat,
+                lng,
+                title.clone(),
+                address.clone(),
+            );
+            if let Some(mid) = reply_to {
+                req = req.reply_parameters(ReplyParameters::new(MessageId(mid as i32)));
+            }
+            req
+        })
+        .await
+        {
+            Ok(m) => {
+                let desc = format!("{title} {address} {lat},{lng}");
+                log_send_success(
+                    "tool",
+                    "send_venue",
+                    "send_venue",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    m.id.0,
+                    desc.len(),
+                    &content_hash8(&desc),
+                );
+                Ok(ToolResult::success(format!(
+                    "Venue '{title}' ({lat}, {lng}) sent to chat {chat_id}.{}",
+                    landing_echo(chat_id, thread_id).await
+                )))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "send_venue",
+                    "send_venue",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    address.len(),
+                    &content_hash8(&address),
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to send venue: {e}")))
+            }
+        }
+    }
+
+    /// `send_dice` — an animated dice-style message (#1079). Omitting `emoji`
+    /// lets Telegram pick the default die, which is the usual case.
+    async fn action_send_dice(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let NewTarget { chat_id, thread_id } =
+            pget!(resolve_new_target(input, context.session_id, &self.telegram_state).await);
+        let emoji = input
+            .get("emoji")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let reply_to = input.get("message_id").and_then(value_as_i64);
+        match send_retrying_rate_limit("telegram_send send_dice", || {
+            let mut req =
+                crate::channels::telegram::send::dice_in_thread(bot, ChatId(chat_id), thread_id);
+            if let Some(ref e) = emoji {
+                req = req.emoji(e.clone());
+            }
+            if let Some(mid) = reply_to {
+                req = req.reply_parameters(ReplyParameters::new(MessageId(mid as i32)));
+            }
+            req
+        })
+        .await
+        {
+            Ok(m) => {
+                let label = emoji.clone().unwrap_or_else(|| "dice".to_string());
+                log_send_success(
+                    "tool",
+                    "send_dice",
+                    "send_dice",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    m.id.0,
+                    label.len(),
+                    &content_hash8(&label),
+                );
+                Ok(ToolResult::success(format!(
+                    "Dice ({label}) sent to chat {chat_id}.{}",
+                    landing_echo(chat_id, thread_id).await
+                )))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "send_dice",
+                    "send_dice",
+                    &context.session_id.to_string(),
+                    "media",
+                    chat_id,
+                    thread_id.map(|t| t.0.0),
+                    0,
+                    &content_hash8("dice"),
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!("Failed to send dice: {e}")))
             }
         }
     }

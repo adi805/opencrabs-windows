@@ -17,13 +17,21 @@
 use teloxide::Bot;
 use teloxide::payloads::CopyMessageSetters;
 use teloxide::payloads::ForwardMessageSetters;
+use teloxide::payloads::SendAnimationSetters;
+use teloxide::payloads::SendAudioSetters;
 use teloxide::payloads::SendChatActionSetters;
+use teloxide::payloads::SendContactSetters;
+use teloxide::payloads::SendDiceSetters;
 use teloxide::payloads::SendDocumentSetters;
 use teloxide::payloads::SendLocationSetters;
 use teloxide::payloads::SendMediaGroupSetters;
 use teloxide::payloads::SendMessageSetters;
 use teloxide::payloads::SendPhotoSetters;
 use teloxide::payloads::SendPollSetters;
+use teloxide::payloads::SendStickerSetters;
+use teloxide::payloads::SendVenueSetters;
+use teloxide::payloads::SendVideoNoteSetters;
+use teloxide::payloads::SendVideoSetters;
 use teloxide::payloads::SendVoiceSetters;
 use teloxide::prelude::Requester;
 use teloxide::requests::JsonRequest;
@@ -252,6 +260,161 @@ where
     C: Into<ChatId>,
 {
     let req = bot.send_voice(chat_id.into(), voice);
+    match thread_id {
+        Some(t) => req.message_thread_id(t),
+        None => req,
+    }
+}
+
+/// `bot.send_sticker(chat_id, sticker)` with optional `message_thread_id`
+/// (#1079). Stickers are a first-class Telegram medium the tool had no way to
+/// send; without a helper the arm would have built a bare request and landed
+/// in General in forum groups, the same defect #1079 fixed for six paths.
+pub fn sticker_in_thread<C>(
+    bot: &Bot,
+    chat_id: C,
+    thread_id: Option<ThreadId>,
+    sticker: InputFile,
+) -> teloxide::requests::MultipartRequest<teloxide::payloads::SendSticker>
+where
+    C: Into<ChatId>,
+{
+    let req = bot.send_sticker(chat_id.into(), sticker);
+    match thread_id {
+        Some(t) => req.message_thread_id(t),
+        None => req,
+    }
+}
+
+/// `bot.send_video(chat_id, video)` with optional `message_thread_id` (#1079).
+pub fn video_in_thread<C>(
+    bot: &Bot,
+    chat_id: C,
+    thread_id: Option<ThreadId>,
+    video: InputFile,
+) -> teloxide::requests::MultipartRequest<teloxide::payloads::SendVideo>
+where
+    C: Into<ChatId>,
+{
+    let req = bot.send_video(chat_id.into(), video);
+    match thread_id {
+        Some(t) => req.message_thread_id(t),
+        None => req,
+    }
+}
+
+/// `bot.send_animation(chat_id, animation)` with optional `message_thread_id`
+/// (#1079). GIF/MP4 animations autoplay inline; they are a distinct payload
+/// from `send_video`, so Telegram needs the right method to render them.
+pub fn animation_in_thread<C>(
+    bot: &Bot,
+    chat_id: C,
+    thread_id: Option<ThreadId>,
+    animation: InputFile,
+) -> teloxide::requests::MultipartRequest<teloxide::payloads::SendAnimation>
+where
+    C: Into<ChatId>,
+{
+    let req = bot.send_animation(chat_id.into(), animation);
+    match thread_id {
+        Some(t) => req.message_thread_id(t),
+        None => req,
+    }
+}
+
+/// `bot.send_audio(chat_id, audio)` with optional `message_thread_id` (#1079).
+/// Audio shows a music player with title/performer metadata, unlike
+/// `send_voice` which renders as a voice note.
+pub fn audio_in_thread<C>(
+    bot: &Bot,
+    chat_id: C,
+    thread_id: Option<ThreadId>,
+    audio: InputFile,
+) -> teloxide::requests::MultipartRequest<teloxide::payloads::SendAudio>
+where
+    C: Into<ChatId>,
+{
+    let req = bot.send_audio(chat_id.into(), audio);
+    match thread_id {
+        Some(t) => req.message_thread_id(t),
+        None => req,
+    }
+}
+
+/// `bot.send_video_note(chat_id, video_note)` with optional
+/// `message_thread_id` (#1079). A video note is the round "telescope"
+/// message; Telegram rejects it outside a 1:1 aspect ratio, so the caller
+/// owns that constraint.
+pub fn video_note_in_thread<C>(
+    bot: &Bot,
+    chat_id: C,
+    thread_id: Option<ThreadId>,
+    video_note: InputFile,
+) -> teloxide::requests::MultipartRequest<teloxide::payloads::SendVideoNote>
+where
+    C: Into<ChatId>,
+{
+    let req = bot.send_video_note(chat_id.into(), video_note);
+    match thread_id {
+        Some(t) => req.message_thread_id(t),
+        None => req,
+    }
+}
+
+/// `bot.send_contact(chat_id, phone_number, first_name)` with optional
+/// `message_thread_id` (#1079). No file involved, so this is a JSON request
+/// like `location_in_thread`.
+pub fn contact_in_thread<C>(
+    bot: &Bot,
+    chat_id: C,
+    thread_id: Option<ThreadId>,
+    phone_number: String,
+    first_name: String,
+) -> JsonRequest<teloxide::payloads::SendContact>
+where
+    C: Into<ChatId>,
+{
+    let req = bot.send_contact(chat_id.into(), phone_number, first_name);
+    match thread_id {
+        Some(t) => req.message_thread_id(t),
+        None => req,
+    }
+}
+
+/// `bot.send_venue(chat_id, lat, lng, title, address)` with optional
+/// `message_thread_id` (#1079). A venue is a location with a name and street
+/// address attached, so it renders as a place card rather than a bare pin.
+pub fn venue_in_thread<C>(
+    bot: &Bot,
+    chat_id: C,
+    thread_id: Option<ThreadId>,
+    latitude: f64,
+    longitude: f64,
+    title: String,
+    address: String,
+) -> JsonRequest<teloxide::payloads::SendVenue>
+where
+    C: Into<ChatId>,
+{
+    let req = bot.send_venue(chat_id.into(), latitude, longitude, title, address);
+    match thread_id {
+        Some(t) => req.message_thread_id(t),
+        None => req,
+    }
+}
+
+/// `bot.send_dice(chat_id)` with optional `message_thread_id` (#1079). The
+/// emoji (dice, darts, basketball, ...) is an optional setter applied by the
+/// caller, so the helper only owns the topic route.
+pub fn dice_in_thread<C>(
+    bot: &Bot,
+    chat_id: C,
+    thread_id: Option<ThreadId>,
+) -> JsonRequest<teloxide::payloads::SendDice>
+where
+    C: Into<ChatId>,
+{
+    let req = bot.send_dice(chat_id.into());
     match thread_id {
         Some(t) => req.message_thread_id(t),
         None => req,
