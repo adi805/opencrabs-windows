@@ -116,8 +116,14 @@ fn the_lot_is_bounded_and_reports_its_overflow() {
         assert_eq!(generation_stops_pending(), STOP_CAP, "cap holds");
 
         // The oldest went, the newest stayed: the lot evicts from the front.
-        assert!(take_generation_stop(0, None).is_none(), "chat 0 was evicted");
-        assert!(take_generation_stop(9999, None).is_some(), "chat 9999 is there");
+        assert!(
+            take_generation_stop(0, None).is_none(),
+            "chat 0 was evicted"
+        );
+        assert!(
+            take_generation_stop(9999, None).is_some(),
+            "chat 9999 is there"
+        );
     });
 }
 
@@ -132,8 +138,15 @@ fn an_exact_topic_match_wins_over_a_threadless_one() {
         stash_generation_stop(topic);
 
         let taken = take_generation_stop(-100200, Some(42)).expect("the topic stop is preferred");
-        assert_eq!(taken.draft_id, 2, "the topic-scoped turn takes its own stop");
-        assert_eq!(generation_stops_pending(), 1, "the general stop is untouched");
+        assert_eq!(
+            taken.draft_id, 2,
+            "the topic-scoped turn takes its own stop"
+        );
+        assert_eq!(
+            generation_stops_pending(),
+            1,
+            "the general stop is untouched"
+        );
     });
 }
 
@@ -156,7 +169,11 @@ fn a_stop_for_another_chat_is_left_alone() {
         let stop = stopped_message_generation(&stop_update(1, None, 5)).expect("parses");
         stash_generation_stop(stop);
         assert!(take_generation_stop(2, None).is_none());
-        assert_eq!(generation_stops_pending(), 1, "still parked for its own chat");
+        assert_eq!(
+            generation_stops_pending(),
+            1,
+            "still parked for its own chat"
+        );
     });
 }
 
@@ -183,7 +200,10 @@ fn a_stop_inside_the_ttl_still_fires() {
         let stop = stopped_message_generation(&stop_update(1, None, 5)).expect("parses");
         stash_generation_stop(stop);
         age_generation_stops(STOP_TTL - std::time::Duration::from_secs(10));
-        assert!(take_generation_stop(1, None).is_some(), "still inside the TTL");
+        assert!(
+            take_generation_stop(1, None).is_some(),
+            "still inside the TTL"
+        );
     });
 }
 
@@ -199,7 +219,10 @@ fn parking_prunes_expired_entries_before_the_cap_can_bite() {
 
         // A full lot of corpses must not report a drop: the prune runs first.
         let fresh = stopped_message_generation(&stop_update(9999, None, 9999)).expect("parses");
-        assert!(stash_generation_stop(fresh), "expired entries are not live capacity");
+        assert!(
+            stash_generation_stop(fresh),
+            "expired entries are not live capacity"
+        );
         assert_eq!(generation_stops_pending(), 1);
     });
 }
