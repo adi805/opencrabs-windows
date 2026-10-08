@@ -102,7 +102,7 @@ fn wired_handlers(body: &str) -> Vec<String> {
     body.lines()
         .filter_map(|line| {
             let rest = line.trim_start().strip_prefix("async fn ")?;
-            let name = rest.split(|c| c == '(' || c == '<').next()?;
+            let name = rest.split(['(', '<']).next()?;
             if name.is_empty() {
                 None
             } else {
