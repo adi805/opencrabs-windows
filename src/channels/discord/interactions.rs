@@ -9,7 +9,9 @@
 //! the TTL answer "expired" instead of firing stale actions.
 
 use crate::brain::agent::AgentService;
+use crate::config::Config;
 use crate::services::SessionService;
+use serenity::model::application::CommandInteraction;
 use serenity::prelude::Context;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -109,6 +111,175 @@ pub(crate) async fn route_interaction_turn(
             tracing::warn!("Discord interaction: failed to deliver reply: {e}");
         }
     }
+}
+
+/// The gate, the acknowledgement and the dispatch shared by every interaction
+/// that asks the agent to do work: a catalog command picked from the `/` menu
+/// (#1850) and the two right-click context menus (FR-006 / AC-009).
+///
+/// ONE copy for every interaction entry point, deliberately. The rule is the
+/// OC-02 deny-by-default gate, and the message path (`handler.rs`) already
+/// carries a copy of it inline; a third one, written for context menus, is the
+/// copy that gets forgotten the next time the rule moves. The caller's job is
+/// only to say what text the request is; where the request came from is not
+/// something the gate should have to know.
+///
+/// `invocation` is the request as text, exactly as if the user had typed it.
+/// A catalog command rebuilds `/<name> <args>`; a context menu renders its
+/// target. Either way the agent sees one shape and there is one implementation
+/// of every command.
+///
+/// The ack is deferred and non-ephemeral on purpose: `route_followup_turn` edits
+/// that very message in place with the turn's answer (FR-002 / AC-004), and an
+/// ephemeral defer can only ever be edited into another ephemeral message.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn handle_invoked_request(
+    ctx: &Context,
+    command: &CommandInteraction,
+    agent: Arc<AgentService>,
+    session_svc: SessionService,
+    discord_state: Arc<super::DiscordState>,
+    config_rx: tokio::sync::watch::Receiver<Config>,
+    invocation: String,
+) {
+    let user = command.user.id.get();
+    let user_name = command.user.name.clone();
+    let is_dm = command.guild_id.is_none();
+    let channel_id = command.channel_id.get();
+
+    // OC-02: Discord shows the command list to every member of the guild, so an
+    // interaction is an entry point like any other message and gets the same
+    // deny-by-default gate `handle_message` applies. Roles count in guilds only,
+    // mirroring that path. A context menu carries a member too, so this is the
+    // same check for both.
+    let cfg = config_rx.borrow().clone();
+    let dc = &cfg.channels.discord;
+    let role_ids: Vec<u64> = if is_dm {
+        Vec::new()
+    } else {
+        command
+            .member
+            .as_ref()
+            .map(|m| m.roles.iter().map(|r| r.get()).collect())
+            .unwrap_or_default()
+    };
+    let owner = crate::config::owner::is_owner(
+        &dc.allowed_users,
+        &dc.bot_owner,
+        &user.to_string(),
+    );
+    let in_allowlist = dc
+        .allowed_users
+        .iter()
+        .filter_map(|s| s.parse::<i64>().ok())
+        .any(|u| u == user as i64);
+    let admitted = super::commands::identity_admitted(
+        dc.allowed_users.is_empty() && dc.allowed_roles.is_empty() && dc.bot_owner.is_empty(),
+        owner,
+        in_allowlist,
+        !is_dm && super::commands::holds_allowed_role(&dc.allowed_roles, &role_ids),
+    );
+
+    // Channel scope, with the parent fallback: a thread or forum post carries
+    // its own id, so allow-listing a forum admits its posts.
+    let channel_str = channel_id.to_string();
+    let mut channel_ok = dc.allowed_channels.is_empty()
+        || dc.allowed_channels.iter().any(|c| c == &channel_str);
+    if !channel_ok && !is_dm {
+        channel_ok = match command.channel_id.to_channel(&ctx.http).await {
+            Ok(serenity::model::channel::Channel::Guild(gc)) => {
+                gc.parent_id.is_some_and(|p| {
+                    dc.allowed_channels
+                        .iter()
+                        .any(|c| c == &p.get().to_string())
+                })
+            }
+            _ => false,
+        };
+    }
+    // `respond_to` filters unsolicited messages; an invoked command is
+    // solicited by definition, so only `dm_only` applies, and it means the
+    // operator told this bot not to speak in guild channels.
+    let inside_dm_policy = is_dm || !matches!(dc.respond_to, crate::config::RespondTo::DmOnly);
+
+    if !admitted || !channel_ok || !inside_dm_policy {
+        tracing::warn!(
+            "Discord: refused {:?} from user {} (allowed={}, channel={}, dm_only={})",
+            command.data.name,
+            user,
+            admitted,
+            channel_ok,
+            inside_dm_policy
+        );
+        let _ = command
+            .create_response(
+                &ctx.http,
+                serenity::builder::CreateInteractionResponse::Message(
+                    serenity::builder::CreateInteractionResponseMessage::new()
+                        .content("This bot is not enabled for you or this channel.")
+                        .ephemeral(true),
+                ),
+            )
+            .await;
+        return;
+    }
+
+    let idle = dc.session_idle_hours;
+    // History keeps the invocation the way a typed message would:
+    // `Sender: /cmd args` in a guild, bare in the owner's DM, the same rule
+    // `handler.rs` uses. `context_text` is the invocation itself, which is what
+    // the model sees when you type it.
+    let history_line = if owner && is_dm {
+        invocation.clone()
+    } else {
+        format!("{user_name}: {invocation}")
+    };
+    // A slash command has no originating message, so `Acknowledge` (Discord's
+    // DEFERRED_UPDATE_MESSAGE, kind 6) is not a valid reply to it: there is
+    // nothing to update, the handshake fails, and the user gets the red "This
+    // interaction didn't respond" banner while the turn quietly carries on
+    // (#27, upstream #1888). `Defer` (kind 5) opens Discord's native loading
+    // state inside the 3-second window AND keeps the interaction alive, so the
+    // turn's answer can replace this very message instead of landing as an
+    // orphaned second reply (FR-002, AC-004).
+    //
+    // The ack result is BOUND, never discarded: a refused acknowledgement used
+    // to vanish into a discard binding, which hid exactly the failure this
+    // branch exists to fix.
+    let ack = command
+        .create_response(
+            &ctx.http,
+            serenity::builder::CreateInteractionResponse::Defer(
+                serenity::builder::CreateInteractionResponseMessage::new(),
+            ),
+        )
+        .await;
+    if let Err(e) = &ack {
+        tracing::warn!(
+            "Discord: deferred ack for {:?} refused: {e}",
+            command.data.name
+        );
+    }
+    // FR-002: hand the turn the token so its answer can replace the deferred
+    // message instead of arriving as a second reply.
+    let interaction_token = Some(command.token.clone());
+    let ctx2 = ctx.clone();
+    tokio::spawn(async move {
+        route_followup_turn(
+            &ctx2,
+            agent,
+            session_svc,
+            discord_state,
+            interaction_token,
+            is_dm,
+            user,
+            channel_id,
+            idle,
+            invocation,
+            history_line,
+        )
+        .await;
+    });
 }
 
 /// Run a tapped follow-up suggestion as an agent turn through the SAME

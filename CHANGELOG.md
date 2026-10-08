@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed interaction puts an error in front of the user for a keystroke
   (FR-005, AC-007, AC-008).
 
+- discord: two right-click context menus, `Ask agent` on a message and
+  `Ask agent about user` on a member, turn a target into a request and hand it
+  to the same interaction path a picked slash command uses, so the access gate,
+  the deferred acknowledgement and the turn router have one implementation. The
+  menus travel in the SAME global overwrite as the command catalog: a separate
+  registration call would erase the catalog and the next catalog sync would
+  erase the menus. A target the client named but did not resolve (a message
+  deleted between the right-click and the interaction landing) is answered with
+  an ephemeral refusal rather than a panic or a timed-out interaction
+  (FR-006, AC-009).
+
 ## [0.5.5] - 2026-10-07
 
 First release cut from this fork. Carries upstream 0.5.4 plus the fork's own

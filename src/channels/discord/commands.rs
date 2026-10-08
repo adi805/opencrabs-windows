@@ -53,7 +53,9 @@ use std::sync::Arc;
 
 use serenity::builder::{CreateCommand, CreateCommandOption};
 use serenity::http::Http;
-use serenity::model::application::{Command, CommandOptionType, CommandType};
+use serenity::model::application::{
+    Command, CommandDataOptionValue, CommandInteraction, CommandOptionType, CommandType,
+};
 use serenity::model::id::GuildId;
 
 use crate::brain::{BrainLoader, CommandLoader, UserCommand};
@@ -192,6 +194,36 @@ pub(crate) fn command_option(source_name: &str) -> CreateCommandOption {
     }
 }
 
+/// Rebuild the invocation text from a picked command's options.
+///
+/// The inverse of [`command_option`]: that writes the one `args` option this
+/// registers, this reads it back. Both live here so the reader and the writer
+/// cannot disagree about the option's name or its type.
+///
+/// The result is the text the user would have typed, `/name args`, which is what
+/// makes a picked command and a typed message the same request. An option that
+/// is not `args` is logged rather than ignored: one option is all this
+/// registers, so anything else means the client sent a set we did not ask for.
+pub(crate) fn invocation(command: &CommandInteraction) -> String {
+    let mut text = format!("/{}", command.data.name);
+    for option in &command.data.options {
+        if option.name == ARGS_OPTION
+            && let CommandDataOptionValue::String(value) = &option.value
+            && !value.is_empty()
+        {
+            text.push(' ');
+            text.push_str(value.as_str());
+        } else if option.name != ARGS_OPTION {
+            tracing::warn!(
+                "Discord: unexpected option {:?} on command {:?}",
+                option.name,
+                command.data.name
+            );
+        }
+    }
+    text
+}
+
 /// Project the catalog onto Discord's command grammar. Catalog order is
 /// preserved and the first entry wins a sanitized-name collision, which is the
 /// ordering rule `trim_catalog_to_budget` already applies on Telegram, so both
@@ -289,6 +321,19 @@ pub(crate) fn sync_key(plan_sig: u64, guilds: &[GuildId]) -> u64 {
     hasher.finish()
 }
 
+/// Fold the component signatures into the one the sync key is built from.
+///
+/// Sequential hashing rather than `a ^ b`: XOR is its own inverse, so a
+/// component that moved twice, or two components that swapped values, would
+/// collide on the same key and skip a sync that was actually needed.
+pub(crate) fn sync_signature(parts: &[u64]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for part in parts {
+        part.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// Load `commands.toml` and register it globally, but only when the comparison
 /// key moved. Returns the key that is live now, for the caller to store and hand
 /// back on the next call, or `None` when nothing could be registered, which tells
@@ -322,16 +367,28 @@ pub(crate) async fn sync_commands(
     }
 
     let plan = plan_commands(&catalog);
-    let key = sync_key(plan.signature(), guilds);
+    // FR-006: the context menus travel in the same overwrite.
+    // `set_global_commands` replaces the whole global set, so registering them
+    // in a call of their own would erase the catalog, and the next catalog sync
+    // would erase them. Both components feed the key, so an edit to either one
+    // re-syncs.
+    let menus = super::context_menu::commands();
+    let key = sync_key(
+        sync_signature(&[plan.signature(), super::context_menu::signature()]),
+        guilds,
+    );
     if Some(key) == last_key {
         tracing::debug!(
             "discord: application commands unchanged ({} registered), skipping sync",
-            plan.commands.len()
+            plan.commands.len() + menus.len()
         );
         return Some(key);
     }
 
-    match Command::set_global_commands(http, plan.commands.clone()).await {
+    let mut commands = plan.commands;
+    commands.extend(menus);
+
+    match Command::set_global_commands(http, commands).await {
         Ok(registered) => {
             tracing::info!(
                 "discord: synced {} application command(s) globally",

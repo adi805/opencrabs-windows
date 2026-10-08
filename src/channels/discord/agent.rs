@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use serenity::async_trait;
-use serenity::model::application::Interaction;
+use serenity::model::application::{CommandType, Interaction};
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
 use serenity::model::guild::Member;
@@ -312,188 +312,67 @@ impl EventHandler for Handler {
             return;
         }
 
-        // Slash commands (#1850): rebuild the invocation as the text the user
-        // would have typed and route it through the same display path a tapped
-        // suggestion uses. Parity is structural: the agent receives `/check
-        // args`, exactly what a hand-typed message produces, so there is one
-        // command implementation and the arguments survive inside the text.
-        //
-        // Deliberately NOT the bare `route_interaction_turn`. Its own contract
-        // is a single completion with no tool loop (see `interactions.rs`), so
-        // `/check` picked from the menu would come back saying it cannot run
-        // cargo. The two synthetic branches that stay on it are synthetic: a
-        // modal fill and a select pick are steering prompts, an invoked command
-        // is a request to do work.
+        // Every command interaction that asks the agent to do work lands here:
+        // a catalog command picked from the `/` menu (#1850) and the two
+        // right-click context menus (FR-006 / AC-009). The gate, the deferred
+        // ack and the dispatch are shared with the context menus
+        // (`interactions::handle_invoked_request`); only the request text
+        // differs, and that is what this arm builds.
         if let Interaction::Command(command) = &interaction {
-            let mut invocation = format!("/{}", command.data.name);
-            for option in &command.data.options {
-                if option.name == super::commands::ARGS_OPTION
-                    && let serenity::model::application::CommandDataOptionValue::String(value) =
-                        &option.value
-                    && !value.is_empty()
-                {
-                    invocation.push(' ');
-                    invocation.push_str(value.as_str());
-                } else if option.name != super::commands::ARGS_OPTION {
-                    // One option is all this registers (see `commands.rs`), so
-                    // anything else means the client sent a set we did not ask
-                    // for. Worth a log line rather than silently swallowing the
-                    // argument text.
-                    tracing::warn!(
-                        "Discord: unexpected option {:?} on command {:?}",
-                        option.name,
-                        command.data.name
-                    );
+            let request = match command.data.kind {
+                // #1850: rebuild the invocation as the text the user would have
+                // typed, so the agent receives `/check args`, exactly what a
+                // hand-typed message produces. Parity is structural: one command
+                // implementation, and the arguments survive inside the text.
+                //
+                // Deliberately NOT the bare `route_interaction_turn`. Its own
+                // contract is a single completion with no tool loop (see
+                // `interactions.rs`), so `/check` picked from the menu would come
+                // back saying it cannot run cargo. The two synthetic branches
+                // that stay on it are synthetic: a modal fill and a select pick
+                // are steering prompts, an invoked command is a request to do
+                // work.
+                CommandType::ChatInput => Some(super::commands::invocation(command)),
+                // FR-006: the request is the right-clicked target.
+                CommandType::Message | CommandType::User => {
+                    super::context_menu::invocation(command)
                 }
-            }
-            let user = command.user.id.get();
-            let user_name = command.user.name.clone();
-            let is_dm = command.guild_id.is_none();
-            let channel_id = command.channel_id.get();
-
-            // OC-02: Discord shows the command list to every member of the
-            // guild, so an interaction is an entry point like any other message
-            // and gets the same deny-by-default gate `handle_message` applies.
-            // Roles count in guilds only, mirroring that path.
-            let cfg = self.config_rx.borrow().clone();
-            let dc = &cfg.channels.discord;
-            let role_ids: Vec<u64> = if is_dm {
-                Vec::new()
-            } else {
-                command
-                    .member
-                    .as_ref()
-                    .map(|m| m.roles.iter().map(|r| r.get()).collect())
-                    .unwrap_or_default()
+                // Nothing else is registered, so this is a type the client sent
+                // that we never asked for. Refused rather than guessed at.
+                _ => None,
             };
-            let owner =
-                crate::config::owner::is_owner(&dc.allowed_users, &dc.bot_owner, &user.to_string());
-            let in_allowlist = dc
-                .allowed_users
-                .iter()
-                .filter_map(|s| s.parse::<i64>().ok())
-                .any(|u| u == user as i64);
-            let admitted = super::commands::identity_admitted(
-                dc.allowed_users.is_empty()
-                    && dc.allowed_roles.is_empty()
-                    && dc.bot_owner.is_empty(),
-                owner,
-                in_allowlist,
-                !is_dm && super::commands::holds_allowed_role(&dc.allowed_roles, &role_ids),
-            );
-
-            // Channel scope, with the parent fallback: a thread or forum post
-            // carries its own id, so allow-listing a forum admits its posts.
-            let channel_str = channel_id.to_string();
-            let mut channel_ok = dc.allowed_channels.is_empty()
-                || dc.allowed_channels.iter().any(|c| c == &channel_str);
-            if !channel_ok && !is_dm {
-                channel_ok = match command.channel_id.to_channel(&ctx.http).await {
-                    Ok(serenity::model::channel::Channel::Guild(gc)) => {
-                        gc.parent_id.is_some_and(|p| {
-                            dc.allowed_channels
-                                .iter()
-                                .any(|c| c == &p.get().to_string())
-                        })
-                    }
-                    _ => false,
-                };
-            }
-            // `respond_to` filters unsolicited messages; an invoked command is
-            // solicited by definition, so only `dm_only` applies, and it means
-            // the operator told this bot not to speak in guild channels.
-            let inside_dm_policy =
-                is_dm || !matches!(dc.respond_to, crate::config::RespondTo::DmOnly);
-
-            if !admitted || !channel_ok || !inside_dm_policy {
+            // `None` is a target the client named but did not resolve, which is
+            // how Discord reports a message deleted between the right-click and
+            // the interaction landing. Answering in place beats letting the
+            // interaction time out into the red "didn't respond" banner, and
+            // running a turn on a message nobody can see is worse than both.
+            let Some(request) = request else {
                 tracing::warn!(
-                    "Discord: refused /{} from user {} (allowed={}, channel={}, dm_only={})",
-                    command.data.name,
-                    user,
-                    admitted,
-                    channel_ok,
-                    inside_dm_policy
+                    "Discord: {:?} interaction with no readable target, refusing",
+                    command.data.name
                 );
                 let _ = command
                     .create_response(
                         &ctx.http,
                         serenity::builder::CreateInteractionResponse::Message(
                             serenity::builder::CreateInteractionResponseMessage::new()
-                                .content("This bot is not enabled for you or this channel.")
+                                .content("Nothing to ask about: the target could not be read.")
                                 .ephemeral(true),
                         ),
                     )
                     .await;
                 return;
-            }
-
-            let idle = dc.session_idle_hours;
-            // History keeps the invocation the way a typed message would:
-            // `Sender: /cmd args` in a guild, bare in the owner's DM, the same
-            // rule `handler.rs` uses. `context_text` is the invocation itself,
-            // which is what the model sees when you type it.
-            let history_line = if owner && is_dm {
-                invocation.clone()
-            } else {
-                format!("{user_name}: {invocation}")
             };
-            // A slash command has no originating message, so `Acknowledge`
-            // (Discord's DEFERRED_UPDATE_MESSAGE, kind 6) is not a valid reply
-            // to it: there is nothing to update, the handshake fails, and the
-            // user gets the red "This interaction didn't respond" banner while
-            // the turn quietly carries on (#27, upstream #1888). `Defer`
-            // (kind 5) opens Discord's native loading state inside the
-            // 3-second window AND keeps the interaction alive, so the turn's
-            // answer can replace this very message instead of landing as an
-            // orphaned second reply (FR-002, AC-004).
-            //
-            // The ack result is BOUND, never discarded: a refused
-            // acknowledgement used to vanish into a discard binding, which hid
-            // exactly the failure this branch exists to fix.
-            //
-            // The placeholder is deliberately non-ephemeral and is NOT deleted
-            // afterwards. `route_followup_turn` edits this very message in
-            // place with the turn's answer (FR-002/AC-004); an ephemeral defer
-            // can only ever be edited into another ephemeral message, and
-            // deleting it would make that edit 404 and silently demote the
-            // answer to a plain follow-up.
-            let ack = command
-                .create_response(
-                    &ctx.http,
-                    serenity::builder::CreateInteractionResponse::Defer(
-                        serenity::builder::CreateInteractionResponseMessage::new(),
-                    ),
-                )
-                .await;
-            if let Err(e) = &ack {
-                tracing::warn!(
-                    "Discord: deferred ack for /{} refused: {e}",
-                    command.data.name
-                );
-            }
-            // FR-002: hand the turn the token so its answer can replace the
-            // deferred message instead of arriving as a second reply.
-            let interaction_token = Some(command.token.clone());
-            let agent = self.agent.clone();
-            let session_svc = self.session_svc.clone();
-            let discord_state = self.discord_state.clone();
-            let ctx2 = ctx.clone();
-            tokio::spawn(async move {
-                super::interactions::route_followup_turn(
-                    &ctx2,
-                    agent,
-                    session_svc,
-                    discord_state,
-                    interaction_token,
-                    is_dm,
-                    user,
-                    channel_id,
-                    idle,
-                    invocation,
-                    history_line,
-                )
-                .await;
-            });
+            super::interactions::handle_invoked_request(
+                &ctx,
+                command,
+                self.agent.clone(),
+                self.session_svc.clone(),
+                self.discord_state.clone(),
+                self.config_rx.clone(),
+                request,
+            )
+            .await;
             return;
         }
 
