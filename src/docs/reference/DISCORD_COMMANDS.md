@@ -4,7 +4,9 @@ Issue: [#1850](https://github.com/opencrabs/opencrabs/issues/1850): OpenCrabs ha
 
 OpenCrabs projects `commands.toml` onto Discord's native slash-command list for
 every guild the bot is in, so a command defined in that file appears in the
-client's `/` menu with its description and an argument hint. The scope is
+client's `/` menu with its description and an argument hint. It also registers
+two right-click context menus, which are a separate command type and cost the
+catalog nothing (see below). The scope of the slash-command projection is
 `commands.toml` only: Telegram's menu also lists built-in commands and skills,
 Discord's does not (#1850 named the file, not the whole catalog), and a skill
 typed as plain text still works through the message path.
@@ -73,6 +75,38 @@ Name collisions after sanitizing are **dropped**, not merged, and the log names
 both the loser and the winner: silently merging `/foo bar` and `/foo-bar` would
 run one command where the user believes they have two.
 
+## Typing-time suggestions (autocomplete)
+
+Discord only asks for suggestions (interaction type 4) when the option was
+registered with `set_autocomplete(true)`, and it expects an answer inside the
+same three-second window as any other interaction. Both halves read one table,
+`autocomplete::catalog_for`, so what is registered and what is answered cannot
+drift.
+
+| Command | Suggestions come from |
+|---------|-----------------------|
+| `/provider`, `/providers` | the provider ids this config has configured |
+| `/model`, `/models` | the models those providers offer |
+| `/session`, `/sessions`, `/resume` | titles in the session store |
+
+Every other command keeps the plain text option, which is what the client shows
+today. Adding `/models` or `/sessions` to `commands.toml` lights up its
+suggestions with no code change, because the command name is the only signal
+available at interaction time: every command is registered with the same single
+`args` string, so nothing in the registration distinguishes "pick a model" from
+"paste an argument".
+
+Three requests answer with an **empty list** rather than an error: a command
+with no catalog, an option that is not the enumerable one, and a catalog that
+cannot be read. Discord renders an empty list as "no suggestions", while a
+failed interaction puts an error in front of the user for a keystroke.
+
+Ranking puts a prefix match ahead of a coincidence and keeps catalog order
+inside each bucket, so the same keystroke always produces the same list. The
+response is capped at Discord's 25 choices and 100-character name budget, and
+the name is clipped by characters so a multi-byte session title is never split
+mid-codepoint.
+
 ## How a slash command is executed
 
 The interaction handler rebuilds the invocation as the text the user would have
@@ -92,6 +126,60 @@ from the channel layer, so:
 
 Every command is registered with a single optional string argument (`args`),
 because the catalog's commands take free-form text rather than typed parameters.
+
+## Right-click commands (context menus)
+
+Two global context menus ride the same path as a picked slash command, so they
+get the same deny-by-default gate, the same deferred acknowledgement and the
+same turn router. Only the request text differs:
+
+| Menu | Applies to | What it sends |
+|------|-----------|---------------|
+| `Ask agent` | a message | the author's name and id, the message link, and the content verbatim |
+| `Ask agent about user` | a member | the member's id, with the display name for readability |
+
+Both are registered in the **same global overwrite** as the command catalog.
+`set_global_commands` replaces the whole global set, so registering the menus in
+a call of their own would erase the catalog, and the next catalog sync would
+erase them. Both components feed the sync key, so an edit to either one
+re-syncs.
+
+A context menu is a different kind of command, not a differently shaped
+`CHAT_INPUT`: the name may be mixed case with spaces, the description must be
+empty, and the budgets are separate (15 `USER`, 15 `MESSAGE`), so these two cost
+the catalog nothing. The `^[\w-]{1,32}$` name rule applies to `CHAT_INPUT`
+alone and must not be applied here.
+
+A context menu is unavailable in a DM, so there is no DM branch to write. A
+target the client named but did not resolve is how Discord reports a message
+deleted between the right-click and the interaction landing: that answers an
+ephemeral refusal in place rather than timing out, and no turn runs on a message
+nobody can see.
+
+## Where a long answer goes
+
+Discord caps a message at 2000 characters, so a long answer has to be split.
+Two routes exist and the order between them is the whole feature:
+
+1. **Thread first.** An answer that clears `auto_thread_min_chars` (default
+   `1800`, `0` disables) posts a short teaser in the channel and the full body
+   in a thread anchored to the message. The teaser names the thread, so the
+   answer stays reachable from the channel.
+2. **Pager as fallback.** If thread creation is refused, the answer is chunked
+   in place and page 0 carries the pager button (FR-009).
+
+The decision runs **before** the pager and takes the answer length and the
+threshold only, never the pager's page count. Gating the thread on "not paged"
+is the bug this order exists to prevent: the pager claims every answer past 2000
+characters, which is exactly the set of answers a thread is for, so a `!paged`
+guard left threads reachable only in the narrow band between the threshold and
+the page ceiling, and the answers that most need a thread could never get one.
+
+Three cases are delivered in place, because a thread is not possible there: a
+message that already arrived in a thread (Discord refuses to anchor a thread to
+a thread), a `!bang` turn that opened its own thread, and a DM (no threads at
+all). The channel-kind lookup runs only once the threshold is cleared, so a
+short answer pays nothing for the feature.
 
 ## Who can run a command
 
