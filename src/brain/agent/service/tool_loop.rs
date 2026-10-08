@@ -1671,6 +1671,12 @@ impl AgentService {
         // failed attempt's calls and those copies must not stack onto the
         // count for calls the model made once.
         let mut tool_repeat = super::tool_repeat::ToolRepeatTracker::new();
+        // The loop review (FR-001). Fires a fixed six-question diagnostic once
+        // per turn when a tool repeats or the turn's call count runs long, so a
+        // loop that survives the repeat correction gets an assessment rather
+        // than only a notice. Count-based, never ends the turn, never suppresses
+        // a call.
+        let mut mentor_tally = super::mentor::LoopTally::new();
         // How many times the phantom retry budget may ROLL (reset + keep
         // nudging) before we give up. Previously the roll was unbounded — the
         // counter reset and re-nudged forever, so a model stuck narrating
@@ -5214,6 +5220,10 @@ impl AgentService {
                         // the repeat threshold on calls the model made once
                         // (#1030).
                         tool_repeat.reset();
+                        // The replay re-emits calls the turn already counted;
+                        // clear the tally but keep the one-per-turn latch, so a
+                        // second provider earns no second review (FR-001).
+                        mentor_tally.reset_counts();
                         let new_name = fb_provider
                             .active_subprovider_name()
                             .unwrap_or_else(|| fb_provider.name().to_string());
@@ -6731,6 +6741,13 @@ impl AgentService {
                 &round_signature,
                 tool_uses.first().map(|(_, name, _)| name.clone()),
             );
+            // The loop review (FR-001). Same round, same tally: fires once per
+            // turn, carries the six fixed questions, and never ends the turn.
+            // The name is cloned so the borrow cannot outlive the move of
+            // `tool_uses` into the parallel path below.
+            let mentor_tool = tool_uses.first().map(|(_, name, _)| name.clone());
+            let mentor_verdict =
+                super::mentor::observe_round(&mut mentor_tally, mentor_tool.as_deref());
 
             // Execute tools and build response message
             let mut tool_results = Vec::new();
@@ -7821,6 +7838,17 @@ impl AgentService {
                     tool_repeat.consecutive()
                 );
                 context.add_message(Message::user(nudge));
+            }
+
+            // The loop review rides the same site: after the results, alongside
+            // the repeat correction, and never in place of it (FR-001).
+            if let Some(review) = mentor_verdict {
+                tracing::warn!(
+                    target: "mentor",
+                    "Loop review fired after {} tool calls; injecting the diagnostic",
+                    mentor_tally.total()
+                );
+                context.add_message(Message::user(review));
             }
 
             // Fire token count update after tool results are added — keeps TUI in sync.
