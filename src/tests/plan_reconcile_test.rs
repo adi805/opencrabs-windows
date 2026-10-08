@@ -82,7 +82,10 @@ fn ac003_a_reported_completion_is_patched_even_from_pending() {
         panic!("expected drift");
     };
     assert_eq!(patch.len(), 1);
-    apply_patch(&mut plan, &validate_patch(&plan, &patch).accepted);
+    // Two statements, not one nested call: `&mut plan` and `&plan` cannot be
+    // live in the same argument list.
+    let accepted = validate_patch(&plan, &patch).accepted;
+    apply_patch(&mut plan, &accepted);
     assert_eq!(
         plan.get_task_by_order(2).unwrap().status,
         TaskStatus::Completed
