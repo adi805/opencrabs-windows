@@ -76,7 +76,10 @@ fn empty_buckets_are_omitted() {
     let line = evidence_line(&group(&names)).expect("two reads yield a line");
     assert_eq!(line, expect_line("baca 2 file"));
     for absent in ["jalan", "tulis", "lainnya"] {
-        assert!(!line.contains(absent), "empty bucket {absent} leaked: {line}");
+        assert!(
+            !line.contains(absent),
+            "empty bucket {absent} leaked: {line}"
+        );
     }
 }
 
@@ -116,7 +119,10 @@ fn long_turns_stay_bounded() {
     let line = evidence_line(&group(&names)).expect("twenty tools must yield a line");
     let body = "baca 4 file · jalan 2 perintah · tulis 2 file · lainnya 12";
     assert_eq!(line, expect_line(body), "every bucket must be counted");
-    assert!(!line.contains("more"), "the removed cap must not reappear: {line}");
+    assert!(
+        !line.contains("more"),
+        "the removed cap must not reappear: {line}"
+    );
 }
 
 /// AC-016: the footer must not read as a claim that a command ALREADY RAN.
