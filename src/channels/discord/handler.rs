@@ -1808,7 +1808,7 @@ pub(crate) async fn handle_message(
                 // The threshold decides intent; the destination decides
                 // whether a thread is even possible. Discord refuses to anchor
                 // a thread to a thread, so a message that already arrived in
-                // one — or a `!bang` turn that opened its own — must be
+                // one, or a `!bang` turn that opened its own, must be
                 // delivered in place, which hands the answer back to the pager
                 // (the right surface inside a thread). DMs have no threads at
                 // all. The lookup runs only once the threshold is cleared, so

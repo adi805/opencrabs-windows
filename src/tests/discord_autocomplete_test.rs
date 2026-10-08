@@ -5,7 +5,7 @@
 //!
 //! The decision itself is pure (`suggest`, `suggestions_for`), so it is tested
 //! directly: filtering, ranking, the 25-choice cap, the 100-character name
-//! budget, and — the part AC-008 is written for — that every negative path
+//! budget, and (the part AC-008 is written for) that every negative path
 //! produces an EMPTY LIST rather than an error.
 //!
 //! What a pure test cannot reach is the wiring, and the wiring is where this
@@ -166,9 +166,9 @@ fn an_unknown_command_gets_an_empty_list_instead_of_an_error() {
     }
 }
 
-/// AC-008's other half: when the catalog cannot be produced — an expired
+/// AC-008's other half: when the catalog cannot be produced (an expired
 /// interaction token, an unreachable session store, a config with nothing
-/// configured — the answer is still an empty list. This is the stale-token
+/// configured), the answer is still an empty list. This is the stale-token
 /// case, and it is why the gather step resolves to `CatalogValues::default()`
 /// rather than propagating a failure.
 #[test]
@@ -233,7 +233,7 @@ fn the_interaction_arm_answers_autocomplete() {
 }
 
 /// AC-007: the client only sends an autocomplete interaction for an option that
-/// asked for one, so the flag has to be set at registration — and only where a
+/// asked for one, so the flag has to be set at registration, and only where a
 /// catalog exists, because a flag with no catalog is a dead interaction.
 #[test]
 fn only_enumerable_commands_ask_the_client_for_suggestions() {
