@@ -28,6 +28,7 @@ pub(crate) mod media_retry;
 pub(crate) mod newsletter;
 mod onboarding_events;
 pub(crate) mod outbox;
+pub(crate) mod owner_alert;
 mod pairing;
 mod photos;
 pub(crate) mod poll;

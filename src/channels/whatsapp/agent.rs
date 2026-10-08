@@ -7,11 +7,13 @@ use super::WhatsAppState;
 use super::handler;
 use super::history;
 use super::newsletter;
+use super::owner_alert;
 use crate::brain::agent::AgentService;
 use crate::config::Config;
 use crate::db::ChannelMessageRepository;
 use crate::services::{ServiceContext, SessionService};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -429,8 +431,84 @@ impl WhatsAppAgent {
                                     ));
                                 }
                             }
-                            Event::LoggedOut(_) => {
-                                tracing::warn!("WhatsApp: logged out");
+                            Event::TemporaryBan(ban) => {
+                                // A ban is the one account event that always needs a
+                                // human: nothing sends until it expires (#1999).
+                                tracing::error!(
+                                    code = ban.code.code(),
+                                    expire_secs = ban.expire.as_secs(),
+                                    has_url = ban.url.is_some(),
+                                    stanza = ?ban.raw,
+                                    "WhatsApp: account temporarily banned"
+                                );
+                                if owner_alert::claim_alert(
+                                    &format!("ban:{}", ban.code.code()),
+                                    Instant::now(),
+                                ) {
+                                    let text = owner_alert::ban_text(
+                                        &ban.code,
+                                        ban.expire,
+                                        ban.message.as_deref(),
+                                        ban.url.as_deref(),
+                                    );
+                                    owner_alert::alert_owner(&text).await;
+                                }
+                            }
+                            Event::ConnectFailure(failure) => {
+                                let text = owner_alert::connect_failure_text(
+                                    &failure.reason,
+                                    failure.message.as_deref(),
+                                );
+                                if owner_alert::connect_failure_needs_owner(&failure.reason) {
+                                    tracing::error!(
+                                        reason = failure.reason.code(),
+                                        stanza = ?failure.raw,
+                                        "WhatsApp: connection refused"
+                                    );
+                                    if owner_alert::claim_alert(
+                                        &format!("connect:{}", failure.reason.code()),
+                                        Instant::now(),
+                                    ) {
+                                        owner_alert::alert_owner(&text).await;
+                                    }
+                                } else {
+                                    // The client retries these on its own, so alerting
+                                    // per attempt would be noise rather than signal.
+                                    tracing::warn!(
+                                        reason = failure.reason.code(),
+                                        "WhatsApp: {text}"
+                                    );
+                                }
+                            }
+                            Event::LoggedOut(info) => {
+                                // The reason is the payload's whole point: a 403 account
+                                // lock and a manual unlink used to log the same line and
+                                // they call for opposite responses. `raw` carries the
+                                // one-time `appeal_token`, which the server never repeats,
+                                // so the stanza is logged before it is dropped.
+                                tracing::warn!(
+                                    on_connect = info.on_connect,
+                                    reason = info.reason.code(),
+                                    has_stanza = info.raw.is_some(),
+                                    stanza = ?info.raw,
+                                    "WhatsApp: logged out"
+                                );
+                                if owner_alert::claim_alert(
+                                    &format!("logout:{}", info.reason.code()),
+                                    Instant::now(),
+                                ) {
+                                    let text = owner_alert::logged_out_text(
+                                        info.on_connect,
+                                        &info.reason,
+                                        info.logout_message
+                                            .as_ref()
+                                            .and_then(|m| m.header.as_deref()),
+                                        info.logout_message
+                                            .as_ref()
+                                            .and_then(|m| m.subtext.as_deref()),
+                                    );
+                                    owner_alert::alert_owner(&text).await;
+                                }
                             }
                             Event::Disconnected(_) => {
                                 tracing::warn!("WhatsApp: disconnected");
@@ -453,6 +531,46 @@ impl WhatsAppAgent {
                                         wa_state.broadcast_delivered(id);
                                     }
                                 }
+                            }
+                            Event::ClientOutdated(outdated) => {
+                                // The server no longer accepts this client build:
+                                // nothing reconnects until the pinned crate moves.
+                                tracing::error!(
+                                    has_stanza = outdated.raw.is_some(),
+                                    "WhatsApp: client version no longer accepted by the server"
+                                );
+                            }
+                            Event::StreamReplaced(_) => {
+                                // Another session claimed this account's stream. Our
+                                // copy still looks connected while receiving nothing.
+                                tracing::warn!(
+                                    "WhatsApp: stream replaced by another session, so this client \
+                                     is no longer receiving messages"
+                                );
+                            }
+                            Event::StreamError(err) => {
+                                tracing::warn!(code = %err.code, "WhatsApp: stream error");
+                            }
+                            Event::UndecryptableMessage(msg) => {
+                                // Named instead of an anonymous catch-all dump: a
+                                // message we could not decrypt, and where it came from.
+                                tracing::warn!(
+                                    chat = %msg.info.source.chat,
+                                    sender = %msg.info.source.sender,
+                                    id = ?msg.info.id,
+                                    unavailable = msg.is_unavailable,
+                                    reason = ?msg.decrypt_fail_mode,
+                                    "WhatsApp: message could not be decrypted"
+                                );
+                            }
+                            Event::IdentityChange(change) => {
+                                // The peer reinstalled WhatsApp; sessions and sender
+                                // keys were cleared for them.
+                                tracing::info!(
+                                    user = %change.user,
+                                    implicit = change.implicit,
+                                    "WhatsApp: peer identity key changed"
+                                );
                             }
                             other => {
                                 tracing::debug!("WhatsApp: unhandled event: {:?}", other);
