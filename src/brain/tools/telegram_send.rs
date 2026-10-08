@@ -502,7 +502,8 @@ impl Tool for TelegramSendTool {
                         "approve_chat_join_request", "decline_chat_join_request",
                         "set_chat_menu_button", "set_chat_title", "set_chat_photo",
                         "set_chat_description", "promote_chat_member",
-                        "restrict_chat_member", "unpin_all_chat_messages"
+                        "restrict_chat_member", "unpin_all_chat_messages",
+                        "edit_message_live_location", "stop_message_live_location"
                     ],
                     "description": "The Telegram action to perform. \
                         `send_sticker` / `send_video` / `send_animation` / `send_audio` / `send_voice` / \
@@ -537,7 +538,13 @@ impl Tool for TelegramSendTool {
                         Join-request actions: `approve_chat_join_request` and `decline_chat_join_request` \
                         (each requires `chat_id` + `user_id`) accept or refuse a pending join request. \
                         The bot needs can_invite_users, and the two ids are exactly the ones in the \
-                        owner notice the join-request handler sends."
+                        owner notice the join-request handler sends. \
+                        Live-location actions (both need `chat_id` + `message_id`): \
+                        `edit_message_live_location` moves a live location (requires `latitude` + \
+                        `longitude`; optional `live_period`, `horizontal_accuracy`, `heading`, \
+                        `proximity_alert_radius`), and `stop_message_live_location` freezes it so it \
+                        can no longer be updated. Only a message the bot itself sent as a live \
+                        location can be edited this way."
                 },
                 "name": {
                     "type": "string",
@@ -682,6 +689,22 @@ impl Tool for TelegramSendTool {
                     "type": "number",
                     "description": "Longitude for send_location / send_venue"
                 },
+                "live_period": {
+                    "type": "integer",
+                    "description": "For edit_message_live_location: new period in seconds during which the location can be updated, starting from the message's send date. 2147483647 makes it updatable forever; otherwise the new value must not exceed the current live_period by more than a day, and the expiry must stay within the next 90 days. Omit to leave the period unchanged."
+                },
+                "horizontal_accuracy": {
+                    "type": "number",
+                    "description": "For edit_message_live_location: radius of uncertainty in meters, 0-1500."
+                },
+                "heading": {
+                    "type": "integer",
+                    "description": "For edit_message_live_location: direction of movement in degrees, 1-360."
+                },
+                "proximity_alert_radius": {
+                    "type": "integer",
+                    "description": "For edit_message_live_location: maximum distance in meters for a proximity alert about approaching another chat member, 1-100000."
+                },
                 "poll_question": {
                     "type": "string",
                     "description": "Poll question text for send_poll"
@@ -821,6 +844,14 @@ impl Tool for TelegramSendTool {
                 self.action_unpin_all_chat_messages(&bot, input, context)
                     .await
             }
+            "edit_message_live_location" => {
+                self.action_edit_message_live_location(&bot, input, context)
+                    .await
+            }
+            "stop_message_live_location" => {
+                self.action_stop_message_live_location(&bot, input, context)
+                    .await
+            }
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{unknown}'. Valid actions: send, reply, edit, delete, pin, \
                  unpin, forward, send_photo, send_document, send_location, send_sticker, \
@@ -831,7 +862,8 @@ impl Tool for TelegramSendTool {
                  delete_forum_topic, close_forum_topic, reopen_forum_topic, edit_forum_topic, \
                  approve_chat_join_request, decline_chat_join_request, \
                  set_chat_menu_button, set_chat_title, set_chat_photo, set_chat_description, \
-                 promote_chat_member, restrict_chat_member, unpin_all_chat_messages"
+                 promote_chat_member, restrict_chat_member, unpin_all_chat_messages, \
+                 edit_message_live_location, stop_message_live_location"
             ))),
         }
     }
@@ -3705,6 +3737,152 @@ impl TelegramSendTool {
             Err(e) => Ok(ToolResult::error(format!(
                 "Failed to unpin all messages: {e}"
             ))),
+        }
+    }
+
+    /// `edit_message_live_location` moves a live location the bot sent.
+    ///
+    /// There is no `message_thread_id` setter on this payload: a `message_id`
+    /// is already unique within its chat, so the topic is implied by the
+    /// message being edited rather than re-stated here.
+    async fn action_edit_message_live_location(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ExistingTarget {
+            chat_id,
+            message_id,
+        } = pget!(resolve_existing_target(input, context.session_id, &self.telegram_state).await);
+        let lat = match input.get("latitude").and_then(value_as_f64) {
+            Some(v) => v,
+            None => {
+                return Ok(ToolResult::error(
+                    "Missing required 'latitude' parameter.".to_string(),
+                ));
+            }
+        };
+        let lng = match input.get("longitude").and_then(value_as_f64) {
+            Some(v) => v,
+            None => {
+                return Ok(ToolResult::error(
+                    "Missing required 'longitude' parameter.".to_string(),
+                ));
+            }
+        };
+        let coords = format!("{lat},{lng}");
+        match send_retrying_rate_limit("telegram_send edit_message_live_location", || {
+            let mut req = bot.edit_message_live_location(
+                ChatId(chat_id),
+                MessageId(message_id as i32),
+                lat,
+                lng,
+            );
+            if let Some(period) = input.get("live_period").and_then(|v| v.as_u64()) {
+                req = req.live_period((period as u32).into());
+            }
+            if let Some(accuracy) = input.get("horizontal_accuracy").and_then(value_as_f64) {
+                req = req.horizontal_accuracy(accuracy);
+            }
+            if let Some(heading) = input.get("heading").and_then(|v| v.as_u64()) {
+                req = req.heading(heading as u16);
+            }
+            if let Some(radius) = input.get("proximity_alert_radius").and_then(|v| v.as_u64()) {
+                req = req.proximity_alert_radius(radius as u32);
+            }
+            req
+        })
+        .await
+        {
+            Ok(m) => {
+                log_send_success(
+                    "tool",
+                    "edit_message_live_location",
+                    &context.session_id.to_string(),
+                    "action",
+                    "action",
+                    chat_id,
+                    None,
+                    m.id.0,
+                    coords.len(),
+                    &content_hash8(&coords),
+                );
+                Ok(ToolResult::success(format!(
+                    "Live location {message_id} moved to ({lat}, {lng}) in chat {chat_id}."
+                )))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "edit_message_live_location",
+                    &context.session_id.to_string(),
+                    "action",
+                    "action",
+                    chat_id,
+                    None,
+                    coords.len(),
+                    &content_hash8(&coords),
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!(
+                    "Failed to edit live location: {e}"
+                )))
+            }
+        }
+    }
+
+    /// `stop_message_live_location` freezes a live location so it stops
+    /// updating. Telegram answers with the edited `Message`.
+    async fn action_stop_message_live_location(
+        &self,
+        bot: &teloxide::Bot,
+        input: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let ExistingTarget {
+            chat_id,
+            message_id,
+        } = pget!(resolve_existing_target(input, context.session_id, &self.telegram_state).await);
+        match send_retrying_rate_limit("telegram_send stop_message_live_location", || {
+            bot.stop_message_live_location(ChatId(chat_id), MessageId(message_id as i32))
+        })
+        .await
+        {
+            Ok(m) => {
+                log_send_success(
+                    "tool",
+                    "stop_message_live_location",
+                    &context.session_id.to_string(),
+                    "action",
+                    "action",
+                    chat_id,
+                    None,
+                    m.id.0,
+                    0,
+                    "-",
+                );
+                Ok(ToolResult::success(format!(
+                    "Live location on message {message_id} stopped in chat {chat_id}."
+                )))
+            }
+            Err(e) => {
+                log_send_failure(
+                    "tool",
+                    "stop_message_live_location",
+                    &context.session_id.to_string(),
+                    "action",
+                    "action",
+                    chat_id,
+                    None,
+                    0,
+                    "-",
+                    &e.to_string(),
+                );
+                Ok(ToolResult::error(format!(
+                    "Failed to stop live location: {e}"
+                )))
+            }
         }
     }
 }

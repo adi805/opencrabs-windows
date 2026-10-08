@@ -3508,7 +3508,7 @@ OpenCrabs includes 40+ built-in tools. The AI can use these during conversation:
 #### Channel Tools
 | Tool | Description |
 |------|-------------|
-| `telegram_send` | 46 actions: send, reply, edit, delete, pin, forward, copy, send_photo, send_document, send_sticker, send_video, send_animation, send_audio, send_voice, send_video_note, send_contact, send_venue, send_dice, locations, polls, buttons, admin ops, chat admin (title/photo/description/menu button/promote/restrict/unpin all), topics (list/create/rename/bind plus the delete/close/reopen/edit lifecycle), join requests (approve/decline) |
+| `telegram_send` | 48 actions: send, reply, edit, delete, pin, forward, copy, send_photo, send_document, send_sticker, send_video, send_animation, send_audio, send_voice, send_video_note, send_contact, send_venue, send_dice, locations, polls, buttons, admin ops, chat admin (title/photo/description/menu button/promote/restrict/unpin all), topics (list/create/rename/bind plus the delete/close/reopen/edit lifecycle), join requests (approve/decline), live location (edit/stop) |
 | `discord_send` | 17 actions: send, reply, react, edit, delete, pin, threads, embeds, roles, kick, ban, send_file |
 | `slack_send` | 17 actions: send, reply, react, edit, delete, pin, blocks, topics, members, send_file |
 | `trello_send` | 22 actions: cards, comments, checklists, labels, members, attachments, board management, search |
