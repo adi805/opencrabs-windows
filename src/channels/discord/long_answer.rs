@@ -37,6 +37,20 @@ pub(crate) const PAGER_PREFIX: &str = "longanswer:";
 /// Discord's per-message character ceiling.
 pub(crate) const PAGE_CHARS: usize = 2000;
 
+/// FR-007 (AC-010): whether a finished answer should be delivered in a thread
+/// instead of the channel.
+///
+/// Takes the answer length and the configured threshold, and deliberately NOT
+/// the pager's page count. Gating this on "not paged" is the bug the function
+/// exists to prevent: the pager claims every answer past [`PAGE_CHARS`], which
+/// is exactly the set of answers a thread is for, so a `!paged` guard left the
+/// thread reachable only in the narrow band between the threshold and the page
+/// ceiling. The pager is the FALLBACK for a refused thread, not a precondition
+/// for trying. `0` disables the feature.
+pub(crate) fn wants_thread(auto_thread_min_chars: usize, answer_chars: usize) -> bool {
+    auto_thread_min_chars > 0 && answer_chars >= auto_thread_min_chars
+}
+
 /// Label for the button that reveals page `page` (1-based in prose).
 fn button_label(page: usize, total: usize) -> String {
     format!("Page {} of {}", page + 1, total)
@@ -119,6 +133,24 @@ impl DiscordState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FR-007 (AC-010): the thread decision is a function of the threshold and
+    /// the answer length only, never of the pager's page count.
+    #[test]
+    fn thread_wants_an_answer_past_the_threshold() {
+        assert!(wants_thread(1800, 1800), "at the threshold is enough");
+        assert!(
+            wants_thread(1800, 5000),
+            "an answer past the page ceiling is exactly the one a thread is \
+             for, and the old `!paged` guard made it unreachable"
+        );
+        assert!(
+            !wants_thread(1800, 1799),
+            "an answer below the threshold stays in place, so the feature \
+             cannot fire on an ordinary reply"
+        );
+        assert!(!wants_thread(0, 10_000), "0 disables the feature");
+    }
 
     /// `CreateButton`'s inner field is private, so read the wire shape it
     /// actually serializes to — the same bytes Discord receives.

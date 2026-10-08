@@ -19,9 +19,11 @@
 //! * page 0 is what goes out in-channel, with the pager row attached;
 //! * the pages are stored BEFORE the row is attached, or the button indexes
 //!   pages nobody kept;
-//! * `paged` gates both the auto-thread and the plain-split fallback, and the
+//! * the pager stands down when a thread is wanted (`!want_thread`), and the
 //!   `for chunk in &chunks` loop sits inside the thread branch — that pair is
-//!   what keeps a paged answer from also being posted in full.
+//!   what keeps an answer from being posted twice. FR-007 moved the thread
+//!   decision ahead of the pager, so the exclusion is `!want_thread`, not the
+//!   old `!paged`.
 //!
 //! Scope, stated so a later reader does not "fix" it by widening or narrowing:
 //! this pins the routing decision in `handler.rs`. It does not re-test the
@@ -109,9 +111,10 @@ fn paging_suppresses_the_thread_and_the_plain_split() {
     let flat_src = flat(&src);
 
     assert!(
-        flat_src.contains("auto_thread=!paged"),
-        "the auto-thread condition no longer excludes a paged answer, so a \
-         long answer would post page 0 AND then the full body again (AC-020)"
+        flat_src.contains("if!want_thread&&chunks.len()>1"),
+        "the pager no longer stands down for an answer that wants a thread, \
+         so a long answer would post page 0 AND then the full body again \
+         (AC-020/AC-010)"
     );
     assert!(
         flat_src.contains("}elseif!paged{"),

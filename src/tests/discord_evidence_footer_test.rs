@@ -1,7 +1,7 @@
 //! FR-007 (#1880): the mechanical evidence footer on a Discord answer.
 //!
-//! The footer is built from the turn's tool-group entries — the tools that
-//! ACTUALLY ran, appended from `ProgressEvent::ToolStarted` — never from the
+//! The footer is built from the turn's tool-group entries (the tools that
+//! ACTUALLY ran, appended from `ProgressEvent::ToolStarted`), never from the
 //! model's prose (NFR-003). It is assembled at the channel layer after the
 //! agent returned, so the phantom gate never inspects it; the wording is
 //! additionally pinned against every `executed_framings` entry so the line
@@ -14,7 +14,19 @@
 use crate::brain::agent::service::phantom_lang::all_langs;
 use crate::channels::discord::tool_group::{GroupEntry, GroupState, evidence_line};
 use crate::channels::evidence::EVIDENCE_HEADER;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+/// The shared renderer's own literals. A second evidence path is a copy of
+/// these, and a copy is free to drift from the phantom-safety property that
+/// `footer_never_frames_a_command_as_already_run` pins.
+const RENDERER_LITERALS: &[&str] = &[
+    EVIDENCE_HEADER,
+    "baca {count} file",
+    "jalan {count} perintah",
+    "tulis {count} file",
+    "lainnya {count}",
+];
 
 fn group(names: &[&str]) -> GroupState {
     GroupState {
@@ -40,7 +52,7 @@ fn expect_line(body: &str) -> String {
 }
 
 /// AC-014: an answer that used tools reports the work it did, as category
-/// counts — not as a list of tool identifiers.
+/// counts, not as a list of tool identifiers.
 #[test]
 fn reports_each_category_with_its_count() {
     let names = ["read_file", "bash", "write_file", "web_search"];
@@ -50,7 +62,7 @@ fn reports_each_category_with_its_count() {
 }
 
 /// AC-015: a turn that ran no tools shows NO footer. An empty or invented
-/// line is worse than none — it would read as evidence that does not exist.
+/// line is worse than none: it would read as evidence that does not exist.
 #[test]
 fn no_tools_means_no_footer() {
     assert!(
@@ -127,8 +139,8 @@ fn long_turns_stay_bounded() {
 
 /// AC-016: the footer must not read as a claim that a command ALREADY RAN.
 /// The phantom gate keys on `executed_framings` ("checked with", "verified
-/// with", "ran ", …); the WHOLE rendered line — header and every bucket
-/// label — is pinned against every language's list, so a future rewording
+/// with", "ran ", …); the WHOLE rendered line (header and every bucket
+/// label) is pinned against every language's list, so a future rewording
 /// cannot quietly re-introduce one.
 #[test]
 fn footer_never_frames_a_command_as_already_run() {
@@ -161,5 +173,80 @@ fn both_channels_render_the_shared_line() {
             !src.contains(EVIDENCE_HEADER),
             "{name} hardcodes the footer header instead of using EVIDENCE_HEADER"
         );
+    }
+}
+
+/// NFR-004 / AC-020: `src/channels/evidence.rs` must stay the ONLY renderer.
+///
+/// The two-channel pin above names its files by hand, so it only covers the
+/// surfaces that existed when it was written: Fase 2's autocomplete and
+/// context menus are exactly the kind of new interactive surface that could
+/// render its own footer and pass that test unnoticed. This sweeps every
+/// `.rs` under `src/channels/` instead of listing channels, so a surface
+/// added later is covered the moment it exists.
+///
+/// Two failure shapes, both a "second evidence path":
+///
+/// 1. The renderer's own literals (the header, the four bucket templates)
+///    appearing outside `evidence.rs`. A duplicated renderer is a copy of
+///    these, and a copy is free to drift from the phantom-safety property
+///    `footer_never_frames_a_command_as_already_run` pins.
+/// 2. A local `fn evidence_line` that does not delegate to the shared one.
+///    Discord's `tool_group.rs` legitimately carries such a name, so the
+///    check is delegation, not existence.
+#[test]
+fn evidence_has_a_single_renderer_across_every_channel() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/channels");
+    let mut files = Vec::new();
+    collect_rs_files(&root, &mut files);
+    assert!(
+        files.len() > 20,
+        "source walk found {} files under {:?}; cwd={:?}",
+        files.len(),
+        root,
+        std::env::current_dir()
+    );
+
+    let mut violations = Vec::new();
+    for file in &files {
+        let rel = file
+            .strip_prefix(&root)
+            .unwrap_or(file)
+            .display()
+            .to_string();
+        if rel == "evidence.rs" {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        for needle in RENDERER_LITERALS {
+            if src.contains(needle) {
+                violations.push(format!("{rel} re-renders {needle:?}"));
+            }
+        }
+        if src.contains("fn evidence_line") && !src.contains("evidence::evidence_line(") {
+            violations.push(format!(
+                "{rel} defines evidence_line without delegating to evidence.rs"
+            ));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "NFR-004/AC-020: src/channels/evidence.rs must be the only renderer, found: {violations:?}"
+    );
+}
+
+fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
     }
 }

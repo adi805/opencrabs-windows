@@ -53,7 +53,9 @@ use std::sync::Arc;
 
 use serenity::builder::{CreateCommand, CreateCommandOption};
 use serenity::http::Http;
-use serenity::model::application::{Command, CommandOptionType, CommandType};
+use serenity::model::application::{
+    Command, CommandDataOptionValue, CommandInteraction, CommandOptionType, CommandType,
+};
 use serenity::model::id::GuildId;
 
 use crate::brain::{BrainLoader, CommandLoader, UserCommand};
@@ -170,6 +172,58 @@ pub(crate) fn description_for(description: &str, name: &str) -> String {
     chosen.chars().take(DESCRIPTION_MAX).collect()
 }
 
+/// The single option every command carries, flagged for autocomplete when its
+/// values come from a live catalog (FR-005 / AC-007).
+///
+/// The flag is decided by [`super::autocomplete::catalog_for`], the same table
+/// the interaction arm answers from, so what is registered and what is answered
+/// cannot drift. A command with no catalog keeps a plain text option, which is
+/// what every command had before this: Discord only sends an autocomplete
+/// interaction for an option that asked for one.
+pub(crate) fn command_option(source_name: &str) -> CreateCommandOption {
+    let option = CreateCommandOption::new(
+        CommandOptionType::String,
+        ARGS_OPTION,
+        ARGS_OPTION_DESCRIPTION,
+    )
+    .required(false);
+    if super::autocomplete::catalog_for(source_name).is_some() {
+        option.set_autocomplete(true)
+    } else {
+        option
+    }
+}
+
+/// Rebuild the invocation text from a picked command's options.
+///
+/// The inverse of [`command_option`]: that writes the one `args` option this
+/// registers, this reads it back. Both live here so the reader and the writer
+/// cannot disagree about the option's name or its type.
+///
+/// The result is the text the user would have typed, `/name args`, which is what
+/// makes a picked command and a typed message the same request. An option that
+/// is not `args` is logged rather than ignored: one option is all this
+/// registers, so anything else means the client sent a set we did not ask for.
+pub(crate) fn invocation(command: &CommandInteraction) -> String {
+    let mut text = format!("/{}", command.data.name);
+    for option in &command.data.options {
+        if option.name == ARGS_OPTION
+            && let CommandDataOptionValue::String(value) = &option.value
+            && !value.is_empty()
+        {
+            text.push(' ');
+            text.push_str(value.as_str());
+        } else if option.name != ARGS_OPTION {
+            tracing::warn!(
+                "Discord: unexpected option {:?} on command {:?}",
+                option.name,
+                command.data.name
+            );
+        }
+    }
+    text
+}
+
 /// Project the catalog onto Discord's command grammar. Catalog order is
 /// preserved and the first entry wins a sanitized-name collision, which is the
 /// ordering rule `trim_catalog_to_budget` already applies on Telegram, so both
@@ -236,14 +290,7 @@ pub(crate) fn plan_commands(catalog: &[UserCommand]) -> CommandPlan {
         let builder = CreateCommand::new(name.clone())
             .description(description.clone())
             .kind(CommandType::ChatInput)
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    ARGS_OPTION,
-                    ARGS_OPTION_DESCRIPTION,
-                )
-                .required(false),
-            );
+            .add_option(command_option(&entry.name));
 
         plan.entries.push((name, entry.name.clone(), description));
         plan.commands.push(builder);
@@ -271,6 +318,19 @@ pub(crate) fn sync_key(plan_sig: u64, guilds: &[GuildId]) -> u64 {
     let mut hasher = DefaultHasher::new();
     plan_sig.hash(&mut hasher);
     ids.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Fold the component signatures into the one the sync key is built from.
+///
+/// Sequential hashing rather than `a ^ b`: XOR is its own inverse, so a
+/// component that moved twice, or two components that swapped values, would
+/// collide on the same key and skip a sync that was actually needed.
+pub(crate) fn sync_signature(parts: &[u64]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for part in parts {
+        part.hash(&mut hasher);
+    }
     hasher.finish()
 }
 
@@ -307,16 +367,28 @@ pub(crate) async fn sync_commands(
     }
 
     let plan = plan_commands(&catalog);
-    let key = sync_key(plan.signature(), guilds);
+    // FR-006: the context menus travel in the same overwrite.
+    // `set_global_commands` replaces the whole global set, so registering them
+    // in a call of their own would erase the catalog, and the next catalog sync
+    // would erase them. Both components feed the key, so an edit to either one
+    // re-syncs.
+    let menus = super::context_menu::commands();
+    let key = sync_key(
+        sync_signature(&[plan.signature(), super::context_menu::signature()]),
+        guilds,
+    );
     if Some(key) == last_key {
         tracing::debug!(
             "discord: application commands unchanged ({} registered), skipping sync",
-            plan.commands.len()
+            plan.commands.len() + menus.len()
         );
         return Some(key);
     }
 
-    match Command::set_global_commands(http, plan.commands.clone()).await {
+    let mut commands = plan.commands;
+    commands.extend(menus);
+
+    match Command::set_global_commands(http, commands).await {
         Ok(registered) => {
             tracing::info!(
                 "discord: synced {} application command(s) globally",

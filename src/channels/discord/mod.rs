@@ -9,6 +9,10 @@
 //! `sessions`, and the tool-group methods in `tool_group`); `agent` runs
 //! the gateway, `handler` routes inbound messages, `interactions` /
 //! `reactions` / `suggest_options` / `typing` handle their UI surfaces,
+//! `autocomplete` answers the typing-time suggestion request and holds the
+//! catalog table the command registration reads (FR-005 / AC-007, AC-008),
+//! `context_menu` builds the right-click entry points and the request text a
+//! right-click turns into (FR-006 / AC-009),
 //! `presence` publishes the bot's own activity (FR-003),
 //! `member_events` greets joining members and reports a missing privileged
 //! intent (FR-004 / NFR-001),
@@ -21,9 +25,11 @@
 
 mod agent;
 mod approval;
+pub(crate) mod autocomplete;
 mod cancel;
 pub(crate) mod commands;
 mod connection;
+pub(crate) mod context_menu;
 pub(crate) mod embed;
 pub(crate) mod flags;
 pub(crate) mod governor;

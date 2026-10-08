@@ -114,8 +114,9 @@ fn tap_path_renders_chained_suggestions() {
 /// modal forms and select-menu picks are synthetic steering prompts, not
 /// user-intent turns (#1852 scoped the routing change to the tap only).
 /// #1850 added the second user-intent caller: a picked slash command rebuilds
-/// its invocation and joins the tap on the display path, which is why the bare
-/// count is still exactly two.
+/// its invocation and joins the tap on the display path. FR-006 moved that
+/// second caller into `interactions::handle_invoked_request` (it now also
+/// serves the context menus), so the two callers live in two files.
 #[test]
 fn bare_route_still_serves_the_synthetic_steering_callers() {
     let interactions = include_str!("../channels/discord/interactions.rs");
@@ -136,9 +137,26 @@ fn bare_route_still_serves_the_synthetic_steering_callers() {
     );
     assert_eq!(
         agent.matches("route_followup_turn(").count(),
-        2,
-        "the follow-up tap and the slash-command arm (#1850) are the two \
-         user-intent callers of the tool-loop display path; anything routed \
-         off these is single-completion code running a request to do work"
+        1,
+        "the follow-up tap is the one user-intent caller left in agent.rs; \
+         anything else routed off it is single-completion code running a \
+         request to do work"
     );
+    assert!(
+        invoked_request_helper(interactions).contains("route_followup_turn("),
+        "the invoked-request helper (#1850 slash arm, FR-006 context menus) \
+         is the second user-intent caller of the tool-loop display path"
+    );
+}
+
+/// The shared ack + dispatch helper, from its signature to the next function.
+fn invoked_request_helper(src: &str) -> &str {
+    let start = src
+        .find("pub(crate) async fn handle_invoked_request(")
+        .expect("the shared invoked-request helper must exist");
+    let rest = &src[start..];
+    let end = rest
+        .find("pub(crate) async fn route_followup_turn(")
+        .expect("route_followup_turn terminates the invoked-request helper");
+    &rest[..end]
 }

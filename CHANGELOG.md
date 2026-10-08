@@ -17,6 +17,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ProgressEvent::ToolStarted` executions, one implementation shared by Discord
   and Telegram (#121).
 
+- discord: a long answer now routes into a thread when it clears
+  `auto_thread_min_chars`, with the in-place chunker as the fallback when
+  thread creation is refused. The gate used to run the pager first, so a
+  thread was only created for answers between the threshold and the 2000-char
+  page ceiling: the answers that most need a thread could never get one. The
+  default threshold moves from 0 (disabled) to 1800 (FR-007, AC-010).
+
+- discord: command options whose values come from a live catalog now answer
+  Discord's typing-time suggestion request (interaction type 4) instead of
+  leaving the user a free-text box. `/providers`, `/models` and
+  `/sessions`/`/resume` filter the running config and the session store, with a
+  prefix match ranked ahead of a coincidence and capped at Discord's 25 choices
+  and 100-character name budget. A command with no catalog, and any catalog
+  that cannot be read, answers with an empty list rather than an error: a
+  failed interaction puts an error in front of the user for a keystroke
+  (FR-005, AC-007, AC-008).
+
+- discord: two right-click context menus, `Ask agent` on a message and
+  `Ask agent about user` on a member, turn a target into a request and hand it
+  to the same interaction path a picked slash command uses, so the access gate,
+  the deferred acknowledgement and the turn router have one implementation. The
+  menus travel in the SAME global overwrite as the command catalog: a separate
+  registration call would erase the catalog and the next catalog sync would
+  erase the menus. A target the client named but did not resolve (a message
+  deleted between the right-click and the interaction landing) is answered with
+  an ephemeral refusal rather than a panic or a timed-out interaction
+  (FR-006, AC-009).
+
 ## [0.5.5] - 2026-10-07
 
 First release cut from this fork. Carries upstream 0.5.4 plus the fork's own
