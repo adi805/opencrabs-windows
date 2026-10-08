@@ -1477,6 +1477,45 @@ pub(crate) fn validate_string(s: &str, max_len: usize, field_name: &str) -> Resu
     Ok(())
 }
 
+/// Reconcile the plan against the artifacts after a task transition (FR-002).
+///
+/// Returns the notice to append to the tool result, or an empty string when the
+/// plan and the artifacts agree. It never fails the transition: a reconcile
+/// that cannot read the disk costs a notice, not the `complete` that just
+/// landed, so the caller appends whatever comes back.
+///
+/// This is the sensor the plan card never had. The card counts what the tool
+/// was told; it cannot see that a row whose artifacts are already on disk was
+/// never marked, which is how it rendered 4/9 over work that was 9/9.
+pub(crate) fn reconcile_notice(plan: &mut PlanDocument, session_working_dir: &Path) -> String {
+    use crate::brain::agent::service::plan_reconcile as rec;
+
+    let dir = receipt_binding_dir(plan.working_directory.as_deref(), session_working_dir);
+    let evidence = rec::collect_evidence(plan, &dir);
+    let rec::ReconcileVerdict::Drift { findings, patch } = rec::reconcile(plan, &evidence) else {
+        return String::new();
+    };
+    let verdict = rec::validate_patch(plan, &patch);
+    let recorded = rec::apply_patch(plan, &verdict.accepted);
+
+    let mut out = String::from("\n\n🔁 Plan reconciliation: the plan and the artifacts disagreed.");
+    for f in &findings {
+        out.push_str(&format!("\n- Task #{}: {}", f.order, f.reason));
+    }
+    for (op, reason) in &verdict.rejected {
+        out.push_str(&format!("\n- refused {}: {reason}", op.describe()));
+    }
+    if recorded.is_empty() {
+        out.push_str("\nNothing changed automatically: those rows need your call.");
+    } else {
+        out.push_str("\nApplied:");
+        for line in &recorded {
+            out.push_str(&format!("\n- {line}"));
+        }
+    }
+    out
+}
+
 #[async_trait]
 impl Tool for PlanTool {
     fn name(&self) -> &str {
@@ -2591,10 +2630,17 @@ impl Tool for PlanTool {
                                 task.title
                             )
                         };
-                        match isolation_note {
+                        let started = match isolation_note {
                             Some(note) => format!("{result}\n\n{note}"),
                             None => format!("{result}\n\n{}", inline_executor_suffix()),
-                        }
+                        };
+                        // FR-002: a start is a transition too, and it is the
+                        // moment a later row's artifacts are most likely to be
+                        // already on disk from work done out of order.
+                        format!(
+                            "{started}{}",
+                            reconcile_notice(current_plan, &context.working_dir())
+                        )
                     }
                 }
             }
@@ -2807,6 +2853,11 @@ impl Tool for PlanTool {
                          failed. Use 'start' with a task_order to retry a failed task.",
                     );
                 }
+                // FR-002: reconcile on the transition. This is the moment the
+                // card is most likely to disagree with the artifacts, because
+                // a row can be completed by hand while another row's work is
+                // already on disk and still unmarked.
+                msg.push_str(&reconcile_notice(current_plan, &context.working_dir()));
                 msg
             }
 
