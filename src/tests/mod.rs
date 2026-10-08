@@ -911,6 +911,8 @@ pub mod telegram_copy_message_test;
 pub mod telegram_ephemeral_test;
 #[cfg(feature = "telegram")]
 pub mod telegram_folded_reclaim_suppression_test;
+#[cfg(feature = "telegram")]
+pub mod telegram_force_reply_test;
 pub mod telegram_inline_query_test;
 pub mod telegram_menu_budget_test;
 #[cfg(feature = "telegram")]
