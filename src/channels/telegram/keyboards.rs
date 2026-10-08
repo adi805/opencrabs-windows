@@ -10,6 +10,40 @@ use super::markdown::escape_html;
 use std::sync::Arc;
 use teloxide::types::InlineKeyboardButton;
 
+/// Serialize a reply markup with the Bot API 10.3 `force_reply` field applied.
+///
+/// 10.3 added an optional `force_reply` to `InlineKeyboardMarkup` and
+/// `ReplyKeyboardMarkup`: when true the client opens the reply interface as if
+/// the user had tapped Reply on the bot's message, so the answer arrives
+/// quoted without the user reaching for the reply affordance. On an inline
+/// keyboard the value is fixed at send time, because Telegram refuses to change
+/// it when the keyboard is edited.
+///
+/// teloxide-core 0.13 has no binding for the field (`InlineKeyboardMarkup`
+/// carries only `inline_keyboard`), so it is stamped onto the serialized markup
+/// instead of going through the typed `reply_markup(..)` setter: the same
+/// raw-JSON wire `send::send_buttons_raw` and the ephemeral sends already use.
+///
+/// `None` means the markup did not serialize to a JSON object, so the caller
+/// can fall back to the un-stamped markup; that is the `.ok()` shape the edit
+/// path already uses for `reply_markup`.
+///
+/// Lib-pass dead-code exempt: no production caller yet. The 10.3 field lands
+/// here with its body tests, and a send path picks it up when a prompt wants
+/// the reply interface opened.
+#[allow(dead_code)]
+pub(crate) fn markup_with_force_reply<M: serde::Serialize>(
+    markup: &M,
+    force_reply: bool,
+) -> Option<serde_json::Value> {
+    let mut value = serde_json::to_value(markup).ok()?;
+    if force_reply {
+        let map = value.as_object_mut()?;
+        map.insert("force_reply".to_string(), serde_json::json!(true));
+    }
+    Some(value)
+}
+
 /// Build an `ApprovalCallback` that sends an inline-keyboard message to Telegram
 /// and waits (up to 5 min) for the user to tap Yes, Always, or No.
 pub(crate) fn make_approval_callback(
