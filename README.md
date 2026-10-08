@@ -3486,7 +3486,7 @@ OpenCrabs includes 40+ built-in tools. The AI can use these during conversation:
 | `web_search` | Search the web (DuckDuckGo, always available, no key needed) |
 | `exa_search` | Neural web search via EXA AI (free via MCP, no API key needed; set key in `keys.toml` for higher rate limits) |
 | `brave_search` | Web search via Brave Search (set key in `keys.toml` — free $5/mo credits at brave.com/search/api) |
-| `serper_search` | Google SERP results via Serper (set key in `keys.toml`, serper.dev); the web_search fan-out dedupes results by URL across engines (#1731) |
+| `serper_search` | Google SERP results via Serper (set key in `keys.toml`, serper.dev); the web_search fan-out dedupes results by URL across engines (#1731); answers backed by any of the four search engines get a deterministic **Sources** footer harvested from the tool output (#1883) |
 | `http_request` | Make HTTP requests |
 | `web_scrape` | Native URL-to-markdown scraping (zero AI, zero API cost). Fetches a URL, extracts clean markdown, keeps images as `![alt](url)` tags so the agent can vision only what it needs. Includes SSRF protection, sitemap crawling, and profile/project-aware markdown export. Surfaced via `tool_search` (deferred, not in core set) |
 | `memory_search` | Hybrid semantic search — FTS5 keyword + vector embeddings combined via RRF. `scope` picks the corpus: `memory` (daily logs, the default) for history, `brain` for rules and policy in your brain files, `all` for both. Local GGUF, OpenAI-compatible API, or FTS5-only mode. With `.rs` files under `extra_paths`, structural queries ("who calls X") auto-route to the tree-sitter symbol graph (`code-graph` feature, on by default) |
