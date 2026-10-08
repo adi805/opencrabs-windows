@@ -128,11 +128,7 @@ fn requested_intents(src: &str) -> Vec<String> {
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
-            if name.is_empty() {
-                None
-            } else {
-                Some(name)
-            }
+            if name.is_empty() { None } else { Some(name) }
         })
         .collect()
 }

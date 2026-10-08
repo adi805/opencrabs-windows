@@ -88,7 +88,11 @@ fn a_transient_drop_is_not_a_missing_toggle() {
 
 #[test]
 fn the_hint_names_the_toggle_and_where_to_flip_it() {
-    for needle in ["GUILD_MEMBERS", "Developer Portal", "Privileged Gateway Intents"] {
+    for needle in [
+        "GUILD_MEMBERS",
+        "Developer Portal",
+        "Privileged Gateway Intents",
+    ] {
         assert!(
             MISSING_TOGGLE_HINT.contains(needle),
             "NFR-001: the operator has to be able to act on this line, and it \

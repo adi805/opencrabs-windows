@@ -194,10 +194,8 @@ pub(crate) const MISSING_TOGGLE_HINT: &str = "Discord refused the gateway IDENTI
 /// Rendered-error substrings that mean Discord refused the IDENTIFY over a
 /// privileged intent. These are the exact strings `GatewayError` renders
 /// (serenity 0.12 `src/gateway/error.rs:69-71`).
-const REFUSED_IDENTIFY_MARKERS: &[&str] = &[
-    "Disallowed gateway intents",
-    "Invalid gateway intents",
-];
+const REFUSED_IDENTIFY_MARKERS: &[&str] =
+    &["Disallowed gateway intents", "Invalid gateway intents"];
 
 /// Whether a rendered gateway error names an intent refusal.
 ///
@@ -212,7 +210,10 @@ pub(crate) fn refused_identify_text(message: &str) -> bool {
 
 /// Whether the gateway error itself is an intent refusal.
 fn is_intent_refusal(error: &GatewayError) -> bool {
-    matches!(error, GatewayError::DisallowedGatewayIntents | GatewayError::InvalidGatewayIntents)
+    matches!(
+        error,
+        GatewayError::DisallowedGatewayIntents | GatewayError::InvalidGatewayIntents
+    )
 }
 
 /// Whether `err` is Discord refusing the IDENTIFY over an intent.

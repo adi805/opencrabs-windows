@@ -32,11 +32,7 @@ static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 /// Pure, so the mapping is tested without a gateway. `ActivityData` derives no
 /// `PartialEq`, so a test that built one could not compare it anyway.
 pub(crate) fn activity_text(in_flight: usize) -> Option<&'static str> {
-    if in_flight == 0 {
-        None
-    } else {
-        Some(WORKING)
-    }
+    if in_flight == 0 { None } else { Some(WORKING) }
 }
 
 /// The activity to publish for the current count.
