@@ -3428,7 +3428,7 @@ fn resolve_chat_permissions(input: &Value) -> std::result::Result<TgChatPermissi
         ));
     }
     for key in obj.keys() {
-        if !CHAT_PERMISSIONS.iter().any(|k| *k == key.as_str()) {
+        if !CHAT_PERMISSIONS.contains(&key.as_str()) {
             return Err(ToolResult::error(format!(
                 "Unknown permission '{key}'. Valid permissions: {}.",
                 CHAT_PERMISSIONS.join(", ")
