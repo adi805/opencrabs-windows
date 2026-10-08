@@ -310,7 +310,6 @@ fn has_obligation_status(summary: &str) -> bool {
     summary.to_lowercase().contains("obligation status")
 }
 
->>>>>>> 4a4a743c7 (fix(compaction): a structural trim guard enforces the continuation-document budget (#1930))
 impl AgentService {
     /// The per-turn plan reminder pinned at the end of the prompt, keyed to
     /// the session's plan-mode state: an Active checklist gets the task
