@@ -262,6 +262,13 @@ impl CronScheduler {
             }
         }
 
+        // FR-010: mirror the job table onto the guild's scheduled events. Runs
+        // at most once every fifteen minutes, and never fails the tick: a
+        // mirror that cannot be refreshed must not stop the schedule it
+        // mirrors. Deliberately awaited rather than spawned, because a spawned
+        // task loses the task-local profile home this loop runs inside.
+        super::scheduled_events::sync_if_due(&jobs).await;
+
         for job in &jobs {
             if self.is_due(job, now) {
                 tracing::info!("Cron job '{}' ({}) is due — executing", job.name, job.id);
@@ -1645,7 +1652,7 @@ async fn deliver_http(url: &str, job_name: &str, content: &str, api_key: Option<
 /// workspace's `keys.toml`. Cron delivery runs outside any channel's live
 /// connection, so it reads the credential straight off disk.
 #[cfg(any(feature = "telegram", feature = "discord", feature = "slack"))]
-fn read_channel_secret(channel: &str, field: &str) -> Option<String> {
+pub(crate) fn read_channel_secret(channel: &str, field: &str) -> Option<String> {
     let keys_path = crate::brain::BrainLoader::resolve_path().join("keys.toml");
     let content = std::fs::read_to_string(&keys_path).ok()?;
     content.parse::<toml::Table>().ok().and_then(|t| {

@@ -1005,6 +1005,7 @@ pub mod discord_plan_card_persist_test;
 pub mod discord_plan_card_test;
 pub mod discord_presence_test;
 pub mod discord_resume_chunk_test;
+pub mod discord_scheduled_events_test;
 pub mod discord_settle_outcome_test;
 pub mod discord_silence_budget_test;
 pub mod discord_slash_defer_followup_test;

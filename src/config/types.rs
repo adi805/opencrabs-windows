@@ -985,6 +985,13 @@ pub struct DiscordConfig {
     /// loudly rather than dying on a 400.
     #[serde(default)]
     pub forum_report_tag: Option<String>,
+    /// Guild whose scheduled events mirror the cron job table (FR-010).
+    /// Numeric guild ID as a string, e.g. `"1234567890123456789"`. Unset
+    /// (the default) leaves the mirror off, so an install that never sets it
+    /// makes no scheduled-event request at all. Only events this bot created
+    /// are managed; a moderator's own events in the same guild are untouched.
+    #[serde(default)]
+    pub scheduled_events_guild: Option<String>,
 }
 
 /// Proactive Discord write-governor knobs (`[channels.discord.rate_limiter]`).
@@ -1117,6 +1124,7 @@ impl Default for DiscordConfig {
             rate_limiter: DiscordRateLimiterConfig::default(),
             progress: ProgressDisplayConfig::default(),
             forum_report_tag: None,
+            scheduled_events_guild: None,
         }
     }
 }
