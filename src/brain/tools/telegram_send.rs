@@ -1447,7 +1447,10 @@ impl TelegramSendTool {
         let reference = pget!(get_str(input, "sticker_url")).to_string();
         // Collapse an identical re-send to the same chat within the dedup
         // window (#721) — a repeat lands the same sticker twice otherwise.
-        if !self.telegram_state.claim_media_send("send_sticker", chat_id, &reference, None) {
+        if !self
+            .telegram_state
+            .claim_media_send("send_sticker", chat_id, &reference, None)
+        {
             tracing::info!(
                 "telegram_send: suppressed duplicate send_sticker to chat {chat_id} ({reference})"
             );
@@ -1851,7 +1854,10 @@ impl TelegramSendTool {
         let NewTarget { chat_id, thread_id } =
             pget!(resolve_new_target(input, context.session_id, &self.telegram_state).await);
         let reference = pget!(get_str(input, "video_note_url")).to_string();
-        if !self.telegram_state.claim_media_send("send_video_note", chat_id, &reference, None) {
+        if !self
+            .telegram_state
+            .claim_media_send("send_video_note", chat_id, &reference, None)
+        {
             tracing::info!(
                 "telegram_send: suppressed duplicate send_video_note to chat {chat_id} ({reference})"
             );
