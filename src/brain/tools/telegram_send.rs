@@ -43,7 +43,6 @@ use uuid::Uuid;
 type TgMenuButton = teloxide::types::MenuButton;
 type TgChatPermissions = teloxide::types::ChatPermissions;
 type TgWebAppInfo = teloxide::types::WebAppInfo;
-type TgCustomEmojiId = teloxide::types::CustomEmojiId;
 
 /// Tool for comprehensive Telegram bot control (44 actions).
 pub struct TelegramSendTool {
@@ -3186,13 +3185,14 @@ impl TelegramSendTool {
 
         let thread_id = ThreadId(MessageId(thread_id_raw as i32));
         use teloxide::payloads::EditForumTopicSetters;
+        use teloxide::types::CustomEmojiId;
         match send_retrying_rate_limit("telegram_send edit_forum_topic", || {
             let mut req = bot.edit_forum_topic(ChatId(chat_id), thread_id);
             if let Some(name) = new_name {
                 req = req.name(name.to_string());
             }
             if let Some(icon) = icon {
-                req = req.icon_custom_emoji_id(TgCustomEmojiId(icon.to_string()));
+                req = req.icon_custom_emoji_id(CustomEmojiId(icon.to_string()));
             }
             req
         })
