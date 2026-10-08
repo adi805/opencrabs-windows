@@ -7,8 +7,16 @@
 //! `my_chat_member` was subscribed and branched on, but `update_kind_name`
 //! returned "other" for it, so the poll log could not name an update the loop
 //! was actively receiving.
+//!
+//! One kind is exempt from the typed half of that agreement. Bot API 10.3
+//! `stopped_message_generation` has no `UpdateKind` variant in teloxide-core
+//! 0.13, so no `Update::filter_*` can exist for it and `update_kind_name`
+//! (which matches on `UpdateKind`) can never name it; the poll loop reads it
+//! off the raw envelope instead. `OFF_ENVELOPE_KINDS` holds those exemptions,
+//! and `off_envelope_kinds_are_read_off_the_envelope` pins each one to a real
+//! reader, so the list cannot quietly excuse a branch that was forgotten.
 
-use crate::channels::telegram::raw_updates::ALLOWED_UPDATES;
+use crate::channels::telegram::raw_updates::{ALLOWED_UPDATES, raw_update_kind_name};
 
 /// The `Update::filter_*` branch each subscribed kind is expected to have.
 /// `message_reaction` is the one kind whose Bot API name and teloxide filter
@@ -23,8 +31,24 @@ const EXPECTED_FILTERS: &[(&str, &str)] = &[
     ("inline_query", "filter_inline_query"),
 ];
 
+/// Subscribed kinds the typed dispatcher cannot handle at all, with the call
+/// the raw poll loop makes to read each one off the envelope.
+///
+/// An exemption is not a dumping ground: a kind belongs here only when
+/// teloxide-core has no variant for it, which is why no `Update::filter_*` can
+/// be written. A kind whose branch was merely forgotten is not on this list,
+/// so both guards below still fail for it.
+const OFF_ENVELOPE_KINDS: &[(&str, &str)] = &[
+    // (Bot API name, the raw reader the poll loop calls)
+    ("stopped_message_generation", "stopped_message_generation("),
+];
+
 const AGENT_SRC: &str = include_str!("../channels/telegram/agent.rs");
 const RAW_SRC: &str = include_str!("../channels/telegram/raw_updates.rs");
+
+fn is_off_envelope(kind: &str) -> bool {
+    OFF_ENVELOPE_KINDS.iter().any(|(k, _)| *k == kind)
+}
 
 /// The body of `update_kind_name`, so a literal elsewhere in the file (the
 /// allowlist itself, for one) cannot satisfy the name check by accident.
@@ -69,6 +93,12 @@ fn every_subscribed_kind_has_a_dispatcher_branch() {
 fn every_subscribed_kind_is_named_in_the_poll_log() {
     let body = update_kind_name_body();
     for kind in ALLOWED_UPDATES {
+        if is_off_envelope(kind) {
+            // `update_kind_name` matches on `UpdateKind`, which has no variant
+            // for these. `raw_update_kind_name` names them instead, and the
+            // pin below proves that it actually does.
+            continue;
+        }
         assert!(
             body.contains(&format!("\"{kind}\"")),
             "{kind} is subscribed but update_kind_name cannot name it, so it logs as \"other\""
@@ -83,8 +113,41 @@ fn every_subscribed_kind_is_named_in_the_poll_log() {
 fn expected_filters_covers_every_subscribed_kind() {
     for kind in ALLOWED_UPDATES {
         assert!(
-            EXPECTED_FILTERS.iter().any(|(k, _)| k == kind),
-            "{kind} is subscribed but missing from EXPECTED_FILTERS"
+            is_off_envelope(kind) || EXPECTED_FILTERS.iter().any(|(k, _)| k == kind),
+            "{kind} is subscribed but missing from EXPECTED_FILTERS, and it is not listed \
+             as off-envelope either, so nothing would notice a missing dispatcher branch"
+        );
+    }
+}
+
+/// An exemption is only honest while the kind really is read off the envelope.
+/// Pin each one to a reader the poll loop calls and to a name the raw poll log
+/// can produce, so the list cannot excuse a kind that nothing handles.
+#[test]
+fn off_envelope_kinds_are_read_off_the_envelope() {
+    for (kind, reader) in OFF_ENVELOPE_KINDS {
+        assert!(
+            ALLOWED_UPDATES.contains(kind),
+            "{kind} is excused from the typed branch but is not subscribed"
+        );
+        assert!(
+            !EXPECTED_FILTERS.iter().any(|(k, _)| k == kind),
+            "{kind} is both off-envelope and in EXPECTED_FILTERS: pick one"
+        );
+        assert!(
+            RAW_SRC.contains(*reader),
+            "{kind} is excused but raw_updates.rs never calls {reader}"
+        );
+
+        // Behaviour, not source text: the raw poll log must really name it.
+        let payload = serde_json::json!({"chat": {"id": 1}, "draft_id": 1});
+        let mut probe = serde_json::Map::new();
+        let replaced = probe.insert(String::from(*kind), payload);
+        assert!(replaced.is_none(), "the probe must carry one key only");
+        assert_eq!(
+            raw_update_kind_name(&serde_json::Value::Object(probe)),
+            *kind,
+            "{kind} is subscribed but the raw poll log cannot name it"
         );
     }
 }
