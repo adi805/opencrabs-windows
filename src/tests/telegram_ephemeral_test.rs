@@ -44,7 +44,10 @@ fn remember_picker_reports_the_bubble_it_replaced() {
     // bubble comes back with it, because deleting that bubble needs the
     // receiver *it* was sent to, not the one being stored now.
     let _ = remember_picker(PICKER_CHAT_B, 7, PICKER_RX);
-    assert_eq!(remember_picker(PICKER_CHAT_B, 8, PICKER_RX + 1), Some((7, PICKER_RX)));
+    assert_eq!(
+        remember_picker(PICKER_CHAT_B, 8, PICKER_RX + 1),
+        Some((7, PICKER_RX))
+    );
     assert_eq!(picker_for(PICKER_CHAT_B), Some((8, PICKER_RX + 1)));
 }
 
@@ -319,7 +322,14 @@ fn ephemeral_id_absent_is_none_not_zero() {
 
 #[test]
 fn thread_id_targets_the_forum_topic() {
-    let body = build_body(-100200, Some(ThreadId(MessageId(77))), 12345, "hi", true);
+    let body = build_body(
+        -100200,
+        Some(ThreadId(MessageId(77))),
+        12345,
+        "hi",
+        true,
+        false,
+    );
     assert_eq!(body["message_thread_id"], 77);
 }
 
@@ -327,6 +337,6 @@ fn thread_id_targets_the_forum_topic() {
 fn no_thread_id_omits_the_field() {
     // Sending `message_thread_id: null` to a non-forum chat is an API error,
     // so the field has to be absent rather than explicitly empty.
-    let body = build_body(-100200, None, 12345, "hi", true);
+    let body = build_body(-100200, None, 12345, "hi", true, false);
     assert!(body.get("message_thread_id").is_none());
 }
