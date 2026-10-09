@@ -1,9 +1,10 @@
 //! The README's channel claims, checked against the code they describe.
 //!
-//! Two claims here have now drifted twice: the `whatsapp_send` row said 26
-//! actions when 27 shipped, and the `telegram_send` row beside it said 19 when
-//! 20 shipped. Both are one number in a table that nobody re-derives while
-//! adding an action, so both will drift again. A reader cannot tell a stale
+//! Three claims here have now drifted: the `whatsapp_send` row said 26 actions
+//! when 27 shipped, the `telegram_send` row beside it said 19 when 20 shipped,
+//! and the `discord_send` row said 17 while the tool declared 28, through a
+//! whole phase. Each is one number in a table that nobody re-derives while
+//! adding an action, so each will drift again. A reader cannot tell a stale
 //! count from a true one, which makes the table worse than no table.
 //!
 //! These tests re-derive the numbers from the tool schemas at test time, so a
@@ -56,6 +57,8 @@ fn readme_action_counts_match_the_tool_schemas() {
     for (tool, src) in [
         ("whatsapp_send", "src/brain/tools/whatsapp_send.rs"),
         ("telegram_send", "src/brain/tools/telegram_send.rs"),
+        ("discord_send", "src/brain/tools/discord_send.rs"),
+        ("slack_send", "src/brain/tools/slack_send.rs"),
     ] {
         let actual = declared_actions(&read(src)).len();
         let claimed = claimed_actions(&readme, tool);
@@ -68,27 +71,26 @@ fn readme_action_counts_match_the_tool_schemas() {
 }
 
 #[test]
-fn every_whatsapp_action_is_reachable() {
+fn every_declared_action_is_reachable() {
     // A schema entry with no match arm is an action the model will call and
     // the tool will reject as unknown, which reads to the user as the agent
-    // hallucinating a capability the docs promised.
-    let src = read("src/brain/tools/whatsapp_send.rs");
-    for action in declared_actions(&src) {
-        assert!(
-            src.contains(&format!("\"{action}\" =>")) || src.contains(&format!("\"{action}\" |")),
-            "action '{action}' is in the schema with no match arm"
-        );
-    }
-}
-
-#[test]
-fn every_telegram_action_is_reachable() {
-    let src = read("src/brain/tools/telegram_send.rs");
-    for action in declared_actions(&src) {
-        assert!(
-            src.contains(&format!("\"{action}\" =>")) || src.contains(&format!("\"{action}\" |")),
-            "action '{action}' is in the schema with no match arm"
-        );
+    // hallucinating a capability the docs promised. Table-driven, so a channel
+    // tool added here cannot be left out of the sweep the way `discord_send`
+    // was: its stale row aged through a whole phase with nobody the wiser.
+    for (tool, path) in [
+        ("whatsapp_send", "src/brain/tools/whatsapp_send.rs"),
+        ("telegram_send", "src/brain/tools/telegram_send.rs"),
+        ("discord_send", "src/brain/tools/discord_send.rs"),
+        ("slack_send", "src/brain/tools/slack_send.rs"),
+    ] {
+        let src = read(path);
+        for action in declared_actions(&src) {
+            assert!(
+                src.contains(&format!("\"{action}\" =>"))
+                    || src.contains(&format!("\"{action}\" |")),
+                "{tool}: action '{action}' is in the schema with no match arm"
+            );
+        }
     }
 }
 
