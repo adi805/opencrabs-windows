@@ -1982,11 +1982,13 @@ pub(crate) async fn handle_message(
             }
         }
     }
-    // Plan board (FR-008, #1880): reconcile this session's plan card after the
-    // turn, so a plan created, approved, advanced or discarded mid-turn shows
-    // its new state. ONE message per session, edited in place; a rendering
-    // identical to what the chat already shows costs no API call.
-    super::plan_card::refresh_plan_card(&ctx.http, target, &discord_state, session_id).await;
+    // Plan board (FR-008, #1880): re-stick this session's plan card after the
+    // turn so it follows the conversation instead of staying buried at the
+    // position the chatter arrived after. A card whose rendering is unchanged
+    // and whose sticky budget is still hot costs no API call; Telegram's
+    // restick has the same shape (`restick_plan_card_after_turn`).
+    super::plan_card::restick_plan_card_after_turn(&ctx.http, target, &discord_state, session_id)
+        .await;
 }
 
 /// Classify a turn error into the terminal outcome stamped on the flow card
