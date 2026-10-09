@@ -510,7 +510,7 @@ impl Tool for BashTool {
                 );
                 mgr.clone().spawn_command(
                     context.session_id,
-                    context.working_directory.clone(),
+                    working_dir.clone(),
                     label.clone(),
                     input.command.clone(),
                 );
@@ -538,7 +538,7 @@ impl Tool for BashTool {
                             );
                             mgr.clone().spawn_command(
                                 context.session_id,
-                                context.working_directory.clone(),
+                                working_dir.clone(),
                                 label.clone(),
                                 input.command.clone(),
                             );
