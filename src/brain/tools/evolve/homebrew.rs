@@ -17,7 +17,9 @@
 
 use super::bounded_child::{Outcome, first_version_field, run_bounded};
 use super::restart_status::RestartStatus;
-use super::systemd::{build_systemd_restart_command, select_unit_bus, sweep_stale_evolve_units};
+use super::systemd::{
+    build_systemd_restart_command, select_restart_targets, sweep_stale_evolve_units,
+};
 use crate::brain::agent::{ProgressCallback, ProgressEvent};
 use crate::brain::tools::error::{Result, ToolError};
 use crate::brain::tools::r#trait::ToolResult;
@@ -122,12 +124,12 @@ fn arm_systemd_backstop(sid: uuid::Uuid) -> RestartStatus {
     if !std::path::Path::new("/run/systemd/system").exists() {
         return RestartStatus::NotSystemd;
     }
-    let Some(use_user_units) = select_unit_bus(sid) else {
+    let Some((use_user_units, targets)) = select_restart_targets(sid) else {
         return RestartStatus::NoUnitsMatched;
     };
     sweep_stale_evolve_units(use_user_units, sid);
     let pid = std::process::id();
-    match build_systemd_restart_command(pid, use_user_units).spawn() {
+    match build_systemd_restart_command(pid, use_user_units, &targets).spawn() {
         Ok(child) => {
             tracing::info!(
                 target: "evolve",
