@@ -219,6 +219,55 @@ pub(crate) async fn handle_invoked_request(
         return;
     }
 
+    // #2013: a built-in picked from the `/` menu is answered HERE, never routed
+    // to the model. The menu entry and this arm are one contract: the catalog
+    // advertises exactly the built-ins `try_execute_text_command` can answer, and
+    // this is the code path that answers them. Without it the invocation reaches
+    // the tool loop as the literal text `/models`, and the model improvises a
+    // reply to a command it cannot run.
+    //
+    // Resolved through `handle_command` rather than by name, because the branch
+    // has to separate two things that look identical on the wire: a built-in
+    // (`action = "system"`, answered here) and a `commands.toml` command
+    // (`action = "prompt"`, which is a request for the agent to do work and must
+    // keep reaching it). A `None` from `try_execute_text_command` means "this
+    // needs platform UI or is a prompt", so the normal turn runs.
+    //
+    // The answer lands through `create_response`, not a defer: every advertised
+    // built-in answers from memory in microseconds, and a defer-then-edit would
+    // add a round-trip and a second failure mode for no gain.
+    if let Some(session_id) =
+        resolve_interaction_session(&session_svc, is_dm, user, channel_id, dc.session_idle_hours)
+            .await
+    {
+        let cmd = crate::channels::commands::handle_command(
+            &invocation,
+            session_id,
+            &agent,
+            &session_svc,
+            owner,
+            None,
+        )
+        .await;
+        if let Some(text) = crate::channels::commands::try_execute_text_command(&cmd).await {
+            let ack = command
+                .create_response(
+                    &ctx.http,
+                    serenity::builder::CreateInteractionResponse::Message(
+                        serenity::builder::CreateInteractionResponseMessage::new().content(text),
+                    ),
+                )
+                .await;
+            if let Err(e) = &ack {
+                tracing::warn!(
+                    "Discord: built-in {:?} could not answer in place: {e}",
+                    command.data.name
+                );
+            }
+            return;
+        }
+    }
+
     let idle = dc.session_idle_hours;
     // History keeps the invocation the way a typed message would:
     // `Sender: /cmd args` in a guild, bare in the owner's DM, the same rule

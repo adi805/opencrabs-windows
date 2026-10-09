@@ -346,9 +346,11 @@ pub(crate) fn sync_signature(parts: &[u64]) -> u64 {
 /// answer as plain text today.
 ///
 /// Deliberately absent, so the omission is a decision and not an oversight:
-/// - `/exit` — kills the daemon from a chat surface. `/restart` is the furthest a
-///   guild should reach; an exit here reproduces the silent dead-bot state this
-///   channel was just debugged out of.
+/// - `/exit`, `/restart`, `/evolve` — daemon lifecycle. Each can kill or reload
+///   the process while its interaction is still pending, which lands us back in
+///   the silent dead-bot state this channel was just debugged out of. Typed as
+///   text they still work for the owner; they are simply not advertised in a
+///   guild menu.
 /// - `/new`, `/stop`, `/clear`, `/compact`, `/sessions` — session and context
 ///   state, driven by the TUI and the session switcher, not by text alone.
 /// - `/goal`, `/profiles`, `/rename`, `/cd`, `/cowork` — persistent config, or a
@@ -367,8 +369,6 @@ pub(crate) const MENU_BUILTINS: &[&str] = &[
     "/show-plan",
     "/respond_to",
     "/redact",
-    "/restart",
-    "/evolve",
 ];
 
 /// Append the Discord-menu built-ins that the interaction path can answer.
