@@ -504,6 +504,34 @@ jobs:
       - name: Scan for duplicate top-level declarations
         run: python3 scripts/check-duplicate-decls.py --root src
 
+  # ── Workflow policy (governance.toml) ─────────────────────────────────────
+  # #1934: rules that live only in prose get violated and then counted in the
+  # ledger. This job reads governance.toml and fails on the ones a machine can
+  # decide without judgement. PRs only — a push to main has no base to diff
+  # against, and the rules describe what a PR must look like.
+  policy-lint:
+    name: Policy lint
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The lint walks base..head, so both ends must be present.
+          fetch-depth: 0
+
+      # Same shape as the two Python linters above: the rule set proves it
+      # still bites before it is trusted to judge a PR. A regex that silently
+      # stopped matching would otherwise pass every PR forever.
+      - name: Policy linter proves its own teeth
+        run: python3 scripts/policy-lint.py --self-test
+
+      - name: Lint the pull request
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/policy-lint.py --base "$BASE_SHA" --head "$HEAD_SHA"
+
   # ── Stage 3: Test on Linux (gated on lint + audit, parallel with build) ──
   # Tests run on Linux only — macOS gets build verification via
   # the `build` job above. ZeroClaw uses the same split because the
@@ -794,7 +822,7 @@ jobs:
     # Price of this line: for Windows-relevant PRs the gate now waits on the
     # longer of the macOS build (~40m) and a cold Windows build (~50m); warm
     # rust-cache runs land near 10m.
-    needs: [lint, build, test, audit, windows-footguns, windows-build]
+    needs: [lint, build, test, audit, windows-footguns, windows-build, policy-lint]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
