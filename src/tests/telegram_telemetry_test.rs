@@ -543,4 +543,3 @@ fn origin_slot_carries_only_the_closed_vocabulary() {
     );
     assert!(checked > 100, "the scan found only {checked} call sites");
 }
-
