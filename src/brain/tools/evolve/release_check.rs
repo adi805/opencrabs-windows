@@ -137,17 +137,88 @@ pub async fn check_for_update() -> Option<String> {
 
     // For pre-built binary installs, only report "available" if the platform
     // asset actually exists in the release (release may still be building).
-    if matches!(InstallMethod::detect(), InstallMethod::PrebuiltBinary)
-        && !has_platform_asset(&release, latest_tag)
-    {
-        tracing::debug!(
-            "Release {} exists but no asset for this platform yet",
-            latest_tag
-        );
-        return None;
+    if matches!(InstallMethod::detect(), InstallMethod::PrebuiltBinary) {
+        match stable_asset_state(&release, latest_tag) {
+            StableAsset::Present => {}
+            StableAsset::Building => {
+                tracing::debug!(
+                    "Release {} exists but no asset for this platform yet",
+                    latest_tag
+                );
+                return None;
+            }
+            StableAsset::NotDistributed => {
+                tracing::debug!(
+                    target: "evolve",
+                    tag = latest_tag,
+                    os = std::env::consts::OS,
+                    arch = std::env::consts::ARCH,
+                    "stable channel publishes no asset for this platform"
+                );
+                return None;
+            }
+            StableAsset::UnsupportedPlatform => {
+                tracing::debug!(
+                    target: "evolve",
+                    os = std::env::consts::OS,
+                    arch = std::env::consts::ARCH,
+                    "no release asset name is defined for this platform"
+                );
+                return None;
+            }
+        }
     }
 
     Some(latest_version.to_string())
+}
+
+/// Asset suffixes the stable release channel publishes.
+///
+/// Mirrors the `asset_suffix` values in `.github/workflows/release-fork.yml`,
+/// which is Linux only on purpose: the header there says the fork's own hosts
+/// are an aarch64 set-top box and an x86_64 VPS, and the macOS and Windows legs
+/// stay in `prerelease.yml` for people who build from source.
+///
+/// The updater polls `releases/latest`, which excludes prereleases, so a
+/// platform absent from this list cannot receive an automatic update at all.
+/// Telling it "try again in a few minutes" would be a promise that never comes
+/// due. `stable_channel_list_matches_the_release_workflow` in
+/// `src/tests/evolve_test.rs` fails if the workflow grows a leg this list does
+/// not carry.
+pub(crate) const STABLE_ASSET_SUFFIXES: &[&str] = &["linux-amd64", "linux-arm64"];
+
+/// Why the stable channel does, or does not, have an asset for this build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StableAsset {
+    /// The release carries an asset for this platform.
+    Present,
+    /// This platform is published by the stable workflow, so a missing asset
+    /// most likely means the release is still uploading.
+    Building,
+    /// The stable workflow does not build this platform at all.
+    NotDistributed,
+    /// No asset name is defined for this OS/arch pair.
+    UnsupportedPlatform,
+}
+
+/// Classify the stable channel's asset situation for one platform suffix.
+///
+/// Split out from [`stable_asset_state`] so every arm is reachable from a test
+/// on any host, rather than only on the platform it describes.
+pub(crate) fn classify_stable_asset(suffix: Option<&str>, asset_present: bool) -> StableAsset {
+    if asset_present {
+        return StableAsset::Present;
+    }
+    match suffix {
+        None => StableAsset::UnsupportedPlatform,
+        Some(s) if STABLE_ASSET_SUFFIXES.contains(&s) => StableAsset::Building,
+        Some(_) => StableAsset::NotDistributed,
+    }
+}
+
+/// Classify the asset situation for the platform this build runs on.
+pub(crate) fn stable_asset_state(release: &serde_json::Value, tag: &str) -> StableAsset {
+    classify_stable_asset(platform_suffix(), has_platform_asset(release, tag))
 }
 
 /// Check whether the release JSON contains a downloadable asset for the

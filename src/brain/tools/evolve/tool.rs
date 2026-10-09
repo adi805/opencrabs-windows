@@ -5,9 +5,13 @@
 
 use super::super::error::Result;
 use super::super::r#trait::{Tool, ToolCapability, ToolExecutionContext, ToolResult};
-use super::release_check::{diagnose_releases_latest_status, github_api, has_platform_asset};
+use super::release_check::{
+    STABLE_ASSET_SUFFIXES, StableAsset, diagnose_releases_latest_status, github_api,
+    stable_asset_state,
+};
 use crate::brain::agent::{ProgressCallback, ProgressEvent};
 use crate::utils::install::InstallMethod;
+use crate::utils::update_source::releases_page;
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -228,20 +232,51 @@ impl Tool for EvolveTool {
         }
 
         // For pre-built binary installs, verify the platform asset exists
-        // before reporting the update as available (release may still be building).
-        if matches!(install_method, InstallMethod::PrebuiltBinary)
-            && !has_platform_asset(&release, latest_tag)
-        {
-            let asset_count = release["assets"].as_array().map(|a| a.len()).unwrap_or(0);
-            return Ok(ToolResult::error(format!(
-                "v{} release exists but the binary for {}/{} is not available yet \
-                 ({} assets uploaded so far). The release may still be building — \
-                 try again in a few minutes.",
-                latest_version,
-                std::env::consts::OS,
-                std::env::consts::ARCH,
-                asset_count
-            )));
+        // before reporting the update as available. A missing asset means two
+        // very different things depending on the platform: still uploading on a
+        // platform the stable workflow builds, and never coming on one it does
+        // not (see STABLE_ASSET_SUFFIXES). Telling the second case to wait is
+        // what made this report useless on Windows.
+        if matches!(install_method, InstallMethod::PrebuiltBinary) {
+            match stable_asset_state(&release, latest_tag) {
+                StableAsset::Present => {}
+                StableAsset::Building => {
+                    let asset_count = release["assets"].as_array().map(|a| a.len()).unwrap_or(0);
+                    return Ok(ToolResult::error(format!(
+                        "v{} release exists but the binary for {}/{} is not available yet \
+                         ({} assets uploaded so far). The release may still be building; \
+                         try again in a few minutes.",
+                        latest_version,
+                        std::env::consts::OS,
+                        std::env::consts::ARCH,
+                        asset_count
+                    )));
+                }
+                StableAsset::NotDistributed => {
+                    return Ok(ToolResult::error(format!(
+                        "v{} is published, but the stable channel does not build for {}/{}: \
+                         tagged releases carry the Linux binaries only ({}). The Windows and \
+                         macOS legs live in the manual preview workflow, which publishes \
+                         under a rolling pre-release tag and is deliberately not offered \
+                         through /evolve. Replace this binary by hand from a preview archive \
+                         at {}.",
+                        latest_version,
+                        std::env::consts::OS,
+                        std::env::consts::ARCH,
+                        STABLE_ASSET_SUFFIXES.join(", "),
+                        releases_page()
+                    )));
+                }
+                StableAsset::UnsupportedPlatform => {
+                    return Ok(ToolResult::error(format!(
+                        "No release asset name is defined for {}/{}, so /evolve cannot pick a \
+                         download for this build. Tagged releases carry {}.",
+                        std::env::consts::OS,
+                        std::env::consts::ARCH,
+                        STABLE_ASSET_SUFFIXES.join(", ")
+                    )));
+                }
+            }
         }
 
         if check_only {
