@@ -813,6 +813,7 @@ pub mod slack_flow_ticker_test;
 pub mod slack_fmt_test;
 pub mod slack_followup_tap_tool_loop_test;
 pub mod slack_footer_placement_test;
+pub mod slack_governor_test;
 pub mod slack_structure_test;
 pub mod sources_footer_tool_loop_test;
 pub mod startup_checks_test;
