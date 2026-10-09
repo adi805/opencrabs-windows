@@ -193,18 +193,20 @@ impl Tool for HttpClientTool {
         // The caller's `headers` map can still override this: reqwest's
         // per-request header setters win over client-level defaults, so
         // explicit `User-Agent` in the tool input replaces ours.
-        let client = Client::builder()
-            .timeout(StdDuration::from_secs(input.timeout_secs))
-            .user_agent(concat!("opencrabs/", env!("CARGO_PKG_VERSION")))
-            .redirect(if input.follow_redirects {
-                // Re-validate every hop (OC-04): a public URL that 302s to an
-                // internal address is stopped, not followed.
-                super::ssrf::redirect_policy(10)
-            } else {
-                reqwest::redirect::Policy::none()
-            })
-            .build()
-            .map_err(|e| ToolError::Execution(format!("Failed to build HTTP client: {}", e)))?;
+        // Both halves of the SSRF guard ride on the client itself (OC-04): the
+        // validating DNS resolver catches a redirect hop whose hostname only
+        // resolves internally, and the redirect policy catches a hop to a
+        // literal internal address. A public URL that 302s to either is stopped,
+        // not followed. `follow_redirects: false` keeps the policy off but still
+        // installs the resolver, so the first request is validated regardless.
+        let client = super::ssrf::guard_client(
+            Client::builder()
+                .timeout(StdDuration::from_secs(input.timeout_secs))
+                .user_agent(concat!("opencrabs/", env!("CARGO_PKG_VERSION"))),
+            input.follow_redirects,
+        )
+        .build()
+        .map_err(|e| ToolError::Execution(format!("Failed to build HTTP client: {}", e)))?;
 
         // Build request
         let mut request = client.request(method.clone(), &input.url);

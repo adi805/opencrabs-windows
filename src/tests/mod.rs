@@ -475,6 +475,7 @@ pub mod session_search_tokenized_test;
 pub mod session_surface_test;
 pub mod shared_session_internal_gate_test;
 pub mod shutdown_recovery_row_test;
+pub mod ssrf_redirect_guard_test;
 #[cfg(feature = "telegram")]
 #[cfg(feature = "telegram")]
 pub mod start_gate_allowed_user_test;

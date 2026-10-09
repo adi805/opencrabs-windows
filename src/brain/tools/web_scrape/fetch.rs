@@ -26,13 +26,17 @@ const JS_SHELL_TEXT_THRESHOLD: usize = 200;
 /// Fetch raw HTML over HTTP with a browser UA and a bounded timeout. Returns the
 /// response body on 2xx, an error string otherwise.
 pub async fn fetch_static(url: &str, timeout_secs: u64) -> Result<String, String> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
-        .user_agent(BROWSER_UA)
-        // Re-validate every redirect hop against the SSRF guard (OC-04).
-        .redirect(crate::brain::tools::ssrf::redirect_policy(10))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+    // Both halves of the SSRF guard ride on the client (OC-04): the validating
+    // DNS resolver catches a hop whose hostname only resolves internally, the
+    // redirect policy catches a hop to a literal internal address.
+    let client = crate::brain::tools::ssrf::guard_client(
+        Client::builder()
+            .timeout(Duration::from_secs(timeout_secs))
+            .user_agent(BROWSER_UA),
+        true,
+    )
+    .build()
+    .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
 
     let resp = client.get(url).send().await.map_err(|e| {
         if e.is_timeout() {
