@@ -86,16 +86,31 @@ impl DiscordAgent {
             // them `reaction_add` below compiles, passes its tests and never
             // fires. `discord_intent_coherence_test` now pins the pairing.
             //
-            // GUILD_MEMBERS (FR-004) is PRIVILEGED. Requesting it while the
-            // application toggle is off makes Discord refuse the IDENTIFY
-            // outright, which is why the retry loop below stops on that error
-            // instead of reconnecting: see `member_events::refused_identify`.
-            let intents = GatewayIntents::GUILD_MESSAGES
+            // The base set is never refused. MESSAGE_CONTENT is privileged
+            // too, but Discord answers a request for it without the toggle by
+            // sending empty content rather than refusing the IDENTIFY, so
+            // GUILD_MEMBERS is the only bit that can fail the handshake.
+            let base_intents = GatewayIntents::GUILD_MESSAGES
                 | GatewayIntents::DIRECT_MESSAGES
                 | GatewayIntents::MESSAGE_CONTENT
                 | GatewayIntents::GUILD_MESSAGE_REACTIONS
-                | GatewayIntents::DIRECT_MESSAGE_REACTIONS
-                | GatewayIntents::GUILD_MEMBERS;
+                | GatewayIntents::DIRECT_MESSAGE_REACTIONS;
+
+            // GUILD_MEMBERS (FR-004) is PRIVILEGED, and it carries one feature:
+            // the welcome message. Asking for it while the application toggle
+            // is off makes Discord refuse the IDENTIFY outright. That refusal
+            // must cost the FEATURE, not the channel, so the retry loop below
+            // drops the bit and reconnects: messages, reactions and slash
+            // commands keep working on a bot whose owner never flipped the
+            // Portal toggle. See `member_events::refused_identify`.
+            let mut members_enabled = true;
+            let intents_for = |members_enabled: bool| {
+                if members_enabled {
+                    base_intents | GatewayIntents::GUILD_MEMBERS
+                } else {
+                    base_intents
+                }
+            };
 
             let make_handler = || Handler {
                 agent: agent.clone(),
@@ -108,7 +123,7 @@ impl DiscordAgent {
                 channel_msg_repo: channel_msg_repo.clone(),
             };
 
-            let mut client = match Client::builder(&token, intents)
+            let mut client = match Client::builder(&token, intents_for(members_enabled))
                 .event_handler(make_handler())
                 .await
             {
@@ -124,27 +139,36 @@ impl DiscordAgent {
             loop {
                 tracing::info!("Discord: starting gateway connection");
                 if let Err(e) = client.start().await {
-                    // NFR-001: a refused IDENTIFY is not transient. Discord
-                    // rejects the connection when a requested privileged intent
-                    // is not enabled on the application, and reconnecting cannot
-                    // flip a Developer Portal toggle, so retrying would log the
-                    // same line every 5 seconds forever on a bot that looks
-                    // alive and answers nothing. Name the missing toggle, then
-                    // stop and let the operator fix it.
+                    // NFR-001: a refused IDENTIFY is not transient, and
+                    // reconnecting cannot flip a Developer Portal toggle. It
+                    // is also not fatal: the refusal names a privileged bit,
+                    // and only GUILD_MEMBERS is requested, so dropping that
+                    // bit keeps every other surface alive. Stop only when the
+                    // refusal survives the drop: then the base set itself is
+                    // being rejected and no Portal toggle can fix that.
                     if super::member_events::refused_identify(&e) {
-                        tracing::error!(
+                        if !members_enabled {
+                            tracing::error!(
+                                "{} Gateway error: {}",
+                                super::member_events::MISSING_TOGGLE_HINT,
+                                e
+                            );
+                            return;
+                        }
+                        tracing::warn!(
                             "{} Gateway error: {}",
-                            super::member_events::MISSING_TOGGLE_HINT,
+                            super::member_events::DEGRADE_HINT,
                             e
                         );
-                        return;
+                        members_enabled = false;
+                    } else {
+                        tracing::error!("Discord: client error: {} — reconnecting in 5s", e);
                     }
-                    tracing::error!("Discord: client error: {} — reconnecting in 5s", e);
                 } else {
                     tracing::warn!("Discord: client exited unexpectedly — reconnecting in 5s");
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                client = match Client::builder(&token, intents)
+                client = match Client::builder(&token, intents_for(members_enabled))
                     .event_handler(make_handler())
                     .await
                 {
