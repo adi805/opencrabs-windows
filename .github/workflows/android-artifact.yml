@@ -51,16 +51,17 @@ jobs:
     # whole cycle, which is the bug that rode ci.yml's macOS job until #50.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Rust (pinned by rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
+          toolchain: stable
           targets: aarch64-linux-android
 
       - name: Set up Android NDK
         id: setup-ndk
-        uses: nttld/setup-ndk@v1
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
         with:
           ndk-version: r27d
           # cargo-ndk reads ANDROID_NDK_HOME, so keep the NDK off PATH and
@@ -73,7 +74,7 @@ jobs:
       # No `save-if` restriction: this job runs on PRs and workflow_dispatch
       # only, so a refs/heads/main-only save-if would never fire and the cache
       # would stay cold forever (the bug #50 fixed in ci.yml).
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
 
@@ -109,7 +110,7 @@ jobs:
           readelf -d "$bin" | grep -E "NEEDED" || true
 
       - name: Upload the binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: opencrabs-android-arm64
           path: target/aarch64-linux-android/ci/opencrabs
@@ -137,17 +138,17 @@ jobs:
     # No compilation here: javac + d8 + aapt2 + apksigner.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Fetch the core binary built above
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: opencrabs-android-arm64
           path: apk-input
 
       - name: Set up Android NDK
         id: setup-ndk
-        uses: nttld/setup-ndk@v1
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
         with:
           ndk-version: r27d
           add-to-path: false
@@ -161,7 +162,7 @@ jobs:
         run: bash android/assemble-apk.sh apk-input/opencrabs
 
       - name: Upload the APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: opencrabs-android-apk
           path: android/out/opencrabs-debug.apk

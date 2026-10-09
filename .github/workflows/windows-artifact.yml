@@ -24,21 +24,21 @@ jobs:
     # from rust-cache lands near 10.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Rust (pinned by rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
 
       # The two tools ci.yml's windows-build also installs: aws-lc-rs needs
       # NASM on Windows, llama-cpp-sys-2 drives CMake.
-      - uses: lukka/get-cmake@latest
-      - uses: ilammy/setup-nasm@v1
+      - uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # latest
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
 
       - name: Build (flags identical to ci.yml windows-build)
         shell: bash
@@ -60,7 +60,7 @@ jobs:
           echo "$ver" | grep -qi opencrabs
 
       - name: Upload the exe
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: opencrabs-windows-x64
           path: target/x86_64-pc-windows-msvc/ci/opencrabs.exe
@@ -100,7 +100,7 @@ jobs:
 
       - name: Upload the UI dump
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: opencrabs-ui-dump
           path: target/ui-dump
@@ -149,7 +149,7 @@ jobs:
 
       - name: Upload the window captures
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: opencrabs-windows-captures
           path: target/capture-dump
@@ -189,7 +189,7 @@ jobs:
 
       - name: Upload the input evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: opencrabs-windows-input
           path: target/input-dump
@@ -228,7 +228,7 @@ jobs:
 
       - name: Upload the app evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: opencrabs-windows-app
           path: target/input-dump/app-*.png
@@ -255,7 +255,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Fetch the exe this run built
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: opencrabs-windows-x64
           path: app
@@ -420,7 +420,7 @@ jobs:
 
       - name: Upload the frames
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: opencrabs-windows-desktop
           path: shots

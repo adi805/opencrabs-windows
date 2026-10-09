@@ -58,7 +58,7 @@ jobs:
     name: Preflight (tag matches Cargo.toml)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
       - name: Check tag against Cargo.toml version
@@ -102,19 +102,20 @@ jobs:
             target: aarch64-unknown-linux-gnu
             asset_suffix: linux-arm64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
 
@@ -124,16 +125,7 @@ jobs:
       - name: Download RTK
         shell: bash
         run: |
-          RTK_VERSION="0.40.0"
-          case "${{ matrix.target }}" in
-            x86_64-unknown-linux-gnu) RTK_ASSET="rtk-x86_64-unknown-linux-musl.tar.gz" ;;
-            aarch64-unknown-linux-gnu) RTK_ASSET="rtk-aarch64-unknown-linux-gnu.tar.gz" ;;
-          esac
-          curl -sL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/${RTK_ASSET}" -o "/tmp/${RTK_ASSET}"
-          mkdir -p /tmp/rtk-extract && tar xzf "/tmp/${RTK_ASSET}" -C /tmp/rtk-extract
-          RTK_BIN=$(find /tmp/rtk-extract -name "rtk" | head -1)
-          cp "$RTK_BIN" "target/${{ matrix.target }}/ci/"
-          chmod +x "target/${{ matrix.target }}/ci/rtk"
+          bash scripts/fetch-rtk.sh "${{ matrix.target }}" "target/${{ matrix.target }}/ci"
 
       - name: Strip
         run: strip target/${{ matrix.target }}/ci/opencrabs
@@ -167,7 +159,7 @@ jobs:
           echo "archive: ${ARCHIVE}.tar.gz"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ matrix.asset_suffix }}
           path: opencrabs-${{ env.RELEASE_TAG }}-${{ matrix.asset_suffix }}.tar.gz
@@ -179,12 +171,12 @@ jobs:
     needs: [build-linux]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: artifacts
 

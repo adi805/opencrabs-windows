@@ -41,11 +41,12 @@ jobs:
           - target: x86_64-apple-darwin
             asset_suffix: macos-amd64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Build
@@ -57,16 +58,7 @@ jobs:
       - name: Download RTK
         shell: bash
         run: |
-          RTK_VERSION="0.40.0"
-          case "${{ matrix.target }}" in
-            x86_64-apple-darwin) RTK_ASSET="rtk-x86_64-apple-darwin.tar.gz" ;;
-            aarch64-apple-darwin) RTK_ASSET="rtk-aarch64-apple-darwin.tar.gz" ;;
-          esac
-          curl -sL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/${RTK_ASSET}" -o "/tmp/${RTK_ASSET}"
-          mkdir -p /tmp/rtk-extract && tar xzf "/tmp/${RTK_ASSET}" -C /tmp/rtk-extract
-          RTK_BIN=$(find /tmp/rtk-extract -name "rtk" | head -1)
-          cp "$RTK_BIN" "target/${{ matrix.target }}/release/"
-          chmod +x "target/${{ matrix.target }}/release/rtk"
+          bash scripts/fetch-rtk.sh "${{ matrix.target }}" "target/${{ matrix.target }}/release"
 
       - name: Strip
         run: strip target/${{ matrix.target }}/release/opencrabs
@@ -81,7 +73,7 @@ jobs:
           tar czf "../../../${ARCHIVE}.tar.gz" opencrabs rtk
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: prerelease-${{ matrix.asset_suffix }}
           path: opencrabs-v*-pre-*.tar.gz
@@ -132,11 +124,12 @@ jobs:
             target: aarch64-unknown-linux-gnu
             asset_suffix: linux-arm64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Install dependencies
@@ -148,16 +141,7 @@ jobs:
       - name: Download RTK
         shell: bash
         run: |
-          RTK_VERSION="0.40.0"
-          case "${{ matrix.target }}" in
-            x86_64-unknown-linux-gnu) RTK_ASSET="rtk-x86_64-unknown-linux-musl.tar.gz" ;;
-            aarch64-unknown-linux-gnu) RTK_ASSET="rtk-aarch64-unknown-linux-gnu.tar.gz" ;;
-          esac
-          curl -sL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/${RTK_ASSET}" -o "/tmp/${RTK_ASSET}"
-          mkdir -p /tmp/rtk-extract && tar xzf "/tmp/${RTK_ASSET}" -C /tmp/rtk-extract
-          RTK_BIN=$(find /tmp/rtk-extract -name "rtk" | head -1)
-          cp "$RTK_BIN" "target/${{ matrix.target }}/release/"
-          chmod +x "target/${{ matrix.target }}/release/rtk"
+          bash scripts/fetch-rtk.sh "${{ matrix.target }}" "target/${{ matrix.target }}/release"
 
       - name: Strip
         run: strip target/${{ matrix.target }}/release/opencrabs
@@ -172,7 +156,7 @@ jobs:
           tar czf "../../../${ARCHIVE}.tar.gz" opencrabs rtk
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: prerelease-${{ matrix.asset_suffix }}
           path: opencrabs-v*-pre-*.tar.gz
@@ -205,18 +189,19 @@ jobs:
     name: Windows (windows-amd64)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
+          toolchain: stable
           targets: x86_64-pc-windows-msvc
 
       - name: Install CMake
-        uses: lukka/get-cmake@latest
+        uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # latest
 
       - name: Install NASM
-        uses: ilammy/setup-nasm@v1
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
 
       - name: Build
         shell: bash
@@ -227,13 +212,7 @@ jobs:
       - name: Download RTK
         shell: bash
         run: |
-          RTK_VERSION="0.40.0"
-          RTK_ASSET="rtk-x86_64-pc-windows-msvc.zip"
-          curl -sL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/${RTK_ASSET}" -o "/tmp/${RTK_ASSET}"
-          mkdir -p /tmp/rtk-extract
-          unzip -q "/tmp/${RTK_ASSET}" -d /tmp/rtk-extract
-          RTK_BIN=$(find /tmp/rtk-extract -name "rtk.exe" | head -1)
-          cp "$RTK_BIN" "target/x86_64-pc-windows-msvc/release/"
+          bash scripts/fetch-rtk.sh x86_64-pc-windows-msvc "target/x86_64-pc-windows-msvc/release"
 
       - name: Create archive
         shell: bash
@@ -245,7 +224,7 @@ jobs:
           7z a "../../../${ARCHIVE}.zip" opencrabs.exe rtk.exe
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: prerelease-windows-amd64
           path: opencrabs-v*-pre-*.zip
@@ -284,10 +263,10 @@ jobs:
     steps:
       # Needed before the notes step reads Cargo.toml for the version. Without
       # it that grep runs in an empty workspace and fails the job.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: artifacts
 
@@ -316,7 +295,7 @@ jobs:
           ### What's included
           - 5 platform binaries (linux-amd64, linux-arm64, macos-amd64, macos-arm64, windows-amd64)
           - SHA256 checksums
-          - RTK 0.40.0 bundled
+          - RTK $(grep '^RTK_VERSION=' scripts/fetch-rtk.sh | cut -d'"' -f2) bundled
 
           ### Install
           Download the archive for your platform, extract, and run \`./opencrabs\`.
