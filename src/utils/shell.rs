@@ -212,10 +212,16 @@ fn unix_shell_pair() -> (&'static str, &'static str) {
 /// containing quotes is corrupted. Live repros (guardrail-0003):
 /// `python "C:/x/probe.py"` receives `C:\Windows\System32\"C:\Users\…"` as
 /// argv; `dir "C:\Program Files"` fails with "filename syntax incorrect".
-/// On Windows this appends both parts with `raw_arg` (verbatim, no
-/// escaping); elsewhere it is a plain `arg`.
+/// On Windows the spelling follows the shell, not the platform: `cmd /C`
+/// re-parses its command line and needs `raw_arg` (verbatim, no escaping),
+/// while a probed bash is a `-c` shell that takes the command as a single
+/// argv element and needs a plain `arg`: `raw_arg` splits it at the first
+/// space and the shell runs only the first word (#150). Elsewhere it is
+/// always `arg`.
 pub trait PushShellCommand {
-    /// Append `shell_arg` and `command` to this command, verbatim on Windows.
+    /// Append `shell_arg` and `command` to this command. `cmd /C` takes them
+    /// verbatim (`raw_arg`); a `-c` shell takes the command as one argv
+    /// element (`arg`), the shape it parses.
     fn push_shell_command(&mut self, shell_arg: &str, command: &str) -> &mut Self;
 }
 
@@ -223,7 +229,11 @@ pub trait PushShellCommand {
 impl PushShellCommand for std::process::Command {
     fn push_shell_command(&mut self, shell_arg: &str, command: &str) -> &mut Self {
         use std::os::windows::process::CommandExt;
-        self.raw_arg(shell_arg).raw_arg(command)
+        if shell_arg == "/C" {
+            self.raw_arg(shell_arg).raw_arg(command)
+        } else {
+            self.arg(shell_arg).arg(command)
+        }
     }
 }
 
@@ -237,7 +247,11 @@ impl PushShellCommand for std::process::Command {
 #[cfg(windows)]
 impl PushShellCommand for tokio::process::Command {
     fn push_shell_command(&mut self, shell_arg: &str, command: &str) -> &mut Self {
-        self.raw_arg(shell_arg).raw_arg(command)
+        if shell_arg == "/C" {
+            self.raw_arg(shell_arg).raw_arg(command)
+        } else {
+            self.arg(shell_arg).arg(command)
+        }
     }
 }
 

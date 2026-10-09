@@ -308,9 +308,10 @@ jobs:
     # from rust-cache land near 10. The original 40 cap killed a build that
     # was minutes from linking. Keep a cap so a true hang can't burn 360.
     # 90 (not 60) while the scoped-test step rides along: the cfg(test) lib
-    # compiles on top of the build. The job is NOT in the required gate, so
-    # the extra ceiling is a priced trade for the first-ever Windows
-    # execution receipts, not silent drift.
+    # compiles on top of the build. The cap must cover a cold run, because
+    # this job IS in the required gate (see ci-gate's `needs`): when the
+    # windows-filter matches, a timeout here fails the PR rather than
+    # scrolling by as advisory.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
@@ -376,6 +377,31 @@ jobs:
           [ "$status" -eq 0 ] || exit 1
           echo "$ver" | grep -qi opencrabs
 
+      # Startup beyond --version (#150). `--version` is answered by clap
+      # alone: it never loads config, never touches the home directory and
+      # never constructs a provider, so it cannot fail for any reason that
+      # matters at startup. `status` walks that path: config load plus
+      # validate, profile resolution, brain path lookup, the database path
+      # check and the channel summary. On a clean runner there is no
+      # config.toml, so the expected report is the "not configured" shape
+      # and the run must still exit 0 instead of panicking on a missing
+      # home. The banner assertion is what separates a completed startup
+      # from a process that died after printing nothing.
+      - name: "Smoke (windows): startup path beyond --version"
+        shell: bash
+        run: |
+          set +e
+          out=$(./target/x86_64-pc-windows-msvc/ci/opencrabs.exe status 2>&1)
+          status=$?
+          set -e
+          echo "exit=$status"
+          printf '%s\n' "$out"
+          [ "$status" -eq 0 ] || exit 1
+          printf '%s\n' "$out" | grep -q "OpenCrabs v" || {
+            echo "::error::status produced no version banner: the startup path did not complete"
+            exit 1
+          }
+
       # Scoped execution: only the modules whose tests assert platform
       # behaviour. Full-suite Windows was rejected twice (#627 cost, and
       # POSIX-semantics failures that are not bugs). Every member below
@@ -420,14 +446,17 @@ jobs:
       #                                   and compiles out here, which is why
       #                                   its count differs from the Linux job
       #                                   by one rather than matching it.
-      # continue-on-error: true is the honest day-1 state, not a dodge: these
-      # tests have never executed on Windows in this repo's history, so their
-      # outcome is unknown and must not block a PR. The smoke step above is
-      # NOT soft, because a binary that does not start is a hard fail. Flip
-      # continue-on-error to false once the receipts are green, in the PR
-      # that reports them.
+      # Blocking, not advisory (#150). These tests had never executed on
+      # Windows in this repo's history, so the slice shipped with
+      # continue-on-error: true: an unknown outcome must not block a PR. The
+      # cost was that Windows compilation was gated while Windows runtime
+      # validation stayed advisory, so a red slice scrolled past as a warning
+      # and a genuine platform regression could reach main. The step is now
+      # hard: a failure here is the cause to fix, not a reason to go back to
+      # advisory. `--all-features` below matches the build step, so the test
+      # harness compiles against the feature set the binary was built with
+      # rather than a narrower default one.
       - name: "Scoped tests (windows): platform-behaviour slice"
-        continue-on-error: true
         shell: bash
         run: |
           # One filter per module, each individually judged. A combined
@@ -450,14 +479,18 @@ jobs:
                    tests::desktop_input_posted_test; do
             set +e
             out=$(cargo test --locked --profile ci --target x86_64-pc-windows-msvc \
-                    --lib -- "$m" 2>&1)
+                    --all-features --lib -- "$m" 2>&1)
             rc=$?
             set -e
             n=$(printf '%s\n' "$out" | sed -n 's/^test result: [a-z]*\. \([0-9]*\) passed.*/\1/p' | head -n1)
             failed=$(printf '%s\n' "$out" | sed -n 's/.*; \([0-9]*\) failed.*/\1/p' | head -n1)
             if [ $rc -ne 0 ]; then
               echo "::warning::Windows slice FAILS (rc=$rc, failed=${failed:-?}): $m"
-              printf '%s\n' "$out" | tail -20
+              # The whole slice output, not a tail. With RUST_BACKTRACE=1 the
+              # panic message, which is where the assertion text lives, sits far
+              # above the trailing summary, so `tail -20` printed only the
+              # failure names and every diagnosis cost another CI round-trip.
+              printf '%s\n' "$out"
               status=1
             elif [ -z "$n" ] || [ "$n" -eq 0 ]; then
               echo "::warning::Windows slice ZERO-MATCH: $m names no tests here (renamed by a sibling PR)"

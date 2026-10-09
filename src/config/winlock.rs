@@ -11,7 +11,7 @@
 //!
 //! Semantics mirrored from Unix:
 //! * Mutual-exclusion lock = `LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK`
-//!   over a *sentinel range* (1 MiB and beyond, past any stamp), not the
+//!   over a *sentinel range* (one byte at 1 MiB, past any stamp), not the
 //!   literal whole file: an exclusive range also blocks READS by other
 //!   handles inside it, and the lock-file's `profile:pid` stamp at offset 0
 //!   must stay readable by the contender that reports `Held` (the owner-PID
@@ -66,6 +66,19 @@ struct Overlapped {
 /// since a range lock there succeeds iff no other handle holds it, and file
 /// size is irrelevant (ranges past EOF are lockable).
 const SENTINEL_OFFSET_LOW: u32 = 1 << 20;
+
+/// Length of the sentinel lock range, as the low dword of the length passed
+/// to `LockFileEx`/`UnlockFileEx`; the high dword is zero.
+///
+/// One byte is enough: overlap, not span, is what makes a range lock conflict,
+/// so a single byte contends exactly as a whole-file range would.
+///
+/// Deliberately not `u32::MAX` (the usual whole-file idiom): that works only
+/// from offset 0. Paired with the sentinel offset it makes `offset + length`
+/// overflow the 64-bit end of the range, and the kernel rejects such a range
+/// with ERROR_INVALID_PARAMETER instead of clipping it, so the lock never even
+/// contends (#150).
+const SENTINEL_LEN: u32 = 1;
 
 impl Overlapped {
     fn sentinel() -> Self {
@@ -182,9 +195,14 @@ pub fn creation_ticks_of(pid: u32) -> Option<u64> {
 pub fn exclusive(handle: RawHandle, nb: bool) -> LockOutcome {
     let ov = Overlapped::sentinel();
     let flags = LOCKFILE_EXCLUSIVE_LOCK | if nb { LOCKFILE_FAIL_IMMEDIATELY } else { 0 };
-    // Sentinel range [1 MiB, +16 EB): contends exactly like a whole-file
-    // flock while leaving the offset-0 stamp readable (see module docs).
-    let ok = unsafe { LockFileEx(handle, flags, 0, u32::MAX, u32::MAX, &ov) };
+    // Sentinel range: one byte at 1 MiB. Overlap is what makes a lock
+    // contend, so a single byte is as good here as a whole-file range, and
+    // starting at the sentinel keeps the offset-0 stamp readable by the
+    // contender that reports `Held` (see module docs). The length is not
+    // `u32::MAX`: from a nonzero offset that overflows the range end and
+    // `LockFileEx` fails with ERROR_INVALID_PARAMETER rather than clipping
+    // it (#150).
+    let ok = unsafe { LockFileEx(handle, flags, 0, SENTINEL_LEN, 0, &ov) };
     if ok != 0 {
         return LockOutcome::Acquired;
     }
@@ -201,7 +219,9 @@ pub fn exclusive(handle: RawHandle, nb: bool) -> LockOutcome {
 /// exists so a caller can see the error when the release itself fails.
 pub fn unlock(handle: RawHandle) -> io::Result<()> {
     let ov = Overlapped::sentinel();
-    if unsafe { UnlockFileEx(handle, 0, u32::MAX, u32::MAX, &ov) } != 0 {
+    // Same range `exclusive` locked: a release must name it exactly, or the
+    // unlock fails and the range stays held until the handle closes.
+    if unsafe { UnlockFileEx(handle, 0, SENTINEL_LEN, 0, &ov) } != 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())

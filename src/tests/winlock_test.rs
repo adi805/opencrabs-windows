@@ -69,19 +69,26 @@ fn non_blocking_second_handle_reports_held() {
     };
     let a = open();
     let b = open();
-    assert!(matches!(
-        exclusive(a.as_raw_handle(), true),
-        LockOutcome::Acquired
-    ));
-    assert!(matches!(
-        exclusive(b.as_raw_handle(), true),
-        LockOutcome::Held
-    ));
+    // Format the outcome rather than asserting `matches!` alone: a
+    // `Failed` carries the Win32 error, and without it a regression here
+    // reports only "not Acquired" and costs a CI round-trip to name the
+    // actual failure.
+    let first = exclusive(a.as_raw_handle(), true);
+    assert!(
+        matches!(first, LockOutcome::Acquired),
+        "the first handle must take the sentinel range, got {first:?}"
+    );
+    let second = exclusive(b.as_raw_handle(), true);
+    assert!(
+        matches!(second, LockOutcome::Held),
+        "a second handle must see the range held, got {second:?}"
+    );
     assert!(unlock(a.as_raw_handle()).is_ok());
-    assert!(matches!(
-        exclusive(b.as_raw_handle(), true),
-        LockOutcome::Acquired
-    ));
+    let after_unlock = exclusive(b.as_raw_handle(), true);
+    assert!(
+        matches!(after_unlock, LockOutcome::Acquired),
+        "the range must be free once the holder unlocks, got {after_unlock:?}"
+    );
     // Windows cannot remove a file while a handle is open on it, and
     // cannot remove a non-empty dir either: drop every handle first,
     // then assert the cleanup itself. Ignoring this result let the
