@@ -8,6 +8,7 @@ use crate::brain::agent::{ApprovalCallback, ProgressCallback, ProgressEvent};
 use crate::channels::group_history;
 use crate::channels::whatsapp::WhatsAppState;
 use crate::config::Config;
+use crate::config::types::{RespondTo, WhatsAppGroupConfig};
 use crate::db::ChannelMessageRepository;
 use crate::db::models::ChannelMessage as DbChannelMessage;
 use crate::services::SessionService;
@@ -411,6 +412,143 @@ pub(crate) fn wa_should_respond(
     }
 }
 
+/// Whether the bot should speak up in a room, independent of who is talking.
+///
+/// Split from [`wa_should_respond`] rather than folded into it, because the two
+/// answer different questions. That one answers "is this sender allowed to
+/// reach the bot"; this one answers "should the bot answer right now". A busy
+/// group may want the bot present but silent until it is called, while the same
+/// sender in a DM always expects an answer. Keeping them apart also leaves the
+/// authorization gate's signature, and the tests that pin it, untouched (#161).
+pub(crate) fn wa_room_should_respond(
+    respond_to: RespondTo,
+    is_group: bool,
+    mentioned: bool,
+) -> bool {
+    // `respond_to` governs rooms. A DM has no room to be called in and no room
+    // to be left, so it is never gated here: reading `dm_only` as "ignore
+    // rooms" rather than "ignore DMs" is the only reading that leaves direct
+    // messages working.
+    if !is_group {
+        return true;
+    }
+    match respond_to {
+        RespondTo::All => true,
+        RespondTo::DmOnly => false,
+        RespondTo::Mention => mentioned,
+        // Telegram's `auto` flips a room to mention-only once a second unique
+        // sender shows up. WhatsApp carries no per-room sender census to flip
+        // on, so it reads as mention-only: the safe half of the Telegram
+        // behaviour, rather than a mode this channel cannot actually observe.
+        RespondTo::Auto => mentioned,
+    }
+}
+
+/// The allow list in force for one room: the channel-wide list with the room's
+/// own merged in.
+///
+/// A room ADDS to the list rather than replacing it, so a number allowed
+/// channel-wide stays allowed everywhere, and a number listed by one room is
+/// admitted only there. Replacing would have let a room's list silently revoke
+/// access the channel-wide list grants, which is not what "per-room" means
+/// here (#161).
+pub(crate) fn wa_allowed_for_room(
+    global: &[String],
+    room: Option<&WhatsAppGroupConfig>,
+) -> Vec<String> {
+    let mut allowed = global.to_vec();
+    if let Some(room) = room {
+        allowed.extend(room.allowed_phones.iter().cloned());
+    }
+    allowed
+}
+
+/// Whether a room's `open` switch admits this sender on its own, without the
+/// allow list.
+///
+/// The paired account's own outgoing messages are excluded: those are the bot
+/// talking, not a member asking, and staying silent in the account's own chats
+/// is this gate's stated rule (see [`wa_should_respond`]).
+pub(crate) fn wa_room_is_open(room: Option<&WhatsAppGroupConfig>, is_from_me: bool) -> bool {
+    room.is_some_and(|g| g.open) && !is_from_me
+}
+
+/// The user part of a JID: the number, with any `@server` or `:device` suffix
+/// removed and a leading `+` stripped.
+pub(crate) fn wa_jid_user(jid: &str) -> &str {
+    let user = jid.split('@').next().unwrap_or(jid);
+    let user = user.split(':').next().unwrap_or(user);
+    user.trim_start_matches('+')
+}
+
+/// The identities a mention can address the bot by, as user parts.
+///
+/// Both the paired account and the configured owners count, because either is
+/// "the bot" to whoever wrote the message.
+pub(crate) fn wa_own_identities(owner_jid: Option<&str>, operators: &[String]) -> Vec<String> {
+    let mut own: Vec<String> = Vec::new();
+    for raw in owner_jid
+        .into_iter()
+        .chain(operators.iter().map(String::as_str))
+    {
+        let user = wa_jid_user(raw);
+        if !user.is_empty() && !own.iter().any(|o| o.as_str() == user) {
+            own.push(user.to_string());
+        }
+    }
+    own
+}
+
+/// The context info of a message, reaching through the wrapper messages.
+///
+/// A mention is not in the text. WhatsApp renders `@<number>` in the body, but
+/// the authoritative list is `contextInfo.mentionedJid`, and it rides on the
+/// media messages too, so a mention in a photo caption counts the same as one
+/// in a text line. Four carriers can hold it; the rest do not.
+fn wa_context_info(msg: &Message) -> Option<&waproto::whatsapp::ContextInfo> {
+    let msg = unwrap_message(msg);
+    msg.extended_text_message
+        .as_option()
+        .and_then(|m| m.context_info.as_option())
+        .or_else(|| {
+            msg.image_message
+                .as_option()
+                .and_then(|m| m.context_info.as_option())
+        })
+        .or_else(|| {
+            msg.video_message
+                .as_option()
+                .and_then(|m| m.context_info.as_option())
+        })
+        .or_else(|| {
+            msg.document_message
+                .as_option()
+                .and_then(|m| m.context_info.as_option())
+        })
+}
+
+/// Whether a message mentions the bot.
+///
+/// Matched on the user part only: WhatsApp addresses a mention as
+/// `<number>@s.whatsapp.net`, sometimes with a `:<device>` suffix, and some
+/// clients put a LID there instead of a number.
+pub(crate) fn wa_is_mentioned(
+    msg: &Message,
+    owner_jid: Option<&str>,
+    operators: &[String],
+) -> bool {
+    let Some(ctx) = wa_context_info(msg) else {
+        return false;
+    };
+    if ctx.mentioned_jid.is_empty() {
+        return false;
+    }
+    let own = wa_own_identities(owner_jid, operators);
+    ctx.mentioned_jid
+        .iter()
+        .any(|jid| own.iter().any(|o| o.as_str() == wa_jid_user(jid)))
+}
+
 /// Split a message into chunks that fit WhatsApp's limit (~65536 chars, but we use 4000 for readability).
 pub fn split_message(text: &str, max_len: usize) -> Vec<&str> {
     if text.len() <= max_len {
@@ -687,21 +825,64 @@ pub(crate) async fn handle_message(
     let canonical_phone =
         super::identity::canonical_user(&info.source.sender, info.source.sender_alt.as_ref());
     let chat_user_part = chat_user(&info);
-    if !wa_should_respond(
-        wa_cfg.response_policy,
-        info.source.is_from_me,
-        &sender_user,
-        sender_alt_user.as_deref(),
-        &chat_user_part,
-        &wa_cfg.allowed_phones,
-        &wa_cfg.bot_owner,
-    ) {
+
+    // #161: the room is already in hand here (`info.source.chat` is the group
+    // JID), so per-room access and per-room behaviour cost nothing extra to
+    // apply. The channel-wide list still applies everywhere; a room's list
+    // ADDS access in that room only, so a trusted group can serve its members
+    // without granting them DMs or loosening any other group.
+    let room = format!("{}", info.source.chat);
+    let is_group = info.source.is_group;
+    // Only a group has a room table. A direct-message JID that ends up under
+    // `groups` by mistake is ignored rather than allowed to widen the DM gate:
+    // direct messages are scoped by phone number, and the issue keeps them so.
+    let room_cfg = if is_group {
+        wa_cfg.groups.get(&room)
+    } else {
+        None
+    };
+    let allowed = wa_allowed_for_room(&wa_cfg.allowed_phones, room_cfg);
+    // A room marked `open` admits any member of that room, and only there, so
+    // it has to win over the channel policy rather than be filtered by it:
+    // that is the whole point of a per-room switch.
+    let room_open = wa_room_is_open(room_cfg, info.source.is_from_me);
+    if !room_open
+        && !wa_should_respond(
+            wa_cfg.response_policy,
+            info.source.is_from_me,
+            &sender_user,
+            sender_alt_user.as_deref(),
+            &chat_user_part,
+            &allowed,
+            &wa_cfg.bot_owner,
+        )
+    {
         tracing::debug!(
             "WhatsApp: ignoring message from={} (alt={:?}) chat={} is_from_me={}",
             sender_user,
             sender_alt_user,
             chat_user_part,
             info.source.is_from_me,
+        );
+        return;
+    }
+
+    // "Should the bot speak at all in this room" is a separate question from
+    // "may this sender reach it": a busy group can keep the bot present but
+    // silent until it is called (#161).
+    let respond_to = wa_cfg.respond_to_for(&room);
+    let mentioned = is_group
+        && matches!(respond_to, RespondTo::Mention | RespondTo::Auto)
+        && wa_is_mentioned(
+            &msg,
+            wa_state.owner_jid().await.as_deref(),
+            &wa_cfg.bot_owner,
+        );
+    if !wa_room_should_respond(respond_to, is_group, mentioned) {
+        tracing::debug!(
+            "WhatsApp: room {} is {:?} and the bot was not mentioned; staying quiet",
+            room,
+            respond_to,
         );
         return;
     }
