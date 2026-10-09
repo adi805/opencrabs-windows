@@ -45,6 +45,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an ephemeral refusal rather than a panic or a timed-out interaction
   (FR-006, AC-009).
 
+- discord: an announcement now leaves through a webhook in the channel instead
+  of arriving as the bot's own message, and is crossposted when the channel is
+  an announcement channel. The webhook is reused by name across calls, so a
+  repeated announcement does not litter the channel with a new webhook each
+  time, and a refused crosspost is reported as a note: the post has already
+  landed, and a failed crosspost must not turn a delivered announcement into a
+  failed one. A message past Discord's 2000-character ceiling is refused with
+  its measured length rather than chunked, because only one message can be
+  crossposted (FR-012, AC-015).
+
+- discord: `discord_send` gains five verbs for AutoMod and the guild audit log.
+  `automod_create`, `automod_edit` and `automod_delete` each carry an audit-log
+  reason naming OpenCrabs, so the guild's own log says where a change came from
+  rather than only that it happened, and each passes through the scheduled-job
+  scope guard: a job with no `deliver_to` cannot change a guild's own settings
+  any more than it can act on a member. That guard now takes an optional target,
+  so a guild-level change no longer has to name a placeholder member in its
+  refusal. `automod_list` and `audit_log` only read, so they stay unguarded
+  (FR-013, AC-016).
+
 ## [0.5.5] - 2026-10-07
 
 First release cut from this fork. Carries upstream 0.5.4 plus the fork's own
