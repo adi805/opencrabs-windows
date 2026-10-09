@@ -125,9 +125,23 @@ async fn a_job_with_no_destination_may_not_moderate_anyone() {
     // channel to act through, so it cannot time out or rename a member either.
     with_send_target(None, async {
         assert!(!may_moderate());
-        let why = moderation_refusal(4242);
+        let why = moderation_refusal(Some(4242));
         assert!(why.contains("4242"), "got: {why}");
         assert!(why.contains("deliver_to"), "got: {why}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_job_with_no_destination_may_not_change_guild_settings() {
+    // A guild-level change has no member to name, so the refusal must not claim
+    // an attempt against a placeholder id. That is the `None` arm of the same
+    // guard the member actions use.
+    with_send_target(None, async {
+        let why = moderation_refusal(None);
+        assert!(why.contains("guild"), "got: {why}");
+        assert!(why.contains("deliver_to"), "got: {why}");
+        assert!(!why.contains("user 0"), "placeholder leaked: {why}");
     })
     .await;
 }

@@ -14,7 +14,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::Value;
 use std::sync::Arc;
 
-/// Tool for comprehensive Discord bot control (23 actions).
+/// Tool for comprehensive Discord bot control (28 actions).
 pub struct DiscordSendTool {
     discord_state: Arc<DiscordState>,
 }
@@ -37,12 +37,23 @@ fn get_str<'a>(input: &'a Value, key: &str) -> std::result::Result<&'a str, Tool
 }
 
 /// Parse a required numeric-string param as u64.
+///
+/// Zero is refused rather than passed through: every caller feeds this into a
+/// serenity id constructor, and those panic on zero. A Discord id of zero does
+/// not exist, so the only way to reach one is a typo, and an error is the right
+/// answer to a typo.
 #[allow(clippy::result_large_err)]
 fn get_id(input: &Value, key: &str) -> std::result::Result<u64, ToolResult> {
     match input.get(key).and_then(|v| v.as_str()) {
-        Some(s) => s.parse::<u64>().map_err(|_| {
-            ToolResult::error(format!("Invalid {key} '{s}': must be a numeric string."))
-        }),
+        Some(s) => match s.parse::<u64>() {
+            Ok(0) => Err(ToolResult::error(format!(
+                "Invalid {key} '0': a Discord id is never zero."
+            ))),
+            Ok(id) => Ok(id),
+            Err(_) => Err(ToolResult::error(format!(
+                "Invalid {key} '{s}': must be a numeric string."
+            ))),
+        },
         None => Err(ToolResult::error(format!(
             "Missing required parameter '{key}'."
         ))),
@@ -160,13 +171,17 @@ pub(crate) fn validate_nickname(name: &str) -> std::result::Result<&str, String>
     Ok(trimmed)
 }
 
-/// Refuse a member-mutating action when the current turn is a scheduled job
-/// that was given no destination. See [`crate::cron::send_scope::may_moderate`].
-fn moderation_guard(user_id: u64) -> Option<ToolResult> {
+/// Refuse a guild-mutating action when the current turn is a scheduled job that
+/// was given no destination. See [`crate::cron::send_scope::may_moderate`].
+///
+/// `target` names the affected member when the action has one. An AutoMod rule
+/// or an audit-log-driven change is guild-level and has no member, so those
+/// callers pass `None` rather than a placeholder id.
+fn moderation_guard(target: Option<u64>) -> Option<ToolResult> {
     if crate::cron::send_scope::may_moderate() {
         return None;
     }
-    let reason = crate::cron::send_scope::moderation_refusal(user_id);
+    let reason = crate::cron::send_scope::moderation_refusal(target);
     tracing::warn!("discord_send: {reason}");
     Some(ToolResult::error(reason))
 }
@@ -271,6 +286,259 @@ pub(crate) fn check_announce_length(text: &str) -> std::result::Result<(), Strin
     Ok(())
 }
 
+// ── FR-013: AutoMod rules and the audit log ─────────────────────────────────
+
+/// Default name for a rule we create, so a later call recognises it.
+pub(crate) const AUTOMOD_DEFAULT_NAME: &str = "OpenCrabs blocked phrase";
+
+/// The reason recorded on every AutoMod change we make, so the guild's own
+/// audit log says where the change came from rather than only that it happened.
+pub(crate) const AUTOMOD_AUDIT_REASON: &str = "OpenCrabs agent: AutoMod rule change";
+
+/// Discord's ceiling on keywords in one rule.
+pub(crate) const AUTOMOD_MAX_KEYWORDS: usize = 1000;
+
+/// Discord's ceiling on one keyword, in characters.
+pub(crate) const AUTOMOD_MAX_KEYWORD_CHARS: usize = 60;
+
+/// Shorten text for an error message without splitting a character.
+pub(crate) fn truncate_for_display(text: &str) -> String {
+    const MAX: usize = 40;
+    if text.chars().count() <= MAX {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(MAX).collect();
+    format!("{head}...")
+}
+
+/// Read a keyword list from the parameter text.
+///
+/// Commas and newlines both separate, so a caller can paste a list either way.
+/// Duplicates collapse: Discord counts the entries, so a repeated phrase spends
+/// the budget without widening the rule.
+pub(crate) fn parse_keywords(spec: &str) -> std::result::Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in spec.split([',', '\n']) {
+        let word = part.trim();
+        if word.is_empty() {
+            continue;
+        }
+        let len = word.chars().count();
+        if len > AUTOMOD_MAX_KEYWORD_CHARS {
+            return Err(format!(
+                "Keyword '{}' is {len} characters; Discord allows \
+                 {AUTOMOD_MAX_KEYWORD_CHARS} per keyword. Split it into shorter phrases.",
+                truncate_for_display(word)
+            ));
+        }
+        if !out.iter().any(|k| k == word) {
+            out.push(word.to_string());
+        }
+    }
+    if out.is_empty() {
+        return Err(
+            "No keywords given: pass at least one phrase for the rule to block.".to_string(),
+        );
+    }
+    if out.len() > AUTOMOD_MAX_KEYWORDS {
+        return Err(format!(
+            "{} keywords given; Discord allows {AUTOMOD_MAX_KEYWORDS} in one rule.",
+            out.len()
+        ));
+    }
+    Ok(out)
+}
+
+/// What an AutoMod rule looks like once reduced to the fields worth reporting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuleView {
+    /// The rule's own id.
+    pub id: u64,
+    /// Its display name.
+    pub name: String,
+    /// Whether Discord is currently enforcing it.
+    pub enabled: bool,
+    /// The event context, rendered.
+    pub event: String,
+    /// What fires it, rendered.
+    pub trigger: String,
+    /// What it does, rendered.
+    pub actions: String,
+}
+
+/// One line describing what fires a rule.
+///
+/// The final arm is a wildcard rather than `Trigger::Unknown` because the enum
+/// is `#[non_exhaustive]`: a new variant upstream has to render as "something
+/// else", not fail to compile here.
+pub(crate) fn trigger_label(trigger: &serenity::model::guild::automod::Trigger) -> String {
+    use serenity::model::guild::automod::Trigger;
+    match trigger {
+        Trigger::Keyword {
+            strings,
+            regex_patterns,
+            allow_list,
+        } => {
+            let mut parts = vec![format!("{} keyword(s)", strings.len())];
+            if !regex_patterns.is_empty() {
+                parts.push(format!("{} regex", regex_patterns.len()));
+            }
+            if !allow_list.is_empty() {
+                parts.push(format!("{} allowed", allow_list.len()));
+            }
+            parts.join(", ")
+        }
+        Trigger::Spam => "spam".to_string(),
+        Trigger::KeywordPreset { presets, allow_list } => {
+            let mut parts = vec![format!("{} preset(s)", presets.len())];
+            if !allow_list.is_empty() {
+                parts.push(format!("{} allowed", allow_list.len()));
+            }
+            parts.join(", ")
+        }
+        Trigger::MentionSpam {
+            mention_total_limit,
+        } => format!("more than {mention_total_limit} mention(s)"),
+        other => format!("unrecognised trigger ({other:?})"),
+    }
+}
+
+/// One line describing what a rule does when it fires.
+pub(crate) fn automod_action_label(action: &serenity::model::guild::automod::Action) -> String {
+    use serenity::model::guild::automod::Action;
+    match action {
+        Action::BlockMessage { custom_message } => match custom_message {
+            Some(text) => format!("block (says: {})", truncate_for_display(text)),
+            None => "block".to_string(),
+        },
+        Action::Alert(channel) => format!("alert to channel {}", channel.get()),
+        Action::Timeout(duration) => format!("timeout {}s", duration.as_secs()),
+        other => format!("unrecognised action ({other:?})"),
+    }
+}
+
+/// Reduce a serenity AutoMod rule to the fields the report reads.
+pub(crate) fn rule_view(rule: &serenity::model::guild::automod::Rule) -> RuleView {
+    RuleView {
+        id: rule.id.get(),
+        name: rule.name.clone(),
+        enabled: rule.enabled,
+        event: format!("{:?}", rule.event_type),
+        trigger: trigger_label(&rule.trigger),
+        actions: rule
+            .actions
+            .iter()
+            .map(automod_action_label)
+            .collect::<Vec<_>>()
+            .join(" + "),
+    }
+}
+
+/// Render one rule as a line of the listing.
+pub(crate) fn render_rule(view: &RuleView) -> String {
+    let state = if view.enabled { "enabled" } else { "disabled" };
+    format!(
+        "- {} [{}] id={} event={} trigger={} actions={}",
+        view.name, state, view.id, view.event, view.trigger, view.actions
+    )
+}
+
+/// What one audit-log entry looks like once reduced to the fields worth
+/// reporting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuditEntryView {
+    /// The entry's own id, which is how a moderator points at it.
+    pub id: u64,
+    /// What happened, rendered.
+    pub action: String,
+    /// Who did it.
+    pub user_id: u64,
+    /// What it was done to, when Discord names a target.
+    pub target_id: Option<u64>,
+    /// The reason the actor gave, when they gave one.
+    pub reason: Option<String>,
+    /// The AutoMod rule involved, which is how a blocked message is attributed.
+    pub rule_name: Option<String>,
+}
+
+/// A readable label for an audit-log action.
+///
+/// serenity gives `Action` no `Display` impl and nests a different inner enum
+/// per category, so the category is named here and the detail is carried as
+/// `{:?}`: matching the inner enums would break on any upstream addition for no
+/// gain, since the top level is what a moderator filters by.
+pub(crate) fn audit_action_label(action: serenity::model::guild::audit_log::Action) -> String {
+    use serenity::model::guild::audit_log::Action;
+    match action {
+        Action::AutoMod(inner) => format!("automod {inner:?}"),
+        Action::Member(inner) => format!("member {inner:?}"),
+        Action::Message(inner) => format!("message {inner:?}"),
+        Action::Channel(inner) => format!("channel {inner:?}"),
+        Action::Role(inner) => format!("role {inner:?}"),
+        Action::Webhook(inner) => format!("webhook {inner:?}"),
+        Action::Thread(inner) => format!("thread {inner:?}"),
+        Action::GuildUpdate => "guild update".to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Reduce a serenity audit-log entry to the fields the report reads.
+pub(crate) fn audit_entry_view(
+    entry: &serenity::model::guild::audit_log::AuditLogEntry,
+) -> AuditEntryView {
+    AuditEntryView {
+        id: entry.id.get(),
+        action: audit_action_label(entry.action),
+        user_id: entry.user_id.get(),
+        target_id: entry.target_id.map(|t| t.get()),
+        reason: entry.reason.clone(),
+        rule_name: entry
+            .options
+            .as_ref()
+            .and_then(|o| o.auto_moderation_rule_name.clone()),
+    }
+}
+
+/// Render one audit-log entry as a line, without mentioning anyone: the id is
+/// the handle, so echoing a user id as a ping would only spam the channel.
+pub(crate) fn render_audit_entry(entry: &AuditEntryView) -> String {
+    let mut line = format!("- {} by user {}", entry.action, entry.user_id);
+    if let Some(target) = entry.target_id {
+        line.push_str(&format!(" on {target}"));
+    }
+    if let Some(rule) = &entry.rule_name {
+        line.push_str(&format!(" (rule: {rule})"));
+    }
+    if let Some(reason) = &entry.reason {
+        line.push_str(&format!(": {}", truncate_for_display(reason)));
+    }
+    line.push_str(&format!(" [entry {}]", entry.id));
+    line
+}
+
+/// Map a filter name, or a raw Discord action number, to an audit-log filter.
+///
+/// The names cover the categories a moderator actually asks about. An unknown
+/// name is refused rather than guessed at, because Discord's filter is exact and
+/// a wrong one silently returns the wrong slice of the log.
+pub(crate) fn parse_audit_action(spec: &str) -> Option<serenity::model::guild::audit_log::Action> {
+    use serenity::model::guild::audit_log::Action;
+    let code: u8 = match spec.to_ascii_lowercase().as_str() {
+        "automod_rule_create" => 140,
+        "automod_rule_update" => 141,
+        "automod_rule_delete" => 142,
+        "automod_block_message" => 143,
+        "member_kick" => 20,
+        "member_ban" => 22,
+        "member_update" => 24,
+        "member_role_update" => 25,
+        "message_delete" => 72,
+        "webhook_create" => 50,
+        other => other.parse::<u8>().ok()?,
+    };
+    Some(Action::from_value(code))
+}
+
 // Macro to early-return Ok(err_result) when a param helper returns Err.
 macro_rules! pget {
     ($expr:expr) => {
@@ -290,9 +558,11 @@ impl Tool for DiscordSendTool {
     fn description(&self) -> &str {
         "Full Discord control: send messages, reply, react, edit, delete, pin/unpin, create \
          threads, send embeds, fetch message history, list channels, manage roles, time out and \
-         rename members, kick and ban members, post native polls (send_poll), and post an \
-         announcement through a channel webhook (announce). Always use discord_send instead of \
-         http_request: credentials handled securely."
+         rename members, kick and ban members, post native polls (send_poll), post an \
+         announcement through a channel webhook (announce), manage AutoMod rules \
+         (automod_list/automod_create/automod_edit/automod_delete), and read the guild audit log \
+         (audit_log). Always use discord_send instead of http_request: credentials handled \
+         securely."
     }
 
     fn input_schema(&self) -> Value {
@@ -307,7 +577,9 @@ impl Tool for DiscordSendTool {
                         "list_channels", "add_role", "remove_role", "kick", "ban",
                         "timeout", "nickname",
                         "send_file", "send_select", "send_form", "send_poll",
-                        "announce"
+                        "announce",
+                        "automod_list", "automod_create", "automod_edit", "automod_delete",
+                        "audit_log",
                     ],
                     "description": "The Discord action to perform"
                 },
@@ -368,7 +640,8 @@ impl Tool for DiscordSendTool {
                 "user_id": {
                     "type": "string",
                     "description": "Target user ID (numeric string) for \
-                                    add_role/remove_role/kick/ban/timeout/nickname"
+                                    add_role/remove_role/kick/ban/timeout/nickname, or for \
+                                    audit_log the only actor whose entries are returned"
                 },
                 "role_id": {
                     "type": "string",
@@ -395,7 +668,46 @@ impl Tool for DiscordSendTool {
                 "limit": {
                     "type": "integer",
                     "description": "Number of messages to fetch for get_messages (1-100, default \
-                                    10)"
+                                    10), or of audit-log entries for audit_log (1-100, default 10)"
+                },
+                "keywords": {
+                    "type": "string",
+                    "description": "AutoMod keyword list for automod_create/automod_edit, \
+                                    separated by commas or newlines (each phrase up to 60 \
+                                    characters). A phrase containing spaces blocks that whole \
+                                    phrase."
+                },
+                "rule_id": {
+                    "type": "string",
+                    "description": "AutoMod rule ID (numeric string) for automod_edit and \
+                                    automod_delete"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Rule name for automod_create (defaults to 'OpenCrabs blocked \
+                                    phrase') or a new name for automod_edit"
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "For automod_edit: whether Discord should enforce the rule"
+                },
+                "block_message": {
+                    "type": "string",
+                    "description": "For automod_create: the message shown to a member whose post \
+                                    is blocked (Discord caps it at 150 characters)"
+                },
+                "alert_channel_id": {
+                    "type": "string",
+                    "description": "For automod_create: a channel ID (numeric string) to log \
+                                    blocked content to, in addition to blocking it"
+                },
+                "audit_action": {
+                    "type": "string",
+                    "description": "For audit_log: filter by action, either a name \
+                                    (automod_rule_create, automod_block_message, member_kick, \
+                                    member_ban, member_update, member_role_update, \
+                                    message_delete, webhook_create) or a raw Discord action \
+                                    number. Omit for every action."
                 },
                 "options": {
                     "type": "array",
@@ -574,7 +886,7 @@ impl Tool for DiscordSendTool {
                 .suppress_notifications,
         );
 
-        use serenity::model::id::{ChannelId, GuildId, MessageId, RoleId, UserId};
+        use serenity::model::id::{ChannelId, GuildId, MessageId, RoleId, RuleId, UserId};
 
         match action.as_str() {
             // ── send ─────────────────────────────────────────────────────────
@@ -886,7 +1198,7 @@ impl Tool for DiscordSendTool {
                 let gid = pget!(guild_or_err(guild_id_opt));
                 let user_id = pget!(get_id(&input, "user_id"));
                 let role_id = pget!(get_id(&input, "role_id"));
-                if let Some(refused) = moderation_guard(user_id) {
+                if let Some(refused) = moderation_guard(Some(user_id)) {
                     return Ok(refused);
                 }
                 let reason = input.get("reason").and_then(|v| v.as_str());
@@ -911,7 +1223,7 @@ impl Tool for DiscordSendTool {
                 let gid = pget!(guild_or_err(guild_id_opt));
                 let user_id = pget!(get_id(&input, "user_id"));
                 let role_id = pget!(get_id(&input, "role_id"));
-                if let Some(refused) = moderation_guard(user_id) {
+                if let Some(refused) = moderation_guard(Some(user_id)) {
                     return Ok(refused);
                 }
                 let reason = input.get("reason").and_then(|v| v.as_str());
@@ -935,7 +1247,7 @@ impl Tool for DiscordSendTool {
             "kick" => {
                 let gid = pget!(guild_or_err(guild_id_opt));
                 let user_id = pget!(get_id(&input, "user_id"));
-                if let Some(refused) = moderation_guard(user_id) {
+                if let Some(refused) = moderation_guard(Some(user_id)) {
                     return Ok(refused);
                 }
                 let reason = input.get("reason").and_then(|v| v.as_str());
@@ -952,7 +1264,7 @@ impl Tool for DiscordSendTool {
             "ban" => {
                 let gid = pget!(guild_or_err(guild_id_opt));
                 let user_id = pget!(get_id(&input, "user_id"));
-                if let Some(refused) = moderation_guard(user_id) {
+                if let Some(refused) = moderation_guard(Some(user_id)) {
                     return Ok(refused);
                 }
                 let reason = input.get("reason").and_then(|v| v.as_str());
@@ -970,7 +1282,7 @@ impl Tool for DiscordSendTool {
                 use serenity::builder::EditMember;
                 let gid = pget!(guild_or_err(guild_id_opt));
                 let user_id = pget!(get_id(&input, "user_id"));
-                if let Some(refused) = moderation_guard(user_id) {
+                if let Some(refused) = moderation_guard(Some(user_id)) {
                     return Ok(refused);
                 }
                 let duration = pget!(get_str(&input, "duration")).to_string();
@@ -1007,7 +1319,7 @@ impl Tool for DiscordSendTool {
                 use serenity::builder::EditMember;
                 let gid = pget!(guild_or_err(guild_id_opt));
                 let user_id = pget!(get_id(&input, "user_id"));
-                if let Some(refused) = moderation_guard(user_id) {
+                if let Some(refused) = moderation_guard(Some(user_id)) {
                     return Ok(refused);
                 }
                 let requested = pget!(get_str(&input, "nickname")).to_string();
@@ -1387,12 +1699,233 @@ impl Tool for DiscordSendTool {
                 )))
             }
 
+            // ── automod_list (FR-013) ────────────────────────────────────────
+            "automod_list" => {
+                let gid = pget!(guild_or_err(guild_id_opt));
+                match http.get_automod_rules(GuildId::new(gid)).await {
+                    Ok(rules) if rules.is_empty() => Ok(ToolResult::success(format!(
+                        "No AutoMod rules in guild {gid}."
+                    ))),
+                    Ok(rules) => {
+                        let mut out = format!("{} AutoMod rule(s) in guild {gid}:\n", rules.len());
+                        for rule in &rules {
+                            out.push_str(&render_rule(&rule_view(rule)));
+                            out.push('\n');
+                        }
+                        Ok(ToolResult::success(out))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to list AutoMod rules (needs Manage Guild): {e}"
+                    ))),
+                }
+            }
+
+            // ── automod_create (FR-013) ──────────────────────────────────────
+            "automod_create" => {
+                use serenity::builder::{Builder, EditAutoModRule};
+                use serenity::model::guild::automod::{Action as AutomodAction, Trigger};
+                let gid = pget!(guild_or_err(guild_id_opt));
+                if let Some(refusal) = moderation_guard(None) {
+                    return Ok(refusal);
+                }
+                let raw = pget!(get_str(&input, "keywords")).to_string();
+                let keywords = match parse_keywords(&raw) {
+                    Ok(k) => k,
+                    Err(e) => return Ok(ToolResult::error(e)),
+                };
+                let name = input
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or(AUTOMOD_DEFAULT_NAME);
+                let mut actions = vec![AutomodAction::BlockMessage {
+                    custom_message: input
+                        .get("block_message")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                }];
+                if let Some(spec) = input.get("alert_channel_id").and_then(|v| v.as_str()) {
+                    match spec.parse::<u64>() {
+                        Ok(0) | Err(_) => {
+                            return Ok(ToolResult::error(format!(
+                                "Invalid alert_channel_id '{spec}': must be a non-zero numeric \
+                                 string"
+                            )));
+                        }
+                        Ok(id) => actions.push(AutomodAction::Alert(ChannelId::new(id))),
+                    }
+                }
+                let trigger = Trigger::Keyword {
+                    strings: keywords.clone(),
+                    regex_patterns: Vec::new(),
+                    allow_list: Vec::new(),
+                };
+                let builder = EditAutoModRule::new()
+                    .name(name)
+                    .trigger(trigger)
+                    .actions(actions)
+                    .enabled(true)
+                    .audit_log_reason(AUTOMOD_AUDIT_REASON);
+                let ctx = (GuildId::new(gid), None);
+                match builder.execute(&http, ctx).await {
+                    Ok(rule) => Ok(ToolResult::success(format!(
+                        "Created AutoMod rule '{}' (id {}) in guild {gid}, blocking {} \
+                         keyword(s): {}",
+                        rule.name,
+                        rule.id.get(),
+                        keywords.len(),
+                        keywords.join(", ")
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to create the AutoMod rule (needs Manage Guild): {e}"
+                    ))),
+                }
+            }
+
+            // ── automod_edit (FR-013) ────────────────────────────────────────
+            "automod_edit" => {
+                use serenity::builder::{Builder, EditAutoModRule};
+                use serenity::model::guild::automod::Trigger;
+                let gid = pget!(guild_or_err(guild_id_opt));
+                if let Some(refusal) = moderation_guard(None) {
+                    return Ok(refusal);
+                }
+                let rule_id = pget!(get_id(&input, "rule_id"));
+                let mut builder = EditAutoModRule::new().audit_log_reason(AUTOMOD_AUDIT_REASON);
+                let mut changed: Vec<&str> = Vec::new();
+                let new_name = input
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty());
+                if let Some(name) = new_name {
+                    builder = builder.name(name);
+                    changed.push("name");
+                }
+                if let Some(enabled) = input.get("enabled").and_then(|v| v.as_bool()) {
+                    builder = builder.enabled(enabled);
+                    changed.push("enabled");
+                }
+                if let Some(raw) = input.get("keywords").and_then(|v| v.as_str()) {
+                    let keywords = match parse_keywords(raw) {
+                        Ok(k) => k,
+                        Err(e) => return Ok(ToolResult::error(e)),
+                    };
+                    let trigger = Trigger::Keyword {
+                        strings: keywords,
+                        regex_patterns: Vec::new(),
+                        allow_list: Vec::new(),
+                    };
+                    builder = builder.trigger(trigger);
+                    changed.push("keywords");
+                }
+                if changed.is_empty() {
+                    return Ok(ToolResult::error(
+                        "Nothing to change: pass at least one of 'name', 'enabled' or \
+                         'keywords'."
+                            .to_string(),
+                    ));
+                }
+                let ctx = (GuildId::new(gid), Some(RuleId::new(rule_id)));
+                match builder.execute(&http, ctx).await {
+                    Ok(rule) => Ok(ToolResult::success(format!(
+                        "Updated AutoMod rule '{}' (id {}): changed {}.",
+                        rule.name,
+                        rule.id.get(),
+                        changed.join(", ")
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to update AutoMod rule {rule_id} (needs Manage Guild): {e}"
+                    ))),
+                }
+            }
+
+            // ── automod_delete (FR-013) ──────────────────────────────────────
+            "automod_delete" => {
+                let gid = pget!(guild_or_err(guild_id_opt));
+                if let Some(refusal) = moderation_guard(None) {
+                    return Ok(refusal);
+                }
+                let rule_id = pget!(get_id(&input, "rule_id"));
+                let guild = GuildId::new(gid);
+                let rule = RuleId::new(rule_id);
+                let reason = Some(AUTOMOD_AUDIT_REASON);
+                match http.delete_automod_rule(guild, rule, reason).await {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Deleted AutoMod rule {rule_id} from guild {gid}."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to delete AutoMod rule {rule_id} (needs Manage Guild): {e}"
+                    ))),
+                }
+            }
+
+            // ── audit_log (FR-013 / AC-016) ──────────────────────────────────
+            "audit_log" => {
+                let gid = pget!(guild_or_err(guild_id_opt));
+                let limit = input
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(10)
+                    .clamp(1, 100) as u8;
+                let filter = input.get("audit_action").and_then(|v| v.as_str());
+                let action = match filter {
+                    Some(spec) if !spec.trim().is_empty() => {
+                        match parse_audit_action(spec.trim()) {
+                            Some(a) => Some(a),
+                            None => {
+                                return Ok(ToolResult::error(format!(
+                                    "Unknown audit_action '{}'. Use a name \
+                                     (automod_rule_create, automod_block_message, member_kick, \
+                                     member_ban, member_update, member_role_update, \
+                                     message_delete, webhook_create) or a raw Discord action \
+                                     number.",
+                                    truncate_for_display(spec)
+                                )));
+                            }
+                        }
+                    }
+                    _ => None,
+                };
+                let user_id = match input.get("user_id").and_then(|v| v.as_str()) {
+                    Some(spec) => match spec.parse::<u64>() {
+                        Ok(0) | Err(_) => {
+                            return Ok(ToolResult::error(format!(
+                                "Invalid user_id '{spec}': must be a non-zero numeric string"
+                            )));
+                        }
+                        Ok(id) => Some(UserId::new(id)),
+                    },
+                    None => None,
+                };
+                let guild = GuildId::new(gid);
+                let entries = http.get_audit_logs(guild, action, user_id, None, Some(limit)).await;
+                match entries {
+                    Ok(log) if log.entries.is_empty() => Ok(ToolResult::success(format!(
+                        "No audit-log entries in guild {gid} match that filter."
+                    ))),
+                    Ok(log) => {
+                        let mut out =
+                            format!("{} audit-log entr(ies) in guild {gid}:\n", log.entries.len());
+                        for entry in &log.entries {
+                            out.push_str(&render_audit_entry(&audit_entry_view(entry)));
+                            out.push('\n');
+                        }
+                        Ok(ToolResult::success(out))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to read the audit log (needs View Audit Log): {e}"
+                    ))),
+                }
+            }
+
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{unknown}'. Valid: send, reply, react, unreact, edit, delete, \
                  send_select, send_form, \
                  send_poll, pin, unpin, create_thread, send_embed, get_messages, \
                  list_channels, add_role, remove_role, kick, ban, timeout, nickname, send_file, \
-                 announce"
+                 announce, automod_list, automod_create, automod_edit, automod_delete, audit_log"
             ))),
         }
     }

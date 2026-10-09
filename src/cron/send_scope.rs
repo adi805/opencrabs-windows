@@ -143,10 +143,17 @@ pub fn may_moderate() -> bool {
 }
 
 /// Why a moderation action was refused, for the tool result the model reads.
-pub fn moderation_refusal(user_id: u64) -> String {
+///
+/// `target` names the affected member when the action has one. A guild-level
+/// change (an AutoMod rule, say) has no member to name, and passing `None` keeps
+/// the message from claiming an attempt against "user 0".
+pub fn moderation_refusal(target: Option<u64>) -> String {
+    let scope = match target {
+        Some(user_id) => format!("moderate anyone either (attempted user {user_id})"),
+        None => "change the guild's own settings either".to_string(),
+    };
     format!(
-        "Refused: this scheduled job has no deliver_to, so it may not moderate anyone either \
-         (attempted user {user_id}). Its output stays in its own session. Set deliver_to on \
-         the job if it should act on members."
+        "Refused: this scheduled job has no deliver_to, so it may not {scope}. Its output stays \
+         in its own session. Set deliver_to on the job if it should act on the guild."
     )
 }
