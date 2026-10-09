@@ -486,7 +486,11 @@ jobs:
             failed=$(printf '%s\n' "$out" | sed -n 's/.*; \([0-9]*\) failed.*/\1/p' | head -n1)
             if [ $rc -ne 0 ]; then
               echo "::warning::Windows slice FAILS (rc=$rc, failed=${failed:-?}): $m"
-              printf '%s\n' "$out" | tail -20
+              # The whole slice output, not a tail. With RUST_BACKTRACE=1 the
+              # panic message, which is where the assertion text lives, sits far
+              # above the trailing summary, so `tail -20` printed only the
+              # failure names and every diagnosis cost another CI round-trip.
+              printf '%s\n' "$out"
               status=1
             elif [ -z "$n" ] || [ "$n" -eq 0 ]; then
               echo "::warning::Windows slice ZERO-MATCH: $m names no tests here (renamed by a sibling PR)"
