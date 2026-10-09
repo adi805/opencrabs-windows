@@ -153,6 +153,13 @@ pub(crate) const MIGRATION_SQL: &[&str] = &[
     // on and a replayed effect opened a second row. Its own migration because
     // the previous one has already run wherever the schema was applied.
     include_str!("../migrations/20261006000002_unique_effect_key.sql"),
+    // #2010: the Telegram bubble id a turn was streaming into, so a boot
+    // resume can edit that bubble instead of opening a second one beside the
+    // partial answer the killed process left on screen. ALTER TABLE ADD
+    // COLUMN with the column NULL by design on every existing row, so no
+    // heal pass is needed (same shape as the project_repo_remote note above).
+    // Appended last per the list invariant.
+    include_str!("../migrations/20261009000001_pending_requests_channel_message_id.sql"),
 ];
 
 pub(crate) fn build_migrations() -> Migrations<'static> {
