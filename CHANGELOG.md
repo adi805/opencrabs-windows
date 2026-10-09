@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-10-09
+
+Second release cut from this fork. Carries upstream 0.5.4 plus 63 commits
+landed since the v0.5.5 tag.
+
 ### Changes
 
 - channels: the evidence footer on a final answer now reports what the turn did
@@ -64,6 +69,152 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a guild-level change no longer has to name a placeholder member in its
   refusal. `automod_list` and `audit_log` only read, so they stay unguarded
   (FR-013, AC-016).
+
+### ✨ Features
+
+- discord: Fase 3 channel structure, moderation and the unified audit (FR-008,
+  FR-009, FR-010). A cron forum post carries a configured tag
+  (`channels.discord.forum_report_tag`), resolved case-insensitively against
+  the target channel's own `available_tags` at post time; a name that resolves
+  to nothing is refused with the tag names on offer rather than posted untagged
+  into a forum that would reject it (#140).
+
+- discord: Fase 1 reachable surface. Slash commands register in the global
+  scope so DMs work (FR-002), the bot publishes its activity while a turn runs
+  (FR-003), reaction intents are requested and pinned coherent with their
+  handlers, a missing `GUILD_MEMBERS` toggle is named instead of silently
+  dropping member events (FR-004, NFR-001), and `ignore_mentions` drops a
+  message aimed at another bot (#125, #95).
+
+- telegram: `telegram_send` grows the action surface the audit still had open:
+  nine media verbs (sticker, video, animation, audio, voice note, video note,
+  contact, venue, dice, #131), chat-admin actions (#132), forum topic lifecycle
+  (#133), chat join requests with approve and decline (#135), the Bot API 10.3
+  rich-plane blocks with `tg://document` routing (#138) and the 10.3
+  `force_reply` markup field (#137). A running generation can be stopped from
+  the 10.3 stop button (#139), live location can be edited and stopped (#141), a
+  message can be copied into another chat with `copyMessage` (#119), and a photo
+  set goes out as one album with `sendMediaGroup` (#118). `inline_query` is
+  subscribed and answered, and ephemeral group replies are two-way.
+
+- whatsapp: group access and respond mode are scoped per room, the way Telegram
+  already did it. `[channels.whatsapp.groups.<jid>]` carries `allowed_phones`
+  (which adds to the channel-wide list and never revokes it), `respond_to`
+  (`mention` reads `contextInfo.mentionedJid` through the wrapper messages, so a
+  mention in a disappearing message or a photo caption counts) and `open`, which
+  admits any member of that one room without listing them (#161).
+
+- agent: `plan_reconcile` closes the drift that let the plan card read 4/9 while
+  the work was 9/9. A task is auto-completed only when every artifact it
+  declares is observed to exist and the state already says work began; a bare
+  `Pending` row whose artifacts are on disk is reported, never closed, because a
+  plan is forward-only and a wrong completion hides unfinished work behind a
+  green row. A six-question loop review is injected when the tool loop circles
+  (five consecutive calls to one tool, or ten in a turn), riding the same site
+  as the repeat nudge and carrying an exit for a turn that is genuinely
+  finished.
+
+- compaction: the summary-is-history rule is appended to every continuation, in
+  all five compaction kinds and both variants, so a compacted agent stops
+  treating its own summary as a standing instruction and imitating its shape
+  (#126).
+
+- search: search-backed answers now carry a deterministic Sources footer. URLs
+  are harvested from the turn's search-tool outputs, deduped across engines,
+  capped at five and dropped when the answer already links them; a turn with no
+  search output returns the answer byte-for-byte unchanged (#102).
+
+### 🔒 Security
+
+- ssrf: `http_request` and `web_scrape` now run through `guard_client()`, a
+  reqwest DNS resolver that resolves, validates and returns exactly the
+  addresses it approved, so the validated set and the connected set are the same
+  set and the DNS-rebinding window between validation and connect is gone. An
+  empty resolution is refused rather than read as approval (#146).
+
+- http: response bodies are read through `bytes_stream()` and stop at a 10 MiB
+  ceiling with the cut reported, and JSON answers render through the same output
+  budget as plain text instead of bypassing the 10,000-character limit (#148).
+
+- evolve: the Unix update path no longer unlinks the installed executable before
+  renaming its replacement into place, and restores the pre-swap backup when the
+  rename fails, so a failed swap leaves the original binary in place or puts it
+  back instead of leaving the installation unlaunchable (#149).
+
+- supply chain: every remote action reference across the 13 workflows is pinned
+  to a full commit SHA (98 refs), each `dtolnay/rust-toolchain` step states
+  `toolchain: stable` explicitly so the pin does not silently move every job,
+  and `scripts/check-pinned-actions.py` guards the property behind a self-test.
+  RTK, previously downloaded in five places with `curl -sL` and no verification
+  before being bundled into the published archives, is now owned by
+  `scripts/fetch-rtk.sh`, which downloads with `--fail` and verifies five
+  digests (#162, #152).
+
+- docs: `docs/dependency-advisories.md` records crate, lock version, advisory
+  kind, patched range and reverse-dependency path for each suppressed advisory,
+  correcting the claim that all nine sit at their upstream's latest release:
+  `lru` 0.12.5 is affected by RUSTSEC-2026-0002 and RUSTSEC-2026-0253, both with
+  fixed releases, and is pinned because `kalosm-language-model 0.4.1` requires
+  `lru ^0.12.3` (#153, #160).
+
+### 🔧 Fixes
+
+- bash: both detachment paths now run in the resolved `working_dir` the caller
+  asked for instead of the session's context directory, so a detached build,
+  write or git operation can no longer land in the wrong project while the tool
+  reports success (#155).
+
+- evolve: a missing stable asset is classified instead of promised.
+  `NotDistributed` (the stable workflow does not build this platform), `Building`
+  and `UnsupportedPlatform` are now distinct outcomes, so Windows and macOS are
+  told the stable channel carries no asset for them and pointed at the preview
+  workflow rather than being told to try again in a few minutes (#151).
+
+- windows: the scoped test slice is blocking instead of `continue-on-error`, and
+  its `cargo test` gains `--all-features` so the harness compiles the same
+  feature set as the binary under test. The startup smoke also runs `status`,
+  which walks config load and validation, profile resolution, the brain path
+  lookup and the channel summary (#150).
+
+- ralph: the project-kind walk stops at the home directory, so a session parked
+  in a folder with no manifest of its own can no longer reach `$HOME`, adopt an
+  unrelated `package.json` and run `npm test` on a Rust repository (#107).
+
+- discord: `list_channels` states its own limitation instead of implying a
+  complete list, because Discord's channel obfuscation (mandatory 2026-11-16)
+  omits channels a bot lacks `VIEW_CHANNEL` for with no signal in the HTTP
+  response, and the empty case spells out that "no channels" and "all channels
+  hidden" are indistinguishable (#117). The plan card is re-stuck to the bottom
+  after every turn (#143) and has durable backing (#111), and an Editing card
+  shows the plan prose (#108).
+
+- telegram: the origin telemetry slot stays inside its closed vocabulary, with
+  free text moved to `origin_detail` (#144); tool landings are attributed to the
+  session rather than the action (#142); ephemeral edits send the required
+  `receiver_user_id` (#136); community and paid-media service events stay out of
+  the text synthesizer; the cowork deep link is no longer unwrapped; and the
+  poll log names every subscribed update kind.
+
+- compaction: the marker the apply step wrote is persisted instead of a
+  full-window banner (#106), and the continuation document is bounded with its
+  tail checked (#105).
+
+### 📖 Documentation
+
+- a MonoCode GUI section and an ACP connect guide (#115).
+
+### 🧪 CI
+
+- the formatting gate hard-fails now that the rustfmt sweep has landed (#120,
+  #123), and a pre-push hook refuses the push when rustfmt reports a diff,
+  falling back to driving rustfmt from the crate roots on hosts without cargo
+  and skipping the check when the push carries no Rust file (#154).
+
+- `governance.toml` and `scripts/policy-lint.py` make the workflow rules
+  machine-readable: two FAIL rules (co-author trailers, AI branding markers)
+  that are already stated in `AGENTS.md` and decidable without judgement, one
+  WARN (diff size), and `--self-test` so a regex that silently stopped matching
+  fails the job instead of passing every PR forever (#113).
 
 ## [0.5.5] - 2026-10-07
 
