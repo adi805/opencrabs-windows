@@ -468,16 +468,12 @@ impl EvolveTool {
             }
         }
 
-        #[cfg(not(windows))]
-        if let Err(e) = std::fs::remove_file(&exe_path) {
-            tracing::debug!(
-                target: "evolve",
-                exe_path = %exe_path.display(),
-                error = %e,
-                session_id = %sid,
-                "evolve: pre-rename unlink failed (non-fatal; rename will report the real error if any)"
-            );
-        }
+        // On Unix, rename(2) replaces the directory entry atomically and the
+        // running process keeps its mapped image, so the swap needs no
+        // preparation: no pre-unlink. Unlinking first was actively harmful,
+        // because a failed rename then left nothing at exe_path and the
+        // installation could not be launched again. The recoverable copy is
+        // the backup taken above, restored in the failure path below.
         if let Err(e) = std::fs::rename(&tmp_path, &exe_path) {
             tracing::warn!(
                 target: "evolve",
@@ -488,12 +484,31 @@ impl EvolveTool {
                 "evolve: atomic rename of tmp -> exe failed"
             );
             let _ = std::fs::remove_file(&tmp_path);
-            // The Windows move-aside above means exe_path is EMPTY right
-            // now: the live image sits at aside_path. Restore it before
-            // returning, or a failed swap takes the installation offline
-            // until a human notices. The running process keeps executing
-            // from its mapped image either way; this is about the next
-            // launch, not this one.
+            // Restore whatever copy of the previous executable this platform
+            // kept, or a failed swap takes the installation offline until a
+            // human notices. The running process keeps executing from its
+            // mapped image either way; this is about the next launch, not
+            // this one. On Windows the live image sits at aside_path (moved
+            // aside above); on Unix the pre-swap backup copy is the only
+            // recoverable one.
+            #[cfg(not(windows))]
+            if let Err(re) = restore_previous_binary(&backup_path, &exe_path) {
+                tracing::error!(
+                    target: "evolve",
+                    exe_path = %exe_path.display(),
+                    backup_path = %backup_path.display(),
+                    swap_error = %e,
+                    restore_error = %re,
+                    session_id = %sid,
+                    "evolve: swap failed AND the backup restore failed; manual recovery required"
+                );
+                return Ok(ToolResult::error(format!(
+                    "Failed to replace binary at {}: {e}. Restore ALSO failed ({re}): \
+                     the previous executable is at {} and must be moved back manually.",
+                    exe_path.display(),
+                    backup_path.display(),
+                )));
+            }
             #[cfg(windows)]
             {
                 if let Err(re) = std::fs::rename(&aside_path, &exe_path) {
@@ -514,11 +529,12 @@ impl EvolveTool {
                     )));
                 }
             }
-            // Report the state that actually holds, not the state the
-            // Windows branch is supposed to have produced. The restore above
-            // is cfg(windows); on Unix the pre-rename unlink already removed
-            // exe_path, so a hardcoded "was restored" told the operator to
-            // retry with a binary that is not there. exists() is the fact.
+            // Report the state that actually holds, not the state a branch is
+            // supposed to have produced. exists() is the fact: on Windows the
+            // move-aside restore above either worked or reported CRITICAL, and
+            // on Unix the backup restore above either worked or reported
+            // CRITICAL, so a binary that is still missing here means no
+            // recoverable copy was available.
             let still_there = exe_path.exists();
             return Ok(ToolResult::error(if still_there {
                 format!(
@@ -528,9 +544,9 @@ impl EvolveTool {
                 )
             } else {
                 format!(
-                    "Failed to replace binary at {}: {e}. The previous executable is gone -- it \
-                     was unlinked before the rename, so there is nothing to restore on this \
-                     platform. Reinstall from the release artifact, then re-run evolve.",
+                    "Failed to replace binary at {}: {e}. The previous executable is gone and \
+                     no pre-swap backup was available to restore it. Reinstall from the release \
+                     artifact, then re-run evolve.",
                     exe_path.display()
                 )
             }));
@@ -830,5 +846,93 @@ impl EvolveTool {
         Ok(ToolResult::success(
             restart_status.user_message(current_version, latest_version),
         ))
+    }
+}
+
+/// Move the pre-swap backup back over `exe_path` after a failed swap.
+///
+/// Returns `true` when a backup existed and was moved back. A missing backup
+/// is not an error: it only means there is no recoverable copy, and the
+/// caller reports that state to the operator instead of claiming a restore
+/// that never happened.
+#[cfg(not(windows))]
+fn restore_previous_binary(
+    backup_path: &std::path::Path,
+    exe_path: &std::path::Path,
+) -> std::io::Result<bool> {
+    if !backup_path.exists() {
+        return Ok(false);
+    }
+    std::fs::rename(backup_path, exe_path)?;
+    Ok(true)
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_swap_restores_the_previous_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("opencrabs");
+        let backup = dir.path().join("opencrabs.evolve_backup");
+        std::fs::write(&exe, b"OLD").unwrap();
+        std::fs::write(&backup, b"OLD").unwrap();
+        // The failed swap unlinked the target before the rename could land.
+        std::fs::remove_file(&exe).unwrap();
+
+        let restored = restore_previous_binary(&backup, &exe).unwrap();
+
+        assert!(restored, "a backup on disk must be reported as restored");
+        assert_eq!(std::fs::read(&exe).unwrap(), b"OLD");
+        assert!(!backup.exists(), "the backup is moved, not copied");
+    }
+
+    #[test]
+    fn a_missing_backup_reports_nothing_to_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("opencrabs");
+        let backup = dir.path().join("opencrabs.evolve_backup");
+        std::fs::write(&exe, b"OLD").unwrap();
+
+        let restored = restore_previous_binary(&backup, &exe).unwrap();
+
+        assert!(!restored, "no backup means nothing was restored");
+        assert_eq!(std::fs::read(&exe).unwrap(), b"OLD");
+    }
+
+    #[test]
+    fn a_restore_that_cannot_land_is_an_error_not_a_silent_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("opencrabs.evolve_backup");
+        std::fs::write(&backup, b"OLD").unwrap();
+        // A target whose parent directory does not exist cannot receive the
+        // rename, so the caller must be told rather than the only
+        // recoverable copy disappearing without a trace.
+        let exe = dir.path().join("missing").join("opencrabs");
+
+        let err = restore_previous_binary(&backup, &exe).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            backup.exists(),
+            "a failed restore must not consume the backup"
+        );
+    }
+
+    #[test]
+    fn the_unix_swap_never_pre_unlinks_the_installed_binary() {
+        // Regression pin for the reported defect: the Unix path used to
+        // remove exe_path before the rename, so a failed rename left the
+        // installation with no launchable binary at all. The needle is
+        // assembled at compile time so this test's own text cannot satisfy
+        // the search it performs.
+        let needle = concat!("pre-rename", " unlink");
+        let source = include_str!("via_binary_download.rs");
+        assert!(
+            !source.contains(needle),
+            "rename(2) already replaces the directory entry atomically on \
+             Unix, so the unlink that used to run before it must not return"
+        );
     }
 }
