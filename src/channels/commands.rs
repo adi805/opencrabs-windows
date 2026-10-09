@@ -938,8 +938,13 @@ pub(crate) fn match_user_command_inner(
 
 // ── /help ───────────────────────────────────────────────────────────────────
 
-pub(crate) fn format_help() -> String {
-    let builtins: &[(&str, &str)] = &[
+/// The built-in command catalog: name (with the leading slash) and a one-line
+/// description. Single source of truth for `/help` AND for the Discord `/`
+/// menu, so the two can never disagree about what a built-in is called
+/// (#2013). Extracted out of `format_help` for exactly that reason: a second
+/// hand-written list would drift, and nobody would notice.
+pub(crate) fn builtin_catalog() -> &'static [(&'static str, &'static str)] {
+    &[
         ("/new", "Start a new session"),
         ("/cd", "Browse and change working directory"),
         (
@@ -1003,7 +1008,11 @@ pub(crate) fn format_help() -> String {
             "/usage",
             "Token & cost stats (`provider [name]` / `model <name>` / `7d`)",
         ),
-    ];
+    ]
+}
+
+pub(crate) fn format_help() -> String {
+    let builtins = builtin_catalog();
     let rows: Vec<Vec<String>> = builtins
         .iter()
         .map(|(cmd, desc)| vec![format!("`{cmd}`"), desc.to_string()])

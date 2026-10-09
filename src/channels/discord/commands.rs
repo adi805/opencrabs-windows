@@ -7,12 +7,13 @@
 //! commands existed and were invisible: there was no `/` autocomplete and no way
 //! to invoke them except typing the name into a message.
 //!
-//! Scope note: this projects `commands.toml` and nothing else. Telegram's menu
-//! additionally lists built-ins and skills; Discord's list here does not, because
-//! #1850 named the file rather than the whole catalog. Skills still work when
-//! typed as text, through the normal message path. Adding them is a loop over
-//! `brain::skills::load_all_skills()` in [`sync_commands`], and it would need its
-//! own decision about which built-ins belong in a guild menu.
+//! Scope note: `commands.toml` plus a fixed set of built-ins. Telegram's menu
+//! additionally lists built-ins and skills; [`with_menu_builtins`] closes part of
+//! that gap and carries only the built-ins the interaction path can answer
+//! ([`MENU_BUILTINS`]). Skills are still not projected: they work when typed as
+//! text, through the normal message path, and adding them is a loop over
+//! `brain::skills::load_all_skills()` in [`sync_commands`] plus its own decision
+//! about which skills belong in a guild menu.
 //!
 //! This module is the projection. It turns the catalog into CHAT_INPUT builders
 //! and pushes them with the *bulk overwrite* route
@@ -334,6 +335,78 @@ pub(crate) fn sync_signature(parts: &[u64]) -> u64 {
     hasher.finish()
 }
 
+/// Built-ins offered in the Discord `/` menu beside `commands.toml` (#2013).
+///
+/// Each name here is answered by the interaction path (see
+/// `interactions::handle_command_interaction`) and never routed to the model.
+/// That pairing is the whole contract: a name in this list without a matching arm
+/// there is a menu entry that throws when tapped, which is worse than an absent
+/// one. Upstream landed the same idea with a single entry (`/respond_to`); this is
+/// the subset of built-ins that `commands::try_execute_text_command` can already
+/// answer as plain text today.
+///
+/// Deliberately absent, so the omission is a decision and not an oversight:
+/// - `/exit` — kills the daemon from a chat surface. `/restart` is the furthest a
+///   guild should reach; an exit here reproduces the silent dead-bot state this
+///   channel was just debugged out of.
+/// - `/new`, `/stop`, `/clear`, `/compact`, `/sessions` — session and context
+///   state, driven by the TUI and the session switcher, not by text alone.
+/// - `/goal`, `/profiles`, `/rename`, `/cd`, `/cowork` — persistent config, or a
+///   QR handshake; `/cowork` is Telegram-only by its own description.
+/// - `/discard`, `/execute` — the plan card already owns these in Discord.
+pub(crate) const MENU_BUILTINS: &[&str] = &[
+    "/help",
+    "/usage",
+    "/models",
+    "/architecture",
+    "/attach",
+    "/audit",
+    "/rtk",
+    "/mission-control",
+    "/plan",
+    "/show-plan",
+    "/respond_to",
+    "/redact",
+    "/restart",
+    "/evolve",
+];
+
+/// Append the Discord-menu built-ins that the interaction path can answer.
+///
+/// Descriptions come from `commands::builtin_catalog()`, the same list `/help`
+/// prints, so the menu and `/help` cannot drift apart. A name in
+/// [`MENU_BUILTINS`] that is missing from that catalog is skipped with a warning
+/// rather than advertised with an invented description: the catalog is the source
+/// of truth, and the unit test pins the two together so the warning should never
+/// fire.
+///
+/// Dedupe is by raw name, and the `commands.toml` entry wins. That file is the
+/// source of truth on every surface, so a built-in must never shadow a command
+/// the user actually wrote — including one written on purpose to override a
+/// built-in.
+pub(crate) fn with_menu_builtins(mut catalog: Vec<UserCommand>) -> Vec<UserCommand> {
+    let known = crate::channels::commands::builtin_catalog();
+    for name in MENU_BUILTINS {
+        if catalog.iter().any(|c| c.name == *name) {
+            continue;
+        }
+        let Some((_, description)) = known.iter().find(|(n, _)| n == name) else {
+            tracing::warn!(
+                "discord: menu built-in {} is missing from commands::builtin_catalog()",
+                name
+            );
+            continue;
+        };
+        catalog.push(UserCommand {
+            name: (*name).to_string(),
+            description: (*description).to_string(),
+            action: "system".to_string(),
+            prompt: String::new(),
+        });
+    }
+    catalog
+}
+
 /// Load `commands.toml` and register it globally, but only when the comparison
 /// key moved. Returns the key that is live now, for the caller to store and hand
 /// back on the next call, or `None` when nothing could be registered, which tells
@@ -360,7 +433,8 @@ pub(crate) async fn sync_commands(
     guilds: &[GuildId],
     last_key: Option<u64>,
 ) -> Option<u64> {
-    let catalog = CommandLoader::from_brain_path(&BrainLoader::resolve_path()).load();
+    let catalog =
+        with_menu_builtins(CommandLoader::from_brain_path(&BrainLoader::resolve_path()).load());
 
     if catalog.is_empty() {
         tracing::info!("discord: command catalog is empty, syncing an empty global list");

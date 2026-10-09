@@ -8,8 +8,8 @@
 use crate::brain::UserCommand;
 use crate::channels::discord::commands::{
     ARGS_OPTION, ARGS_OPTION_DESCRIPTION, DESCRIPTION_MAX, DropReason, Dropped, GUILD_COMMAND_CAP,
-    NAME_MAX, TREE_CHAR_CAP, description_for, holds_allowed_role, identity_admitted, plan_commands,
-    sanitize_name, sync_key,
+    MENU_BUILTINS, NAME_MAX, TREE_CHAR_CAP, description_for, holds_allowed_role, identity_admitted,
+    plan_commands, sanitize_name, sync_key, with_menu_builtins,
 };
 use serenity::model::id::GuildId;
 
@@ -415,5 +415,90 @@ fn a_guild_less_bot_still_registers_its_commands() {
         !body.contains("if guilds.is_empty()"),
         "sync_commands must not skip registration when the guild list is \
          empty: the global set is what a DM reads (AC-003). Body was:\n{body}"
+    );
+}
+
+// ── with_menu_builtins (#2013) ──────────────────────────────────────────────
+//
+// The menu entries are built-ins answered by the interaction path, so their
+// descriptions are borrowed from `channels::commands::builtin_catalog()` rather
+// than written twice. These tests pin both ends of that: the names exist in the
+// shared catalog, and what comes out still passes Discord's grammar.
+
+/// The invariant that keeps `with_menu_builtins`'s warning unreachable: every
+/// advertised name must be described by the catalog `/help` prints. A name
+/// missing there is skipped at runtime, which would make the menu and `/help`
+/// disagree about what exists.
+#[test]
+fn every_menu_builtin_has_a_description_in_the_shared_catalog() {
+    let known = crate::channels::commands::builtin_catalog();
+    for name in MENU_BUILTINS {
+        assert!(
+            known.iter().any(|(n, _)| n == name),
+            "{name} is in MENU_BUILTINS but not in builtin_catalog(), so the \
+             menu would advertise a name it cannot describe"
+        );
+    }
+}
+
+#[test]
+fn menu_builtins_are_appended_to_an_empty_catalog() {
+    let catalog = with_menu_builtins(Vec::new());
+    let got: Vec<&str> = catalog.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        got.len(),
+        MENU_BUILTINS.len(),
+        "empty catalog + built-ins should be exactly the built-in set, got {got:?}"
+    );
+    for name in MENU_BUILTINS {
+        assert!(
+            got.contains(name),
+            "{name} missing from the projected catalog"
+        );
+    }
+}
+
+/// `commands.toml` is the source of truth on every surface, so a built-in must
+/// never shadow a command the user wrote — including one written on purpose to
+/// override a built-in.
+#[test]
+fn a_commands_toml_entry_wins_over_a_builtin_of_the_same_name() {
+    let own = cmd("/models", "switch model, our way");
+    let catalog = with_menu_builtins(vec![own.clone()]);
+
+    let matching: Vec<&UserCommand> = catalog.iter().filter(|c| c.name == "/models").collect();
+    assert_eq!(matching.len(), 1, "duplicate /models entries: {matching:?}");
+    let kept = matching[0];
+    assert_eq!(kept.description, own.description, "user description wins");
+    assert_eq!(kept.action, "prompt", "user action wins");
+    assert_eq!(kept.prompt, own.prompt, "user prompt wins");
+    // And the rest of the built-ins still land beside it.
+    assert_eq!(catalog.len(), MENU_BUILTINS.len());
+}
+
+/// A menu entry Discord rejects takes the whole sync down with it, so the
+/// built-ins are held to the same grammar `plan_commands` enforces on the
+/// catalog. This is the end-to-end claim: every built-in survives planning.
+#[test]
+fn menu_builtins_pass_the_name_and_description_grammar() {
+    let catalog = with_menu_builtins(Vec::new());
+    for entry in &catalog {
+        let name = sanitize_name(&entry.name)
+            .unwrap_or_else(|| panic!("{} failed Discord's name grammar", entry.name));
+        assert!(name.len() <= NAME_MAX, "{name} exceeds NAME_MAX");
+        assert!(
+            entry.description.chars().count() <= DESCRIPTION_MAX,
+            "{} carries a {} char description, over the {DESCRIPTION_MAX} limit",
+            entry.name,
+            entry.description.chars().count()
+        );
+    }
+
+    let plan = plan_commands(&catalog);
+    assert_eq!(
+        plan.commands.len(),
+        MENU_BUILTINS.len(),
+        "every built-in should survive planning, dropped: {:?}",
+        plan.dropped
     );
 }
