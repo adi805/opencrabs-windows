@@ -11,6 +11,46 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration as StdDuration;
 
+/// Hard ceiling on how many response bytes are pulled into memory. `.text()`
+/// buffers the whole body before anything can reject it, so a multi-gigabyte
+/// response could exhaust memory (#148).
+const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+
+/// One output budget for every response body, pretty-printed JSON included.
+/// The JSON path used to bypass the text limit entirely (#148).
+const MAX_OUTPUT_CHARS: usize = 10_000;
+
+/// Read a response body through a bounded stream.
+///
+/// Pulls chunks and stops at `max_bytes`, reporting whether the body was cut so
+/// the caller can say so instead of presenting a partial answer as complete.
+async fn read_bounded_body(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<(String, bool)> {
+    use futures::StreamExt;
+
+    let mut stream = response.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut truncated = false;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk
+            .map_err(|e| ToolError::Execution(format!("Failed to read response body: {}", e)))?;
+        let remaining = max_bytes.saturating_sub(buf.len());
+        if chunk.len() > remaining {
+            buf.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        buf.extend_from_slice(&chunk);
+    }
+
+    // A binary payload must not kill the tool: fall back to lossy UTF-8 rather
+    // than erroring out on a body that is not valid text.
+    Ok((String::from_utf8_lossy(&buf).into_owned(), truncated))
+}
+
 /// HTTP client tool for external API integration
 pub struct HttpClientTool;
 
@@ -258,11 +298,8 @@ impl Tool for HttpClientTool {
             }
         }
 
-        // Get response body
-        let body_text = response
-            .text()
-            .await
-            .map_err(|e| ToolError::Execution(format!("Failed to read response body: {}", e)))?;
+        // Get response body through a bounded stream (#148).
+        let (body_text, body_truncated) = read_bounded_body(response, MAX_RESPONSE_BYTES).await?;
 
         // Try to parse as JSON, fallback to text
         let body_json: Option<Value> = serde_json::from_str(&body_text).ok();
@@ -299,22 +336,31 @@ impl Tool for HttpClientTool {
             output.push('\n');
         }
 
-        // Add response body
+        // Add response body. One budget for both shapes: pretty JSON used to
+        // bypass the text limit entirely (#148).
         output.push_str("Response Body:\n");
-        if let Some(json) = body_json {
-            output.push_str(&serde_json::to_string_pretty(&json).unwrap_or(body_text.clone()));
-        } else if body_text.is_empty() {
+        if body_text.is_empty() {
             output.push_str("(empty)");
         } else {
-            // Truncate very long text responses
-            if body_text.len() > 10000 {
+            let rendered = match &body_json {
+                Some(json) => {
+                    serde_json::to_string_pretty(json).unwrap_or_else(|_| body_text.clone())
+                }
+                None => body_text.clone(),
+            };
+            let shown: String = rendered.chars().take(MAX_OUTPUT_CHARS).collect();
+            output.push_str(&shown);
+            if rendered.chars().count() > MAX_OUTPUT_CHARS {
                 output.push_str(&format!(
-                    "{}... (truncated, {} bytes total)",
-                    crate::utils::truncate_str(&body_text, 10000),
-                    body_text.len()
+                    "\n... (truncated to {} chars, {} bytes total{})",
+                    MAX_OUTPUT_CHARS,
+                    rendered.len(),
+                    if body_truncated {
+                        ", response cut at the read ceiling"
+                    } else {
+                        ""
+                    }
                 ));
-            } else {
-                output.push_str(&body_text);
             }
         }
 
