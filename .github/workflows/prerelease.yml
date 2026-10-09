@@ -279,18 +279,26 @@ jobs:
 
       - name: Generate pre-release notes
         id: notes
+        env:
+          # Interpolating GitHub context straight into the script is what
+          # Semgrep's run-shell-injection rule flags, and `inputs.note` is
+          # caller-supplied text. The environment carries the values instead, so
+          # the shell never parses them.
+          COMMIT_SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          RELEASE_NOTE: ${{ inputs.note }}
         run: |
-          SHA="${{ github.sha }}"
-          SHORT_SHA=$(echo "$SHA" | cut -c1-7)
+          SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           cat > /tmp/prerelease_notes.md << EOF
-          ## Pre-release build — v${VERSION}-pre-${SHORT_SHA}
+          ## Pre-release build: v${VERSION}-pre-${SHORT_SHA}
 
-          **On-demand build.** Not a tagged release — for testing only.
+          **On-demand build.** Not a tagged release, for testing only.
 
-          **Commit:** \`${SHORT_SHA}\` on \`${{ github.ref_name }}\` ([view](https://github.com/${{ github.repository }}/commit/${SHA}))
+          **Commit:** \`${SHORT_SHA}\` on \`${REF_NAME}\` ([view](https://github.com/${REPO}/commit/${COMMIT_SHA}))
 
-          ${{ inputs.note }}
+          ${RELEASE_NOTE}
 
           ### What's included
           - 5 platform binaries (linux-amd64, linux-arm64, macos-amd64, macos-arm64, windows-amd64)
