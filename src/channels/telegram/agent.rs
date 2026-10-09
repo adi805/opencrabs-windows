@@ -358,7 +358,7 @@ impl TelegramAgent {
                                                                 msg.id.0,
                                                                 &body,
                                                                 None,
-                                                                "stale-strip",
+                                                                "system",
                                                                 "#59 stale rich strip",
                                                             )
                                                             .await
@@ -372,7 +372,7 @@ impl TelegramAgent {
                                                                 msg.id.0,
                                                                 &body,
                                                                 None,
-                                                                "stale-strip",
+                                                                "system",
                                                                 "#59 stale rich strip",
                                                             )
                                                             .await
