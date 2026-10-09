@@ -22,8 +22,8 @@
 use crate::brain::tools::discord_send::{
     ANNOUNCE_MAX_CHARS, AUTOMOD_AUDIT_REASON, AUTOMOD_MAX_KEYWORD_CHARS, AUTOMOD_MAX_KEYWORDS,
     AuditEntryView, RuleView, WebhookView, audit_action_label, automod_action_label,
-    check_announce_length, crosspostable, parse_audit_action, parse_keywords, pick_announce_webhook,
-    render_audit_entry, render_rule, trigger_label, truncate_for_display,
+    check_announce_length, crosspostable, parse_audit_action, parse_keywords,
+    pick_announce_webhook, render_audit_entry, render_rule, trigger_label, truncate_for_display,
 };
 use serenity::model::channel::ChannelType;
 use serenity::model::guild::audit_log::{Action as AuditAction, AutoModAction};
@@ -111,7 +111,10 @@ fn an_announcement_is_refused_past_the_ceiling_rather_than_split() {
     assert!(check_announce_length(&ok).is_ok());
     let over = "a".repeat(ANNOUNCE_MAX_CHARS + 1);
     let why = check_announce_length(&over).unwrap_err();
-    assert!(why.contains("2001"), "the measured length must be in it: {why}");
+    assert!(
+        why.contains("2001"),
+        "the measured length must be in it: {why}"
+    );
     // Counting is by character, not byte: a multi-byte glyph is one character.
     let accented = "é".repeat(ANNOUNCE_MAX_CHARS);
     assert!(check_announce_length(&accented).is_ok());
@@ -144,7 +147,10 @@ fn an_empty_keyword_list_is_refused() {
 fn a_keyword_past_the_character_ceiling_is_refused_with_its_length() {
     let long = "x".repeat(AUTOMOD_MAX_KEYWORD_CHARS + 1);
     let why = parse_keywords(&long).unwrap_err();
-    assert!(why.contains("61"), "the measured length must be in it: {why}");
+    assert!(
+        why.contains("61"),
+        "the measured length must be in it: {why}"
+    );
     let edge = "x".repeat(AUTOMOD_MAX_KEYWORD_CHARS);
     assert!(parse_keywords(&edge).is_ok());
 }
@@ -156,7 +162,10 @@ fn a_keyword_list_past_the_count_ceiling_is_refused() {
         .collect::<Vec<_>>()
         .join(",");
     let why = parse_keywords(&many).unwrap_err();
-    assert!(why.contains(&(AUTOMOD_MAX_KEYWORDS + 1).to_string()), "{why}");
+    assert!(
+        why.contains(&(AUTOMOD_MAX_KEYWORDS + 1).to_string()),
+        "{why}"
+    );
 }
 
 #[test]
@@ -257,7 +266,10 @@ fn an_entry_without_a_target_or_reason_still_renders() {
         reason: None,
         rule_name: None,
     };
-    assert_eq!(render_audit_entry(&entry), "- guild update by user 11 [entry 6]");
+    assert_eq!(
+        render_audit_entry(&entry),
+        "- guild update by user 11 [entry 6]"
+    );
 }
 
 #[test]
@@ -291,7 +303,10 @@ fn tool_source() -> String {
 /// Strip every whitespace character, so a call split across lines still reads as
 /// one needle. Same trick as `discord_write_discipline_test`.
 fn flattened() -> String {
-    tool_source().chars().filter(|c| !c.is_whitespace()).collect()
+    tool_source()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
 }
 
 #[test]

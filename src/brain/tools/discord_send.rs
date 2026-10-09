@@ -389,7 +389,10 @@ pub(crate) fn trigger_label(trigger: &serenity::model::guild::automod::Trigger) 
             parts.join(", ")
         }
         Trigger::Spam => "spam".to_string(),
-        Trigger::KeywordPreset { presets, allow_list } => {
+        Trigger::KeywordPreset {
+            presets,
+            allow_list,
+        } => {
             let mut parts = vec![format!("{} preset(s)", presets.len())];
             if !allow_list.is_empty() {
                 parts.push(format!("{} allowed", allow_list.len()));
@@ -1900,14 +1903,18 @@ impl Tool for DiscordSendTool {
                     None => None,
                 };
                 let guild = GuildId::new(gid);
-                let entries = http.get_audit_logs(guild, action, user_id, None, Some(limit)).await;
+                let entries = http
+                    .get_audit_logs(guild, action, user_id, None, Some(limit))
+                    .await;
                 match entries {
                     Ok(log) if log.entries.is_empty() => Ok(ToolResult::success(format!(
                         "No audit-log entries in guild {gid} match that filter."
                     ))),
                     Ok(log) => {
-                        let mut out =
-                            format!("{} audit-log entr(ies) in guild {gid}:\n", log.entries.len());
+                        let mut out = format!(
+                            "{} audit-log entr(ies) in guild {gid}:\n",
+                            log.entries.len()
+                        );
                         for entry in &log.entries {
                             out.push_str(&render_audit_entry(&audit_entry_view(entry)));
                             out.push('\n');
