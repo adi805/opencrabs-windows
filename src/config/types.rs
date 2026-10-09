@@ -992,6 +992,23 @@ pub struct DiscordConfig {
     /// are managed; a moderator's own events in the same guild are untouched.
     #[serde(default)]
     pub scheduled_events_guild: Option<String>,
+    /// Render every outbound message as an embed, so a reply reads as a card
+    /// instead of a wall of text. Default: true.
+    ///
+    /// Applied at the single write choke point (`writes::send` /
+    /// `writes::edit`), so it covers the answer, the progress card, plan
+    /// cards, one-shot command replies, and every later edit of them.
+    ///
+    /// Two bodies are deliberately left plain. An empty one has nothing to
+    /// show, and a media gallery or voice note carries no text, so wrapping it
+    /// would post an empty card beside the attachment. A body past Discord's
+    /// 4096-char embed description limit does not fit and would be clipped, so
+    /// it stays text where the pager and the chunker already handle long
+    /// output. Because the decision is a pure function of the body, a create
+    /// and its later edits always agree, so an embed never flips back to plain
+    /// text mid-turn.
+    #[serde(default = "default_true")]
+    pub auto_embed: bool,
 }
 
 /// Proactive Discord write-governor knobs (`[channels.discord.rate_limiter]`).
@@ -1125,6 +1142,7 @@ impl Default for DiscordConfig {
             progress: ProgressDisplayConfig::default(),
             forum_report_tag: None,
             scheduled_events_guild: None,
+            auto_embed: default_true(),
         }
     }
 }
