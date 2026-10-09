@@ -112,15 +112,20 @@ fn wired_handlers(body: &str) -> Vec<String> {
         .collect()
 }
 
-/// The `GatewayIntents::*` names in the `let intents = ...;` expression.
+/// The `GatewayIntents::*` names in the intent-declaration region.
+///
+/// The set is declared in two halves: `let base_intents = ...` (always
+/// requested) and the `intents_for` closure that ORs in the optional
+/// privileged `GUILD_MEMBERS`. Both must be scanned, or a bit that moves into
+/// the closure reads as never requested.
 fn requested_intents(src: &str) -> Vec<String> {
     let start = src
-        .find("let intents =")
-        .unwrap_or_else(|| panic!("agent.rs no longer builds a `let intents` value"));
+        .find("let base_intents =")
+        .unwrap_or_else(|| panic!("agent.rs no longer builds a `let base_intents` value"));
     let end = start
         + src[start..]
-            .find(';')
-            .unwrap_or_else(|| panic!("unterminated `let intents` expression"));
+            .find("let mut client =")
+            .unwrap_or_else(|| panic!("agent.rs no longer builds a client from the intent set"));
     src[start..end]
         .match_indices("GatewayIntents::")
         .filter_map(|(i, marker)| {

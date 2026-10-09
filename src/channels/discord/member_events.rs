@@ -9,11 +9,12 @@
 //! 1. The intent is requested but the toggle is off. Discord answers the
 //!    IDENTIFY with close code 4014 (`Disallowed intent(s)`), serenity
 //!    surfaces it as `GatewayError::DisallowedGatewayIntents`, and the
-//!    reconnect loop in `agent.rs` would retry it every 5 seconds forever,
-//!    logging one line per attempt: a bot that looks alive, sits in the
-//!    guild, answers nothing, and never says why. That is the failure NFR-001
-//!    exists to kill, so [`refused_identify`] turns it into a named
-//!    instruction and the loop stops.
+//!    reconnect loop in `agent.rs` drops the bit and reconnects instead of
+//!    retrying it forever: a bot that looks alive, sits in the guild, answers
+//!    nothing, and never says why is the failure NFR-001 exists to kill, so
+//!    [`refused_identify`] turns the refusal into a named instruction and the
+//!    loop degrades to the base intents. The channel stays up without the
+//!    member-join events; only the greeting is lost until the toggle is on.
 //! 2. The toggle is on but the template is unset, which is the state of every
 //!    install that predates this feature. That one is intentional and stays
 //!    quiet, logged at debug so a silent channel is explainable.
@@ -183,13 +184,24 @@ pub(crate) async fn handle_member_addition(
 
 /// What to print when the gateway refuses the IDENTIFY over an intent.
 ///
-/// Names the toggle, the file, and the reason retrying cannot help: the
-/// reconnect loop stops here, and an owner reading the log needs the fix, not
-/// a fifth identical retry line.
-pub(crate) const MISSING_TOGGLE_HINT: &str = "Discord refused the gateway IDENTIFY because a \
-     requested privileged intent is not enabled on the application. Enable GUILD_MEMBERS in the \
-     Developer Portal (your app -> Bot -> Privileged Gateway Intents), then restart OpenCrabs. \
-     Reconnecting cannot flip a Portal toggle, so the reconnect loop stops here (NFR-001).";
+/// Names the toggle, the file, and the consequence: the bit is dropped and
+/// the bot carries on without member-join events, so an owner reading the log
+/// gets the fix rather than a fifth identical retry line.
+pub(crate) const DEGRADE_HINT: &str = "Discord refused the gateway IDENTIFY because a requested \
+     privileged intent is not enabled on the application. Dropping GUILD_MEMBERS and reconnecting \
+     WITHOUT it: messages, reactions and slash commands keep working, member-join events and the \
+     welcome message stay off. To restore them, enable GUILD_MEMBERS in the Developer Portal \
+     (your app -> Bot -> Privileged Gateway Intents) and restart OpenCrabs (NFR-001).";
+
+/// What to print when the refusal survives dropping `GUILD_MEMBERS`.
+///
+/// That means the base intent set itself is being rejected, so no Portal
+/// toggle can help and there is nothing left to degrade to: the loop stops
+/// here on purpose.
+pub(crate) const MISSING_TOGGLE_HINT: &str = "Discord refused the gateway IDENTIFY even after \
+     GUILD_MEMBERS was dropped, so the base intent set is being rejected. Reconnecting cannot \
+     flip a Developer Portal toggle, and there is nothing left to degrade to, so this loop halts \
+     on purpose instead of retrying (NFR-001).";
 
 /// Rendered-error substrings that mean Discord refused the IDENTIFY over a
 /// privileged intent. These are the exact strings `GatewayError` renders

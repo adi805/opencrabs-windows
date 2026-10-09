@@ -6,7 +6,9 @@
 //! neither shows up in a green test run:
 //!
 //! 1. The Portal toggle is off, Discord refuses the IDENTIFY, and the reconnect
-//!    loop retries forever on a bot that looks alive and answers nothing.
+//!    loop would retry forever on a bot that looks alive and answers nothing.
+//!    The loop instead DROPS `GUILD_MEMBERS` and reconnects, so the channel
+//!    stays up and only the greeting is lost.
 //! 2. The template renders without the mention, so the newcomer is never
 //!    notified at all.
 //!
@@ -16,7 +18,7 @@
 //! the source, the same way `discord_presence_test.rs` pins the presence hook.
 
 use crate::channels::discord::member_events::{
-    MISSING_TOGGLE_HINT, refused_identify_text, render_welcome,
+    DEGRADE_HINT, MISSING_TOGGLE_HINT, refused_identify_text, render_welcome,
 };
 use crate::config::DiscordConfig;
 
@@ -87,18 +89,41 @@ fn a_transient_drop_is_not_a_missing_toggle() {
 }
 
 #[test]
-fn the_hint_names_the_toggle_and_where_to_flip_it() {
+fn the_degrade_hint_names_the_toggle_and_where_to_flip_it() {
+    // DEGRADE_HINT is the line an operator actually sees when the toggle is
+    // off, so it is the one that must name the fix.
     for needle in [
         "GUILD_MEMBERS",
         "Developer Portal",
         "Privileged Gateway Intents",
     ] {
         assert!(
-            MISSING_TOGGLE_HINT.contains(needle),
+            DEGRADE_HINT.contains(needle),
             "NFR-001: the operator has to be able to act on this line, and it \
              never names {needle:?}"
         );
     }
+    assert!(
+        DEGRADE_HINT.contains("keep working"),
+        "the line must say the channel survives, otherwise an operator reads a \
+         refusal as a dead bot and restarts instead of flipping the toggle"
+    );
+}
+
+#[test]
+fn the_fatal_hint_says_nothing_is_left_to_degrade() {
+    // MISSING_TOGGLE_HINT now fires only when the refusal survived dropping
+    // GUILD_MEMBERS, so it must say the base set is the problem rather than
+    // tell an operator to flip a toggle that is already irrelevant.
+    assert!(
+        MISSING_TOGGLE_HINT.contains("even after GUILD_MEMBERS was dropped"),
+        "the fatal line must distinguish itself from the degrade line: same \
+         symptom, different fix"
+    );
+    assert!(
+        MISSING_TOGGLE_HINT.contains("nothing left to degrade"),
+        "an operator reading a stopped loop needs to know the ladder is spent"
+    );
 }
 
 #[test]
@@ -124,7 +149,7 @@ fn the_join_handler_is_wired_with_its_delivering_intent() {
 }
 
 #[test]
-fn the_reconnect_loop_stops_on_a_refused_identify() {
+fn the_reconnect_loop_degrades_instead_of_stopping() {
     let agent = flat(AGENT);
     let start = agent
         .find("refused_identify(&e)")
@@ -135,15 +160,54 @@ fn the_reconnect_loop_stops_on_a_refused_identify() {
     let branch = &agent[start..start + sleep];
 
     assert!(
-        branch.contains("return;"),
-        "NFR-001: the refused-IDENTIFY branch must return BEFORE the sleep. \
-         Sleeping and retrying reconnects every 5 seconds forever on a Portal \
-         toggle only an operator can flip, which is the silent failure this \
-         check exists to remove"
+        branch.contains("members_enabled = false"),
+        "the refused-IDENTIFY branch must DROP GUILD_MEMBERS before the sleep. \
+         Returning here instead is the v0.5.6 defect: one unflipped Portal \
+         toggle killed the whole channel, so messages and slash commands went \
+         down with the welcome message"
+    );
+    assert!(
+        branch.contains("DEGRADE_HINT"),
+        "the degrade branch must print the hint that names the missing toggle \
+         and says the channel survives"
     );
     assert!(
         branch.contains("MISSING_TOGGLE_HINT"),
-        "the fatal branch must print the hint that names the missing toggle"
+        "the fatal branch must still print the hint that names the missing toggle"
+    );
+}
+
+#[test]
+fn a_second_refusal_after_degrade_stops_the_loop() {
+    // The ladder has exactly one rung. Once GUILD_MEMBERS is dropped, a refusal
+    // means the base intent set is being rejected and no Portal toggle can fix
+    // it, so the loop must stop rather than reconnect forever.
+    let agent = flat(AGENT);
+    let start = agent
+        .find("refused_identify(&e)")
+        .expect("agent.rs must consult member_events::refused_identify on a start() error");
+    let sleep = agent[start..]
+        .find("tokio::time::sleep(")
+        .expect("the reconnect loop must still back off before rebuilding the client");
+    let branch = &agent[start..start + sleep];
+
+    let guard = branch
+        .find("if !members_enabled")
+        .expect("the fatal return must be gated on the flag already being down");
+    let ret = branch
+        .find("return;")
+        .expect("a refusal that survives the degrade must stop the loop");
+
+    assert!(
+        guard < ret,
+        "the only return in the refused branch must sit INSIDE the \
+         `!members_enabled` guard. An unguarded return is the old behaviour, \
+         and it makes the flag pointless"
+    );
+    assert!(
+        branch[..guard].find("return;").is_none(),
+        "no return may appear before the guard, or a first refusal would still \
+         kill the channel"
     );
 }
 
