@@ -25,6 +25,7 @@ use crate::brain::tools::discord_send::{
     check_announce_length, crosspostable, parse_audit_action, parse_keywords,
     pick_announce_webhook, render_audit_entry, render_rule, trigger_label, truncate_for_display,
 };
+use serenity::builder::EditAutoModRule;
 use serenity::model::channel::ChannelType;
 use serenity::model::guild::audit_log::{Action as AuditAction, AutoModAction};
 use serenity::model::guild::automod::{Action as AutomodAction, Trigger};
@@ -291,6 +292,50 @@ fn a_filter_name_maps_to_its_discord_number_and_a_number_passes_through() {
     // Out of range for the wire format too, so it cannot be a raw number either.
     assert!(parse_audit_action("999").is_none());
     assert_eq!(parse_audit_action("200").unwrap().num(), 200);
+}
+
+// ── FR-013: the body Discord actually reads ──────────────────────────────────
+
+#[test]
+fn a_new_rule_puts_the_fields_discord_requires_on_the_wire() {
+    // `EditAutoModRule::new()` is `Self::default()`, and serenity's default sets
+    // `event_type` to `MessageSend`. That field is not an `Option` and carries no
+    // `skip_serializing_if`, so it is always on the wire, and Discord answers 400
+    // BASE_TYPE_REQUIRED when it is missing. Pinned on the serialised body rather
+    // than on the builder because the body is what Discord reads, and because a
+    // serenity upgrade that made the field optional would otherwise only show up
+    // as a live 400 that no unit test would catch.
+    let builder = EditAutoModRule::new()
+        .name("probe")
+        .trigger(Trigger::Keyword {
+            strings: vec!["x".to_string()],
+            regex_patterns: Vec::new(),
+            allow_list: Vec::new(),
+        })
+        .actions(vec![AutomodAction::BlockMessage {
+            custom_message: None,
+        }])
+        .enabled(true);
+    let encoded = serde_json::to_value(builder);
+    let body = encoded.expect("EditAutoModRule serialises");
+    let event_type = body.get("event_type").and_then(|v| v.as_u64());
+    assert_eq!(
+        event_type,
+        Some(1),
+        "MessageSend must be on the wire: {body}"
+    );
+    // `trigger` is `#[serde(flatten)]`, so its keys have to land at the top level
+    // for Discord to see a trigger at all.
+    let trigger_type = body.get("trigger_type").and_then(|v| v.as_u64());
+    assert_eq!(
+        trigger_type,
+        Some(1),
+        "the trigger must be flattened: {body}"
+    );
+    assert!(
+        body.get("actions").is_some(),
+        "actions are required: {body}"
+    );
 }
 
 // ── the wiring, pinned against the source ────────────────────────────────────
