@@ -849,5 +849,6 @@ pub(crate) async fn route_followup_turn(
     // Plan board (FR-008, #1880): re-stick this session's plan card after the
     // turn so it follows the conversation instead of staying buried at the
     // position the chatter arrived after. Same tail as the message path.
-    super::plan_card::restick_plan_card_after_turn(&http, channel, &discord_state, session_id).await;
+    super::plan_card::restick_plan_card_after_turn(&http, channel, &discord_state, session_id)
+        .await;
 }
