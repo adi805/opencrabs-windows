@@ -21,7 +21,7 @@ use crate::brain::agent::service::session_routes;
 use crate::brain::tools::Tool;
 use crate::brain::tools::ToolExecutionContext;
 use crate::brain::tools::bash::BashTool;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -62,7 +62,7 @@ async fn await_completion(log: &DeliveryLog) -> String {
 }
 
 /// Assert the marker landed in `requested` and nowhere near `context_dir`.
-fn assert_marker_landed(requested: &PathBuf, context_dir: &PathBuf, marker: &str) {
+fn assert_marker_landed(requested: &Path, context_dir: &Path, marker: &str) {
     assert!(
         requested.join(marker).exists(),
         "the detached command must run in the requested directory ({})",
@@ -83,6 +83,10 @@ fn cleanup(dirs: &[&PathBuf]) {
 
 /// The explicit `background: true` route.
 #[tokio::test]
+// The test_guard serializes suites touching the process-global parked-queue
+// state; holding it across the awaits below is the entire point, the same shape
+// as the background_tasks and session_notify suites (#1206).
+#[allow(clippy::await_holding_lock)]
 async fn explicit_background_runs_in_the_requested_directory() {
     // register_session_route touches process-global parked-queue state, so
     // serialize against the other suites that do too (#1206).
@@ -124,6 +128,10 @@ async fn explicit_background_runs_in_the_requested_directory() {
 /// The automatic route: a command whose first word is a known long marker is
 /// detached without the caller asking.
 #[tokio::test]
+// The test_guard serializes suites touching the process-global parked-queue
+// state; holding it across the awaits below is the entire point, the same shape
+// as the background_tasks and session_notify suites (#1206).
+#[allow(clippy::await_holding_lock)]
 async fn automatic_detach_runs_in_the_requested_directory() {
     let _guard = crate::brain::agent::service::restart_recovery::test_guard();
 
