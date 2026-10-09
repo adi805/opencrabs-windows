@@ -53,7 +53,31 @@ pub(crate) async fn run_bounded(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let child = cmd.spawn()?;
+    // A child written moments ago can briefly refuse to exec even though it is
+    // perfectly valid: ETXTBSY (os 26, the kernel still counts the write as
+    // open) or a transient ENOENT (os 2) before the write settles. Same race
+    // `binary_health` retries for a freshly swapped binary, and it is what makes
+    // the supervision tests flap: the stub is written and spawned inside a single
+    // test, and `spawn` can lose that race (run 37992419552 on main, 1 failure
+    // out of 10671, while the same tree passed on the PR head). Retry with
+    // backoff before treating it as a real spawn failure.
+    let mut attempt = 0u32;
+    let child = loop {
+        attempt += 1;
+        match cmd.spawn() {
+            Ok(child) => break child,
+            Err(e) if attempt < 5 && matches!(e.raw_os_error(), Some(2) | Some(26)) => {
+                tracing::warn!(
+                    target: "evolve",
+                    attempt,
+                    os_error = ?e.raw_os_error(),
+                    "evolve: fresh child not exec-able yet, retrying spawn"
+                );
+                tokio::time::sleep(Duration::from_millis(200 * u64::from(attempt))).await;
+            }
+            Err(e) => return Err(e),
+        }
+    };
     match tokio::time::timeout(budget, child.wait_with_output()).await {
         Ok(Ok(output)) => Ok(Outcome::Exited(output)),
         Ok(Err(e)) => Err(e),
