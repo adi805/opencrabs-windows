@@ -1,9 +1,9 @@
 //! Discord Send Tool
 //!
 //! Agent-callable tool for full Discord control: send, reply, react, edit, delete,
-//! pin/unpin, threads, embeds, message history, channel listing, moderation, and
-//! native polls. Always prefer this tool over http_request: credentials are
-//! handled securely.
+//! pin/unpin, threads, embeds, message history, channel listing, moderation,
+//! native polls, announcement webhooks, and AutoMod/audit-log access. Always
+//! prefer this tool over http_request: credentials are handled securely.
 
 use super::error::Result;
 use super::r#trait::{Tool, ToolCapability, ToolExecutionContext, ToolHints, ToolResult};
@@ -14,7 +14,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::Value;
 use std::sync::Arc;
 
-/// Tool for comprehensive Discord bot control (22 actions).
+/// Tool for comprehensive Discord bot control (23 actions).
 pub struct DiscordSendTool {
     discord_state: Arc<DiscordState>,
 }
@@ -171,6 +171,106 @@ fn moderation_guard(user_id: u64) -> Option<ToolResult> {
     Some(ToolResult::error(reason))
 }
 
+// ── FR-012: announcement webhooks ───────────────────────────────────────────
+
+/// Name of the webhook an announcement leaves through. Stable on purpose: it is
+/// how a later announcement recognises the first one's webhook instead of
+/// minting a duplicate on every call. Discord allows 1-80 characters and
+/// serenity refuses a name under 2, so this sits safely inside both.
+pub(crate) const ANNOUNCE_WEBHOOK_NAME: &str = "OpenCrabs Announcements";
+
+/// Discord's ceiling on one message. An announcement is a single crosspostable
+/// message by definition, so one past the ceiling is refused rather than
+/// chunked: chunking would crosspost a fragment and silently drop the rest.
+pub(crate) const ANNOUNCE_MAX_CHARS: usize = 2000;
+
+/// The parts of a webhook that decide whether it can carry our announcement.
+///
+/// Serenity's `Webhook` is only constructible over a live connection, so the
+/// selection rule is expressed over this plain view instead: that keeps the
+/// rule unit-testable without a gateway.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WebhookView {
+    /// The webhook's own id.
+    pub id: u64,
+    /// The name it was created with.
+    pub name: Option<String>,
+    /// The channel it belongs to.
+    pub channel_id: Option<u64>,
+    /// Whether it is an incoming webhook, the only kind that can be executed.
+    pub incoming: bool,
+    /// Whether Discord handed us a token for it.
+    pub has_token: bool,
+}
+
+/// Reduce a serenity webhook to the fields the selection rule reads.
+pub(crate) fn webhook_view(webhook: &serenity::model::webhook::Webhook) -> WebhookView {
+    use serenity::model::webhook::WebhookType;
+    WebhookView {
+        id: webhook.id.get(),
+        name: webhook.name.clone(),
+        channel_id: webhook.channel_id.map(|c| c.get()),
+        incoming: webhook.kind == WebhookType::Incoming,
+        has_token: webhook.token.is_some(),
+    }
+}
+
+/// Pick the webhook a repeated announcement should reuse.
+///
+/// `has_token` is the load-bearing filter rather than a belt-and-braces extra:
+/// Discord only returns a token for a webhook the bot may execute, so one
+/// without a token cannot be used however well its name matches. Matching on
+/// the name as well keeps us off a webhook some other integration owns.
+pub(crate) fn pick_announce_webhook(
+    views: &[WebhookView],
+    channel_id: u64,
+    name: &str,
+) -> Option<u64> {
+    views
+        .iter()
+        .find(|v| {
+            v.incoming
+                && v.has_token
+                && v.channel_id == Some(channel_id)
+                && v.name.as_deref() == Some(name)
+        })
+        .map(|v| v.id)
+}
+
+/// Resolve the reusable webhook for a channel, cloning it out of the listing.
+///
+/// The picked id has to come back through the serenity type, because executing
+/// it needs the token that only the live object carries.
+fn existing_webhook(
+    listed: &[serenity::model::webhook::Webhook],
+    views: &[WebhookView],
+    channel_id: u64,
+) -> Option<serenity::model::webhook::Webhook> {
+    let id = pick_announce_webhook(views, channel_id, ANNOUNCE_WEBHOOK_NAME)?;
+    listed.iter().find(|w| w.id.get() == id).cloned()
+}
+
+/// Whether a channel kind supports crossposting (PRD FR-012).
+///
+/// Only announcement channels do. Discord answers `400` on any other kind, so
+/// the check happens before the call and its verdict is reported as a note.
+pub(crate) fn crosspostable(kind: serenity::model::channel::ChannelType) -> bool {
+    kind == serenity::model::channel::ChannelType::News
+}
+
+/// Refuse an announcement Discord would reject, with the measured length.
+pub(crate) fn check_announce_length(text: &str) -> std::result::Result<(), String> {
+    let len = text.chars().count();
+    if len > ANNOUNCE_MAX_CHARS {
+        return Err(format!(
+            "Announcement is {len} characters; Discord allows {ANNOUNCE_MAX_CHARS} in one \
+             message, and an announcement is not split because only one message can be \
+             crossposted. Shorten it."
+        ));
+    }
+    Ok(())
+}
+
 // Macro to early-return Ok(err_result) when a param helper returns Err.
 macro_rules! pget {
     ($expr:expr) => {
@@ -190,8 +290,9 @@ impl Tool for DiscordSendTool {
     fn description(&self) -> &str {
         "Full Discord control: send messages, reply, react, edit, delete, pin/unpin, create \
          threads, send embeds, fetch message history, list channels, manage roles, time out and \
-         rename members, kick and ban members, and post native polls (send_poll). Always use \
-         discord_send instead of http_request: credentials handled securely."
+         rename members, kick and ban members, post native polls (send_poll), and post an \
+         announcement through a channel webhook (announce). Always use discord_send instead of \
+         http_request: credentials handled securely."
     }
 
     fn input_schema(&self) -> Value {
@@ -205,14 +306,15 @@ impl Tool for DiscordSendTool {
                         "pin", "unpin", "create_thread", "send_embed", "get_messages",
                         "list_channels", "add_role", "remove_role", "kick", "ban",
                         "timeout", "nickname",
-                        "send_file", "send_select", "send_form", "send_poll"
+                        "send_file", "send_select", "send_form", "send_poll",
+                        "announce"
                     ],
                     "description": "The Discord action to perform"
                 },
                 "message": {
                     "type": "string",
-                    "description": "Message text (send, reply, edit) or embed description \
-                                    (send_embed)"
+                    "description": "Message text (send, reply, edit, announce) or embed \
+                                    description (send_embed)"
                 },
                 "channel_id": {
                     "type": "string",
@@ -1188,11 +1290,109 @@ impl Tool for DiscordSendTool {
                 }
             }
 
+            // ── announce (FR-012 / AC-015) ───────────────────────────────────
+            // Post through a webhook carrying the bot's own name and avatar,
+            // then crosspost so the message is marked published.
+            "announce" => {
+                use crate::channels::discord::writes;
+                use serenity::builder::{Builder, CreateWebhook, ExecuteWebhook};
+                let channel_id = pget!(channel_or_err(channel_id_opt));
+                let channel = ChannelId::new(channel_id);
+                let raw = pget!(get_str(&input, "message")).to_string();
+                let text = crate::channels::discord::table_convert::tables_to_discord(&raw);
+                if let Err(e) = check_announce_length(&text) {
+                    return Ok(ToolResult::error(e));
+                }
+
+                // Reuse this channel's announcement webhook when there is one,
+                // so a repeated announcement does not litter the channel with a
+                // new webhook per call.
+                let listed = match http.get_channel_webhooks(channel).await {
+                    Ok(list) => list,
+                    Err(e) => {
+                        return Ok(ToolResult::error(format!(
+                            "Failed to list webhooks for channel {channel_id}: {e}"
+                        )));
+                    }
+                };
+                let views: Vec<WebhookView> = listed.iter().map(webhook_view).collect();
+                let reuse = existing_webhook(&listed, &views, channel_id);
+                let webhook = match reuse {
+                    Some(w) => w,
+                    None => {
+                        let builder = CreateWebhook::new(ANNOUNCE_WEBHOOK_NAME);
+                        match builder.execute(&http, channel).await {
+                            Ok(w) => w,
+                            Err(e) => {
+                                return Ok(ToolResult::error(format!(
+                                    "Failed to create an announcement webhook in channel \
+                                     {channel_id} (needs Manage Webhooks): {e}"
+                                )));
+                            }
+                        }
+                    }
+                };
+
+                // The webhook posts as the bot itself: `username`/`avatar_url`
+                // are what carry the bot's identity, which is the half of
+                // AC-015 that is about the webhook rather than the channel.
+                let bot = match http.get_current_user().await {
+                    Ok(u) => (u.name.clone(), u.face()),
+                    Err(e) => {
+                        return Ok(ToolResult::error(format!(
+                            "Failed to read the bot identity for the webhook override: {e}"
+                        )));
+                    }
+                };
+                let builder = ExecuteWebhook::new()
+                    .content(text.as_str())
+                    .username(bot.0.as_str())
+                    .avatar_url(bot.1.as_str());
+                let outcome = writes::execute_webhook(&http, channel, &webhook, builder).await;
+                let posted = match outcome {
+                    Ok(Some(m)) => m,
+                    Ok(None) => {
+                        return Ok(ToolResult::error(
+                            "The announcement was refused by the Discord write budget; \
+                             nothing was posted."
+                                .to_string(),
+                        ));
+                    }
+                    Err(e) => {
+                        return Ok(ToolResult::error(format!("Announcement post failed: {e}")));
+                    }
+                };
+
+                // Crossposting is what marks the message published, and only an
+                // announcement channel supports it. The post has already
+                // landed, so a refusal here is reported as a note: it never
+                // turns a delivered announcement into a failed one.
+                let is_news = match http.get_channel(channel).await {
+                    Ok(serenity::model::channel::Channel::Guild(gc)) => crosspostable(gc.kind),
+                    _ => false,
+                };
+                let crosspost = if !is_news {
+                    format!("not crossposted: {channel_id} is not an announcement channel")
+                } else {
+                    match http.crosspost_message(channel, posted.id).await {
+                        Ok(_) => "crossposted".to_string(),
+                        Err(e) => format!("not crossposted: {e}"),
+                    }
+                };
+                Ok(ToolResult::success(format!(
+                    "Announcement posted to {channel_id} through webhook {} (message {}); \
+                     {crosspost}.",
+                    webhook.id.get(),
+                    posted.id.get()
+                )))
+            }
+
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{unknown}'. Valid: send, reply, react, unreact, edit, delete, \
                  send_select, send_form, \
                  send_poll, pin, unpin, create_thread, send_embed, get_messages, \
-                 list_channels, add_role, remove_role, kick, ban, timeout, nickname, send_file"
+                 list_channels, add_role, remove_role, kick, ban, timeout, nickname, send_file, \
+                 announce"
             ))),
         }
     }
