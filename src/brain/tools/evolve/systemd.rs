@@ -5,21 +5,36 @@
 //! their arg lists in tests is the whole point — silent drift in any flag
 //! re-introduces the "Evolved! but the daemon never restarted" symptom.
 //!
-//! Also holds [`schedule_restart`], the pre-flight-and-arm sequence, since
-//! that is the only consumer of the builders and it belongs with them rather
-//! than inside one strategy file. It was added for the Homebrew branch (#1779),
-//! which previously armed no backstop at all and relied on the in-process
-//! `exec()` alone.
+//! Also holds the pre-flight-and-arm helpers ([`select_restart_targets`],
+//! [`sweep_stale_evolve_units`]) since they are the only consumers of the
+//! builders and belong with them rather than inside one strategy file. The
+//! Homebrew branch (#1779) reaches them too, so the bus rules cannot drift
+//! between the two evolve paths.
 
-/// Service-unit glob used by the systemd restart path. Matches every
-/// profile (default, ops, staging, ...) sharing the same binary.
+/// Service-unit glob used to *list* the restart candidates. Matches every
+/// profile (default, ops, staging, ...) sharing the same binary. It is a
+/// listing pattern only: the scheduled `systemctl restart` is handed explicit
+/// unit names (see [`build_systemd_restart_command`]), never this glob,
+/// because the glob also matches the transient evolve unit running it.
 pub(crate) const SYSTEMD_UNIT_PATTERN: &str = "opencrabs*.service";
 
-/// Build the `systemd-run` command that schedules a delayed restart
-/// of every service unit matching `SYSTEMD_UNIT_PATTERN`. Extracted
-/// so the arg list can be pinned by tests — silent drift in any of
-/// these flags would re-introduce the "Evolved! but daemon didn't
-/// restart" symptom that issue #136 reported.
+/// Prefix of the transient units `build_systemd_restart_command` schedules,
+/// one per evolve attempt (`opencrabs-evolve-<pid>`).
+///
+/// Used two ways: to name the transient unit, and to exclude any unit carrying
+/// this prefix from its own restart set. A unit whose ExecStart is
+/// `systemctl restart opencrabs*.service` matches *itself* through the glob,
+/// so systemctl SIGTERMs the transient unit before it ever reaches the daemon
+/// (the daemon then never restarts, and systemd gives up with
+/// `start-limit-hit`). Naming targets explicitly, and dropping this prefix
+/// from the candidate list, removes that self-match.
+pub(crate) const EVOLVE_UNIT_PREFIX: &str = "opencrabs-evolve-";
+
+/// Build the `systemd-run` command that schedules a delayed restart of
+/// `units`, an explicit list of unit names resolved by
+/// [`select_restart_targets`]. Extracted so the arg list can be pinned by
+/// tests — silent drift in any of these flags would re-introduce the
+/// "Evolved! but daemon didn't restart" symptom that issue #136 reported.
 ///
 /// Set `user` to `true` to target user-level units (`systemctl --user`),
 /// e.g. when OpenCrabs was installed via `install_systemd_service()` which
@@ -28,8 +43,16 @@ pub(crate) const SYSTEMD_UNIT_PATTERN: &str = "opencrabs*.service";
 /// The `pid` argument is used to derive a unique transient unit
 /// name (`opencrabs-evolve-<pid>`) so concurrent evolve calls don't
 /// collide on the transient unit registry.
-pub(crate) fn build_systemd_restart_command(pid: u32, user: bool) -> std::process::Command {
-    let unit_name = format!("opencrabs-evolve-{pid}");
+///
+/// Precondition: `units` is non-empty. Callers pass the output of
+/// [`select_restart_targets`], which returns `None` rather than an empty list
+/// so a bare `systemctl restart` (no operand, an error) is never scheduled.
+pub(crate) fn build_systemd_restart_command(
+    pid: u32,
+    user: bool,
+    units: &[String],
+) -> std::process::Command {
+    let unit_name = format!("{EVOLVE_UNIT_PREFIX}{pid}");
     let mut cmd = std::process::Command::new("systemd-run");
     let mut args = vec![];
     // --user on systemd-run itself is required when the daemon runs as a
@@ -48,7 +71,11 @@ pub(crate) fn build_systemd_restart_command(pid: u32, user: bool) -> std::proces
         args.push("--user".to_string());
     }
     args.push("restart".to_string());
-    args.push(SYSTEMD_UNIT_PATTERN.to_string());
+    // Explicit names, never a glob: see EVOLVE_UNIT_PREFIX for the self-match
+    // this avoids.
+    for unit in units {
+        args.push(unit.clone());
+    }
     cmd.args(&args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -85,23 +112,22 @@ pub(crate) fn build_systemd_cleanup_command(user: bool) -> std::process::Command
     cmd
 }
 
-/// Count systemd service units matching the given glob pattern, at either
-/// system or user level.
+/// List the unit names matching `pattern`, at either system or user level.
 ///
 /// Set `user` to `true` to query user-level units (`systemctl --user`).
 ///
-/// Returns `Some(n)` on a successful query (n may be zero), or
-/// `None` if `systemctl` failed to spawn / returned a non-zero exit
-/// status (a permissions issue or non-systemd host). `None` is a
-/// "don't know" signal: the caller should fall through and schedule
-/// the restart anyway rather than blocking on a diagnostic failure.
+/// Returns `Some(names)` on a successful query (the list may be empty), or
+/// `None` if `systemctl` failed to spawn / returned a non-zero exit status (a
+/// permissions issue or non-systemd host). `None` is a "don't know" signal, not
+/// "zero units": on a healthy host `systemctl list-units` exits 0 with empty
+/// output when nothing matches, which is `Some(vec![])`.
 ///
-/// Uses `--no-legend --no-pager` to keep stdout machine-parseable.
-/// Counts non-empty lines — `systemctl` prints one line per matched
-/// unit when `--no-legend` is set.
-pub(crate) fn count_matching_systemd_units(pattern: &str, user: bool) -> Option<usize> {
+/// `--no-legend --no-pager --plain` keep stdout machine-parseable: one line
+/// per matched unit, whose first whitespace-delimited field is the unit name
+/// (e.g. `opencrabs.service loaded active running OpenCrabs Daemon [default]`).
+pub(crate) fn list_matching_systemd_units(pattern: &str, user: bool) -> Option<Vec<String>> {
     let mut cmd = std::process::Command::new("systemctl");
-    cmd.args(["list-units", "--no-legend", "--no-pager"]);
+    cmd.args(["list-units", "--no-legend", "--no-pager", "--plain"]);
     if user {
         cmd.arg("--user");
     }
@@ -112,72 +138,111 @@ pub(crate) fn count_matching_systemd_units(pattern: &str, user: bool) -> Option<
         return None;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Some(stdout.lines().filter(|l| !l.trim().is_empty()).count())
+    Some(
+        stdout
+            .lines()
+            .filter_map(|l| l.split_whitespace().next())
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
 }
-/// Which unit bus an evolve restart should target, or `None` when nothing
-/// matched at either level.
+
+/// Drop any unit whose name carries [`EVOLVE_UNIT_PREFIX`] from a candidate
+/// list.
 ///
-/// `Some(false)` = the system bus, `Some(true)` = the user bus. The user-bus
-/// fallback is the substance of #162: OpenCrabs installed as a user service
+/// This is the exclusion that fixes the self-match: the transient unit running
+/// the restart must never be in its own restart set. Pure and total, so it is
+/// unit-tested with synthetic input (the end-to-end systemd behaviour is not
+/// portable to the macOS / Windows CI runners).
+pub(crate) fn filter_evolve_units(names: Vec<String>) -> Vec<String> {
+    names
+        .into_iter()
+        .filter(|name| !name.starts_with(EVOLVE_UNIT_PREFIX))
+        .collect()
+}
+
+/// Resolve which unit bus to restart and the explicit units to name, or `None`
+/// when nothing is restartable.
+///
+/// `Some((user, units))` = restart `units`; `user` selects the bus (`false` =
+/// system, `true` = user). `units` is always non-empty. The user-bus fallback
+/// is the substance of #162: OpenCrabs installed as a user service
 /// (`install_systemd_service()` writes to `~/.config/systemd/user/`) has zero
 /// system-level units, and checking only the system bus is what produced the
 /// "Evolved! but the daemon never restarted" line of reports (#136).
 ///
-/// A `None` unit count from [`count_matching_systemd_units`] means "could not
-/// tell", systemctl failed to spawn, not "zero units". That case returns
-/// `Some(false)` and logs: a diagnostic failure must not withhold a restart from
-/// a user whose daemon does exist. Only a confirmed zero on both buses returns
-/// `None`, so the caller skips scheduling instead of quietly no-op'ing.
+/// `None` means a confirmed absence of restartable units on both buses: the
+/// caller reports [`crate::brain::tools::evolve::restart_status::RestartStatus::NoUnitsMatched`]
+/// with the honest manual-restart message instead of scheduling a no-op. A
+/// `None` *query* from [`list_matching_systemd_units`] (systemctl could not
+/// run) is logged and the other bus is still tried; it is not treated as zero.
 ///
 /// Both evolve branches (binary download, Homebrew) pre-flight through here so
 /// the bus rules cannot drift apart.
-pub(crate) fn select_unit_bus(sid: uuid::Uuid) -> Option<bool> {
-    match count_matching_systemd_units(SYSTEMD_UNIT_PATTERN, false) {
-        Some(0) => {}
-        Some(n) => {
-            tracing::info!(
-                target: "evolve",
-                pattern = SYSTEMD_UNIT_PATTERN,
-                matched_units = n,
-                use_user_units = false,
-                session_id = %sid,
-                "evolve: pre-flight found {n} system-level units, scheduling restart (+3s)"
-            );
-            return Some(false);
+pub(crate) fn select_restart_targets(sid: uuid::Uuid) -> Option<(bool, Vec<String>)> {
+    match list_matching_systemd_units(SYSTEMD_UNIT_PATTERN, false) {
+        Some(names) => {
+            let targets = filter_evolve_units(names);
+            if !targets.is_empty() {
+                tracing::info!(
+                    target: "evolve",
+                    pattern = SYSTEMD_UNIT_PATTERN,
+                    matched_units = targets.len(),
+                    units = ?targets,
+                    use_user_units = false,
+                    session_id = %sid,
+                    "evolve: pre-flight resolved {} system-level restart \
+                     target(s), scheduling restart (+3s)",
+                    targets.len()
+                );
+                return Some((false, targets));
+            }
         }
         None => {
             tracing::warn!(
                 target: "evolve",
                 pattern = SYSTEMD_UNIT_PATTERN,
                 session_id = %sid,
-                "evolve: could not count system-level units (systemctl spawn failed), \
-                 scheduling restart anyway"
+                "evolve: could not list system-level units (systemctl spawn failed), \
+                 trying the user bus"
             );
-            return Some(false);
         }
     }
 
-    match count_matching_systemd_units(SYSTEMD_UNIT_PATTERN, true) {
-        Some(n) if n > 0 => {
-            tracing::info!(
+    match list_matching_systemd_units(SYSTEMD_UNIT_PATTERN, true) {
+        Some(names) => {
+            let targets = filter_evolve_units(names);
+            if !targets.is_empty() {
+                tracing::info!(
+                    target: "evolve",
+                    pattern = SYSTEMD_UNIT_PATTERN,
+                    user_units = targets.len(),
+                    units = ?targets,
+                    session_id = %sid,
+                    "evolve: no system-level targets, using {} user-level \
+                     unit(s), scheduling restart with --user",
+                    targets.len()
+                );
+                return Some((true, targets));
+            }
+        }
+        None => {
+            tracing::warn!(
                 target: "evolve",
                 pattern = SYSTEMD_UNIT_PATTERN,
-                user_units = n,
                 session_id = %sid,
-                "evolve: no system-level units found, using {n} user-level units, \
-                 scheduling restart with --user"
+                "evolve: could not list user-level units (systemctl spawn failed)"
             );
-            return Some(true);
         }
-        _ => {}
     }
 
     tracing::warn!(
         target: "evolve",
         pattern = SYSTEMD_UNIT_PATTERN,
         session_id = %sid,
-        "evolve: no systemd units matched the pattern (checked system and user level), \
-         skipping scheduled restart"
+        "evolve: no restartable systemd units matched the pattern (checked system \
+         and user level), skipping scheduled restart"
     );
     None
 }

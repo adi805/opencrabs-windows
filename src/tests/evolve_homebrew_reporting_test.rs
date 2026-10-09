@@ -147,11 +147,11 @@ fn both_evolve_branches_arm_the_systemd_restart() {
     );
     let flat = homebrew_flat();
     assert!(
-        flat.contains("build_systemd_restart_command(pid, use_user_units).spawn()"),
+        flat.contains("build_systemd_restart_command(pid, use_user_units, &targets).spawn()"),
         "the brew branch must spawn the delayed restart, not merely build it"
     );
     assert!(
-        flat.contains("select_unit_bus(sid)"),
+        flat.contains("select_restart_targets(sid)"),
         "the branch must pre-flight the unit bus instead of scheduling blind"
     );
     assert!(
@@ -172,15 +172,15 @@ fn the_user_bus_fallback_lives_in_the_shared_preflight() {
     // branches reach, so it cannot drift apart between them.
     let sys = include_str!("../brain/tools/evolve/systemd.rs");
     assert!(
-        sys.contains("count_matching_systemd_units(SYSTEMD_UNIT_PATTERN, true)"),
+        sys.contains("list_matching_systemd_units(SYSTEMD_UNIT_PATTERN, true)"),
         "the user bus must be checked before giving up"
     );
     assert!(
-        sys.contains("using {n} user-level units"),
+        sys.contains("using {} user-level"),
         "the fallback must be logged so an operator can diagnose a silent restart"
     );
     assert!(
-        sys.contains("scheduling restart anyway"),
+        sys.contains("trying the user bus"),
         "an uncountable bus must not withhold the restart from a user whose daemon exists"
     );
 }
