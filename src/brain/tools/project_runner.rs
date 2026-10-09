@@ -63,11 +63,21 @@ impl ProjectKind {
 /// a package inside a monorepo is verified as itself rather than as its parent.
 ///
 /// Bounded by [`MAX_ANCESTORS`] so an unrecognised directory cannot walk to the
-/// filesystem root and adopt something unrelated on the way.
+/// filesystem root and adopt something unrelated on the way, and stopped at the
+/// home directory, which is not a project root: a session parked in a folder
+/// with no manifest of its own used to walk up, adopt `$HOME/package.json`, and
+/// hand a Rust repo `npm test` (#107).
 pub(crate) fn detect(working_dir: &Path) -> Option<ProjectKind> {
+    detect_within(working_dir, dirs::home_dir().as_deref())
+}
+
+/// [`detect`] with the home directory passed in, so the boundary can be tested
+/// without mutating the process-wide environment.
+pub(crate) fn detect_within(working_dir: &Path, home: Option<&Path>) -> Option<ProjectKind> {
     working_dir
         .ancestors()
         .take(MAX_ANCESTORS)
+        .take_while(|dir| home != Some(*dir))
         .find_map(detect_exactly_in)
 }
 
