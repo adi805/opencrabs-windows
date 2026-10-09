@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-10-10
+
+Third release cut from this fork. Two fixes landed since the v0.5.6 tag.
+
+### Fixes
+
+- discord: a refused gateway IDENTIFY no longer kills the channel. `GUILD_MEMBERS`
+  is a privileged intent, and requesting it while the application toggle is off
+  makes Discord refuse the handshake with close code 4014. The client now drops
+  that one bit and reconnects on the base intent set, so messages, reactions and
+  slash commands keep working; only the member-join greeting stays off until the
+  Portal toggle is enabled (#167).
+
+- evolve: the restart step names its systemd units explicitly instead of
+  globbing `opencrabs*.service`. The glob also matched the transient unit the
+  restart runs inside, so the process signalled itself and the unit ended in
+  `start-limit-hit` (#166).
+
 ## [0.5.6] - 2026-10-09
 
 Second release cut from this fork. Carries upstream 0.5.4 plus 63 commits
