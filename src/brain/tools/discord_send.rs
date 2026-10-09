@@ -2,17 +2,19 @@
 //!
 //! Agent-callable tool for full Discord control: send, reply, react, edit, delete,
 //! pin/unpin, threads, embeds, message history, channel listing, moderation, and
-//! native polls. Always prefer this tool over http_request — credentials are
+//! native polls. Always prefer this tool over http_request: credentials are
 //! handled securely.
 
 use super::error::Result;
 use super::r#trait::{Tool, ToolCapability, ToolExecutionContext, ToolHints, ToolResult};
 use crate::channels::discord::DiscordState;
+use crate::channels::discord::component_spec;
 use async_trait::async_trait;
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::Value;
 use std::sync::Arc;
 
-/// Tool for comprehensive Discord bot control (20 actions).
+/// Tool for comprehensive Discord bot control (22 actions).
 pub struct DiscordSendTool {
     discord_state: Arc<DiscordState>,
 }
@@ -76,6 +78,99 @@ fn guild_or_err(id: Option<u64>) -> std::result::Result<u64, ToolResult> {
     })
 }
 
+/// Discord's ceiling on a communication timeout: 28 days. Anything past it is
+/// rejected by the API, which is why [`parse_timeout_secs`] refuses instead of
+/// clamping.
+const TIMEOUT_MAX_SECS: i64 = 28 * 24 * 60 * 60;
+
+/// Discord's ceiling on a nickname, in characters.
+const NICKNAME_MAX_CHARS: usize = 32;
+
+/// Read a timeout length into seconds (FR-009).
+///
+/// A caller writes either a compact duration (`30s`, `10m`, `2h`, `7d`) or a
+/// bare count of seconds, so both are accepted. A length that is empty,
+/// unreadable, zero, or past the 28-day ceiling is refused with the reason
+/// rather than clamped: silently shortening a request hides the mismatch from
+/// whoever asked for it, and a timeout is an action taken against a person.
+pub(crate) fn parse_timeout_secs(spec: &str) -> std::result::Result<i64, String> {
+    let text = spec.trim();
+    if text.is_empty() {
+        return Err("Missing required parameter 'duration'.".to_string());
+    }
+    // The unit is the final character, which is ASCII when it matches, so the
+    // byte slice lands on a char boundary.
+    let (digits, unit_secs) = match text.chars().last() {
+        Some('s') | Some('S') => (&text[..text.len() - 1], 1),
+        Some('m') | Some('M') => (&text[..text.len() - 1], 60),
+        Some('h') | Some('H') => (&text[..text.len() - 1], 3600),
+        Some('d') | Some('D') => (&text[..text.len() - 1], 86_400),
+        _ => (text, 1),
+    };
+    let value: i64 = match digits.trim().parse() {
+        Ok(value) => value,
+        Err(_) => {
+            return Err(format!(
+                "Cannot read duration '{spec}': use 30s, 10m, 2h, 7d or a count of seconds."
+            ));
+        }
+    };
+    if value <= 0 {
+        return Err(format!(
+            "A timeout of '{spec}' is not a timeout: give a length above zero (30s, 10m, 2h, 7d)."
+        ));
+    }
+    match value.checked_mul(unit_secs) {
+        Some(secs) if secs <= TIMEOUT_MAX_SECS => Ok(secs),
+        _ => Err(format!(
+            "'{spec}' is longer than the 28 days Discord allows for a timeout; use the ban \
+             action for a permanent removal."
+        )),
+    }
+}
+
+/// The instant a timeout of `secs` seconds ends, as the ISO8601 string
+/// `EditMember::disable_communication_until` wants.
+pub(crate) fn timeout_until_rfc3339(secs: i64, now: DateTime<Utc>) -> String {
+    let until = now + chrono::Duration::seconds(secs);
+    until.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+/// Check a requested nickname against Discord's own rules (FR-009): 1 to 32
+/// characters, and none of the three reserved words it refuses outright. The
+/// trimmed form is what gets sent, so a name that is only spaces is refused
+/// rather than posted.
+pub(crate) fn validate_nickname(name: &str) -> std::result::Result<&str, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Missing required parameter 'nickname'.".to_string());
+    }
+    let count = trimmed.chars().count();
+    if count > NICKNAME_MAX_CHARS {
+        return Err(format!(
+            "Nickname is {count} characters; Discord allows at most {NICKNAME_MAX_CHARS}."
+        ));
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if matches!(lowered.as_str(), "everyone" | "here" | "discord") {
+        return Err(format!(
+            "Discord refuses the reserved nickname '{trimmed}'; pick another."
+        ));
+    }
+    Ok(trimmed)
+}
+
+/// Refuse a member-mutating action when the current turn is a scheduled job
+/// that was given no destination. See [`crate::cron::send_scope::may_moderate`].
+fn moderation_guard(user_id: u64) -> Option<ToolResult> {
+    if crate::cron::send_scope::may_moderate() {
+        return None;
+    }
+    let reason = crate::cron::send_scope::moderation_refusal(user_id);
+    tracing::warn!("discord_send: {reason}");
+    Some(ToolResult::error(reason))
+}
+
 // Macro to early-return Ok(err_result) when a param helper returns Err.
 macro_rules! pget {
     ($expr:expr) => {
@@ -94,9 +189,9 @@ impl Tool for DiscordSendTool {
 
     fn description(&self) -> &str {
         "Full Discord control: send messages, reply, react, edit, delete, pin/unpin, create \
-         threads, send embeds, fetch message history, list channels, manage roles, kick and ban \
-         members, and post native polls (send_poll). Always use discord_send instead of \
-         http_request — credentials handled securely."
+         threads, send embeds, fetch message history, list channels, manage roles, time out and \
+         rename members, kick and ban members, and post native polls (send_poll). Always use \
+         discord_send instead of http_request: credentials handled securely."
     }
 
     fn input_schema(&self) -> Value {
@@ -109,21 +204,25 @@ impl Tool for DiscordSendTool {
                         "send", "reply", "react", "unreact", "edit", "delete",
                         "pin", "unpin", "create_thread", "send_embed", "get_messages",
                         "list_channels", "add_role", "remove_role", "kick", "ban",
+                        "timeout", "nickname",
                         "send_file", "send_select", "send_form", "send_poll"
                     ],
                     "description": "The Discord action to perform"
                 },
                 "message": {
                     "type": "string",
-                    "description": "Message text (send, reply, edit) or embed description (send_embed)"
+                    "description": "Message text (send, reply, edit) or embed description \
+                                    (send_embed)"
                 },
                 "channel_id": {
                     "type": "string",
-                    "description": "Discord channel ID (numeric string). Omit to use owner's last channel."
+                    "description": "Discord channel ID (numeric string). Omit to use owner's last \
+                                    channel."
                 },
                 "message_id": {
                     "type": "string",
-                    "description": "Target message ID for reply/react/unreact/edit/delete/pin/unpin/create_thread"
+                    "description": "Target message ID for \
+                                    reply/react/unreact/edit/delete/pin/unpin/create_thread"
                 },
                 "emoji": {
                     "type": "string",
@@ -135,7 +234,8 @@ impl Tool for DiscordSendTool {
                 },
                 "embed_description": {
                     "type": "string",
-                    "description": "Body text for send_embed (single-embed path; ignored when 'embeds' is given)"
+                    "description": "Body text for send_embed (single-embed path; ignored when \
+                                    'embeds' is given)"
                 },
                 "embed_color": {
                     "type": "integer",
@@ -151,7 +251,13 @@ impl Tool for DiscordSendTool {
                             "color": {"type": "integer"}
                         }
                     },
-                    "description": "Multi-embed layout for send_embed (max 10 blocks). When present and non-empty it replaces embed_title/embed_description/embed_color. Each block: title (<=256 chars), description (<=4096), color (RGB int, default Discord blurple). Discord caps the combined title+description text across all blocks at 6000 chars; overflow is trimmed from the tail and reported."
+                    "description": "Multi-embed layout for send_embed (max 10 blocks). When \
+                                    present and non-empty it replaces \
+                                    embed_title/embed_description/embed_color. Each block: title \
+                                    (<=256 chars), description (<=4096), color (RGB int, default \
+                                    Discord blurple). Discord caps the combined title+description \
+                                    text across all blocks at 6000 chars; overflow is trimmed \
+                                    from the tail and reported."
                 },
                 "thread_name": {
                     "type": "string",
@@ -159,24 +265,72 @@ impl Tool for DiscordSendTool {
                 },
                 "user_id": {
                     "type": "string",
-                    "description": "Target user ID (numeric string) for add_role/remove_role/kick/ban"
+                    "description": "Target user ID (numeric string) for \
+                                    add_role/remove_role/kick/ban/timeout/nickname"
                 },
                 "role_id": {
                     "type": "string",
                     "description": "Role ID (numeric string) for add_role/remove_role"
                 },
+                "duration": {
+                    "type": "string",
+                    "description": "Timeout length for the timeout action: 30s, 10m, 2h or 7d, or \
+                                    a count of seconds. Discord caps a timeout at 28 days; \
+                                    anything longer is refused, so use the ban action for a \
+                                    permanent removal."
+                },
+                "nickname": {
+                    "type": "string",
+                    "description": "New nickname for the nickname action (1-32 characters; \
+                                    Discord refuses 'everyone', 'here' and 'discord')."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional audit-log reason recorded for \
+                                    timeout/nickname/kick/ban/add_role/remove_role. Discord shows \
+                                    it in the guild audit log."
+                },
                 "limit": {
                     "type": "integer",
-                    "description": "Number of messages to fetch for get_messages (1-100, default 10)"
+                    "description": "Number of messages to fetch for get_messages (1-100, default \
+                                    10)"
                 },
                 "options": {
                     "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Choices for send_select (max 25). The user's pick is routed back to you as a new turn."
+                    "maxItems": 25,
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "label": {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "emoji": {"type": "string"},
+                                    "default": {"type": "boolean"}
+                                },
+                                "required": ["label"]
+                            }
+                        ]
+                    },
+                    "description": "Choices for send_select (max 25). A bare string is the label; \
+                                    an object adds a description, a unicode emoji, and default \
+                                    (pre-selected when the menu opens). The user's pick is routed \
+                                    back to you as a new turn."
                 },
                 "placeholder": {
                     "type": "string",
                     "description": "Placeholder text for send_select's menu."
+                },
+                "min_values": {
+                    "type": "integer",
+                    "description": "For send_select: fewest options the user may pick (1-25). \
+                                    Defaults to 1."
+                },
+                "max_values": {
+                    "type": "integer",
+                    "description": "For send_select: most options the user may pick (1-25, capped \
+                                    at the option count). multi_select is sugar for this."
                 },
                 "title": {
                     "type": "string",
@@ -184,36 +338,53 @@ impl Tool for DiscordSendTool {
                 },
                 "fields": {
                     "type": "array",
+                    "maxItems": 5,
                     "items": {
                         "type": "object",
                         "properties": {
                             "label": {"type": "string"},
-                            "multiline": {"type": "boolean"}
+                            "multiline": {"type": "boolean"},
+                            "placeholder": {"type": "string"},
+                            "required": {"type": "boolean"},
+                            "min_length": {"type": "integer"},
+                            "max_length": {"type": "integer"},
+                            "value": {"type": "string"}
                         },
                         "required": ["label"]
                     },
-                    "description": "Form fields for send_form (max 5). Submitted values are routed back to you as a new turn."
+                    "description": "Form fields for send_form (max 5). label and multiline are \
+                                    the base shape; placeholder, required (default true), \
+                                    min_length, max_length and value are optional refinements. \
+                                    Submitted values are routed back to you as a new turn."
                 },
                 "poll_question": {
                     "type": "string",
-                    "description": "Poll question text for send_poll. Discord caps it at 300 chars; longer is truncated"
+                    "description": "Poll question text for send_poll. Discord caps it at 300 \
+                                    chars; longer is truncated"
                 },
                 "poll_options": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Poll answer strings for send_poll. Discord allows up to 10 answers; blank entries are dropped and labels over 55 chars are truncated"
+                    "description": "Poll answer strings for send_poll. Discord allows up to 10 \
+                                    answers; blank entries are dropped and labels over 55 chars \
+                                    are truncated"
                 },
                 "poll_duration_hours": {
                     "type": "integer",
-                    "description": "How long a send_poll stays open, in hours (1-768, the platform 32-day ceiling). Defaults to 24"
+                    "description": "How long a send_poll stays open, in hours (1-768, the \
+                                    platform 32-day ceiling). Defaults to 24"
                 },
                 "multi_select": {
                     "type": "boolean",
-                    "description": "For send_poll: let voters pick several answers. Default false (single choice)"
+                    "description": "For send_poll: let voters pick several answers. For \
+                                    send_select: sugar for max_values = the option count, so the \
+                                    user may pick any number. Default false (single choice)"
                 },
                 "file_path": {
                     "type": "string",
-                    "description": "Local file path to upload (required for send_file). Refused locally if over Discord's 20 MiB per-attachment default or 25 MiB request limit."
+                    "description": "Local file path to upload (required for send_file). Refused \
+                                    locally if over Discord's 20 MiB per-attachment default or 25 \
+                                    MiB request limit."
                 },
                 "caption": {
                     "type": "string",
@@ -221,7 +392,12 @@ impl Tool for DiscordSendTool {
                 },
                 "silent": {
                     "type": "boolean",
-                    "description": "Post with SUPPRESS_NOTIFICATIONS: recipients get the unread badge but no push/desktop notification. Applies to send, reply, send_embed, send_file. Omit to use the channel default (channels.discord.suppress_notifications, false). Set true for scheduled/report output that should not ping the server; set false to force a loud send on a quiet channel."
+                    "description": "Post with SUPPRESS_NOTIFICATIONS: recipients get the unread \
+                                    badge but no push/desktop notification. Applies to send, \
+                                    reply, send_embed, send_file. Omit to use the channel default \
+                                    (channels.discord.suppress_notifications, false). Set true \
+                                    for scheduled/report output that should not ping the server; \
+                                    set false to force a loud send on a quiet channel."
                 }
             },
             "required": ["action"]
@@ -303,6 +479,7 @@ impl Tool for DiscordSendTool {
             "send" => {
                 use serenity::builder::CreateMessage;
                 let text = pget!(get_str(&input, "message")).to_string();
+                let text = crate::channels::discord::table_convert::tables_to_discord(&text);
                 let channel_id = pget!(channel_or_err(channel_id_opt));
                 let channel = ChannelId::new(channel_id);
                 let chunks = crate::channels::discord::handler::split_message(&text, 2000);
@@ -327,6 +504,7 @@ impl Tool for DiscordSendTool {
                 use serenity::builder::CreateMessage;
                 use serenity::model::channel::MessageReference;
                 let text = pget!(get_str(&input, "message")).to_string();
+                let text = crate::channels::discord::table_convert::tables_to_discord(&text);
                 let channel_id = pget!(channel_or_err(channel_id_opt));
                 let message_id = pget!(get_id(&input, "message_id"));
                 let channel = ChannelId::new(channel_id);
@@ -395,6 +573,7 @@ impl Tool for DiscordSendTool {
                 let channel_id = pget!(channel_or_err(channel_id_opt));
                 let message_id = pget!(get_id(&input, "message_id"));
                 let text = pget!(get_str(&input, "message")).to_string();
+                let text = crate::channels::discord::table_convert::tables_to_discord(&text);
                 let edit = EditMessage::new().content(text.as_str());
                 match http
                     .edit_message(
@@ -605,12 +784,16 @@ impl Tool for DiscordSendTool {
                 let gid = pget!(guild_or_err(guild_id_opt));
                 let user_id = pget!(get_id(&input, "user_id"));
                 let role_id = pget!(get_id(&input, "role_id"));
+                if let Some(refused) = moderation_guard(user_id) {
+                    return Ok(refused);
+                }
+                let reason = input.get("reason").and_then(|v| v.as_str());
                 match http
                     .add_member_role(
                         GuildId::new(gid),
                         UserId::new(user_id),
                         RoleId::new(role_id),
-                        None,
+                        reason,
                     )
                     .await
                 {
@@ -626,12 +809,16 @@ impl Tool for DiscordSendTool {
                 let gid = pget!(guild_or_err(guild_id_opt));
                 let user_id = pget!(get_id(&input, "user_id"));
                 let role_id = pget!(get_id(&input, "role_id"));
+                if let Some(refused) = moderation_guard(user_id) {
+                    return Ok(refused);
+                }
+                let reason = input.get("reason").and_then(|v| v.as_str());
                 match http
                     .remove_member_role(
                         GuildId::new(gid),
                         UserId::new(user_id),
                         RoleId::new(role_id),
-                        None,
+                        reason,
                     )
                     .await
                 {
@@ -646,8 +833,12 @@ impl Tool for DiscordSendTool {
             "kick" => {
                 let gid = pget!(guild_or_err(guild_id_opt));
                 let user_id = pget!(get_id(&input, "user_id"));
+                if let Some(refused) = moderation_guard(user_id) {
+                    return Ok(refused);
+                }
+                let reason = input.get("reason").and_then(|v| v.as_str());
                 match http
-                    .kick_member(GuildId::new(gid), UserId::new(user_id), None)
+                    .kick_member(GuildId::new(gid), UserId::new(user_id), reason)
                     .await
                 {
                     Ok(()) => Ok(ToolResult::success(format!("User {user_id} kicked."))),
@@ -659,12 +850,81 @@ impl Tool for DiscordSendTool {
             "ban" => {
                 let gid = pget!(guild_or_err(guild_id_opt));
                 let user_id = pget!(get_id(&input, "user_id"));
+                if let Some(refused) = moderation_guard(user_id) {
+                    return Ok(refused);
+                }
+                let reason = input.get("reason").and_then(|v| v.as_str());
                 match http
-                    .ban_user(GuildId::new(gid), UserId::new(user_id), 0, None)
+                    .ban_user(GuildId::new(gid), UserId::new(user_id), 0, reason)
                     .await
                 {
                     Ok(()) => Ok(ToolResult::success(format!("User {user_id} banned."))),
                     Err(e) => Ok(ToolResult::error(format!("Failed to ban user: {e}"))),
+                }
+            }
+
+            // ── timeout (FR-009 / AC-012) ────────────────────────────────────
+            "timeout" => {
+                use serenity::builder::EditMember;
+                let gid = pget!(guild_or_err(guild_id_opt));
+                let user_id = pget!(get_id(&input, "user_id"));
+                if let Some(refused) = moderation_guard(user_id) {
+                    return Ok(refused);
+                }
+                let duration = pget!(get_str(&input, "duration")).to_string();
+                let secs = match parse_timeout_secs(&duration) {
+                    Ok(secs) => secs,
+                    Err(why) => return Ok(ToolResult::error(why)),
+                };
+                let until = timeout_until_rfc3339(secs, Utc::now());
+                let reason = input.get("reason").and_then(|v| v.as_str());
+                let mut edit = EditMember::new().disable_communication_until(until.clone());
+                if let Some(reason) = reason {
+                    edit = edit.audit_log_reason(reason);
+                }
+                match http
+                    .edit_member(GuildId::new(gid), UserId::new(user_id), &edit, reason)
+                    .await
+                {
+                    Ok(member) => {
+                        let confirmed = member
+                            .communication_disabled_until
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "none".to_string());
+                        Ok(ToolResult::success(format!(
+                            "User {user_id} timed out until {until} (requested {duration}). \
+                             Discord reports the member's timeout as {confirmed}."
+                        )))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!("Failed to time out user: {e}"))),
+                }
+            }
+
+            // ── nickname (FR-009 / AC-012) ───────────────────────────────────
+            "nickname" => {
+                use serenity::builder::EditMember;
+                let gid = pget!(guild_or_err(guild_id_opt));
+                let user_id = pget!(get_id(&input, "user_id"));
+                if let Some(refused) = moderation_guard(user_id) {
+                    return Ok(refused);
+                }
+                let requested = pget!(get_str(&input, "nickname")).to_string();
+                let name = match validate_nickname(&requested) {
+                    Ok(name) => name.to_string(),
+                    Err(why) => return Ok(ToolResult::error(why)),
+                };
+                let reason = input.get("reason").and_then(|v| v.as_str());
+                let mut edit = EditMember::new().nickname(name.clone());
+                if let Some(reason) = reason {
+                    edit = edit.audit_log_reason(reason);
+                }
+                let message = format!("User {user_id} renamed to '{name}'.");
+                match http
+                    .edit_member(GuildId::new(gid), UserId::new(user_id), &edit, reason)
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(message)),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to rename user: {e}"))),
                 }
             }
 
@@ -674,30 +934,52 @@ impl Tool for DiscordSendTool {
                     CreateActionRow, CreateMessage, CreateSelectMenu, CreateSelectMenuKind,
                     CreateSelectMenuOption,
                 };
+                use serenity::model::channel::ReactionType;
                 let text = pget!(get_str(&input, "message")).to_string();
                 let channel_id = pget!(channel_or_err(channel_id_opt));
-                let options: Vec<String> = input
+                let raw_options = input
                     .get("options")
                     .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .take(25)
-                            .collect()
-                    })
+                    .cloned()
                     .unwrap_or_default();
+                let options = component_spec::parse_select_options(&raw_options);
                 if options.is_empty() {
                     return Ok(ToolResult::error(
-                        "send_select requires a non-empty 'options' array.".to_string(),
+                        "send_select needs a non-empty 'options' array.".to_string(),
                     ));
                 }
+                let multi_select = input
+                    .get("multi_select")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let (min_values, max_values) = component_spec::select_arity(
+                    multi_select,
+                    options.len(),
+                    input
+                        .get("min_values")
+                        .and_then(|v| v.as_u64())
+                        .and_then(|n| u8::try_from(n).ok()),
+                    input
+                        .get("max_values")
+                        .and_then(|v| v.as_u64())
+                        .and_then(|n| u8::try_from(n).ok()),
+                );
                 let select_id = uuid::Uuid::new_v4().to_string();
                 let menu_options: Vec<CreateSelectMenuOption> = options
                     .iter()
                     .enumerate()
                     .map(|(i, o)| {
-                        let label: String = o.chars().take(100).collect();
-                        CreateSelectMenuOption::new(label, i.to_string())
+                        let mut opt = CreateSelectMenuOption::new(o.label.clone(), i.to_string());
+                        if let Some(description) = &o.description {
+                            opt = opt.description(description.clone());
+                        }
+                        if let Some(emoji) = &o.emoji {
+                            opt = opt.emoji(ReactionType::Unicode(emoji.clone()));
+                        }
+                        if o.default {
+                            opt = opt.default_selection(true);
+                        }
+                        opt
                     })
                     .collect();
                 let mut menu = CreateSelectMenu::new(
@@ -709,6 +991,12 @@ impl Tool for DiscordSendTool {
                 if let Some(ph) = input.get("placeholder").and_then(|v| v.as_str()) {
                     menu = menu.placeholder(ph);
                 }
+                if let Some(min) = min_values {
+                    menu = menu.min_values(min);
+                }
+                if let Some(max) = max_values {
+                    menu = menu.max_values(max);
+                }
                 let message = CreateMessage::new()
                     .content(text)
                     .components(vec![CreateActionRow::SelectMenu(menu)]);
@@ -717,7 +1005,8 @@ impl Tool for DiscordSendTool {
                     .await
                 {
                     Ok(_) => {
-                        self.discord_state.register_select(select_id, options).await;
+                        let labels = options.iter().map(|o| o.label.clone()).collect();
+                        self.discord_state.register_select(select_id, labels).await;
                         Ok(ToolResult::success(
                             "Select menu posted; the pick will arrive as a new turn.".to_string(),
                         ))
@@ -801,23 +1090,12 @@ impl Tool for DiscordSendTool {
                     .and_then(|v| v.as_str())
                     .unwrap_or("Form")
                     .to_string();
-                let fields: Vec<(String, bool)> = input
+                let raw_fields = input
                     .get("fields")
                     .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|f| {
-                                let label = f.get("label")?.as_str()?.to_string();
-                                let multiline = f
-                                    .get("multiline")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false);
-                                Some((label, multiline))
-                            })
-                            .take(5)
-                            .collect()
-                    })
+                    .cloned()
                     .unwrap_or_default();
+                let fields = component_spec::parse_form_fields(&raw_fields);
                 if fields.is_empty() {
                     return Ok(ToolResult::error(
                         "send_form requires a non-empty 'fields' array (max 5).".to_string(),
@@ -911,9 +1189,10 @@ impl Tool for DiscordSendTool {
             }
 
             unknown => Ok(ToolResult::error(format!(
-                "Unknown action '{unknown}'. Valid: send, reply, react, unreact, edit, delete, send_select, send_form, \
+                "Unknown action '{unknown}'. Valid: send, reply, react, unreact, edit, delete, \
+                 send_select, send_form, \
                  send_poll, pin, unpin, create_thread, send_embed, get_messages, \
-                 list_channels, add_role, remove_role, kick, ban, send_file"
+                 list_channels, add_role, remove_role, kick, ban, timeout, nickname, send_file"
             ))),
         }
     }

@@ -262,6 +262,13 @@ impl CronScheduler {
             }
         }
 
+        // FR-010: mirror the job table onto the guild's scheduled events. Runs
+        // at most once every fifteen minutes, and never fails the tick: a
+        // mirror that cannot be refreshed must not stop the schedule it
+        // mirrors. Deliberately awaited rather than spawned, because a spawned
+        // task loses the task-local profile home this loop runs inside.
+        super::scheduled_events::sync_if_due(&jobs).await;
+
         for job in &jobs {
             if self.is_due(job, now) {
                 tracing::info!("Cron job '{}' ({}) is due — executing", job.name, job.id);
@@ -1145,11 +1152,12 @@ pub(crate) fn parse_discord_target(target: &str) -> Option<(String, DiscordDeliv
 /// (discord-api-docs `developers/resources/channel.mdx:98`).
 const CHANNEL_FLAG_REQUIRE_TAG: u64 = 1 << 4;
 
-/// The tag policy this ships with, chosen from the two #1851 offered: posts go
-/// out with **no** `applied_tags`, so a forum carrying `REQUIRE_TAG` is refused
-/// before the request instead of dying on a 400 nobody reads. No
-/// `discord.forum_report_tag` knob is added here; that is the other option and
-/// stays open as its own change.
+/// The tag policy: a forum carrying `REQUIRE_TAG` is refused before the
+/// request instead of dying on a 400 nobody reads, and the refusal names the
+/// tags on offer. A post carries `applied_tags` when
+/// `channels.discord.forum_report_tag` names one of those tags (FR-008), the
+/// configured-tag option #1851 left open, so a tagged forum is reachable
+/// without an operator guessing at snowflake ids.
 ///
 /// `flags` is optional on the channel object, so absence means 0: no tag
 /// required.
@@ -1174,6 +1182,41 @@ pub(crate) fn forum_tag_names(channel: &serde_json::Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Resolve the configured tag NAME to the id the API wants. Discord sends ids
+/// as strings (`available_tags[].id`, channel.mdx:386-388) while operators know
+/// tags by name, so the name is what config carries and the id is what the
+/// request needs. Matching is case-insensitive: the operator types the name by
+/// hand and a tag name is not a code identifier.
+pub(crate) fn resolve_forum_tag(channel: &serde_json::Value, name: &str) -> Option<String> {
+    channel
+        .get("available_tags")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .find(|tag| {
+            tag.get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|tag_name| tag_name.eq_ignore_ascii_case(name))
+        })
+        .and_then(|tag| tag.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+/// The `applied_tags` a post carries: the configured tag resolved to its id,
+/// empty when nothing is configured or the knob is blank. Whether empty is
+/// legal is the caller's decision, [`forum_requires_tag`] is what answers it.
+pub(crate) fn forum_applied_tags(
+    channel: &serde_json::Value,
+    configured: Option<&str>,
+) -> Vec<String> {
+    configured
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .and_then(|name| resolve_forum_tag(channel, name))
+        .into_iter()
+        .collect()
 }
 
 /// `GUILD_FORUM` = 15 and `GUILD_MEDIA` = 16 (channel.mdx:79-80): the two types
@@ -1207,14 +1250,23 @@ pub(crate) fn forum_post_title(job_name: &str, when: chrono::DateTime<Utc>) -> S
 }
 
 /// Body for `POST /channels/{channel.id}/threads` (channel.mdx:651-652): the
-/// post `name` and the first message of the thread (:676-680, message params at
-/// :684-690). `applied_tags` is deliberately absent; [`forum_requires_tag`] is
-/// the policy that makes sending no tags safe.
-pub(crate) fn forum_post_body(name: &str, content: &str) -> serde_json::Value {
-    serde_json::json!({
+/// post `name`, the first message of the thread (:676-680, message params at
+/// :684-690), and `applied_tags` when the caller resolved a tag (:98-99).
+/// The field is omitted rather than sent empty: an empty array is not "no
+/// tag", it is a request a `REQUIRE_TAG` channel rejects for carrying none.
+pub(crate) fn forum_post_body(
+    name: &str,
+    content: &str,
+    applied_tags: &[String],
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
         "name": name,
         "message": { "content": content },
-    })
+    });
+    if !applied_tags.is_empty() {
+        body["applied_tags"] = serde_json::json!(applied_tags);
+    }
+    body
 }
 
 /// Parse a session target out of a `deliver_to` entry (fork #144).
@@ -1600,7 +1652,7 @@ async fn deliver_http(url: &str, job_name: &str, content: &str, api_key: Option<
 /// workspace's `keys.toml`. Cron delivery runs outside any channel's live
 /// connection, so it reads the credential straight off disk.
 #[cfg(any(feature = "telegram", feature = "discord", feature = "slack"))]
-fn read_channel_secret(channel: &str, field: &str) -> Option<String> {
+pub(crate) fn read_channel_secret(channel: &str, field: &str) -> Option<String> {
     let keys_path = crate::brain::BrainLoader::resolve_path().join("keys.toml");
     let content = std::fs::read_to_string(&keys_path).ok()?;
     content.parse::<toml::Table>().ok().and_then(|t| {
@@ -1832,8 +1884,11 @@ async fn deliver_discord(channel_id: &str, message: &str) {
 ///
 /// The channel object is read once first (`GET /channels/{id}`, channel.mdx:395
 /// -398) to apply the tag policy in [`forum_requires_tag`] and to confirm the
-/// target is a forum or media channel. Both checks fail loudly in the log
-/// rather than firing a request Discord is going to reject.
+/// target is a forum or media channel. The configured tag
+/// (`channels.discord.forum_report_tag`) resolves against that object's own
+/// `available_tags`, because the id a post needs exists only there. Every check
+/// fails loudly in the log rather than firing a request Discord is going to
+/// reject.
 #[cfg(feature = "discord")]
 async fn deliver_discord_forum(forum_id: &str, job_name: &str, message: &str) {
     let Some(token) = read_channel_secret("discord", "token") else {
@@ -1887,15 +1942,38 @@ async fn deliver_discord_forum(forum_id: &str, job_name: &str, message: &str) {
         );
         return;
     }
-    if forum_requires_tag(&channel) {
-        tracing::error!(
-            "Discord forum delivery: channel {forum_id} sets REQUIRE_TAG, so every post needs \
-             applied_tags and this build sends none (the #1851 policy). Tags on offer: [{}]. \
-             Point the job at a tagless forum, or land the configured-tag option; not posting",
-            forum_tag_names(&channel).join(", ")
-        );
-        return;
-    }
+    let configured_tag = crate::config::Config::load()
+        .ok()
+        .and_then(|config| config.channels.discord.forum_report_tag)
+        .map(|tag| tag.trim().to_string())
+        .filter(|tag| !tag.is_empty());
+    let applied_tags = match configured_tag.as_deref() {
+        Some(name) => {
+            let ids = forum_applied_tags(&channel, Some(name));
+            if ids.is_empty() {
+                tracing::error!(
+                    "Discord forum delivery: channels.discord.forum_report_tag is '{name}' but \
+                     channel {forum_id} offers no tag by that name, so the post would go out \
+                     untagged; not posting. Tags on offer: [{}]",
+                    forum_tag_names(&channel).join(", ")
+                );
+                return;
+            }
+            tracing::info!("Discord forum delivery: post in {forum_id} carries tag '{name}'");
+            ids
+        }
+        None if forum_requires_tag(&channel) => {
+            tracing::error!(
+                "Discord forum delivery: channel {forum_id} sets REQUIRE_TAG, so every post \
+                 needs applied_tags and none is configured. Set \
+                 channels.discord.forum_report_tag to one of the tags on offer, or point the \
+                 job at a tagless forum; not posting. Tags on offer: [{}]",
+                forum_tag_names(&channel).join(", ")
+            );
+            return;
+        }
+        None => Vec::new(),
+    };
 
     let title = forum_post_title(job_name, Utc::now());
     let chunks = split_for_delivery(message, 2000);
@@ -1905,7 +1983,7 @@ async fn deliver_discord_forum(forum_id: &str, job_name: &str, message: &str) {
     let thread_id = match client
         .post(format!("{base}/channels/{forum_id}/threads"))
         .header("Authorization", &auth)
-        .json(&forum_post_body(&title, first))
+        .json(&forum_post_body(&title, first, &applied_tags))
         .send()
         .await
     {

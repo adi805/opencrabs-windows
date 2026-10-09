@@ -7,6 +7,7 @@
 
 pub mod pipeline;
 mod schedule_util;
+pub mod scheduled_events;
 pub(crate) mod scheduler;
 pub mod send_scope;
 pub mod trigger;

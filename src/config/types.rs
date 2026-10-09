@@ -976,6 +976,22 @@ pub struct DiscordConfig {
     /// `[channels.discord.progress]`.
     #[serde(default)]
     pub progress: ProgressDisplayConfig,
+    /// Forum tag applied to every `discord:<id>:forum` cron post (FR-008),
+    /// written by NAME because tag ids are snowflakes an operator cannot
+    /// read. Resolved against the target channel's `available_tags` at post
+    /// time; a name that resolves to nothing refuses the post instead of
+    /// silently sending an untagged one. Unset (the default) keeps the
+    /// tagless behaviour, so a forum that requires a tag still refuses
+    /// loudly rather than dying on a 400.
+    #[serde(default)]
+    pub forum_report_tag: Option<String>,
+    /// Guild whose scheduled events mirror the cron job table (FR-010).
+    /// Numeric guild ID as a string, e.g. `"1234567890123456789"`. Unset
+    /// (the default) leaves the mirror off, so an install that never sets it
+    /// makes no scheduled-event request at all. Only events this bot created
+    /// are managed; a moderator's own events in the same guild are untouched.
+    #[serde(default)]
+    pub scheduled_events_guild: Option<String>,
 }
 
 /// Proactive Discord write-governor knobs (`[channels.discord.rate_limiter]`).
@@ -1107,6 +1123,8 @@ impl Default for DiscordConfig {
             welcome_channel: None,
             rate_limiter: DiscordRateLimiterConfig::default(),
             progress: ProgressDisplayConfig::default(),
+            forum_report_tag: None,
+            scheduled_events_guild: None,
         }
     }
 }

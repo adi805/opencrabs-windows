@@ -17,14 +17,15 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use super::component_spec::FormField;
 use super::writes::{self, Class};
 
 /// One pending modal form: what the modal shows when the button is hit.
 #[derive(Debug, Clone)]
 pub(crate) struct FormSpec {
     pub title: String,
-    /// (label, multiline) per field, max 5 (Discord's modal cap).
-    pub fields: Vec<(String, bool)>,
+    /// One entry per modal input, max 5 (Discord's modal cap).
+    pub fields: Vec<FormField>,
 }
 
 /// Resolve (or create) the session for interaction input, mirroring

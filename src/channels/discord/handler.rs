@@ -1107,9 +1107,8 @@ pub(crate) async fn handle_message(
     // cross-surface sends without guessing (#533, mirror of upstream #510).
     let channel_id = msg.channel_id.get();
     let agent_input = format!(
-        "[Channel: Discord (channel_id: {channel_id}) — your text response is automatically sent to this channel. \
-         Do NOT call discord_send to deliver your answer. Only use discord_send for: \
-         sending to a different channel, embeds, reactions, threads, files, or moderation.]\n{agent_input}"
+        "{}{agent_input}",
+        super::formatting_prompt::discord_preamble(channel_id)
     );
 
     // Register channel for approval routing, then send with approval callback

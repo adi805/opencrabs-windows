@@ -124,3 +124,29 @@ pub fn refusal_for(channel: &str, target_id: &str) -> String {
 pub fn refusal(chat_id: i64) -> String {
     refusal_for("telegram", &chat_id.to_string())
 }
+
+/// May the current task change a guild member's standing?
+///
+/// Moderation is not a send, but it is the same authority question: what did
+/// this turn get permission for. A cron turn whose job named no `deliver_to`
+/// (`Nowhere`) has no channel to act through, so it may not time out, rename,
+/// re-role, kick or ban anyone either. The recalled-text path that once posted
+/// a report into a stranger's group could otherwise mute that group's members.
+///
+/// An unscoped turn (an ordinary conversation) is unrestricted, and a
+/// `Permitted` turn is allowed: the guild a member belongs to cannot be
+/// resolved from a channel id without a request, so the target guild is not
+/// cross-checked here. That limit is deliberate, and this is where it is
+/// stated.
+pub fn may_moderate() -> bool {
+    !matches!(permission(), SendPermission::Nowhere)
+}
+
+/// Why a moderation action was refused, for the tool result the model reads.
+pub fn moderation_refusal(user_id: u64) -> String {
+    format!(
+        "Refused: this scheduled job has no deliver_to, so it may not moderate anyone either \
+         (attempted user {user_id}). Its output stays in its own session. Set deliver_to on \
+         the job if it should act on members."
+    )
+}
