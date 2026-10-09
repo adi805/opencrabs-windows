@@ -22,6 +22,67 @@ pub(crate) enum Outcome {
     TimedOut,
 }
 
+/// How many times a spawn is reissued before the kernel's refusal is reported.
+///
+/// Five attempts, matching `binary_health::health_check_binary`, which retries
+/// the same kernel refusal for a freshly swapped binary.
+pub(crate) const SPAWN_ATTEMPTS: u32 = 5;
+
+/// The pause before reissuing a spawn, multiplied by the attempt number.
+///
+/// 200ms per attempt (200/400/600/800ms across the four retries) is the ladder
+/// `binary_health` already walks. The ~2s total is far more than the window that
+/// produces the refusal, and it is only ever paid when a spawn actually failed.
+const SPAWN_RETRY_BACKOFF: Duration = Duration::from_millis(200);
+
+/// Is this spawn failure one the kernel clears by itself?
+///
+/// `ETXTBSY` (os 26) is the one that bit: `exec` refuses a file that is open for
+/// writing *somewhere*, and nothing in this crate writes a program and then runs
+/// it. A `fork` in ANOTHER thread inherits every fd the process holds at that
+/// instant, so a child forked while a test fixture was mid-write keeps that stub
+/// counted as busy until the child execs. The file is never actually corrupt,
+/// which is exactly why the answer is "ask again" rather than "report it".
+///
+/// `ENOENT` (os 2) rides along for the reason `binary_health` already documents:
+/// the write may not have settled. Anything else is a real answer (`EACCES`,
+/// `ENOEXEC`, a program that genuinely does not exist) and is returned on the
+/// first attempt.
+pub(crate) fn transient_spawn_error(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(26) | Some(2))
+}
+
+/// Reissue `attempt` while the kernel refuses for a transient reason.
+///
+/// Split out of [`run_bounded`] so the policy is testable against synthetic
+/// errnos instead of a race: the caller supplies the spawn, so a test can make
+/// the first attempts fail with `ETXTBSY` and pin that the retry happens, that a
+/// permanent error is not retried, and that a refusal which never clears still
+/// gives up and is reported. The race itself cannot be pinned from inside a
+/// test; the policy can.
+pub(crate) async fn retry_transient_spawn<T, F>(mut attempt: F) -> std::io::Result<T>
+where
+    F: FnMut() -> std::io::Result<T>,
+{
+    let mut tries = 0u32;
+    loop {
+        tries += 1;
+        match attempt() {
+            Ok(value) => return Ok(value),
+            Err(e) if tries < SPAWN_ATTEMPTS && transient_spawn_error(&e) => {
+                tracing::warn!(
+                    target: "evolve",
+                    attempt = tries,
+                    os_error = ?e.raw_os_error(),
+                    "evolve: fresh child not exec-able yet, retrying spawn"
+                );
+                tokio::time::sleep(SPAWN_RETRY_BACKOFF.saturating_mul(tries)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Run `program` with `args`, stdin detached and both output pipes captured,
 /// under `budget`.
 ///
@@ -41,19 +102,27 @@ pub(crate) enum Outcome {
 ///
 /// `Err` is a spawn failure only. A child that ran and exited non-zero is
 /// [`Outcome::Exited`] carrying a failing status, because the caller words those
-/// two outcomes differently.
+/// two outcomes differently. A spawn the kernel refuses *transiently* is reissued
+/// before it is reported, because the refusal can come from a `fork` in another
+/// thread rather than from anything wrong with `program`; see
+/// [`retry_transient_spawn`].
 pub(crate) async fn run_bounded(
     program: &str,
     args: &[&str],
     budget: Duration,
 ) -> std::io::Result<Outcome> {
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    let child = cmd.spawn()?;
+    // The command is rebuilt per attempt on purpose: a `Command` whose `spawn`
+    // already failed is not guaranteed to be reusable.
+    let child = retry_transient_spawn(|| {
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        cmd.spawn()
+    })
+    .await?;
     match tokio::time::timeout(budget, child.wait_with_output()).await {
         Ok(Ok(output)) => Ok(Outcome::Exited(output)),
         Ok(Err(e)) => Err(e),
