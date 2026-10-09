@@ -171,12 +171,12 @@ cargo test --all-features            # run the suite (incl. your new tests)
 cargo fmt --all                      # auto-format before committing
 
 # Run the EXACT CI checks before submitting a PR
-cargo fmt --all -- --check                # soft-fail in CI today, still expected on your diff
+cargo fmt --all -- --check                # hard gate in CI: a diff blocks the PR
 cargo clippy --locked --lib --bins --tests --examples --all-features -- -D warnings
 cargo test --locked --profile ci --all-features --verbose
 ```
 
-**`cargo clippy` and `cargo test` are hard CI gates: they must pass.** PRs with failing CI will not be merged. We'll comment on the PR explaining what's failing and how to fix it. Push the fix, wait for CI to go green, and the PR will be reviewed. The `cargo fmt --check` step is a soft-fail in CI today (`continue-on-error: true` in `ci.yml`): legacy unformatted code would otherwise block every PR until a fmt sweep lands on main, after which it becomes a hard gate. Format the code you touch anyway; an unformatted diff gets bounced in review.
+**`cargo fmt --check`, `cargo clippy` and `cargo test` are hard CI gates: they must pass.** PRs with failing CI will not be merged. We'll comment on the PR explaining what's failing and how to fix it. Push the fix, wait for CI to go green, and the PR will be reviewed. The formatting step runs first in the `Lint` job, so an unformatted line fails the job before clippy reports anything: run `cargo fmt --all`, review the diff, and do not push if the check fails. If you cannot run the check, say the change is unverified rather than assuming CI will pass. `.githooks/pre-push` enforces this locally; see `AGENTS.md` to install it.
 
 `cargo clippy` is the lint pass we trust — `cargo check` only type-checks and misses the lint rules CI enforces. Iterate with clippy locally so you don't burn a CI run discovering a `-D warnings` failure.
 
@@ -371,7 +371,7 @@ To be transparent, here's what will get your PR closed immediately:
 
 - **Stub/placeholder code** — Empty implementations, `todo!()`, functions that return hardcoded empty values
 - **No linked issue** — Feature PRs without an approved issue
-- **Fails CI** — If `cargo clippy` or `cargo test` fail (the hard gates; `cargo fmt --check` is a soft-fail in CI today, but an unformatted diff still gets bounced in review)
+- **Fails CI** — If `cargo fmt --check`, `cargo clippy`, or `cargo test` fail (all three are hard gates; the fmt check runs first)
 - **Unrelated changes** — Reformatting files you didn't modify, drive-by "improvements"
 - **No tests** — Bug fixes without a regression test, features without any tests
 - **Tests that write the live config** — A test that saves `config.toml` or `keys.toml` outside a home override

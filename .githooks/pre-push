@@ -1,0 +1,88 @@
+#!/bin/sh
+# Pre-push gate: refuse to push Rust that is not rustfmt-clean.
+#
+# CI runs `cargo fmt --all -- --check` as a hard fail (.github/workflows/ci.yml,
+# "Check formatting", #120). That is the last line of defence; this hook is the
+# first, so an unformatted diff is caught before it costs a 20-45 minute CI
+# round. A formatting diff also fails the whole Lint job before clippy runs, so
+# one bad line hides every clippy verdict in that round.
+#
+# Never bypass this with `git push --no-verify`. If the check cannot run, report
+# the push as UNVERIFIED instead of claiming CI will pass. See AGENTS.md.
+#
+# Install once per working environment: sh scripts/install-hooks.sh
+
+set -u
+
+zero=0000000000000000000000000000000000000000
+
+refuse() {
+    echo "" >&2
+    echo "pre-push: REFUSED - $1" >&2
+    echo "pre-push: run the formatter, review 'git diff', then push again." >&2
+    echo "pre-push: do not retry with --no-verify; report the push as UNVERIFIED." >&2
+    exit 1
+}
+
+# Does this push carry a Rust file at all? Read the pre-push ref lines from
+# stdin. With no Rust file in the push there can be no formatting regression,
+# and the authoritative check below costs ~50s, so skip it. stdin is a terminal
+# when a human runs the hook by hand: do not block waiting on it.
+saw=0
+unknown=0
+touched=""
+if [ ! -t 0 ]; then
+    while read -r _local_ref local_sha _remote_ref remote_sha; do
+        saw=1
+        if [ "$remote_sha" = "$zero" ]; then
+            # New branch: no remote tip to diff against, so check everything.
+            unknown=1
+            continue
+        fi
+        touched="$touched
+$(git diff --name-only --diff-filter=d "$remote_sha" "$local_sha" 2>/dev/null)"
+    done
+fi
+
+if [ "$saw" = "1" ] && [ "$unknown" = "0" ] && ! printf '%s\n' "$touched" | grep -q '\.rs$'; then
+    echo "pre-push: no Rust file in this push; formatting check skipped."
+    exit 0
+fi
+
+if command -v cargo >/dev/null 2>&1; then
+    echo "pre-push: cargo fmt --all -- --check"
+    cargo fmt --all -- --check || refuse "cargo fmt --all -- --check reported a diff."
+    echo "pre-push: formatting clean."
+    exit 0
+fi
+
+# No cargo on this host (the STB agent box ships rustc + rustfmt only). Drive
+# the standalone rustfmt from the crate roots: that visits exactly the files
+# `cargo fmt --all` visits. Checking a raw file list instead would also lint
+# files that are NOT in the module tree (src/tests/mod.rs keeps several
+# `//pub mod ...` entries commented out) and report diffs CI never sees.
+RUSTFMT=$(command -v rustfmt 2>/dev/null || true)
+if [ -z "$RUSTFMT" ] && [ -x /root/rftc/rustfmt-1.99.0-aarch64-unknown-linux-gnu/rustfmt-preview/bin/rustfmt ]; then
+    RUSTFMT=/root/rftc/rustfmt-1.99.0-aarch64-unknown-linux-gnu/rustfmt-preview/bin/rustfmt
+    LD_LIBRARY_PATH=/root/rftc/rustc-1.99.0-aarch64-unknown-linux-gnu/rustc/lib
+    export LD_LIBRARY_PATH
+fi
+[ -n "$RUSTFMT" ] || refuse "neither cargo nor rustfmt is installed here, so formatting CANNOT be verified."
+
+# The crate's edition lives in Cargo.toml. .rustfmt.toml still pins
+# edition = "2021", and a bare `rustfmt --check <file>` then reports phantom
+# import-order diffs; passing the manifest edition is what cargo fmt does.
+EDITION=$(sed -n 's/^[[:space:]]*edition *= *"\([0-9]*\)"/\1/p' Cargo.toml 2>/dev/null | head -1)
+[ -n "$EDITION" ] || refuse "cannot read 'edition' from Cargo.toml."
+
+roots=""
+for candidate in src/lib.rs src/main.rs build.rs examples/*.rs; do
+    [ -f "$candidate" ] && roots="$roots $candidate"
+done
+[ -n "$roots" ] || refuse "no crate root found; run this from the repository root."
+
+echo "pre-push: cargo absent; checking the crate roots with rustfmt --edition $EDITION"
+# shellcheck disable=SC2086  # $roots is a deliberate word-split list.
+$RUSTFMT --check --edition "$EDITION" $roots || refuse "rustfmt reported a diff."
+echo "pre-push: formatting clean."
+exit 0
