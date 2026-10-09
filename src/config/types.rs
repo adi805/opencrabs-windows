@@ -1253,6 +1253,45 @@ pub struct WhatsAppConfig {
     /// plus a stored `newsletter` row in `channel_messages` only.
     #[serde(default)]
     pub newsletters: Vec<String>,
+    /// Per-room access control and behaviour, keyed by group JID
+    /// (`<id>@g.us`, the `Display` of the source chat). Mirrors
+    /// `TelegramConfig.groups`: a room's list admits a number to THAT room
+    /// only, so a group member can be served without being granted DM access
+    /// or access to any other group (#161).
+    #[serde(default)]
+    pub groups: std::collections::HashMap<String, WhatsAppGroupConfig>,
+}
+
+/// Per-room access control + behaviour override for one WhatsApp group.
+/// Lives under `[channels.whatsapp.groups.<chat_id>]`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WhatsAppGroupConfig {
+    /// The group's human-readable subject, so config stays readable by a
+    /// person or an agent inspecting it. Sections are keyed by group JID,
+    /// which on its own says nothing about which group it is.
+    ///
+    /// Display metadata ONLY. Access control keys off the chat id and never
+    /// reads this. Unlike Telegram's, it is NOT refreshed from the server:
+    /// WhatsApp does not carry a group subject on ordinary inbound messages,
+    /// so this holds whatever a human or agent wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deser_opt_text_compat")]
+    pub name: Option<String>,
+    /// Phone numbers allowed to interact ONLY within this group. They are NOT
+    /// granted DM access (that needs the global `allowed_phones` or owner).
+    #[serde(default, deserialize_with = "deser_users_compat")]
+    pub allowed_phones: Vec<String>,
+    /// Per-room respond mode. Overrides the channel-level behaviour for this
+    /// room when set; `None` answers everything the gate already allows,
+    /// which is what every room does today.
+    #[serde(default)]
+    pub respond_to: Option<RespondTo>,
+    /// Opt-in open mode for THIS group: when true, any member of this group
+    /// passes the ACL without being listed in `allowed_phones`. DMs and every
+    /// other group stay locked (a member here is still refused in DMs and in
+    /// other groups unless separately allowed). Default: false.
+    #[serde(default)]
+    pub open: bool,
 }
 
 impl WhatsAppConfig {
@@ -1261,6 +1300,22 @@ impl WhatsAppConfig {
     /// `allowed_phones` (WhatsApp's allow list).
     pub fn is_owner(&self, user_id: &str) -> bool {
         crate::config::owner::is_owner(&self.allowed_phones, &self.bot_owner, user_id)
+    }
+
+    /// Respond mode for a room: the group's override if set, else `All`.
+    ///
+    /// `All` rather than Telegram's `Mention` default, deliberately. Telegram
+    /// has always shipped mention-only as its default, so a fresh install
+    /// expects it. WhatsApp has been answering every allow-listed sender in
+    /// every group it is in since the channel existed, so defaulting a room to
+    /// mention-only would silently stop an existing install answering where it
+    /// works today. Opting a room in is the change (#161); moving the default
+    /// is not.
+    pub fn respond_to_for(&self, chat_id: &str) -> RespondTo {
+        self.groups
+            .get(chat_id)
+            .and_then(|g| g.respond_to)
+            .unwrap_or(RespondTo::All)
     }
 }
 
