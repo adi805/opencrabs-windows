@@ -55,7 +55,7 @@ jobs:
     # 36069934718); one noisy neighbor on the hosted fleet is a false red.
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Refuse to administer the host's rustup
         # dtolnay/rust-toolchain manages rustup on whatever machine it runs
@@ -87,12 +87,12 @@ jobs:
           done
 
       - name: Install Rust (from rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
           components: rustfmt, clippy
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -152,7 +152,7 @@ jobs:
             target: aarch64-apple-darwin
             features: --all-features
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Refuse to administer the host's rustup
         # dtolnay/rust-toolchain manages rustup on whatever machine it runs
@@ -184,7 +184,7 @@ jobs:
           done
 
       - name: Install Rust (from rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
@@ -195,7 +195,7 @@ jobs:
       # build chronically rides the 40m timeout cap. Saving in the run's own
       # scope lets the 2nd..Nth push of a PR hit warm artifacts.
       # Mirrors the `test` job below, which already drops the restriction.
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
 
@@ -236,7 +236,7 @@ jobs:
       run: ${{ steps.relevant.outputs.run }}
     steps:
       # fetch-depth 0: the filter below diffs against the PR base sha.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
@@ -314,10 +314,10 @@ jobs:
     # scrolling by as advisory.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Rust (from rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
           components: rustfmt, clippy
@@ -326,15 +326,15 @@ jobs:
       # workflow_dispatch, so a `refs/heads/main`-only save-if never fires —
       # the cache would stay cold forever. Saving in the run's own scope
       # lets the 2nd..Nth push of a PR hit warm artifacts.
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
 
       - name: Install CMake (Windows)
-        uses: lukka/get-cmake@latest
+        uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # latest
 
       - name: Install NASM (Windows)
-        uses: ilammy/setup-nasm@v1
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
 
       - name: Build
         shell: bash
@@ -517,7 +517,7 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Linter proves its own teeth
         run: python3 scripts/check-windows-footguns.py --self-test
@@ -548,10 +548,19 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # The lint walks base..head, so both ends must be present.
           fetch-depth: 0
+
+      # A pin without a guard regresses: the next `uses: foo@v2` pasted from an
+      # action's README is a mutable ref executing inside this repo. Cheap to
+      # check, and it fails closed rather than warning.
+      - name: Pinned-action check proves its own teeth
+        run: python3 scripts/check-pinned-actions.py --self-test
+
+      - name: Every workflow action is pinned to a commit
+        run: python3 scripts/check-pinned-actions.py
 
       # Same shape as the two Python linters above: the rule set proves it
       # still bites before it is trusted to judge a PR. A regex that silently
@@ -591,7 +600,7 @@ jobs:
     # run was superseded, so 90 is the cold-cache ceiling.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Refuse to administer the host's rustup
         # dtolnay/rust-toolchain manages rustup on whatever machine it runs
@@ -623,11 +632,11 @@ jobs:
           done
 
       - name: Install Rust (from rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -655,7 +664,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Refuse to administer the host's rustup
         # dtolnay/rust-toolchain manages rustup on whatever machine it runs
@@ -687,12 +696,12 @@ jobs:
           done
 
       - name: Install Rust (from rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           tool: cargo-audit
 
@@ -768,9 +777,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -805,7 +814,7 @@ jobs:
           done
 
       - name: Install Rust (from rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
 
@@ -814,7 +823,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y libasound2-dev
 
       - name: Install tarpaulin
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           tool: cargo-tarpaulin
 
@@ -825,7 +834,7 @@ jobs:
         # local-tts added when feature lands on main.
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           files: ./cobertura.xml
 

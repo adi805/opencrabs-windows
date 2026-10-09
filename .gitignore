@@ -118,3 +118,7 @@ bench_scratch/
 # Regenerable and ~28MB per APK, so a stray `git add -A` would commit a binary
 # the next build overwrites anyway.
 android/out/
+
+# Python bytecode caches (scripts/ holds checked-in tooling)
+__pycache__/
+*.py[cod]

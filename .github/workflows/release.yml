@@ -80,7 +80,7 @@ jobs:
       version: ${{ steps.check.outputs.version }}
       crate: ${{ steps.check.outputs.crate }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Check if already published
         id: check
@@ -130,7 +130,9 @@ jobs:
 
       - name: Install Rust
         if: steps.check.outputs.published == 'false'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
 
       - name: Install ALSA dev
         if: steps.check.outputs.published == 'false'
@@ -207,7 +209,7 @@ jobs:
             asset_suffix: macos-arm64
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set version
         id: version
@@ -244,8 +246,9 @@ jobs:
           done
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Install Linux dependencies
@@ -256,11 +259,11 @@ jobs:
 
       - name: Install CMake (Windows)
         if: matrix.os == 'windows-latest'
-        uses: lukka/get-cmake@latest
+        uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # latest
 
       - name: Install NASM (Windows)
         if: matrix.os == 'windows-latest'
-        uses: ilammy/setup-nasm@v1
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
 
       - name: Build
         shell: bash
@@ -306,64 +309,13 @@ jobs:
           [ "$status" -eq 0 ] || exit 1
           echo "$ver" | grep -qi opencrabs
 
-      - name: Download and bundle RTK 0.40.0
+      - name: Download and bundle RTK
         shell: bash
         run: |
-          RTK_VERSION="0.40.0"
-          RTK_TARGET="${{ matrix.target }}"
-          
-          # Map Rust targets to RTK release asset names (v0.40.0 actual names)
-          case "$RTK_TARGET" in
-            x86_64-unknown-linux-gnu)
-              RTK_ASSET="rtk-x86_64-unknown-linux-musl.tar.gz"
-              ;;
-            aarch64-unknown-linux-gnu)
-              RTK_ASSET="rtk-aarch64-unknown-linux-gnu.tar.gz"
-              ;;
-            x86_64-apple-darwin)
-              RTK_ASSET="rtk-x86_64-apple-darwin.tar.gz"
-              ;;
-            aarch64-apple-darwin)
-              RTK_ASSET="rtk-aarch64-apple-darwin.tar.gz"
-              ;;
-            x86_64-pc-windows-msvc)
-              RTK_ASSET="rtk-x86_64-pc-windows-msvc.zip"
-              ;;
-            *)
-              echo "Unknown target: $RTK_TARGET"
-              exit 1
-              ;;
-          esac
-          
-          RTK_URL="https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/${RTK_ASSET}"
-          echo "Downloading RTK from: $RTK_URL"
-          
-          curl -L -o "/tmp/$RTK_ASSET" "$RTK_URL"
-          
-          # Extract RTK binary
-          mkdir -p /tmp/rtk-extract
-          if [[ "$RTK_ASSET" == *.zip ]]; then
-            unzip -q "/tmp/$RTK_ASSET" -d /tmp/rtk-extract
-          else
-            tar xzf "/tmp/$RTK_ASSET" -C /tmp/rtk-extract
-          fi
-          
-          # Find the rtk binary in the extracted archive
-          RTK_BINARY=$(find /tmp/rtk-extract -name "rtk" -o -name "rtk.exe" | head -1)
-          if [ -z "$RTK_BINARY" ]; then
-            echo "RTK binary not found in archive"
-            ls -laR /tmp/rtk-extract
-            exit 1
-          fi
-          
-          # Copy to the release directory alongside opencrabs
-          RELEASE_DIR="target/${{ matrix.target }}/release"
-          cp "$RTK_BINARY" "$RELEASE_DIR/"
-          if [[ "${{ matrix.os }}" != "windows-latest" ]]; then
-            chmod +x "$RELEASE_DIR/rtk"
-          fi
-          echo "RTK binary bundled at: $RELEASE_DIR/$(basename $RTK_BINARY)"
-          ls -lh "$RELEASE_DIR/$(basename $RTK_BINARY)"
+          # Digest verification lives in the script, next to the table, so
+          # this call site cannot drift away from what it trusts.
+          bash scripts/fetch-rtk.sh "${{ matrix.target }}" "target/${{ matrix.target }}/release"
+          ls -lh target/${{ matrix.target }}/release/rtk*
 
       - name: Strip binary (Unix)
         if: matrix.os != 'windows-latest'
@@ -381,7 +333,7 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: opencrabs-v${{ steps.version.outputs.version }}-${{ matrix.asset_suffix }}
           path: |
@@ -404,7 +356,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Extract version from tag
         id: version
@@ -426,7 +378,7 @@ jobs:
           fi
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: artifacts
 
