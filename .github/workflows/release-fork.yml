@@ -5,9 +5,12 @@ name: Release (fork)
 # publish succeeding. On a fork the publish can never succeed, because the crate
 # name belongs to upstream, so `create-release` never runs and the fork
 # publishes no tagged release at all. That leaves the updater with nothing to
-# find: `releases/latest` currently resolves to `win-desktop-preview`, whose tag
-# is not semver, so the version comparison never sees anything newer and every
-# check reports "already on latest".
+# find: when this file was written `releases/latest` resolved to
+# `win-desktop-preview`, whose tag is not semver, so the version comparison
+# never saw anything newer and every check reported "already on latest". The
+# latest release is now a real `vX.Y.Z` tag, but it still carries the Linux
+# assets only, so a Windows or macOS build finds no asset for its platform at
+# all (#151).
 #
 # This is the fork's own release path. It builds the Linux binaries, names each
 # archive exactly as the updater expects

@@ -86,6 +86,35 @@ jobs:
           name: prerelease-${{ matrix.asset_suffix }}
           path: opencrabs-v*-pre-*.tar.gz
 
+      # The archive is what a user receives, so validate the archive: extract it
+      # and run the binary out of the extraction. Neither leg had ever executed
+      # what it published (#151), and an archive that extracts cleanly but holds
+      # a binary which cannot start looks the same from the outside as a good
+      # one. A failure fails the job, and publish-prerelease needs this job, so
+      # a broken archive never reaches the release page.
+      - name: "Smoke: the archived binary starts"
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE=$(ls opencrabs-v*-pre-*.tar.gz | head -1)
+          echo "archive: $ARCHIVE"
+          rm -rf /tmp/smoke && mkdir -p /tmp/smoke
+          tar xzf "$ARCHIVE" -C /tmp/smoke
+          ls -la /tmp/smoke
+          test -x /tmp/smoke/opencrabs
+          test -x /tmp/smoke/rtk
+          # Actions' bash runs with -e: without the guard, a failing binary would
+          # die AT the substitution and the echo below would never run, which is
+          # exactly the case whose diagnostic we want. stderr rides in too,
+          # because dyld failures land there.
+          set +e
+          ver=$(/tmp/smoke/opencrabs --version 2>&1)
+          status=$?
+          set -e
+          echo "exit=$status version=$ver"
+          [ "$status" -eq 0 ] || exit 1
+          echo "$ver" | grep -qi opencrabs
+
   # ---------------------------------------------------------------------------
   # Linux — GitHub-hosted runners (cross-compile from Mac is fragile for glibc)
   # ---------------------------------------------------------------------------
@@ -148,6 +177,27 @@ jobs:
           name: prerelease-${{ matrix.asset_suffix }}
           path: opencrabs-v*-pre-*.tar.gz
 
+      # See the macOS leg for why this validates the archive rather than the
+      # build tree (#151).
+      - name: "Smoke: the archived binary starts"
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE=$(ls opencrabs-v*-pre-*.tar.gz | head -1)
+          echo "archive: $ARCHIVE"
+          rm -rf /tmp/smoke && mkdir -p /tmp/smoke
+          tar xzf "$ARCHIVE" -C /tmp/smoke
+          ls -la /tmp/smoke
+          test -x /tmp/smoke/opencrabs
+          test -x /tmp/smoke/rtk
+          set +e
+          ver=$(/tmp/smoke/opencrabs --version 2>&1)
+          status=$?
+          set -e
+          echo "exit=$status version=$ver"
+          [ "$status" -eq 0 ] || exit 1
+          echo "$ver" | grep -qi opencrabs
+
   # ---------------------------------------------------------------------------
   # Windows — GitHub-hosted runner (needs NASM + CMake for aws-lc-rs)
   # ---------------------------------------------------------------------------
@@ -199,6 +249,30 @@ jobs:
         with:
           name: prerelease-windows-amd64
           path: opencrabs-v*-pre-*.zip
+
+      # See the macOS leg for why this validates the archive rather than the
+      # build tree. This leg is the one #151 named: it shipped a .zip that
+      # nothing had ever started.
+      - name: "Smoke: the archived binary starts"
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE=$(ls opencrabs-v*-pre-*.zip | head -1)
+          echo "archive: $ARCHIVE"
+          rm -rf /tmp/smoke && mkdir -p /tmp/smoke
+          7z x -y "$ARCHIVE" -o/tmp/smoke > /dev/null
+          ls -la /tmp/smoke
+          test -f /tmp/smoke/opencrabs.exe
+          test -f /tmp/smoke/rtk.exe
+          # A DLL-load failure lands on stderr and takes the exit code with it,
+          # so both are captured and reported before the verdict.
+          set +e
+          ver=$(/tmp/smoke/opencrabs.exe --version 2>&1)
+          status=$?
+          set -e
+          echo "exit=$status version=$ver"
+          [ "$status" -eq 0 ] || exit 1
+          echo "$ver" | grep -qi opencrabs
 
   # ---------------------------------------------------------------------------
   # Collect all pre-release artifacts into a single downloadable package

@@ -4,7 +4,9 @@
 //! and install method detection.
 
 use crate::brain::tools::evolve::is_newer;
-use crate::brain::tools::evolve::release_check::has_platform_asset;
+use crate::brain::tools::evolve::release_check::{
+    STABLE_ASSET_SUFFIXES, StableAsset, classify_stable_asset, has_platform_asset,
+};
 use crate::utils::install::{InstallMethod, binary_name, platform_suffix};
 
 // ─── Version comparison ─────────────────────────────────────────────────────
@@ -240,4 +242,81 @@ fn has_platform_asset_multiple_assets_finds_correct() {
         "opencrabs-v0.2.68-otheros-otherarch.zip",
     ]);
     assert!(has_platform_asset(&release, "v0.2.68"));
+}
+
+// ─── Stable-channel asset classification (#151) ─────────────────────────────
+
+#[test]
+fn a_present_asset_is_present_on_every_platform() {
+    assert_eq!(
+        classify_stable_asset(Some("linux-amd64"), true),
+        StableAsset::Present
+    );
+    assert_eq!(
+        classify_stable_asset(Some("windows-amd64"), true),
+        StableAsset::Present
+    );
+    assert_eq!(classify_stable_asset(None, true), StableAsset::Present);
+}
+
+#[test]
+fn a_missing_asset_on_a_stable_platform_still_reads_as_building() {
+    for &suffix in STABLE_ASSET_SUFFIXES {
+        assert_eq!(
+            classify_stable_asset(Some(suffix), false),
+            StableAsset::Building,
+            "{suffix} is published by the stable workflow, so a missing asset \
+             is a timing problem, not a policy one"
+        );
+    }
+}
+
+#[test]
+fn a_missing_asset_off_the_stable_matrix_is_not_distributed() {
+    // The gap this classification exists for: Windows and macOS are built by
+    // prerelease.yml, never by release-fork.yml, so `releases/latest` (which
+    // excludes prereleases) can never carry them. Reporting "still building"
+    // there is a promise that never comes due.
+    for suffix in ["windows-amd64", "macos-arm64", "macos-amd64"] {
+        assert!(
+            !STABLE_ASSET_SUFFIXES.contains(&suffix),
+            "{suffix} must not be claimed as a stable channel asset"
+        );
+        assert_eq!(
+            classify_stable_asset(Some(suffix), false),
+            StableAsset::NotDistributed,
+            "{suffix} is not on the stable channel, so it must not be told to wait"
+        );
+    }
+}
+
+#[test]
+fn an_unnamed_platform_is_not_reported_as_a_policy_gap() {
+    // platform_suffix() has no name for this build, which is a different
+    // problem from the stable workflow choosing not to build it.
+    assert_eq!(
+        classify_stable_asset(None, false),
+        StableAsset::UnsupportedPlatform
+    );
+}
+
+#[test]
+fn stable_channel_list_matches_the_release_workflow() {
+    // STABLE_ASSET_SUFFIXES mirrors release-fork.yml's build-linux matrix, and
+    // that mirror is what the "not distributed" message rests on. Add a Windows
+    // or macOS leg there and this fails, so the updater's per-platform story has
+    // to change in the same commit instead of going quietly stale.
+    let workflow = include_str!("../../.github/workflows/release-fork.yml");
+    let mut from_workflow: Vec<&str> = workflow
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("asset_suffix:"))
+        .map(str::trim)
+        .collect();
+    from_workflow.sort_unstable();
+    let mut expected: Vec<&str> = STABLE_ASSET_SUFFIXES.to_vec();
+    expected.sort_unstable();
+    assert_eq!(
+        from_workflow, expected,
+        "release-fork.yml builds {from_workflow:?} but the updater assumes {expected:?}"
+    );
 }
