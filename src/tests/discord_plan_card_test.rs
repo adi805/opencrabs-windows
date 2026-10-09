@@ -186,23 +186,45 @@ fn the_card_is_owner_gated_and_routed_from_the_component_dispatch() {
 }
 
 /// A plan created, approved, advanced or discarded mid-turn must show its new
-/// state. Both places a Discord turn can finish have to reconcile the card, or
-/// the board silently freezes on the pre-turn rendering.
+/// state, and the card must MOVE with the conversation. Telegram re-sticks its
+/// card on every settled turn (delete + repost at the bottom); Discord used to
+/// only edit in place, which is exactly why the card stayed buried at the top
+/// while the chat moved on. Both places a Discord turn can finish must run the
+/// re-stick tail, or the board freezes at a stale position.
 #[test]
-fn the_card_is_refreshed_after_both_delivery_paths() {
+fn the_card_is_resticked_after_both_delivery_paths() {
     let message_path = flattened("src/channels/discord/handler.rs");
     assert!(
         message_path.contains(
-            "super::plan_card::refresh_plan_card(&ctx.http,target,&discord_state,session_id).await;"
+            "super::plan_card::restick_plan_card_after_turn(&ctx.http,target,&discord_state,session_id).await;"
         ),
-        "the message path must reconcile the plan card"
+        "the message path must re-stick the plan card after the turn"
     );
     let tap_path = flattened("src/channels/discord/interactions.rs");
     assert!(
         tap_path.contains(
-            "super::plan_card::refresh_plan_card(&http,channel,&discord_state,session_id).await;"
+            "super::plan_card::restick_plan_card_after_turn(&http,channel,&discord_state,session_id).await;"
         ),
-        "the component-tap path must reconcile the plan card"
+        "the component-tap path must re-stick the plan card after the turn"
+    );
+}
+
+/// The re-stick is the settle tail ONLY. Turn start and the 4 s flow ticker
+/// must keep editing in place: re-sticking on every tick would churn the card
+/// toward Discord's write limits for no benefit, since a tick is not a settled
+/// turn. Pinned from source so a later "let's also restick there" fails loudly.
+#[test]
+fn the_ticker_and_turn_start_keep_the_in_place_refresh() {
+    let handler = flattened("src/channels/discord/handler.rs");
+    assert!(
+        handler.contains(
+            "super::plan_card::refresh_plan_card(&ctx.http,target,&discord_state,session_id).await;"
+        ),
+        "the turn-start path must keep refreshing in place, not re-sticking"
+    );
+    assert!(
+        handler.contains("super::plan_card::refresh_plan_card(&http,channel,&dstate,sid).await;"),
+        "the flow ticker must keep refreshing in place, not re-sticking"
     );
 }
 

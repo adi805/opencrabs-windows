@@ -846,9 +846,9 @@ pub(crate) async fn route_followup_turn(
             }
         }
     }
-    // Plan board (FR-008, #1880): reconcile this session's plan card after the
-    // turn, so a plan created, approved, advanced or discarded mid-turn shows
-    // its new state. ONE message per session, edited in place; a rendering
-    // identical to what the chat already shows costs no API call.
-    super::plan_card::refresh_plan_card(&http, channel, &discord_state, session_id).await;
+    // Plan board (FR-008, #1880): re-stick this session's plan card after the
+    // turn so it follows the conversation instead of staying buried at the
+    // position the chatter arrived after. Same tail as the message path.
+    super::plan_card::restick_plan_card_after_turn(&http, channel, &discord_state, session_id)
+        .await;
 }

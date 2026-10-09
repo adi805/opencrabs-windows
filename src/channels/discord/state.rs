@@ -85,6 +85,12 @@ pub struct DiscordState {
     /// per-class bucket, which is the same reuse-over-reinvent rule AC-019
     /// states for the lock.
     pub(super) plan_card_locks: Mutex<HashMap<Uuid, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    /// Last plan-card re-stick per channel (#1150, ported from Telegram):
+    /// channel_id → the instant the last delete+repost pair fired. Gates the
+    /// re-stick so a burst of settles cannot churn the card toward Discord's
+    /// per-channel write limits. `std::sync::Mutex` because the claim is a
+    /// synchronous map hit with no await, exactly like Telegram's.
+    pub(super) last_sticky_action: std::sync::Mutex<HashMap<u64, std::time::Instant>>,
 }
 
 impl Default for DiscordState {
@@ -113,6 +119,7 @@ impl DiscordState {
             plan_cards: Mutex::new(HashMap::new()),
             plan_card_store: Mutex::new(None),
             plan_card_locks: Mutex::new(HashMap::new()),
+            last_sticky_action: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -203,6 +210,38 @@ impl DiscordState {
     ) {
         *self.plan_card_store.lock().await = Some(repo);
     }
+
+    /// Claim permission for one sticky-stack action (the plan-card re-stick)
+    /// in `channel_id`, ported from Telegram's budget (#1150).
+    ///
+    /// Returns false when another sticky action fired less than `min_interval`
+    /// ago; the caller then skips its delete+create pair instead of churning
+    /// the card toward Discord's per-channel write limits. The gate is a
+    /// synchronous map hit with no await, so `std::sync::Mutex` is enough.
+    pub(crate) fn claim_sticky_action(
+        &self,
+        channel_id: u64,
+        min_interval: std::time::Duration,
+    ) -> bool {
+        let mut map = self
+            .last_sticky_action
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let now = std::time::Instant::now();
+        if let Some(last) = map.get(&channel_id)
+            && now.duration_since(*last) < min_interval
+        {
+            return false;
+        }
+        map.insert(channel_id, now);
+        true
+    }
+
+    /// Minimum spacing between plan-card re-sticks in one channel (#1150).
+    /// Bounds delete+create churn well under Discord's write limits while
+    /// keeping burial recovery responsive.
+    pub(crate) const STICKY_STACK_MIN_INTERVAL: std::time::Duration =
+        std::time::Duration::from_secs(15);
 
     /// Per-session write lock, created on first use.
     ///

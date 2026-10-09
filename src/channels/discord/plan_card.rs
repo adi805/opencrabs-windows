@@ -313,6 +313,37 @@ pub(crate) async fn refresh_plan_card(
     }
 }
 
+/// Settle-path plan-card tail, ported from Telegram (#1150 parity).
+///
+/// Telegram re-sticks its card after every settled turn: the tracked card is
+/// deleted and a fresh one posted at the BOTTOM, so the card follows the
+/// conversation instead of staying buried under the chatter that arrived after
+/// it. Discord only ever edited in place, which is exactly why the owner saw
+/// the card "sangkut di atas" while Telegram's kept moving down.
+///
+/// Same gate as Telegram, unchanged: the sticky claim is taken only when a
+/// card is tracked (a cardless settle spends nothing from the budget, so a
+/// later re-stick is not starved), and the delete+repost pair is skipped when
+/// another sticky action fired inside
+/// [`DiscordState::STICKY_STACK_MIN_INTERVAL`]. Removal clears the tracking,
+/// so the `refresh_plan_card` that follows posts a fresh card at the bottom.
+///
+/// Callers that must NOT move the card (turn start, the 4 s flow ticker) keep
+/// calling [`refresh_plan_card`] directly: only a settled turn re-sticks.
+pub(crate) async fn restick_plan_card_after_turn(
+    http: &Http,
+    channel: ChannelId,
+    state: &DiscordState,
+    session_id: Uuid,
+) {
+    if state.plan_card(session_id).await.is_some()
+        && state.claim_sticky_action(channel.get(), DiscordState::STICKY_STACK_MIN_INTERVAL)
+    {
+        remove_plan_card(http, channel, state, session_id).await;
+    }
+    refresh_plan_card(http, channel, state, session_id).await;
+}
+
 /// Delete the tracked card for a session and forget it.
 ///
 /// Takes the lock itself; callers already holding it use
