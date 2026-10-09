@@ -221,8 +221,8 @@ pub(crate) fn build_enqueue_callback(
                                 thread_id,
                                 html,
                                 None,
+                                "system",
                                 "bg-resume",
-                                "-",
                             )
                             .await
                             {
@@ -243,8 +243,8 @@ pub(crate) fn build_enqueue_callback(
                                 teloxide::types::ChatId(chat_id),
                                 thread_id,
                                 md,
+                                "system",
                                 "bg-resume",
-                                "-",
                                 None,
                             )
                             .await

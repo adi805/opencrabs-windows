@@ -366,3 +366,180 @@ fn send_telemetry_never_swaps_session_and_kind() {
     }
     assert!(checked > 50, "the scan found only {checked} call sites");
 }
+
+// ---------------------------------------------------------------------------
+// #1085 P1a follow-up: the `origin` slot is a CLOSED VOCABULARY.
+//
+// `origin` and `origin_detail` sit adjacent (args 1-2 at the landing lines),
+// which is exactly the shape that let `session` and `kind` be swapped without
+// a compile error. `telemetry.rs` declares the vocabulary as
+// `turn | tool | cron | system`, with free text belonging in `origin_detail`
+// at the call site.
+//
+// The wrapper family is DERIVED from fn signatures, never hand-listed: a new
+// wrapper that forwards the pair is governed the day it lands, and a signature
+// that declares the pair reversed fails here instead of at a log reader's desk.
+// ---------------------------------------------------------------------------
+
+/// The vocabulary a literal may hold in the `origin` slot.
+const ORIGIN_VOCAB: [&str; 4] = ["\"turn\"", "\"tool\"", "\"cron\"", "\"system\""];
+
+/// The parameter names of the `fn` starting at `from` (the byte after `fn `),
+/// in declaration order. Generics are skipped, so `fn f<C>(` reads as `f`.
+fn fn_params_at(src: &str, from: usize) -> Option<(String, Vec<String>)> {
+    let name_end = src[from..]
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map(|i| from + i)
+        .unwrap_or(src.len());
+    let name = src[from..name_end].to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let mut at = name_end;
+    if at < src.len() && src[at..].starts_with('<') {
+        let mut depth = 0usize;
+        for (i, c) in src[at..].char_indices() {
+            match c {
+                '<' => depth += 1,
+                '>' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        at += i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if at >= src.len() {
+        return None;
+    }
+    let open = at + src[at..].find('(')?;
+    let mut params = Vec::new();
+    for arg in call_args(&src[open + 1..]) {
+        // `origin: &str` reads as `origin`; `mut thread_id: Option<ThreadId>`
+        // reads as `thread_id`.
+        let head = arg.split(':').next().unwrap_or("").trim();
+        let last = head.split_whitespace().last().unwrap_or("").trim();
+        params.push(last.to_string());
+    }
+    Some((name, params))
+}
+
+/// A wrapper that forwards the `origin`/`origin_detail` pair: its name and the
+/// two parameter positions.
+type Wrapper = (String, usize, usize);
+
+/// A source file and its text.
+type Source = (std::path::PathBuf, String);
+
+/// The `origin`/`origin_detail` wrapper family in `root`, plus every source
+/// file read.
+///
+/// Returns `(family, files, declarations_reversed)`; a declaration whose two
+/// parameters are not adjacent (or not `origin` first) is reported, not
+/// silently accepted, because order is the whole contract.
+fn origin_family(root: &std::path::Path) -> (Vec<Wrapper>, Vec<Source>, Vec<String>) {
+    let mut files = Vec::new();
+    rust_sources(root, &mut files);
+
+    let mut family: Vec<Wrapper> = Vec::new();
+    let mut sources: Vec<Source> = Vec::new();
+    let mut reversed = Vec::new();
+    for path in &files {
+        let src = std::fs::read_to_string(path).expect("source file is readable");
+        let mut cursor = 0usize;
+        while let Some(rel) = src[cursor..].find("fn ") {
+            let start = cursor + rel;
+            cursor = start + 3;
+            let line_start = src[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            if src[line_start..start].contains("//") {
+                continue; // a mention in prose, not a declaration
+            }
+            let Some((name, params)) = fn_params_at(&src, cursor) else {
+                continue;
+            };
+            let origin_at = params.iter().position(|p| p.as_str() == "origin");
+            let detail_at = params.iter().position(|p| p.as_str() == "origin_detail");
+            let (Some(o), Some(d)) = (origin_at, detail_at) else {
+                continue;
+            };
+            if d != o + 1 {
+                reversed.push(format!(
+                    "{}: `{name}` declares origin at {o} and origin_detail at {d}; \
+                     the pair must be adjacent with `origin` first",
+                    path.display()
+                ));
+            }
+            family.push((name, o, d));
+        }
+        sources.push((path.clone(), src));
+    }
+    (family, sources, reversed)
+}
+
+/// Every call site of the family in a tree, checked against the vocabulary.
+///
+/// Returns `(call sites checked, violations)`; each violation is a rendered
+/// sentence naming the file, the wrapper and the offending value.
+fn origin_vocab_violations(root: &std::path::Path) -> (usize, Vec<String>) {
+    let (family, sources, reversed) = origin_family(root);
+    let mut checked = 0usize;
+    let mut violations = reversed;
+    for (path, src) in &sources {
+        for (name, o, d) in &family {
+            let needle = format!("{name}(");
+            let mut cursor = 0usize;
+            while let Some(rel) = src[cursor..].find(needle.as_str()) {
+                let start = cursor + rel;
+                let open = start + needle.len();
+                cursor = open;
+                if src[..start].ends_with("fn ") {
+                    continue; // the definition, not a call site
+                }
+                let line_start = src[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                if src[line_start..start].contains("//") {
+                    continue; // a mention in prose, not a call
+                }
+                let args = call_args(&src[open..]);
+                if args.len() <= *d {
+                    continue; // not a full call, so nothing to check
+                }
+                let origin_arg = args[*o].as_str();
+                let detail_arg = args[*d].as_str();
+                if !ORIGIN_VOCAB.contains(&origin_arg) && origin_arg != "origin" {
+                    violations.push(format!(
+                        "{}: `{name}` gets origin `{origin_arg}`, outside the closed \
+                         vocabulary turn|tool|cron|system",
+                        path.display()
+                    ));
+                }
+                if ORIGIN_VOCAB.contains(&detail_arg) {
+                    violations.push(format!(
+                        "{}: `{name}` gets detail `{detail_arg}`, a vocabulary word; \
+                         origin and origin_detail are swapped",
+                        path.display()
+                    ));
+                }
+                checked += 1;
+            }
+        }
+    }
+    (checked, violations)
+}
+
+/// The `origin` slot carries only `turn | tool | cron | system` (or the
+/// pass-through identifier `origin`), and the `origin_detail` slot never
+/// carries a vocabulary word: that shape is the swap.
+#[test]
+fn origin_slot_carries_only_the_closed_vocabulary() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let (checked, violations) = origin_vocab_violations(&root);
+    assert!(
+        violations.is_empty(),
+        "origin/origin_detail vocabulary violations:\n{}",
+        violations.join("\n")
+    );
+    assert!(checked > 100, "the scan found only {checked} call sites");
+}
