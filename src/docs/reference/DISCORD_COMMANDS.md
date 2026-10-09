@@ -226,3 +226,102 @@ Discord's application-command limits are real and OpenCrabs stays inside them:
   that flaps on a short retry loop cannot turn into a registration storm. The
   trade-off is that a guild joined while the process is up is picked up on the
   next reconnect, not instantly.
+
+## Adjacent surface: the `discord_send` tool
+
+Everything above describes the slash-command projection. The other way an owner
+drives Discord from OpenCrabs is the `discord_send` tool, which the agent calls
+itself and a scheduled job can be pointed at. Its actions are a separate surface
+with their own scope rules, so they are recorded here rather than in a second
+file nobody would find from this one. Two groups are recent enough to spell out:
+announcements (FR-012), and AutoMod rules with the guild audit log (FR-013).
+
+### Announcements through a channel webhook (FR-012)
+
+`announce` takes `message` and posts it to `channel_id`. With `channel_id`
+omitted it goes to the ambient origin channel or the owner's last channel, the
+same resolution every other action uses. What makes it an announcement rather than a
+`send` is the two steps around the text:
+
+- **The post leaves through a webhook, not as the bot's own message.** The
+  webhook is named `OpenCrabs Announcements` and is reused when one already
+  exists in that channel, so a repeated announcement does not litter the channel
+  with a new webhook per call. Reuse is deliberately narrow: the webhook must be
+  an **incoming** one, in **this** channel, carrying **our** name, and Discord
+  must have handed us a **token** for it. That last condition is load-bearing
+  rather than belt-and-braces: Discord only returns a token for a webhook the
+  bot may execute, so a name match without one is unusable however well it fits.
+  With no reusable webhook one is created, which needs **Manage Webhooks**.
+- **It is then crossposted, which is what marks it published.** Only an
+  announcement channel (`ChannelType::News`) supports that, so the check runs
+  before the call and a refusal is reported as a **note** rather than an error:
+  the post has already landed, and a failed crosspost must not turn a delivered
+  announcement into a failed one. The text override carries the bot's own
+  `username` and `avatar_url`, which is the half of AC-015 that is about the
+  webhook rather than the channel.
+
+The ceiling is **2000 characters, counted in characters rather than bytes**, and
+a longer announcement is **refused with its measured length instead of
+chunked**. Chunking would crosspost a fragment and silently drop the rest: only
+one message can be crossposted, so there is no correct way to split one. The
+post also passes through the Discord write budget like any other write, and when
+the budget refuses it the result says nothing was posted rather than reporting a
+failure that did not happen.
+
+### AutoMod rules and the audit log (FR-013)
+
+Five verbs join the tool: `automod_list`, `automod_create`, `automod_edit`,
+`automod_delete` and `audit_log`.
+
+**Reads are unguarded, mutations are not.** `automod_list` and `audit_log` only
+read, so they run under the ordinary rules. The three mutating verbs go through
+the scheduled-job scope guard on the same footing as the member actions (`kick`,
+`ban`, `timeout`, `nickname`, `add_role`, `remove_role`): a job with no
+`deliver_to` cannot change a guild's own settings any more than it can act on a
+member. A rule is guild-level and has no member to name, so those three pass
+`None` to the guard and its refusal names the guild's settings instead of
+inventing a member to accuse.
+
+| Verb | Parameters | Notes |
+|---|---|---|
+| `automod_list` | (none) | one line per rule: name, state, id, event, trigger, actions |
+| `automod_create` | `keywords` (required), `name`, `block_message`, `alert_channel_id` | keyword trigger, blocks the message, enabled on creation |
+| `automod_edit` | `rule_id` (required), plus at least one of `name`, `enabled`, `keywords` | an empty change set is refused rather than sent as a no-op |
+| `automod_delete` | `rule_id` (required) | |
+| `audit_log` | `limit` (default 10), `audit_action`, `user_id` | one line per entry, in the order Discord returns them |
+
+None of the five takes a guild: they act on the guild the bot is connected to,
+and say so plainly when no guild is known yet.
+
+**The keyword grammar** decides whether a rule is created at all. Commas and
+newlines both separate, so a pasted list works either way; blanks are dropped
+and **duplicates collapse**, since Discord counts the entries and a repeated
+phrase would spend the budget without widening the rule. A list past **1000
+keywords** is refused with its count, a single keyword past **60 characters** is
+refused with its length, and an empty list is refused outright rather than
+creating a rule that matches nothing.
+
+**Every change carries a reason.** `automod_create`, `automod_edit` and
+`automod_delete` each send Discord an audit-log reason naming OpenCrabs, so the
+guild's own log says where a change came from rather than only that it happened.
+That reason is a constant with a test pinning its value, because a reword would
+silently stop the guild's log from matching what the tool reports.
+
+**`audit_action` accepts a name or a raw number.** The names are the ones this
+feature is about (`automod_rule_create` 140, `automod_rule_update` 141,
+`automod_rule_delete` 142, `automod_block_message` 143), plus the moderator
+actions worth seeing beside them: `member_kick` (20), `member_ban` (22),
+`member_update` (24), `member_role_update` (25), `message_delete` (72) and
+`webhook_create` (50). Anything else is answered with that list rather than a
+silent empty result, and a raw Discord action number passes straight through.
+
+Rendering a rule or an entry is OpenCrabs' own work: serenity gives
+`audit_log::Action` no `Display`, so the labels and the one-line shapes are ours
+and are pinned by tests. A new trigger or action variant upstream renders as
+"something else" instead of failing to compile here, because both enums are
+`#[non_exhaustive]`.
+
+Permissions: **Manage Guild** for the AutoMod verbs, **View Audit Log** for
+`audit_log`, **Manage Webhooks** for an announcement that has to create its
+webhook. A missing permission comes back as an error naming the permission
+rather than as a silent no-op.
