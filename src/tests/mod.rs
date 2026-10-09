@@ -564,6 +564,7 @@ pub mod governor_gates_test;
 pub mod governor_internals_test;
 pub mod governor_spacing_floor_test;
 pub mod html_comment_strip_test;
+pub mod http_bounded_response_test;
 pub mod http_request_test;
 pub mod onboard_channel_test;
 pub mod openai_provider_test;
