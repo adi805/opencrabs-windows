@@ -1004,6 +1004,7 @@ pub mod discord_handler_test;
 pub mod discord_history_dedup_test;
 pub mod discord_intent_coherence_test;
 pub mod discord_interaction_ack_test;
+pub mod discord_live_ctx_test;
 pub mod discord_long_answer_decision_test;
 pub mod discord_member_welcome_test;
 pub mod discord_mention_only_test;

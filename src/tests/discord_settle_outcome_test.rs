@@ -45,6 +45,7 @@ fn settled(n: usize, outcome: TurnOutcome) -> GroupState {
         expanded: false,
         notes: Vec::new(),
         started_at: Instant::now(),
+        live_ctx: None,
         settled: Some(SettledStatus::new(
             outcome,
             Duration::from_secs(90),

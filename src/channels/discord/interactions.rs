@@ -395,6 +395,7 @@ pub(crate) async fn route_followup_turn(
                                             notes: Vec::new(),
                                             expanded: false,
                                             started_at: std::time::Instant::now(),
+                                            live_ctx: None,
                                             settled: None,
                                         },
                                     )
@@ -420,6 +421,7 @@ pub(crate) async fn route_followup_turn(
                                     notes: Vec::new(),
                                     expanded: false,
                                     started_at: std::time::Instant::now(),
+                                    live_ctx: None,
                                     settled: None,
                                 };
                                 let content = super::tool_group::render_content(&group);
@@ -484,6 +486,7 @@ pub(crate) async fn route_followup_turn(
                                         notes: Vec::new(),
                                         expanded: false,
                                         started_at: std::time::Instant::now(),
+                                        live_ctx: None,
                                         settled: None,
                                     },
                                 )
@@ -635,6 +638,7 @@ pub(crate) async fn route_followup_turn(
         notes: Vec::new(),
         expanded: false,
         started_at: std::time::Instant::now(),
+        live_ctx: None,
         settled: None,
     };
     match writes::say(

@@ -1216,6 +1216,7 @@ pub(crate) async fn handle_message(
         let group_msg_id = turn_group_mid.clone();
         let trace_narration = dc_cfg.trace_narration;
         let group_state_cb = discord_state.clone();
+        let agent_cb = agent.clone();
         let http = ctx.http.clone();
         let channel = target;
 
@@ -1240,6 +1241,42 @@ pub(crate) async fn handle_message(
                                 tracing::warn!(error = %e, "failed to broadcast Discord typing");
                             }
                             tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                        }
+                    });
+                }
+                ProgressEvent::TokenCount(count) => {
+                    // Live ctx budget on the flow card (#1144/#1183 parity):
+                    // Telegram stamps `ctx` only at delivery, so Discord
+                    // streams the same string from the tool loop's real token
+                    // count instead — the card shows the budget growing while
+                    // the turn runs, not only once it settles.
+                    let gmid = group_msg_id.clone();
+                    let dstate = group_state_cb.clone();
+                    let agent = agent_cb.clone();
+                    tokio::spawn(async move {
+                        let ctx_max = agent.context_limit_for_session(session_id);
+                        let ctx = crate::utils::format_ctx_footer(
+                            u32::try_from(count).unwrap_or(u32::MAX),
+                            ctx_max,
+                            None,
+                        );
+                        if let Some(mid) = *gmid.lock().await
+                            && let Some(group) = dstate.set_live_ctx(mid.get(), ctx).await
+                            // A settled card owns its ctx (#1841): re-rendering
+                            // it from a late count would only burn an edit.
+                            && group.settled.is_none()
+                        {
+                            let edit = EditMessage::new()
+                                .content(super::tool_group::render_content(&group))
+                                .components(super::tool_group::render_components(
+                                    &group,
+                                    mid.get(),
+                                ));
+                            if let Err(e) =
+                                writes::edit(&http, channel, mid, edit, Class::Edit).await
+                            {
+                                tracing::warn!("Discord: live ctx edit failed: {e}");
+                            }
                         }
                     });
                 }
@@ -1274,6 +1311,7 @@ pub(crate) async fn handle_message(
                                             notes: Vec::new(),
                                             expanded: false,
                                             started_at: Instant::now(),
+                                            live_ctx: None,
                                             settled: None,
                                         },
                                     )
@@ -1297,6 +1335,7 @@ pub(crate) async fn handle_message(
                                     notes: Vec::new(),
                                     expanded: false,
                                     started_at: Instant::now(),
+                                    live_ctx: None,
                                     settled: None,
                                 };
                                 let content = super::tool_group::render_content(&group);
@@ -1359,6 +1398,7 @@ pub(crate) async fn handle_message(
                                         notes: Vec::new(),
                                         expanded: false,
                                         started_at: Instant::now(),
+                                        live_ctx: None,
                                         settled: None,
                                     },
                                 )
@@ -1528,6 +1568,7 @@ pub(crate) async fn handle_message(
         notes: Vec::new(),
         expanded: false,
         started_at: Instant::now(),
+        live_ctx: None,
         settled: None,
     };
     match writes::say(

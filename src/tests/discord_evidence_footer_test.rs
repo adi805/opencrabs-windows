@@ -41,6 +41,7 @@ fn group(names: &[&str]) -> GroupState {
         notes: Vec::new(),
         expanded: false,
         started_at: Instant::now(),
+        live_ctx: None,
         settled: None,
         last_activity_at: Instant::now(),
     }

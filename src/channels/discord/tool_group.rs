@@ -50,6 +50,12 @@ pub(crate) struct GroupState {
     /// silence threshold so a stalled turn says so instead of looking
     /// frozen.
     pub last_activity_at: Instant,
+    /// Live ctx budget line while the turn runs (#1144/#1183 parity). The
+    /// settled chrome already carries `ctx`; this is the same string
+    /// streamed from `ProgressEvent::TokenCount` mid-turn, so the card shows
+    /// the budget as it grows instead of only at settle. `None` until the
+    /// first token-count event; preserved by every upsert like `notes`.
+    pub live_ctx: Option<String>,
 }
 
 /// Frozen post-delivery chrome (#1841): the Discord twin of Slack's
@@ -359,9 +365,15 @@ fn summary_line(group: &GroupState) -> String {
                 ("✅", String::new())
             };
             let clock = format!("🕒 {}", clock(group.started_at.elapsed(), budget()));
+            let ctx_segment = match &group.live_ctx {
+                Some(ctx) => format!(" · {ctx}"),
+                None => String::new(),
+            };
             let base = match activity_segment(group) {
-                Some(activity) => format!("{icon} {activity} · {counts}{tail} · {clock}"),
-                None => format!("{icon} {counts}{tail} · {clock}"),
+                Some(activity) => {
+                    format!("{icon} {activity} · {counts}{tail}{ctx_segment} · {clock}")
+                }
+                None => format!("{icon} {counts}{tail}{ctx_segment} · {clock}"),
             };
             match silence_segment(group) {
                 Some(silence) => format!("{base}\n{silence}"),
@@ -519,6 +531,7 @@ impl DiscordState {
                 group.notes = existing.notes.clone();
                 group.started_at = existing.started_at;
                 group.settled = existing.settled.clone();
+                group.live_ctx = existing.live_ctx.clone();
             }
             None => {
                 order.push(message_id);
@@ -553,6 +566,20 @@ impl DiscordState {
         if group.notes.len() > NOTE_CAP {
             group.notes.remove(0);
         }
+        Some(group.clone())
+    }
+
+    /// Store the live ctx budget on the card while the turn runs
+    /// (#1144/#1183 parity): the settled chrome already carries `ctx`, but
+    /// only at settle. Discord streams the same string from
+    /// `ProgressEvent::TokenCount` mid-turn, so the live line shows the
+    /// budget as it grows. Returns the updated state, or None when the
+    /// message has no stored group (aged out of retention).
+    pub(crate) async fn set_live_ctx(&self, message_id: u64, ctx: String) -> Option<GroupState> {
+        let mut guard = self.tool_groups.lock().await;
+        let (_, map) = &mut *guard;
+        let group = map.get_mut(&message_id)?;
+        group.live_ctx = Some(ctx);
         Some(group.clone())
     }
 
@@ -651,6 +678,7 @@ mod cap_tests {
             expanded,
             started_at: Instant::now(),
             last_activity_at: Instant::now(),
+            live_ctx: None,
             settled: Some(SettledStatus::new(
                 TurnOutcome::Finished,
                 Duration::from_secs(3),

@@ -21,6 +21,7 @@ fn live_group() -> GroupState {
         expanded: false,
         notes: Vec::new(),
         started_at: Instant::now(),
+        live_ctx: None,
         settled: None,
     }
 }

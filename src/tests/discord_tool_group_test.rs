@@ -26,6 +26,7 @@ fn group(n: usize, done: bool, expanded: bool) -> GroupState {
         expanded,
         notes: Vec::new(),
         started_at: Instant::now(),
+        live_ctx: None,
         settled: None,
     }
 }

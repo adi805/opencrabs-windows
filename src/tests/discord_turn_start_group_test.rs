@@ -14,6 +14,7 @@ fn turn_start_shell() -> GroupState {
         notes: Vec::new(),
         expanded: false,
         started_at: Instant::now(),
+        live_ctx: None,
         settled: None,
     }
 }

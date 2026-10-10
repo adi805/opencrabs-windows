@@ -22,6 +22,7 @@ fn group_with(entries: Vec<GroupEntry>, notes: Vec<String>) -> GroupState {
         expanded: false,
         notes,
         started_at: Instant::now(),
+        live_ctx: None,
         settled: None,
     }
 }
