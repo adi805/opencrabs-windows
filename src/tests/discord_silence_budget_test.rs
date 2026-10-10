@@ -41,11 +41,8 @@ fn group(idle_secs: u64, settled: bool) -> GroupState {
         started_at: now
             .checked_sub(Duration::from_secs(idle_secs + 60))
             .expect("started_at within range"),
-        settled: settled.then(|| SettledStatus {
-            outcome: TurnOutcome::Finished,
-            elapsed: Duration::from_secs(5),
-            ctx: None,
-        }),
+        settled: settled
+            .then(|| SettledStatus::new(TurnOutcome::Finished, Duration::from_secs(5), None)),
         last_activity_at: now
             .checked_sub(Duration::from_secs(idle_secs))
             .expect("last_activity_at within range"),

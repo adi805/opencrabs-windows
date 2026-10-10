@@ -61,6 +61,64 @@ pub(crate) struct SettledStatus {
     pub outcome: TurnOutcome,
     pub elapsed: Duration,
     pub ctx: Option<String>,
+    /// Icon + verb as they render on the settled line (#1144/#1183 parity).
+    /// Stored, not re-derived: a turn that finished with detached work still
+    /// alive overrides the `✅ Finished` pair to `⏳ Waiting for …`, and the
+    /// render must show the pair it was settled with.
+    pub icon: &'static str,
+    pub verb: String,
+}
+
+/// Test-only constructor: the plain-finish shape with no background work
+/// alive. Production settles through `settle_tool_group`, which stamps the
+/// icon/verb from the live counts via [`settled_icon_verb`]; tests that pin
+/// the terminal verbs (and the zero-count finish path) need the same literal
+/// without a live agent, so it lives behind `cfg(test)` rather than as dead
+/// code in the lib unit.
+#[cfg(test)]
+impl SettledStatus {
+    pub(crate) fn new(outcome: TurnOutcome, elapsed: Duration, ctx: Option<String>) -> Self {
+        let (icon, verb) = settled_icon_verb(outcome, 0, None);
+        Self {
+            outcome,
+            elapsed,
+            ctx,
+            icon,
+            verb,
+        }
+    }
+}
+
+/// Settled icon + verb, overridden to a waiting state when the turn finished
+/// with background work still alive (#1144, #1183): the Discord twin of
+/// Telegram's `settled_icon_verb` and Slack's `GroupState::settle`. A card
+/// that ended with detached shell tasks used to read `✅ Finished` while work
+/// was still running, and alive sub-agents live in a separate registry the
+/// background-task count never read. The verb folds both, e.g. `Waiting for
+/// 1 background task + 2 working agents`. Only a `Finished` outcome is
+/// overridden: a failed, timed-out, or cancelled turn keeps its terminal
+/// verb even when detached work is still alive.
+pub(crate) fn settled_icon_verb(
+    outcome: TurnOutcome,
+    bg: usize,
+    agent_phrase: Option<&str>,
+) -> (&'static str, String) {
+    if outcome == TurnOutcome::Finished && (bg > 0 || agent_phrase.is_some()) {
+        let mut parts: Vec<String> = Vec::new();
+        if bg > 0 {
+            parts.push(if bg == 1 {
+                "1 background task".to_string()
+            } else {
+                format!("{bg} background tasks")
+            });
+        }
+        if let Some(phrase) = agent_phrase {
+            parts.push(phrase.to_string());
+        }
+        return ("⏳", format!("Waiting for {}", parts.join(" + ")));
+    }
+    let (icon, verb) = outcome.icon_verb();
+    (icon, verb.to_string())
 }
 
 /// Terminal outcome of a turn, stamped on the group at settle (FR-005, #1880).
@@ -263,12 +321,12 @@ fn summary_line(group: &GroupState) -> String {
     match &group.settled {
         Some(s) => {
             // Settled chrome (#1841), outcome-honest since FR-005 (#1880):
-            // the icon and verb come from how the TURN ended, not from
-            // whether some tool happened to fail. A timeout or a cancel
-            // with all tools green used to render ✅ — a false success on
-            // the card the user is watching. The failure count stays as
-            // supporting detail, never as the primary signal.
-            let (icon, verb) = s.outcome.icon_verb();
+            // the icon and verb are the pair stamped at settle, outcome
+            // derived, except a Finished turn still waiting on background
+            // work, which settled to `⏳ Waiting for …` (#1144/#1183). The
+            // failure count stays as supporting detail, never as the
+            // primary signal.
+            let (icon, verb) = (s.icon, s.verb.as_str());
             let tail = if failed > 0 {
                 format!(" · {failed} failed")
             } else {
@@ -378,9 +436,23 @@ pub(crate) fn evidence_line(group: &GroupState) -> Option<String> {
 
 /// Message body for the group in its current display state.
 pub(crate) fn render_content(group: &GroupState) -> String {
-    let tools_part = if group.entries.len() == 1 && !group.expanded {
+    let tools_part = if group.entries.len() == 1 && !group.expanded && group.settled.is_none() {
         let e = &group.entries[0];
         format!("{} **{}**{}", entry_icon(e.status), e.name, e.context)
+    } else if group.entries.len() == 1 && !group.expanded {
+        // Single-tool card that has settled (#1144/#1183 parity): the settled
+        // chrome (waiting verb, ctx budget, clock) must stay visible, so the
+        // lone row rides UNDER the summary line instead of replacing it. Before
+        // this, a one-tool turn rendered as the bare tool row and the settled
+        // status — including `⏳ Waiting for 1 background task` — never appeared.
+        let e = &group.entries[0];
+        format!(
+            "{}\n{} **{}**{}",
+            summary_line(group),
+            entry_icon(e.status),
+            e.name,
+            e.context
+        )
     } else if group.expanded {
         let lines: Vec<String> = group
             .entries
@@ -487,25 +559,51 @@ impl DiscordState {
     /// Stamp the post-delivery status (#1841, outcome-honest FR-005): freeze
     /// the clock at now, record how the turn ENDED, and keep the ctx budget
     /// line for the settled chrome. A `None` ctx keeps whatever a previous
-    /// settle stamped, so a re-settle never clears the budget. Returns the
-    /// updated state, or None when the message has no stored group (aged out
-    /// of retention).
+    /// settle stamped, so a re-settle never clears the budget. `bg` and
+    /// `agents` are the alive background-task / sub-agent counts at settle
+    /// (#1144/#1183): a Finished turn with either still alive settles to the
+    /// `⏳ Waiting for …` pair instead of `✅ Finished`. Returns the updated
+    /// state, or None when the message has no stored group (aged out of
+    /// retention).
     pub(crate) async fn settle_tool_group(
         &self,
         message_id: u64,
         outcome: TurnOutcome,
+        bg: usize,
+        agents: crate::channels::telegram::flow::SubagentCounts,
         ctx: Option<String>,
     ) -> Option<GroupState> {
         let mut guard = self.tool_groups.lock().await;
         let (_, map) = &mut *guard;
         let group = map.get_mut(&message_id)?;
         let prev_ctx = group.settled.as_ref().and_then(|s| s.ctx.clone());
+        let agent_phrase = (!agents.is_empty())
+            .then(|| crate::channels::telegram::flow::subagent_waiting_phrase(agents));
+        let (icon, verb) = settled_icon_verb(outcome, bg, agent_phrase.as_deref());
         group.settled = Some(SettledStatus {
             outcome,
             elapsed: group.started_at.elapsed(),
             ctx: ctx.or(prev_ctx),
+            icon,
+            verb,
         });
         Some(group.clone())
+    }
+
+    /// Alive background-task and sub-agent counts for a session at settle
+    /// (#1144/#1183): the single read the settle sites share so Discord
+    /// cannot drift from Telegram's `bg_indicator_for` + `subagent_counts_for`.
+    /// Both registries are optional (no manager wired) and degrade to zero.
+    pub(crate) fn waiting_counts(
+        agent: &crate::brain::agent::AgentService,
+        session_id: uuid::Uuid,
+    ) -> (usize, crate::channels::telegram::flow::SubagentCounts) {
+        let bg = agent
+            .background_manager()
+            .map(|bm| bm.running_tasks(session_id).len())
+            .unwrap_or(0);
+        let agents = crate::channels::telegram::delivery::subagent_counts_for(agent, session_id);
+        (bg, agents)
     }
 
     /// Clone the live or settled group for out-of-loop renderers (#1843):
@@ -553,11 +651,11 @@ mod cap_tests {
             expanded,
             started_at: Instant::now(),
             last_activity_at: Instant::now(),
-            settled: Some(SettledStatus {
-                outcome: TurnOutcome::Finished,
-                elapsed: Duration::from_secs(3),
-                ctx: None,
-            }),
+            settled: Some(SettledStatus::new(
+                TurnOutcome::Finished,
+                Duration::from_secs(3),
+                None,
+            )),
         }
     }
 

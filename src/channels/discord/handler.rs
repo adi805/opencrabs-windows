@@ -1686,11 +1686,17 @@ pub(crate) async fn handle_message(
             // ctx budget into the flow group, the Discord twin of Telegram's
             // settled flow header. Runs on every delivery outcome so the
             // chrome ends as the last word regardless of the answer path.
+            // Background-task / sub-agent counts ride along (#1144/#1183) so a
+            // Finished turn with detached work alive settles to the waiting
+            // pair instead of a false ✅.
+            let (bg_alive, agents_alive) = DiscordState::waiting_counts(&agent, session_id);
             if let Some(mid) = *turn_group_mid.lock().await
                 && let Some(group) = discord_state
                     .settle_tool_group(
                         mid.get(),
                         super::tool_group::TurnOutcome::Finished,
+                        bg_alive,
+                        agents_alive,
                         if ctx_line.is_empty() {
                             None
                         } else {
@@ -1958,6 +1964,8 @@ pub(crate) async fn handle_message(
                 target,
                 &discord_state,
                 &turn_group_mid,
+                &agent,
+                session_id,
                 super::tool_group::TurnOutcome::Cancelled,
                 None,
             )
@@ -1970,6 +1978,8 @@ pub(crate) async fn handle_message(
                 target,
                 &discord_state,
                 &turn_group_mid,
+                &agent,
+                session_id,
                 classify_outcome(&e),
                 None,
             )
@@ -2016,19 +2026,28 @@ pub(crate) fn classify_outcome(
 /// indistinguishable from a turn still working — and the card's icon came from
 /// tool status, so a timeout with all tools green rendered a green check. The
 /// trace is never deleted: the card is edited to its final shape.
+///
+/// `agent`/`session_id` supply the alive background-task and sub-agent counts
+/// (#1144/#1183). A failure settle keeps its terminal verb regardless, but the
+/// counts are read the same way on every path so the two registries are never
+/// consulted inconsistently.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn settle_outcome(
     http: &Http,
     channel: serenity::model::id::ChannelId,
     discord_state: &DiscordState,
     turn_group_mid: &Arc<Mutex<Option<serenity::model::id::MessageId>>>,
+    agent: &AgentService,
+    session_id: uuid::Uuid,
     outcome: super::tool_group::TurnOutcome,
     ctx: Option<String>,
 ) {
     let Some(mid) = *turn_group_mid.lock().await else {
         return;
     };
+    let (bg_alive, agents_alive) = DiscordState::waiting_counts(agent, session_id);
     let Some(group) = discord_state
-        .settle_tool_group(mid.get(), outcome, ctx)
+        .settle_tool_group(mid.get(), outcome, bg_alive, agents_alive, ctx)
         .await
     else {
         return;
