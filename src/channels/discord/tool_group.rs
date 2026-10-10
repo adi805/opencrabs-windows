@@ -449,8 +449,20 @@ pub(crate) fn evidence_line(group: &GroupState) -> Option<String> {
 /// Message body for the group in its current display state.
 pub(crate) fn render_content(group: &GroupState) -> String {
     let tools_part = if group.entries.len() == 1 && !group.expanded && group.settled.is_none() {
+        // Single live tool, the common case: this branch renders the bare row
+        // and never reaches `summary_line`, so the live ctx budget has to be
+        // appended here as well or it would only ever show on 2+ tool cards.
         let e = &group.entries[0];
-        format!("{} **{}**{}", entry_icon(e.status), e.name, e.context)
+        let ctx_segment = match &group.live_ctx {
+            Some(ctx) => format!(" · {ctx}"),
+            None => String::new(),
+        };
+        format!(
+            "{} **{}**{}{ctx_segment}",
+            entry_icon(e.status),
+            e.name,
+            e.context
+        )
     } else if group.entries.len() == 1 && !group.expanded {
         // Single-tool card that has settled (#1144/#1183 parity): the settled
         // chrome (waiting verb, ctx budget, clock) must stay visible, so the
