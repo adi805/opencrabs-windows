@@ -386,7 +386,7 @@ impl EventHandler for Handler {
                     )
                     .await;
                 return;
-            }
+            };
 
             // Per-channel `/respond_to` and `/cowork` need this channel's id,
             // the owner verdict and the thread's parent. The admission gate
@@ -397,6 +397,11 @@ impl EventHandler for Handler {
             let dc = &cfg.channels.discord;
             let is_dm = command.guild_id.is_none();
             let channel_str = command.channel_id.get().to_string();
+            // The fork builds `request` from the command kind; the scope replies
+            // and the history line want the command text itself, which for a
+            // chat-input command is the same string (#1850).
+            let invocation = super::commands::invocation(command);
+            let user_name = command.user.name.clone();
             let owner = crate::config::owner::is_owner(
                 &dc.allowed_users,
                 &dc.bot_owner,
