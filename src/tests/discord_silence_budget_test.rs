@@ -1,5 +1,4 @@
-//! FR-006 (silence warning) and FR-011 (budget clock denominator) for the
-//! Discord progress card (#1880).
+//! FR-006 (silence warning) for the Discord progress card (#1880).
 //!
 //! Both features read config at render time, so these tests swap the
 //! process-wide in-memory mirror via `Config::set_current` — no file is ever
@@ -88,21 +87,15 @@ fn silence_threshold_zero_disables_the_line() {
     assert!(!body.contains("still working"), "body was: {body}");
 }
 
-/// AC-023: the clock carries the budget denominator read from config.
+/// The clock carries elapsed time only. The thinking-loop budget was never a
+/// deadline the turn raced, so the denominator read as a countdown that meant
+/// nothing; the bare elapsed clock stands alone.
 #[test]
-fn clock_shows_the_budget_denominator() {
+fn clock_carries_no_budget_denominator() {
     let _g = CFG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     Config::set_current(cfg_with(60, 600));
     let body = render_content(&group(5, false));
-    assert!(body.contains("/ 10:00"), "body was: {body}");
-}
-
-/// A disabled budget (0) keeps the bare elapsed clock.
-#[test]
-fn clock_omits_the_denominator_when_the_budget_is_disabled() {
-    let _g = CFG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    Config::set_current(cfg_with(60, 0));
-    let body = render_content(&group(5, false));
+    assert!(body.contains("🕒 1:05"), "body was: {body}");
     assert!(!body.contains(" / "), "body was: {body}");
 }
 
