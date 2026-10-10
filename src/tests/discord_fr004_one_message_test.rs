@@ -77,7 +77,7 @@ fn the_rendered_count_is_exactly_the_number_of_tool_entries() {
 fn the_render_path_takes_no_model_text() {
     let flat = flattened("src/channels/discord/tool_group.rs");
     for sig in [
-        "fnsummary_line(group:&GroupState)->String",
+        "fnsummary_line(group:&GroupState,show_activity:bool)->String",
         "fnrender_content(group:&GroupState)->String",
     ] {
         assert!(
