@@ -15,11 +15,11 @@
 //! the registries are read through one shared helper (`DiscordState::
 //! waiting_counts`) and the rendering is exercised directly.
 
+use crate::channels::background_work::{SubagentCounts, subagent_waiting_phrase};
 use crate::channels::discord::DiscordState;
 use crate::channels::discord::tool_group::{
     GroupEntry, GroupState, TurnOutcome, render_content, settled_icon_verb,
 };
-use crate::channels::telegram::flow::{SubagentCounts, subagent_waiting_phrase};
 use std::time::Instant;
 
 fn group(n: usize) -> GroupState {
