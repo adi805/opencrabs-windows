@@ -12,12 +12,15 @@ use super::flow::{
 use super::handler::{fire_reaction, map_to_allowed_reaction};
 use super::intermediates::send_html_or_plain;
 use super::markdown::{markdown_to_telegram_html, split_message};
-use super::send::{best_effort_delete, message_in_thread, photo_in_thread, voice_in_thread};
+use super::send::{
+    best_effort_delete, document_in_thread, message_in_thread, photo_in_thread, voice_in_thread,
+};
 use crate::brain::agent::AgentService;
 use crate::db::ChannelMessageRepository;
 use crate::db::models::ChannelMessage as DbChannelMessage;
 use crate::utils::sanitize::redact_secrets;
 use std::sync::Arc;
+use teloxide::payloads::SendDocumentSetters;
 use teloxide::prelude::*;
 use teloxide::types::{InputFile, MessageId, ParseMode};
 use uuid::Uuid;
@@ -127,6 +130,15 @@ pub(crate) async fn deliver_final_response(
             // Strip LLM-hallucinated artifacts (<!-- tools-v2 -->, XML tool blocks)
             let text_only = crate::utils::sanitize::strip_llm_artifacts(&text_only);
             let text_only = redact_secrets(&text_only);
+            // #1916: after secret redaction, scan the reply for markdown
+            // links to local files. The session working directory is the
+            // base a relative target resolves against; scan-cleared text is
+            // adopted via partial move so the failure list stays available
+            // for the notice below.
+            let session_cwd = agent.get_working_directory_for_session(session_id);
+            let mut file_scan =
+                crate::utils::image::extract_local_files(&text_only, Some(session_cwd.as_path()));
+            let text_only = std::mem::take(&mut file_scan.text);
 
             // Drop an echoed plan title (#837). The reminder shows the model
             // the title every turn and it opens by repeating it, directly
@@ -484,6 +496,83 @@ pub(crate) async fn deliver_final_response(
                 }
             }
 
+            // #1916: ship every scanned local-file link as a document bubble.
+            // Read or send failures come back on the SAME link rather than as
+            // a log-only error, so the model learns the reference produced
+            // nothing. Refusals land in `text_only` as a short notice: raw
+            // link + reason, one per line, no markdown, because it rides the
+            // same channel as the reply itself.
+            // #1918: a file an INTERMEDIATE already shipped is in the chat;
+            // the final leg must not put a second copy there. Consume those
+            // entries from the scan before the floor runs: their markers
+            // stay for the reader (linking them to the intermediate's bubble
+            // is #1939's leg), and the failure notice is not theirs to
+            // join, because their delivery already succeeded.
+            {
+                let s = streaming.lock().unwrap_or_else(|e| e.into_inner());
+                if !s.delivered_files.is_empty() {
+                    file_scan
+                        .attachments
+                        .retain(|f| !s.delivered_files.iter().any(|d| d.path == f.path));
+                }
+            }
+            let (delivered, send_failures) = send_local_files(
+                session_id,
+                bot,
+                chat_id,
+                thread_id,
+                &std::mem::take(&mut file_scan.attachments),
+            )
+            .await;
+            file_scan.failures.extend(send_failures);
+            let text_only =
+                crate::utils::image::append_file_failure_notice(&text_only, &file_scan.failures);
+
+            // #1918: a marker for a file that DID land becomes a link to its
+            // bubble. The inbound message decides whether this chat has a
+            // link form at all; a chat without one (private, basic group)
+            // gets an empty list and keeps the plain markers. `unwrap_or_default`
+            // is the no-inbound leg: nothing here invented a chat, so nothing
+            // here can guess a link into existence.
+            let mut file_links: Vec<(std::path::PathBuf, String)> = match inbound {
+                Some(inbound) => delivered
+                    .iter()
+                    .filter_map(|delivered_file| {
+                        let link = file_message_link(
+                            &inbound.chat.kind,
+                            chat_id.0,
+                            thread_id,
+                            delivered_file.message_id,
+                        )?;
+                        Some((delivered_file.path.clone(), link))
+                    })
+                    .collect(),
+                None => Vec::new(),
+            };
+            // #1939: a document an INTERMEDIATE delivered is in the chat but
+            // absent from `delivered` above: the final leg sent nothing for
+            // it, so there is no id here to build a link from. Its bubble id
+            // is recorded next to the path, so the one splice below links
+            // both origins by one rule. A path the final leg DID ship keeps
+            // its own (fresher) id rather than being overwritten.
+            if let Some(inbound) = inbound {
+                let from_intermediates = {
+                    let s = streaming.lock().unwrap_or_else(|e| e.into_inner());
+                    s.delivered_files.clone()
+                };
+                for file in from_intermediates {
+                    if file_links.iter().any(|(p, _)| p == &file.path) {
+                        continue;
+                    }
+                    if let Some(link) =
+                        file_message_link(&inbound.chat.kind, chat_id.0, thread_id, file.message_id)
+                    {
+                        file_links.push((file.path, link));
+                    }
+                }
+            }
+            let text_only = link_file_markers(&text_only, &file_scan, &file_links);
+
             // Rich fallback: when all content was sent as HTML intermediates
             // during streaming, the dedup step strips text_only to empty. If
             // the original response had rich structure (tables, headings,
@@ -493,13 +582,28 @@ pub(crate) async fn deliver_final_response(
             // reclaim below can restore the host, so it must consult
             // options_pending itself — same gate as the final-answer site
             // (#45) — or a fully-deduped buttons turn stays plain.
+            // #1939: does a media-bearing intermediate already carry this
+            // exact body? Its bubble is not in `intermediate_msg_ids`, so
+            // the cleanup below cannot replace it: the arm would only
+            // re-send the body the reader already has, and the copy's
+            // markers would point at a bubble that holds nothing. Skipping
+            // the arm loses nothing: `text_only` is empty here, and the
+            // body itself already lives in that bubble.
+            let fallback_dup = {
+                let s = streaming.lock().unwrap_or_else(|e| e.into_inner());
+                super::intermediates::fallback_would_duplicate(
+                    &s.media_intermediates,
+                    &pre_dedup_text,
+                )
+            };
             let text_only = if text_only.is_empty()
                 && !sent.is_empty()
+                && !fallback_dup
                 && super::rich::should_send_native_rich_for(
                     &pre_dedup_text,
                     options_pending(streaming),
                 ) {
-                let rich_md = pre_dedup_text.clone();
+                let rich_md = link_file_markers(&pre_dedup_text, &file_scan, &file_links);
                 match super::rich::send_rich_with_mermaid_id(
                     bot.api_url().as_str(),
                     bot.token(),
@@ -1146,6 +1250,236 @@ pub(crate) async fn deliver_final_response(
         }
     }
     Ok(true)
+}
+
+/// One delivered file together with the id of the message bubble it landed
+/// in (#1918). The path travels with the id because the caller looks the
+/// file up BY PATH: the id alone would not say which file it carried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeliveredFile {
+    /// The file that was sent.
+    pub path: std::path::PathBuf,
+    /// Telegram's id for the message the send produced.
+    pub message_id: i32,
+}
+
+/// The `t.me` message link for a delivered file's bubble, when its chat kind
+/// has one (#1918).
+///
+/// A message link exists only for a public supergroup or a channel.
+/// `t.me/c/...` addresses a chat by its INTERNAL id, the chat id with the
+/// `-100` marker stripped, and gains a middle segment with the topic id
+/// when the message sits in a forum topic, so the reader lands on the bubble
+/// inside the right topic rather than at the top of a thread they then have
+/// to search.
+///
+/// A private chat and a basic group have no message-link form at all, so
+/// they get `None` and the caller leaves the marker as plain text: a link
+/// that goes nowhere is worse than no link, and the marker's job of pointing
+/// at the file is done by the label either way.
+pub(crate) fn file_message_link(
+    kind: &teloxide::types::ChatKind,
+    chat_id: i64,
+    thread_id: Option<teloxide::types::ThreadId>,
+    message_id: i32,
+) -> Option<String> {
+    let has_message_link = match kind {
+        teloxide::types::ChatKind::Public(public) => matches!(
+            public.kind,
+            teloxide::types::PublicChatKind::Supergroup { .. }
+                | teloxide::types::PublicChatKind::Channel { .. }
+        ),
+        teloxide::types::ChatKind::Private { .. } => false,
+    };
+    if !has_message_link {
+        return None;
+    }
+    // `t.me/c/` takes the id WITHOUT the `-100` marker that identifies a
+    // supergroup or channel. A private or basic-group id never reaches here,
+    // so an id without the prefix keeps its digits rather than losing three.
+    let chat = chat_id.to_string();
+    let internal = chat.strip_prefix("-100").unwrap_or(chat.as_str());
+    Some(match thread_id {
+        Some(thread) => format!("https://t.me/c/{internal}/{}/{message_id}", thread.0.0),
+        None => format!("https://t.me/c/{internal}/{message_id}"),
+    })
+}
+
+/// Rewrite each file's `<label>` marker into a markdown link to the bubble
+/// that carries that file (#1918).
+///
+/// `links` names the files that were BOTH delivered and reachable by a link
+/// as `(path, url)`, so a file the channel refused, a file an intermediate
+/// already sent, or one whose chat kind has no message-link form is simply
+/// absent and keeps the plain marker. The marker never points at a bubble
+/// that does not exist, and it never disappears: the label is the reader's
+/// anchor either way.
+///
+/// `text` is the buffer being rewritten, which STARTS as a copy of
+/// `scan.text` and is then run through the artifact strip, the secret
+/// redaction and the dedup ladder, any of which can move a marker. `scan`
+/// therefore travels with the call, and a span is cut only while the bytes
+/// it names still match the ones the scanner wrote there: a rewrite that
+/// moved the text degrades to the plain marker instead of splicing a link
+/// over unrelated words.
+///
+/// Spans are cut from the LAST to the FIRST, so a link's extra bytes can
+/// never invalidate a span that has not been cut yet.
+pub(crate) fn link_file_markers(
+    text: &str,
+    scan: &crate::utils::image::LocalFileScan,
+    links: &[(std::path::PathBuf, String)],
+) -> String {
+    if links.is_empty() {
+        return text.to_string();
+    }
+    let mut spans: Vec<(usize, usize, &str, &str)> = Vec::new();
+    for file in &scan.attachments {
+        let Some(span) = file.marker_span.as_ref() else {
+            // Not from a scan: nothing to cut.
+            continue;
+        };
+        let (start, end) = (span.start, span.end);
+        let Some(marker) = text.get(start..end) else {
+            continue;
+        };
+        if scan.text.get(start..end) != Some(marker) {
+            // The text moved under the span: the marker stays plain.
+            continue;
+        }
+        let Some((_, link)) = links
+            .iter()
+            .find(|(path, _)| path.as_path() == file.path.as_path())
+        else {
+            continue;
+        };
+        spans.push((start, end, marker, link.as_str()));
+    }
+    if spans.is_empty() {
+        return text.to_string();
+    }
+    // The scanner emits markers in order, so this only guards a caller that
+    // reordered them: cutting back-to-front is what keeps the earlier spans
+    // valid, and that needs the order to be known.
+    spans.sort_by_key(|(start, _, _, _)| *start);
+    let mut linked = text.to_string();
+    for (start, end, marker, link) in spans.iter().rev() {
+        linked.replace_range(*start..*end, &format!("[{marker}]({link})"));
+    }
+    linked
+}
+
+/// The filename Telegram should display for a document read from `path`.
+///
+/// `InputFile::memory` carries no name, and teloxide's own fallback returns an
+/// empty string for a `Bytes` payload, so Telegram labels the document `file`
+/// and drops the MIME: the extension never travelled. The multipart part's
+/// filename is where the name travels from (#1918).
+pub(crate) fn document_part_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Send each resolved local-file link as its own document bubble (#1916).
+///
+/// Telegram's clients render no document preview, so there is no
+/// photo/document ceiling to route by: every file ships through
+/// `sendDocument`, and the one size gate that matters lives upstream in
+/// [`crate::utils::image::validate_local_file`], where exceeding it can be
+/// reported to the MODEL as a rejection reason before delivery is attempted
+/// instead of surfacing here as a refusal the model never saw coming.
+/// Returns the files that landed, each with the message id the send
+/// produced, and the failures the channel itself refused: the two halves
+/// are set in different arms, and inferring one from the other would couple
+/// two independent facts.
+///
+/// A file that cannot be READ reports `Unreadable`: the reference named
+/// something this host cannot produce, which the model can repair by
+/// rewriting the link. A file the Telegram API REFUSES reports
+/// `DeliveryFailed`: the reference was fine, the channel said no, and no
+/// rewrite fixes that. The distinction is what routes the correction.
+pub(crate) async fn send_local_files(
+    session_id: uuid::Uuid,
+    bot: &Bot,
+    chat_id: ChatId,
+    thread_id: Option<teloxide::types::ThreadId>,
+    files: &[crate::utils::image::LocalFile],
+) -> (
+    Vec<DeliveredFile>,
+    Vec<crate::utils::image::LocalImageFailure>,
+) {
+    let mut delivered: Vec<DeliveredFile> = Vec::new();
+    let mut failures: Vec<crate::utils::image::LocalImageFailure> = Vec::new();
+
+    for file in files {
+        let path = &file.path;
+        let bytes = match tokio::fs::read(path).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::error!("Telegram: failed to read file {}: {}", path.display(), e);
+                failures.push(crate::utils::image::LocalImageFailure {
+                    raw: path.display().to_string(),
+                    resolved: Some(path.clone()),
+                    reason: crate::utils::image::LocalImageFailureReason::Unreadable,
+                });
+                continue;
+            }
+        };
+        let len = bytes.len();
+        // The document's own name rides the multipart part's filename
+        // (#1937): InputFile::memory carries none, teloxide guesses empty,
+        // and Telegram labels an unnamed document "file" with no MIME. The
+        // extension is also what teloxide derives the MIME type from, so
+        // naming the part is what makes a .pdf arrive as application/pdf.
+        let mut req = document_in_thread(
+            bot,
+            chat_id,
+            thread_id,
+            InputFile::memory(bytes).file_name(document_part_name(path)),
+        );
+        // Upstream `document_in_thread` carries no caption parameter, so the
+        // link label chains onto the request as the document caption.
+        if let Some(caption) = file.caption.as_deref() {
+            req = req.caption(caption.to_string());
+        }
+        match req.await {
+            Ok(msg) => {
+                delivered.push(DeliveredFile {
+                    path: path.clone(),
+                    message_id: msg.id.0,
+                });
+                // Match the outbox media receipt: len is sent bytes and hash8
+                // identifies the path, so one audit predicate covers every leg.
+                super::telemetry::log_send_success(
+                    "turn",
+                    "-",
+                    &session_id.to_string(),
+                    "delivery_media",
+                    "file_document",
+                    chat_id.0,
+                    thread_id.map(|t| t.0.0),
+                    msg.id.0,
+                    len,
+                    &super::telemetry::content_hash8(&path.display().to_string()),
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Telegram: failed to send file {} as document: {}",
+                    path.display(),
+                    e
+                );
+                failures.push(crate::utils::image::LocalImageFailure {
+                    raw: path.display().to_string(),
+                    resolved: Some(path.clone()),
+                    reason: crate::utils::image::LocalImageFailureReason::DeliveryFailed,
+                });
+            }
+        }
+    }
+
+    (delivered, failures)
 }
 
 /// Drain the display items left queued after the edit loop stopped,
