@@ -50,7 +50,7 @@ pub fn is_vision_available(config: &Config) -> bool {
             "vision unavailable: active provider has no `vision_model` set AND \
              [image.vision] is disabled. Two fixes: (1) set `vision_model = \"<model>\"` \
              on [providers.{provider}] in config.toml (preferred — uses the same \
-             provider for chat + vision), or (2) run /onboard:image to enable Gemini \
+             provider for chat + vision), or (2) run /image to enable Gemini \
              vision globally"
         );
     }

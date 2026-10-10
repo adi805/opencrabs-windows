@@ -29,16 +29,49 @@ async fn snapshot_reports_settled_so_the_ticker_stops() {
     let state = SlackState::new();
     state.upsert_tool_group("111.0".into(), live_group()).await;
     state
-        .settle_tool_group("111.0", TurnOutcome::Finished, 0, None)
+        .settle_tool_group("111.0", TurnOutcome::Finished, None, None)
         .await;
     let snap = state
         .tool_group_snapshot("111.0")
         .await
         .expect("settled group is still stored");
     assert!(
-        snap.settled.is_some(),
-        "settled must stay visible to the ticker: it is the stop condition (#1807)"
+        snap.settled_terminal(),
+        "terminal settle must stay visible to the ticker: it is the stop condition (#1807, #1988)"
     );
+}
+
+#[tokio::test]
+async fn waiting_settle_does_not_stop_the_ticker() {
+    // #1988: the flip is what ends the clock, not the waiting settle. A
+    // group waiting on background work must keep rolling its 🕒.
+    let state = SlackState::new();
+    state.upsert_tool_group("111.0".into(), live_group()).await;
+    state
+        .settle_tool_group(
+            "111.0",
+            TurnOutcome::Finished,
+            Some("Waiting for 1 background task".into()),
+            None,
+        )
+        .await;
+    let snap = state
+        .tool_group_snapshot("111.0")
+        .await
+        .expect("waiting group is still stored");
+    assert!(
+        !snap.settled_terminal(),
+        "a waiting line keeps the clock rolling until the flip"
+    );
+    // The terminal flip is what stops it.
+    state
+        .settle_tool_group("111.0", TurnOutcome::Finished, None, None)
+        .await;
+    let snap = state
+        .tool_group_snapshot("111.0")
+        .await
+        .expect("flipped group is still stored");
+    assert!(snap.settled_terminal(), "terminal settle stops the ticker");
 }
 
 #[tokio::test]

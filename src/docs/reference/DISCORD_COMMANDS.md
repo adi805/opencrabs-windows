@@ -10,7 +10,6 @@ catalog nothing (see below). The scope of the slash-command projection is
 `commands.toml` only: Telegram's menu also lists built-in commands and skills,
 Discord's does not (#1850 named the file, not the whole catalog), and a skill
 typed as plain text still works through the message path.
-
 ## Two different axes: intents and scopes
 
 Both must be right or nothing works, and they fail in different ways.
@@ -198,9 +197,34 @@ command is a new way into the agent and gets the same deny-by-default gate
 The refusal is an ephemeral message, so only the person who tapped it sees it,
 plus a `warn` line naming which check failed. Channel scope travels with the
 identity check: `allowed_channels` applies, including the parent fallback that
-lets an allow-listed forum admit its posts, and `respond_to` applies only in its
-`dm_only` form, because that setting is about unsolicited messages and nobody
-taps a command unsolicited.
+lets an allow-listed forum admit its posts. A command is solicited, so only a
+channel's `dm_only` mode blocks it; that mode is read per channel, with the thread →
+parent → global fallback (#2014). In a `mention` channel an unmentioned command is
+dropped, except the owner's `/respond_to` and `/cowork`, which pass the gate (#2016).
+
+## Per-channel settings and the owner commands
+
+Each Discord channel, or a forum/thread parent, can have its own entry:
+
+```toml
+[channels.discord.channels.1473207147025137778]
+name = "general"             # display only; access never reads it
+respond_to = "all"           # this channel's mode; unset inherits the global respond_to
+open = true                  # any member of this channel is admitted (ACL)
+```
+
+- **`open`** admits every member of the channel, and its threads and forum posts,
+  past `allowed_users`. It never admits anyone while the bot has no
+  `allowed_users`, `allowed_roles` or `bot_owner`. DMs and other channels stay locked.
+- **`/respond_to`** (owner) typed in a channel or thread shows the mode that applies
+  there. With an argument (`all`, `dm_only`, `mention`, `auto`) it writes that
+  channel's own `respond_to`. Threads write their own entry, which wins over the parent's.
+- **`/cowork`** (owner) in a server channel or thread writes `open = true` and the
+  channel's `name`. It refuses in a DM. Members are not registered; `open` admits them.
+- Both commands are refused for non-owners before anything is written, and a failed
+  write is reported in the channel. Slack and WhatsApp answer `/respond_to` from their
+  channel-level setting and do not write it.
+- `auto` on Discord behaves as `mention`.
 
 The verdict itself lives in `identity_admitted()` and `holds_allowed_role()` as
 pure functions, which is what lets the deny-by-default case have a test: there

@@ -1294,7 +1294,9 @@ impl App {
             // Notes for doc/audio/archive/unknown/text files flow into the
             // input buffer below, exactly like a bracketed paste of the same
             // path does; with no clean text there is nothing to insert.
-            self.insert_text_at_cursor(&extraction.text);
+            // Bracketed paste scrubs at the bottom of this fn; the
+            // Ctrl+V file-extraction path must not skip it (#1983).
+            self.insert_text_at_cursor(&Self::strip_terminal_escapes(&extraction.text));
             return;
         }
 
@@ -1596,7 +1598,10 @@ impl App {
             && self.messages.last().is_some_and(|m| m.role == "user")
         {
             if let Some(m) = self.messages.pop() {
-                self.input_buffer = m.content;
+                // Scrub like every other buffer write: a queued message
+                // captured before the gate existed could still carry a
+                // burst (#1983).
+                self.input_buffer = Self::strip_terminal_escapes(&m.content);
                 self.cursor_position = self.input_buffer.len();
             }
             if let Some(sid) = self.current_session.as_ref().map(|s| s.id) {
@@ -2016,7 +2021,9 @@ impl App {
                     0
                 };
                 if let Some(text) = self.followup_suggestions.get(idx).cloned() {
-                    self.input_buffer = text;
+                    // Same as the cancel-restore above: followup text can
+                    // arrive from a model output that echoed a raw burst.
+                    self.input_buffer = Self::strip_terminal_escapes(&text);
                     self.cursor_position = self.input_buffer.len();
                 }
                 self.followup_suggestions.clear();

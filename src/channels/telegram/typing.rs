@@ -21,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::brain::agent::service::background_tasks::BackgroundTaskManager;
+use crate::brain::tools::subagent::SubAgentManager;
 
 use super::send::fire_chat_action;
 
@@ -56,21 +57,24 @@ pub(crate) fn spawn_typing_turn(
 }
 
 /// Keep "typing" alive for the turn, then for as long as the session has
-/// background commands running.
+/// detached work: background commands or alive sub-agents (#1985).
 ///
-/// `cancel` ends the turn phase, exactly as before. `background` is `None` on
-/// surfaces with no background manager wired, which collapses this to the
-/// turn loop only.
+/// `cancel` ends the turn phase, exactly as before. `background` and `agents`
+/// are `None` on surfaces with neither manager wired, which collapses this to
+/// the turn loop only.
 pub(crate) fn spawn_typing(
     bot: Bot,
     chat_id: ChatId,
     thread_id: Option<ThreadId>,
     cancel: CancellationToken,
     background: Option<Arc<BackgroundTaskManager>>,
+    agents: Option<Arc<SubAgentManager>>,
     session_id: Uuid,
 ) {
     spawn_typing_turn(bot.clone(), chat_id, thread_id, cancel.clone());
-    spawn_typing_after_turn(bot, chat_id, thread_id, cancel, background, session_id);
+    spawn_typing_after_turn(
+        bot, chat_id, thread_id, cancel, background, agents, session_id,
+    );
 }
 
 /// The tail of [`spawn_typing`], for callers that only learn their session id
@@ -84,23 +88,26 @@ pub(crate) fn spawn_typing_after_turn(
     thread_id: Option<ThreadId>,
     cancel: CancellationToken,
     background: Option<Arc<BackgroundTaskManager>>,
+    agents: Option<Arc<SubAgentManager>>,
     session_id: Uuid,
 ) {
     tokio::spawn(async move {
         cancel.cancelled().await;
-        keep_typing_while_detached(bot, chat_id, thread_id, background, session_id).await;
+        keep_typing_while_detached(bot, chat_id, thread_id, background, agents, session_id).await;
     });
 }
 
-/// Tick "typing" for as long as `session_id` has background commands running.
+/// Tick "typing" for as long as `session_id` has detached work in either
+/// registry: background commands or alive sub-agents (#1985).
 async fn keep_typing_while_detached(
     bot: Bot,
     chat_id: ChatId,
     thread_id: Option<ThreadId>,
     background: Option<Arc<BackgroundTaskManager>>,
+    agents: Option<Arc<SubAgentManager>>,
     session_id: Uuid,
 ) {
-    crate::channels::typing_tick::tick_while_detached(background, session_id, TICK, || {
+    crate::channels::typing_tick::tick_while_detached(background, agents, session_id, TICK, || {
         fire_chat_action(
             &bot,
             chat_id,

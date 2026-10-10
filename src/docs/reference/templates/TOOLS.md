@@ -81,7 +81,7 @@ Manage scheduled jobs with the **`cron_manage`** tool (`action`: create/list/del
 
 STT providers: `voicebox` (local server) > `openai_compatible` > `groq` (Whisper API) > `local` (rwhisper, `local-stt` feature). Override with `stt_fallback_chain`.
 TTS providers: `voicebox` (local server) > `openai_compatible` > `openai` (OpenAI TTS) > `local` (Piper, `local-tts` feature). Override with `tts_fallback_chain`.
-Config: `[providers.stt.*]` / `[providers.tts.*]`. Piper voices: `ryan`(default), `amy`, `lessac`, `kristin`, `joe`, `cori`. Local STT presets: `local-tiny`(42MB)…`local-medium`(1.5GB). Audio: OGG/Opus via ffmpeg. Models: `~/.local/share/opencrabs/models/{whisper,piper}/`. Setup: `/onboard:voice`.
+Config: `[providers.stt.*]` / `[providers.tts.*]`. Piper voices: `ryan`(default), `amy`, `lessac`, `kristin`, `joe`, `cori`. Local STT presets: `local-tiny`(42MB)…`local-medium`(1.5GB). Audio: OGG/Opus via ffmpeg. Models: `~/.local/share/opencrabs/models/{whisper,piper}/`. Setup: `/voice`.
 
 ## Reporting
 

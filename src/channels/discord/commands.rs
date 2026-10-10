@@ -56,7 +56,7 @@ use serenity::http::Http;
 use serenity::model::application::{
     Command, CommandDataOptionValue, CommandInteraction, CommandOptionType, CommandType,
 };
-use serenity::model::id::GuildId;
+use serenity::model::id::{ChannelId, GuildId};
 
 use crate::brain::{BrainLoader, CommandLoader, UserCommand};
 
@@ -355,12 +355,34 @@ pub(crate) fn sync_signature(parts: &[u64]) -> u64 {
 /// round-trip for nothing. The 5-per-second per-route bucket
 /// (`application-commands.mdx:206`) is what a chatty watcher would hit, not the
 /// 200-per-day create budget, which bulk overwrite does not touch.
+/// Built-ins offered in the Discord `/` menu beside `commands.toml` (#2013).
+/// Each is answered by the interaction path, never routed to the model, so an
+/// entry here has to be handled there too.
+pub(crate) fn with_menu_builtins(mut catalog: Vec<UserCommand>) -> Vec<UserCommand> {
+    const MENU_BUILTINS: &[(&str, &str)] = &[
+        ("/respond_to", "Show this bot's respond mode (owner only)"),
+        ("/cowork", "Open this channel to its members (owner only)"),
+    ];
+    for (name, description) in MENU_BUILTINS {
+        if !catalog.iter().any(|c| c.name == *name) {
+            catalog.push(UserCommand {
+                name: (*name).to_string(),
+                description: (*description).to_string(),
+                action: "system".to_string(),
+                prompt: String::new(),
+            });
+        }
+    }
+    catalog
+}
+
 pub(crate) async fn sync_commands(
     http: &Arc<Http>,
     guilds: &[GuildId],
     last_key: Option<u64>,
 ) -> Option<u64> {
-    let catalog = CommandLoader::from_brain_path(&BrainLoader::resolve_path()).load();
+    let catalog =
+        with_menu_builtins(CommandLoader::from_brain_path(&BrainLoader::resolve_path()).load());
 
     if catalog.is_empty() {
         tracing::info!("discord: command catalog is empty, syncing an empty global list");
@@ -438,7 +460,8 @@ pub(crate) async fn sync_commands(
 /// no roles and no owner is UNCONFIGURED, and unconfigured denies everybody:
 /// the old "empty means everyone" reading made a half-configured Discord bot
 /// public. Otherwise the owner, an allowlisted id, or a holder of an allowed
-/// role is admitted.
+/// role is admitted, and so is any member of a channel that is `open` there
+/// (#2014). `open_here` never overrides `unconfigured`.
 ///
 /// Extracted pure so the branch can be pinned without a gateway.
 pub(crate) fn identity_admitted(
@@ -446,8 +469,38 @@ pub(crate) fn identity_admitted(
     is_owner: bool,
     in_allowlist: bool,
     role_granted: bool,
+    open_here: bool,
 ) -> bool {
-    !unconfigured && (is_owner || in_allowlist || role_granted)
+    !unconfigured && (is_owner || in_allowlist || role_granted || open_here)
+}
+
+/// Persist a channel's respond mode under `[channels.discord.channels.<id>]`
+/// (#2014). The config watcher picks the change up the way it picks up any
+/// config write.
+pub(crate) fn write_channel_respond_to(channel_id: &str, mode: &str) -> Result<(), String> {
+    crate::config::Config::write_key(
+        &format!("channels.discord.channels.{channel_id}"),
+        "respond_to",
+        mode,
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// The parent channel of a thread or forum post, or `None` for a top-level
+/// channel, a DM, or a lookup that failed (#2014). A failed lookup is logged;
+/// callers fall back to the thread's own id alone.
+pub(crate) async fn parent_channel_id(http: &Http, channel: ChannelId) -> Option<String> {
+    match channel.to_channel(http).await {
+        Ok(serenity::model::channel::Channel::Guild(gc)) => {
+            gc.parent_id.map(|p| p.get().to_string())
+        }
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("Discord: could not resolve parent of channel {channel}: {e}");
+            None
+        }
+    }
 }
 
 /// Whether any of a member's role ids is on the allowlist. Ids cross a JSON

@@ -31,10 +31,25 @@ async fn discord_re_registration_last_writer_wins() {
 async fn slack_reverse_map_resolves_channel_to_session() {
     let st = SlackState::new();
     let s = Uuid::new_v4();
-    st.register_session_channel(s, "C0123ABCDEF".to_string())
+    st.register_session_channel(s, "C0123ABCDEF".to_string(), None)
         .await;
     assert_eq!(st.session_owner_by_channel("C0123ABCDEF").await, Some(s));
     assert_eq!(st.session_owner_by_channel("C999").await, None);
+}
+
+#[tokio::test]
+async fn slack_thread_registration_tracks_turn_origin() {
+    // #1988: the background-resume reply lands in the thread the turn came
+    // from; a top-level turn must CLEAR the entry, never inherit a stale
+    // thread from an earlier one.
+    let st = SlackState::new();
+    let s = Uuid::new_v4();
+    st.register_session_channel(s, "C0123ABCDEF".to_string(), Some("1700.000100".into()))
+        .await;
+    assert_eq!(st.session_thread(s).await.as_deref(), Some("1700.000100"));
+    st.register_session_channel(s, "C0123ABCDEF".to_string(), None)
+        .await;
+    assert_eq!(st.session_thread(s).await, None, "stale thread cleared");
 }
 
 #[tokio::test]

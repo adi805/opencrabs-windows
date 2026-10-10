@@ -199,33 +199,31 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         name: "/onboard",
         description: "Run setup wizard",
     },
+    // Single-step setup (#1981). The legacy `/onboard:<step>` spellings
+    // still resolve but are deliberately not offered here.
     SlashCommand {
-        name: "/onboard:provider",
-        description: "Jump to AI provider setup",
+        name: "/workspace",
+        description: "Workspace settings",
     },
     SlashCommand {
-        name: "/onboard:workspace",
-        description: "Jump to workspace settings",
-    },
-    SlashCommand {
-        name: "/onboard:channels",
+        name: "/channels",
         description: "Setup Telegram, Slack, Discord, WhatsApp, Trello",
     },
     SlashCommand {
-        name: "/onboard:voice",
-        description: "Jump to voice STT/TTS setup",
+        name: "/voice",
+        description: "Voice STT/TTS setup",
     },
     SlashCommand {
-        name: "/onboard:image",
-        description: "Jump to image handling setup (vision + generation)",
+        name: "/image",
+        description: "Image handling setup (vision + generation)",
     },
     SlashCommand {
-        name: "/onboard:daemon",
-        description: "Jump to background service (always-on) setup",
+        name: "/daemon",
+        description: "Background service (always-on) setup",
     },
     SlashCommand {
-        name: "/onboard:brain",
-        description: "Jump to brain/persona setup",
+        name: "/brain",
+        description: "Brain/persona setup",
     },
     SlashCommand {
         name: "/doctor",
@@ -766,10 +764,12 @@ pub struct App {
     /// Working directory
     pub working_directory: std::path::PathBuf,
 
-    /// Context hints queued by UI actions (e.g. /cd, @ file picker).
-    /// Drained and prepended to the next user message so the LLM knows
-    /// what just happened without the user having to explain.
-    pub pending_context: Vec<String>,
+    /// Context hints queued by UI actions (e.g. /cd, @ file picker), keyed by
+    /// the session they belong to. Drained and prepended to that session's
+    /// next user message so the LLM knows what just happened without the user
+    /// having to explain. App-level storage let one session's `/cd` hint ride
+    /// into whichever session sent next (#2006).
+    pub(crate) pending_context: std::collections::HashMap<Uuid, Vec<String>>,
 
     /// Editor handoff request (#1744): `(command, origin_session_id)` set by
     /// the bang allowlist branch, consumed by the runner loop (it owns the
@@ -794,6 +794,10 @@ pub struct App {
     pub skills_dialog: crate::tui::app::skills_dialog::SkillsDialogState,
     /// Profiles dialog state — filter, selection, scroll. Same pattern.
     pub profiles_dialog: crate::tui::app::profiles_dialog::ProfilesDialogState,
+
+    /// Dispatcher-level mouse-report fragment gate (#1983): fed at the top
+    /// of `handle_key_event` so every mode inherits burst suppression.
+    pub(crate) mouse_frag_gate: crate::tui::app::mouse_frag::MouseFragGate,
 
     /// Onboarding wizard state
     pub onboarding: Option<OnboardingWizard>,
@@ -1118,7 +1122,7 @@ impl App {
             input_history_index: None,
             input_history_stash: String::new(),
             working_directory: crate::utils::cwd::launch_cwd(),
-            pending_context: Vec::new(),
+            pending_context: std::collections::HashMap::new(),
             #[cfg(unix)]
             pending_editor_handoff: None,
             brain_path,
@@ -1127,6 +1131,7 @@ impl App {
             mc: crate::tui::app::mission_control::McState::default(),
             skills_dialog: crate::tui::app::skills_dialog::SkillsDialogState::default(),
             profiles_dialog: crate::tui::app::profiles_dialog::ProfilesDialogState::default(),
+            mouse_frag_gate: crate::tui::app::mouse_frag::MouseFragGate::default(),
             onboarding: None,
             force_onboard: false,
             processing_sessions: HashSet::new(),
@@ -1882,6 +1887,12 @@ impl App {
             .session_model_snapshot()
             .into_iter()
             .collect();
+        // Carry each session's OWN working directory across the rebuild (#2008).
+        // The `.with_working_directory(working_dir)` above copies the global
+        // only, so without this every pane that had chosen its own repo answers
+        // the next prompt from the new global default and reports it in Runtime
+        // Info. Same contract as the provider and model pins below.
+        let preserved_session_wds = self.agent_service.session_working_dir_snapshot();
 
         let new_agent_service = Arc::new(new_agent_service);
         for (sid, prov) in preserved_session_providers {
@@ -1890,6 +1901,9 @@ impl App {
                 .cloned()
                 .unwrap_or_else(|| prov.default_model().to_string());
             new_agent_service.swap_provider_for_session(sid, prov, model);
+        }
+        for (sid, dir) in preserved_session_wds {
+            new_agent_service.set_session_only_working_directory(sid, dir);
         }
 
         // Update app state
@@ -3406,6 +3420,18 @@ impl App {
     async fn handle_key_event(&mut self, event: crossterm::event::KeyEvent) -> Result<()> {
         use super::events::keys;
         use crossterm::event::{KeyCode, KeyModifiers};
+
+        // Mouse-report fragments (#1983): when an escape read splits,
+        // crossterm re-publishes SGR/URXVT bursts as individual Char
+        // events. The #1943 gate only covered the chat plain-char path;
+        // this choke point makes every surface (onboarding, dialogs,
+        // mission control, sudo, rename) inherit the suppression before
+        // any mode consumes the key. F12 and other non-Char keys always
+        // pass, so the mouse-capture escape hatch stays reachable.
+        if self.mouse_frag_gate.absorb(&event.code) {
+            tracing::debug!("[MOUSEFRAG] dropped fragment {:?} at dispatch", event.code);
+            return Ok(());
+        }
 
         // Ctrl+C expanded command panel (#1775). Modal: while open, every
         // key is consumed; Esc/q/Ctrl+C dismiss it. Checked before all

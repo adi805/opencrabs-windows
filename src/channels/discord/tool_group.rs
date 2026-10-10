@@ -316,7 +316,11 @@ fn latest_activity(group: &GroupState) -> Option<String> {
         .next()
 }
 
-fn summary_line(group: &GroupState) -> String {
+/// `show_activity` is false when the caller renders the narration notes
+/// underneath anyway (an expanded card): the live arm leads with the latest
+/// note as its activity segment, so leaving it in *and* printing the notes
+/// block repeated the same sentence — once above the tool rows, once below.
+fn summary_line(group: &GroupState, show_activity: bool) -> String {
     let n = group.entries.len();
     let failed = group
         .entries
@@ -370,10 +374,10 @@ fn summary_line(group: &GroupState) -> String {
                 None => String::new(),
             };
             let base = match activity_segment(group) {
-                Some(activity) => {
+                Some(activity) if show_activity => {
                     format!("{icon} {activity} · {counts}{tail}{ctx_segment} · {clock}")
                 }
-                None => format!("{icon} {counts}{tail}{ctx_segment} · {clock}"),
+                _ => format!("{icon} {counts}{tail}{ctx_segment} · {clock}"),
             };
             match silence_segment(group) {
                 Some(silence) => format!("{base}\n{silence}"),
@@ -472,7 +476,7 @@ pub(crate) fn render_content(group: &GroupState) -> String {
         let e = &group.entries[0];
         format!(
             "{}\n{} **{}**{}",
-            summary_line(group),
+            summary_line(group, false),
             entry_icon(e.status),
             e.name,
             e.context
@@ -483,9 +487,9 @@ pub(crate) fn render_content(group: &GroupState) -> String {
             .iter()
             .map(|e| format!("{} **{}**{}", entry_icon(e.status), e.name, e.context))
             .collect();
-        clamp_rows(summary_line(group), lines)
+        clamp_rows(summary_line(group, false), lines)
     } else {
-        summary_line(group)
+        summary_line(group, true)
     };
     // Narration rows are EXPANSION-ONLY (#1990 parity). Collapsed, the card
     // stays a glance: the summary line already carries the latest narration
@@ -621,7 +625,7 @@ impl DiscordState {
         message_id: u64,
         outcome: TurnOutcome,
         bg: usize,
-        agents: crate::channels::telegram::flow::SubagentCounts,
+        agents: crate::channels::background_work::SubagentCounts,
         ctx: Option<String>,
     ) -> Option<GroupState> {
         let mut guard = self.tool_groups.lock().await;
@@ -629,7 +633,7 @@ impl DiscordState {
         let group = map.get_mut(&message_id)?;
         let prev_ctx = group.settled.as_ref().and_then(|s| s.ctx.clone());
         let agent_phrase = (!agents.is_empty())
-            .then(|| crate::channels::telegram::flow::subagent_waiting_phrase(agents));
+            .then(|| crate::channels::background_work::subagent_waiting_phrase(agents));
         let (icon, verb) = settled_icon_verb(outcome, bg, agent_phrase.as_deref());
         group.settled = Some(SettledStatus {
             outcome,
@@ -648,7 +652,7 @@ impl DiscordState {
     pub(crate) fn waiting_counts(
         agent: &crate::brain::agent::AgentService,
         session_id: uuid::Uuid,
-    ) -> (usize, crate::channels::telegram::flow::SubagentCounts) {
+    ) -> (usize, crate::channels::background_work::SubagentCounts) {
         let bg = agent
             .background_manager()
             .map(|bm| bm.running_tasks(session_id).len())

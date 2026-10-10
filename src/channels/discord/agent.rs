@@ -387,6 +387,72 @@ impl EventHandler for Handler {
                     .await;
                 return;
             };
+
+            // Per-channel `/respond_to` and `/cowork` need this channel's id,
+            // the owner verdict and the thread's parent. The admission gate
+            // itself stays in `interactions::handle_invoked_request`, where the
+            // fork enforces it; here we resolve only what the scope reply needs
+            // (#2014). The parent lookup runs for a guild channel only.
+            let cfg = self.config_rx.borrow().clone();
+            let dc = &cfg.channels.discord;
+            let is_dm = command.guild_id.is_none();
+            let channel_str = command.channel_id.get().to_string();
+            // The fork builds `request` from the command kind; the scope replies
+            // and the history line want the command text itself, which for a
+            // chat-input command is the same string (#1850).
+            let invocation = super::commands::invocation(command);
+            let owner = crate::config::owner::is_owner(
+                &dc.allowed_users,
+                &dc.bot_owner,
+                &command.user.id.get().to_string(),
+            );
+            let parent = if is_dm {
+                None
+            } else {
+                super::commands::parent_channel_id(&ctx.http, command.channel_id).await
+            };
+
+            // `/respond_to` from the menu is answered here, not routed to the
+            // model as a prompt. It never writes Telegram's section (#2013).
+            let cowork_name = if !is_dm && super::cowork::is_cowork_command(&invocation) {
+                super::cowork::channel_name(&ctx.http, command.channel_id).await
+            } else {
+                None
+            };
+            let scope_reply = super::cowork::cowork_discord_channel(
+                &invocation,
+                owner,
+                !is_dm,
+                &channel_str,
+                cowork_name.as_deref(),
+                super::cowork::write_channel_open,
+            )
+            .or_else(|| {
+                crate::channels::respond_to_scope::respond_to_discord_channel(
+                    &invocation,
+                    owner,
+                    &channel_str,
+                    &dc.respond_to_for(&channel_str, parent.as_deref()),
+                    super::commands::write_channel_respond_to,
+                )
+            });
+            if let Some(reply) = scope_reply {
+                if let Err(e) = command
+                    .create_response(
+                        &ctx.http,
+                        serenity::builder::CreateInteractionResponse::Message(
+                            serenity::builder::CreateInteractionResponseMessage::new()
+                                .content(reply)
+                                .ephemeral(true),
+                        ),
+                    )
+                    .await
+                {
+                    tracing::warn!("Discord: /{} reply refused: {e}", command.data.name);
+                }
+                return;
+            }
+
             super::interactions::handle_invoked_request(
                 &ctx,
                 command,
@@ -471,7 +537,17 @@ impl EventHandler for Handler {
 
         if let Some(comp) = interaction.message_component() {
             let custom_id = comp.data.custom_id.as_str();
-            tracing::info!("Discord callback received: custom_id={}", custom_id);
+            // Log the interaction and application ids alongside the custom_id.
+            // The 40060 "already acknowledged" class cannot be diagnosed from a
+            // custom_id alone: knowing WHICH interaction was acked, and by which
+            // application, is the only way to tell a double-ack apart from a
+            // stale click on an old card.
+            tracing::info!(
+                "Discord callback received: custom_id={} interaction_id={} application_id={}",
+                custom_id,
+                comp.id,
+                comp.application_id
+            );
 
             // Optional follow-up suggestion tapped (#598): inject the chosen
             // suggestion as the user's next message (a fresh turn). Options were
@@ -742,57 +818,93 @@ impl EventHandler for Handler {
                 return;
             }
 
-            // Tool-group Expand/Collapse toggle (#380): flip stored state
-            // and update THIS message via the interaction response.
+            // Tool-group Expand/Collapse toggle (#380): flip stored state and
+            // redraw THIS message.
+            //
+            // The redraw deliberately does NOT ride the interaction response.
+            // Gating it there made the button depend on this handler winning a
+            // race for the acknowledgement: whenever something else acked first
+            // the response came back 40060 (`Interaction has already been
+            // acknowledged`) and the card was never redrawn, so Expand looked
+            // dead. Ack on its own, then redraw through `writes` — the governed
+            // path the card was created on — and the redraw lands regardless of
+            // who acked first.
             if let Some(mid_str) = custom_id.strip_prefix("toolgroup:") {
-                // Every path must resolve the interaction (#1949): a bare
-                // `Acknowledge` or a skipped response leaves Discord
-                // spinning its "didn't respond in time" toast.
-                // `render_content` clamps to the 2000-char wire cap, but
-                // if the API still refuses, answer with an ephemeral
-                // fallback instead of leaving the click unresolved.
-                use serenity::builder::{
-                    CreateInteractionResponse, CreateInteractionResponseMessage,
-                };
-                let resp = match mid_str.parse::<u64>() {
-                    Ok(mid) => match self.discord_state.toggle_tool_group(mid).await {
-                        // The card was created through `writes`, so it is an
-                        // embed; this response must redraw the SAME shape or the
-                        // first Expand press flips the card back to plain text
-                        // (#170). `auto_embed_update` is the choke point for the
-                        // raw interaction responses the create/edit helpers
-                        // cannot see.
-                        Some(group) => CreateInteractionResponse::UpdateMessage(
-                            super::embed::auto_embed_update(
-                                CreateInteractionResponseMessage::new()
-                                    .content(super::tool_group::render_content(&group))
-                                    .components(super::tool_group::render_components(&group, mid)),
-                            ),
-                        ),
-                        None => {
-                            tracing::debug!("Discord: tool group {mid} aged out — toggle ignored");
-                            CreateInteractionResponse::Message(
-                                CreateInteractionResponseMessage::new()
+                let Ok(mid) = mid_str.parse::<u64>() else {
+                    // A custom_id we cannot parse is a bubble older than this
+                    // build. Answer plainly rather than leaving the click
+                    // unresolved, which leaves Discord spinning its "didn't
+                    // respond in time" toast (#1949).
+                    if let Err(e) = comp
+                        .create_response(
+                            &ctx.http,
+                            serenity::builder::CreateInteractionResponse::Message(
+                                serenity::builder::CreateInteractionResponseMessage::new()
                                     .ephemeral(true)
                                     .content("This status bubble is too old to expand."),
-                            )
-                        }
-                    },
-                    Err(_) => CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .ephemeral(true)
-                            .content("This status bubble is too old to expand."),
-                    ),
+                            ),
+                        )
+                        .await
+                    {
+                        tracing::warn!("Discord: tool group aged-out notice failed: {e}");
+                    }
+                    return;
                 };
-                if let Err(e) = comp.create_response(&ctx.http, resp).await {
-                    tracing::warn!("Discord: tool group toggle response failed: {e}");
-                    let fallback = CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .ephemeral(true)
-                            .content("Couldn't redraw the status bubble — try again shortly."),
-                    );
-                    if let Err(e2) = comp.create_response(&ctx.http, fallback).await {
-                        tracing::warn!("Discord: tool group toggle fallback response failed: {e2}");
+                match self.discord_state.toggle_tool_group(mid).await {
+                    Some(group) => {
+                        // Claim the interaction first so Discord stops its
+                        // spinner. A failure here is expected when something
+                        // else already acked, and it must not block the redraw
+                        // below — that separation is the whole point of this arm.
+                        if let Err(e) = comp
+                            .create_response(
+                                &ctx.http,
+                                serenity::builder::CreateInteractionResponse::Acknowledge,
+                            )
+                            .await
+                        {
+                            tracing::debug!(
+                                "Discord: tool group {mid} toggle ack skipped (already acked): {e}"
+                            );
+                        }
+                        // `Class::Final`, not `Edit`: a press is user-initiated,
+                        // so it must never be dropped when the write budget is
+                        // spent. A silently ignored press is the exact bug this
+                        // arm exists to fix. `writes::edit` applies the same
+                        // embed conversion the card was created with, so the
+                        // shape survives the redraw (#170).
+                        match writes::edit(
+                            &ctx.http,
+                            comp.channel_id,
+                            serenity::model::id::MessageId::new(mid),
+                            serenity::builder::EditMessage::new()
+                                .content(super::tool_group::render_content(&group))
+                                .components(super::tool_group::render_components(&group, mid)),
+                            Class::Final,
+                        )
+                        .await
+                        {
+                            Ok(_) => {}
+                            Err(e) => {
+                                tracing::warn!("Discord: tool group {mid} redraw failed: {e}");
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::debug!("Discord: tool group {mid} aged out — toggle ignored");
+                        if let Err(e) = comp
+                            .create_response(
+                                &ctx.http,
+                                serenity::builder::CreateInteractionResponse::Message(
+                                    serenity::builder::CreateInteractionResponseMessage::new()
+                                        .ephemeral(true)
+                                        .content("This status bubble is too old to expand."),
+                                ),
+                            )
+                            .await
+                        {
+                            tracing::warn!("Discord: tool group aged-out notice failed: {e}");
+                        }
                     }
                 }
                 return;

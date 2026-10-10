@@ -46,6 +46,10 @@ pub(crate) fn spawn_edit_loop(
         let agent = agent.clone();
         let sid = session_id;
         async move {
+            // #2010: the bubble surface this turn was last seen streaming
+            // into, so the pending row is rewritten only when it moves.
+            // Tuple is (surface tag, message id); see `CarriedBubble`.
+            let mut last_surface: Option<(&'static str, i32)> = None;
             loop {
                 // Bot API 10.3 stop button (#98 follow-up): the raw poll loop
                 // parked a `stopped_message_generation` update for this chat
@@ -164,6 +168,51 @@ pub(crate) fn spawn_edit_loop(
                         };
                         // Lock is now released
 
+                        // #2010: keep the pending row pointed at the bubble this
+                        // turn is streaming into. A SIGKILL takes this task's
+                        // memory with it, and the row is the only state that
+                        // survives to the boot resume, so without this the
+                        // resumed turn has nothing to edit and opens a second
+                        // bubble beside the partial answer left on screen. The
+                        // flow block wins when both exist, because that is the
+                        // bubble a reader sees growing. Checked against the last
+                        // written value so the row is touched only when the
+                        // surface moves (placeholder opens, the flow takes over,
+                        // a relocation replaces it). Fire-and-forget: the edit
+                        // tick must never wait on the database, and a failed
+                        // write only costs the adoption, which then falls back
+                        // to the pre-#2010 behaviour of a fresh bubble.
+                        {
+                            let surface = {
+                                let s = st.lock().unwrap_or_else(|e| e.into_inner());
+                                match s.open_group_msg_id {
+                                    Some(m) => Some((
+                                        if s.flow_rich { "flow" } else { "flow_plain" },
+                                        m.0,
+                                    )),
+                                    None => snap.msg_id.map(|m| ("answer", m.0)),
+                                }
+                            };
+                            if surface != last_surface {
+                                last_surface = surface;
+                                if let Some((tag, id)) = surface {
+                                    let carried = format!("{tag}:{id}");
+                                    let pool = agent.context().pool();
+                                    tokio::spawn(async move {
+                                        if let Err(e) =
+                                            crate::db::PendingRequestRepository::new(pool)
+                                                .set_channel_message_id_for_session(sid, &carried)
+                                                .await
+                                        {
+                                            tracing::debug!(
+                                                "[telegram] #2010 bubble id persist failed, this turn keeps no adoptable bubble: {e:#}"
+                                            );
+                                        }
+                                    });
+                                }
+                            }
+                        }
+
                         // ── Ordered display: tools and intermediates in chronological order ──
                         // Buffer consecutive tool calls to group them into collapsible blocks
                         let mut tool_buffer: Vec<usize> = Vec::new();
@@ -216,8 +265,17 @@ pub(crate) fn spawn_edit_loop(
                                     // visible answer just because it also appears in
                                     // the collapsed trace.
                                     if super::intermediates::is_deliverable_rich_report(&text) {
+                                        let session_cwd =
+                                            agent.get_working_directory_for_session(sid);
                                         super::intermediates::deliver_intermediate_message(
-                                            &bot, chat, thread_id, &st, &tg, &text,
+                                            &bot,
+                                            chat,
+                                            thread_id,
+                                            &st,
+                                            &tg,
+                                            sid,
+                                            session_cwd.as_path(),
+                                            &text,
                                         )
                                         .await;
                                     } else {

@@ -388,29 +388,30 @@ impl AgentContext {
     /// Previous segments survive verbatim; everything after the last marker
     /// (the delta the summary describes) is replaced by the new marker. No
     /// prior summary text is re-derived or re-billed into the result.
-    pub(crate) fn compact_with_delta_summary(&mut self, summary: String) {
+    pub(crate) fn compact_with_delta_summary(&mut self, summary: String) -> String {
         let Some(idx) = self.last_marker_index() else {
             // No prior marker: this is the session's first compaction —
             // identical to the classic full-window swap.
-            self.compact_with_summary(summary, 0);
-            return;
+            return self.compact_with_summary(summary, 0);
         };
         // Keep the frozen segments; drop the delta the summary covers.
         self.messages.truncate(idx + 1);
+        let marker_text = format!(
+            "[CONTEXT COMPACTION — {SEGMENT_SENTINEL} This block summarises only the \
+             messages since the previous compaction marker. The earlier frozen \
+             segments above remain in force unchanged; do not re-derive or merge \
+             them.]\n\n{summary}"
+        );
         let summary_msg = Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
-                text: format!(
-                    "{DELTA_MARKER_PREFIX} This block summarises only the \
-                     messages since the previous compaction marker. The earlier frozen \
-                     segments above remain in force unchanged; do not re-derive or merge \
-                     them.]\n\n{summary}"
-                ),
+                text: marker_text.clone(),
             }],
         };
         self.messages.push(summary_msg);
         self.recount_tokens_after_compaction();
         self.provider_anchor = None;
+        marker_text
     }
 
     /// #1649: replace every frozen segment with ONE consolidated summary.
@@ -420,29 +421,30 @@ impl AgentContext {
     /// the result is a single marker again. The consolidated marker carries
     /// no segment sentinel, so the DB loader treats it as a boundary and
     /// drops every superseded marker row on reload.
-    pub(crate) fn consolidate_segments(&mut self, summary: String) {
+    pub(crate) fn consolidate_segments(&mut self, summary: String) -> String {
         let Some(first) = self.first_marker_index() else {
-            self.compact_with_summary(summary, 0);
-            return;
+            return self.compact_with_summary(summary, 0);
         };
         let last = self.last_marker_index().unwrap_or(first);
         let tail: Vec<Message> = self.messages.split_off(last + 1);
         self.messages.truncate(first);
+        let marker_text = format!(
+            "[CONTEXT COMPACTION — The session's accumulated compaction summaries \
+             were consolidated into this single self-contained summary. It \
+             replaces every earlier one; nothing before this point survives \
+             except this marker.]\n\n{summary}"
+        );
         let summary_msg = Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
-                text: format!(
-                    "[CONTEXT COMPACTION — The session's accumulated compaction summaries \
-                     were consolidated into this single self-contained summary. It \
-                     replaces every earlier one; nothing before this point survives \
-                     except this marker.]\n\n{summary}"
-                ),
+                text: marker_text.clone(),
             }],
         };
         self.messages.push(summary_msg);
         self.messages.extend(tail);
         self.recount_tokens_after_compaction();
         self.provider_anchor = None;
+        marker_text
     }
 
     /// Text of every frozen segment marker, in order (consolidation input).
@@ -498,7 +500,13 @@ impl AgentContext {
     /// Keeps the most recent messages that fit within the token budget
     /// and prepends a summary of everything that was trimmed.
     /// `keep_token_budget` is the max tokens for kept messages (excluding the summary).
-    pub fn compact_with_summary(&mut self, summary: String, keep_token_budget: usize) {
+    /// Returns the exact marker text it pushed into the context (banner +
+    /// summary). A caller that persists a compaction row MUST write THIS
+    /// string rather than rebuild a banner of its own: two construction sites
+    /// drifting apart is #1928 — the in-memory apply wrote a delta segment's
+    /// sentinel banner that the DB row never carried, so the loader counted
+    /// every segment as a fresh boundary and kept only the newest.
+    pub fn compact_with_summary(&mut self, summary: String, keep_token_budget: usize) -> String {
         // Walk backwards from end, keeping messages until we hit the budget
         let summary_tokens = Self::estimate_tokens(&summary) + 50; // +50 for the marker text
         let available = keep_token_budget.saturating_sub(summary_tokens);
@@ -535,14 +543,15 @@ impl AgentContext {
         self.messages.clear();
 
         // Prepend the compaction summary as a user message (so the LLM sees the context)
+        let marker_text = format!(
+            "[CONTEXT COMPACTION — The conversation was automatically compacted. \
+             Below is a structured summary of everything before this point.]\n\n{}",
+            summary
+        );
         let summary_msg = Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
-                text: format!(
-                    "[CONTEXT COMPACTION — The conversation was automatically compacted. \
-                     Below is a structured summary of everything before this point.]\n\n{}",
-                    summary
-                ),
+                text: marker_text.clone(),
             }],
         };
         self.messages.push(summary_msg);
@@ -563,6 +572,7 @@ impl AgentContext {
         // the uncompacted prompt and would inflate the post-compaction budget
         // with a stale delta (#211).
         self.provider_anchor = None;
+        marker_text
     }
 }
 

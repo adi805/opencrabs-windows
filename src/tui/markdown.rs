@@ -462,7 +462,12 @@ pub fn parse_markdown(markdown: &str, max_width: usize) -> Vec<Line<'static>> {
         lines.pop();
     }
 
-    lines
+    // #1897: RTL scripts reach a left-to-right cell grid mirrored and
+    // disconnected unless shaped and reordered into visual order first.
+    // Applied after parsing so markdown structure and per-span styles
+    // survive; Latin-only spans pass through untouched (apply_rtl returns
+    // None for them).
+    crate::tui::render::utils::apply_rtl_lines(lines)
 }
 
 /// Heuristic: does this text look like a markdown table?

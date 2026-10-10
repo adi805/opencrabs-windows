@@ -502,6 +502,26 @@ pub fn is_user_correction(msg: &str) -> bool {
 }
 
 impl AgentService {
+    /// #1960: the session's live skill inventory, read from the SAME two
+    /// registries the continuation stamp uses (#125/#131): slash-invoked skills
+    /// (#219) unioned with the skills the session consumed by reading.
+    ///
+    /// Both compaction surfaces stamp this list: the continuation prompt and the
+    /// summariser's §10 manifest instructions. Neither can then hold a different
+    /// idea of what is active, and a manifest that prunes one of them is a
+    /// detectable contradiction instead of a silent one.
+    pub(crate) fn skill_inventory_for_session(&self, session_id: Uuid) -> Vec<String> {
+        let active: std::collections::BTreeSet<String> = self
+            .active_skills_for_session(session_id)
+            .into_iter()
+            .collect();
+        let seen: std::collections::BTreeSet<String> =
+            crate::brain::tools::seen_skills::seen_for_session(session_id)
+                .into_iter()
+                .collect();
+        active.union(&seen).cloned().collect()
+    }
+
     /// Build the post-compaction continuation prompt for `kind` — the single
     /// construction path shared by all five compaction sites (Regular,
     /// MidLoop, Emergency, PostTool, Manual): continuation body + plan
@@ -511,34 +531,15 @@ impl AgentService {
         session_id: Uuid,
         kind: super::compaction_prompts::CompactionKind,
     ) -> String {
-        // Union (issue #131): slash-invoked skills (#219 registry) plus
-        // skills the session CONSUMED by reading (seen_skills registry) —
-        // the inventory must reflect every way the agent loaded a skill.
-        // Deduped by BTreeSet; slash-invocation wins nothing extra because
-        // both registries store the same slug strings.
-        let active: std::collections::BTreeSet<String> = self
-            .active_skills_for_session(session_id)
-            .into_iter()
-            .collect();
-        // Epoch bump (#150) BEFORE the seen-inventory read below is NOT
-        // required and after it is not harmful: `note_compaction` bumps a
-        // per-session epoch counter and clears nothing, so
-        // `seen_for_session` is unaffected either way (decision 5 — a
-        // clearing implementation would empty the stamp's inventory).
+        // Epoch bump (#150) BEFORE the seen-inventory read inside
+        // `skill_inventory_for_session` is NOT required and after it is not
+        // harmful: `note_compaction` bumps a per-session epoch counter and
+        // clears nothing, so `seen_for_session` is unaffected either way
+        // (decision 5: a clearing implementation would empty the stamp's
+        // inventory).
         crate::brain::tools::seen_skills::note_compaction(session_id);
-        let seen: std::collections::BTreeSet<String> =
-            crate::brain::tools::seen_skills::seen_for_session(session_id)
-                .into_iter()
-                .collect();
-        let skills: Vec<String> = active.union(&seen).cloned().collect();
-        tracing::debug!(
-            "continuation_prompt({kind:?}): skill inventory stamp = {skills:?} \
-             (active {}/{} + seen {}/{})",
-            skills.len(),
-            active.len(),
-            seen.len(),
-            skills.len()
-        );
+        let skills = self.skill_inventory_for_session(session_id);
+        tracing::debug!("continuation_prompt({kind:?}): skill inventory stamp = {skills:?}");
         super::compaction_prompts::append_skill_stamp(
             super::compaction_prompts::build_continuation(
                 kind,
@@ -696,6 +697,9 @@ impl AgentService {
                     has_progress_override,
                     progress_callback.clone(),
                     turn_id.as_deref(),
+                    // Only the first entry persists the turn start. A rotation
+                    // reuses the same message, so the user row already exists.
+                    rotations == 0,
                 )
                 .await;
 
@@ -873,6 +877,11 @@ impl AgentService {
         has_progress_override: bool,
         progress_callback: Option<ProgressCallback>,
         turn_id: Option<&str>,
+        // True on the first entry of a turn. The rotation loop in `run_tool_loop`
+        // re-enters this function with the SAME `user_message` when a provider is
+        // killed by the loop detector, and turn-start persistence lives here, so
+        // every rotation wrote the user's message a second time (#2009).
+        first_attempt: bool,
     ) -> Result<AgentResponse> {
         // Restore the directory `/cd` persisted for this session BEFORE anything
         // else in this function (#1810). Everything below (context build, brain
@@ -1312,8 +1321,11 @@ impl AgentService {
         // of the LLM-context-augmented `user_message`. This keeps Telegram /
         // Discord / Slack / WhatsApp / Trello sessions readable in OpenCrabs
         // — no sender brackets, no reply context, no recent-history dump.
+        // `first_attempt` keeps a rotation from re-writing the user row: the
+        // retry re-enters with the same message and the history would otherwise
+        // show it once per provider tried (#2009).
         let is_system_continuation = user_message.starts_with("[System:");
-        if !is_system_continuation {
+        if !is_system_continuation && first_attempt {
             let raw_for_db = display_text_override.as_deref().unwrap_or(&user_message);
             let safe_message = crate::utils::sanitize::redact_secrets(raw_for_db);
             let _user_db_msg = message_service
@@ -1350,18 +1362,14 @@ impl AgentService {
                 progress_callback.as_ref(),
             );
             match compacted {
-                Ok(summary) => {
-                    // Persist compaction marker to DB so restarts load from this point
-                    let compaction_marker = format!(
-                        "[CONTEXT COMPACTION — The conversation was automatically compacted. \
-                         Below is a structured summary of everything before this point.]\n\n{}",
-                        summary
-                    );
+                Ok((summary, applied_marker)) => {
+                    // Persist compaction marker to DB so restarts load from this
+                    // point. #1928: the applied marker the swap welded into the
+                    // live context, not a banner rebuilt here.
                     message_service
-                        .create_message(session_id, "user".to_string(), compaction_marker)
+                        .create_message(session_id, "user".to_string(), applied_marker)
                         .await
                         .map_err(AgentError::db)?;
-
                     // Persist summary as the assistant response (for DB/search continuity)
                     message_service
                         .append_content(assistant_db_msg.id, &summary)
@@ -2255,15 +2263,12 @@ impl AgentService {
                         )
                         .await
                     {
-                        Ok(summary) => {
-                            // Persist compaction marker to DB so restarts load from this point
-                            let compaction_marker = format!(
-                                "[CONTEXT COMPACTION — The conversation was automatically compacted. \
-                                 Below is a structured summary of everything before this point.]\n\n{}",
-                                summary
-                            );
+                        Ok((_summary, applied_marker)) => {
+                            // Persist compaction marker to DB so restarts load
+                            // from this point. #1928: the applied marker, not a
+                            // banner rebuilt here.
                             if let Err(e) = message_service
-                                .create_message(session_id, "user".to_string(), compaction_marker)
+                                .create_message(session_id, "user".to_string(), applied_marker)
                                 .await
                             {
                                 tracing::error!(
@@ -3687,7 +3692,7 @@ impl AgentService {
                                 session_id,
                                 ProgressEvent::SelfHealingAlert {
                                     message: "No fallback provider available. \
-                                         Configure one with /onboard:provider"
+                                         Configure one with /models"
                                         .to_string(),
                                 },
                             );
@@ -3937,14 +3942,13 @@ impl AgentService {
                     progress_callback.as_ref(),
                 );
                 match compacted {
-                    Ok(summary) => {
-                        let compaction_marker = format!(
-                            "[CONTEXT COMPACTION — The conversation was automatically compacted. \
-                             Below is a structured summary of everything before this point.]\n\n{}",
-                            summary
-                        );
+                    Ok((_summary, applied_marker)) => {
+                        // #1928: persist the marker the apply welded in, not a
+                        // banner rebuilt here — this inline copy was one of the
+                        // construction sites that could drift from the live
+                        // context.
                         let _ = message_service
-                            .create_message(session_id, "user".to_string(), compaction_marker)
+                            .create_message(session_id, "user".to_string(), applied_marker)
                             .await;
                     }
                     Err(e) => {

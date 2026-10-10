@@ -551,7 +551,7 @@ pub struct TelegramConfig {
     /// details). On by default (#425). Older clients and Telegram Web show
     /// rich messages as a "not supported" placeholder, so users on outdated
     /// clients can disable it in the onboard dialog or via
-    /// `/onboard:channels telegram richtext off`; the universal HTML
+    /// `/channels telegram richtext off`; the universal HTML
     /// rendering (which works on every client) is used instead.
     #[serde(default = "default_true")]
     pub rich_messages: bool,
@@ -564,6 +564,16 @@ pub struct TelegramConfig {
     /// keep mermaid fences as plain code blocks.
     #[serde(default = "default_true")]
     pub mermaid_render: bool,
+    /// Inline local MARKDOWN documents in rich messages (#1968). Off by
+    /// default: a `.md` or `.markdown` file referenced from a reply becomes a
+    /// plain marker and the file ships as its own document bubble, which the
+    /// client's built-in viewer opens (some clients, notably Telegram
+    /// Android, cannot open a document inlined in a rich message). Set true
+    /// to rewrite the reference to a rich document reference and inline it AT
+    /// the reference instead. Other document kinds are unaffected and always
+    /// inline.
+    #[serde(default)]
+    pub inline_markdown_documents: bool,
     /// Silently ignore /start commands from non-allowed users in group chats.
     /// When true (default), the bot does NOT reply with user ID in groups.
     /// Users who need their ID can DM the bot instead.
@@ -611,6 +621,7 @@ impl Default for TelegramConfig {
             respond_to: RespondTo::default(),
             session_idle_hours: None,
             rich_messages: true,
+            inline_markdown_documents: false,
             mermaid_render: true,
             silence_group_start: true,
             bot_owner: Vec::new(),
@@ -948,6 +959,11 @@ pub struct DiscordConfig {
     /// Default: false.
     #[serde(default)]
     pub bang_new_thread: bool,
+    /// Per-channel overrides, keyed by channel id, under
+    /// `[channels.discord.channels.<id>]` (#2014). A thread or forum post
+    /// inherits any field it does not set from its parent channel.
+    #[serde(default)]
+    pub channels: std::collections::HashMap<String, DiscordChannelConfig>,
     /// Post this channel's outbound messages with `SUPPRESS_NOTIFICATIONS`
     /// (1 << 12): recipients get the unread badge but no push/desktop
     /// notification. Intended for scheduled/report fan-out that should not
@@ -1143,14 +1159,62 @@ impl Default for DiscordConfig {
             forum_report_tag: None,
             scheduled_events_guild: None,
             auto_embed: default_true(),
+            channels: std::collections::HashMap::new(),
         }
     }
+}
+
+/// One Discord channel's overrides (#2014). Lives under
+/// `[channels.discord.channels.<channel_id>]`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DiscordChannelConfig {
+    /// Channel name, recorded so the config is readable without the id.
+    /// Display metadata only; access never reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Respond mode for this channel. `None` inherits the global value.
+    #[serde(default)]
+    pub respond_to: Option<RespondTo>,
+    /// Let any member of this channel pass the ACL here without being
+    /// listed in `allowed_users`. DMs and other channels stay locked.
+    #[serde(default)]
+    pub open: bool,
 }
 
 impl DiscordConfig {
     /// Check if a user ID is a bot owner. See [`crate::config::owner::is_owner`].
     pub fn is_owner(&self, user_id: &str) -> bool {
         crate::config::owner::is_owner(&self.allowed_users, &self.bot_owner, user_id)
+    }
+
+    /// Respond mode for a message in `channel_id`. A thread's own setting
+    /// wins, then its parent channel's, then the global `respond_to` (#2014).
+    pub fn respond_to_for(&self, channel_id: &str, parent_id: Option<&str>) -> RespondTo {
+        self.channel_field(channel_id, parent_id, |c| c.respond_to)
+            .unwrap_or(self.respond_to)
+    }
+
+    /// Whether `channel_id` (or its parent) is `open` (#2014). Opening a
+    /// channel opens its threads; nothing else is affected.
+    pub fn channel_open(&self, channel_id: &str, parent_id: Option<&str>) -> bool {
+        self.channel_field(channel_id, parent_id, |c| c.open.then_some(true))
+            .unwrap_or(false)
+    }
+
+    /// First set value of `pick` along thread → parent, field by field.
+    fn channel_field<T>(
+        &self,
+        channel_id: &str,
+        parent_id: Option<&str>,
+        pick: impl Fn(&DiscordChannelConfig) -> Option<T>,
+    ) -> Option<T> {
+        let own = self.channels.get(channel_id).and_then(&pick);
+        own.or_else(|| {
+            parent_id
+                .filter(|p| *p != channel_id)
+                .and_then(|p| self.channels.get(p))
+                .and_then(&pick)
+        })
     }
 }
 
@@ -1181,6 +1245,63 @@ pub struct SlackConfig {
     /// `allowed_users`. Accepts int or string arrays.
     #[serde(default, deserialize_with = "deser_users_compat")]
     pub bot_owner: Vec<String>,
+    /// `[channels.slack.governor]` - the outbound write policy (#2012), the
+    /// Slack twin of `[channels.discord.governor]` (#1910). slack-morphism's
+    /// own throttler stays underneath: it queues the request and retries it,
+    /// it does not know that this request is the fourth re-render of a step
+    /// group nobody has read yet.
+    #[serde(default)]
+    pub governor: SlackGovernorConfig,
+}
+
+/// Slack outbound write policy (#2012).
+///
+/// Slack DOES publish per-method tier budgets, and slack-morphism's connector
+/// enforces them before the request leaves the process. These numbers are not
+/// a mirror of those: they are ceilings that only bite when the bot outruns
+/// its own cadence, plus the window we honor when Slack's 429 names a
+/// `Retry-After`. When the response names a window, that window governs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SlackGovernorConfig {
+    /// Master switch. False makes every gate a pass-through: the layer stops
+    /// deciding, and slack-morphism's throttler plus the 429 log are the only
+    /// protection, which is the pre-#2012 behavior.
+    pub enabled: bool,
+    /// Rolling per-conversation write ceiling (all surfaces together). It is
+    /// the one number that says "this conversation is being rewritten too
+    /// often". `0` = no ceiling.
+    pub writes_per_minute: u32,
+    /// Burst capacity for that ceiling: a turn opening with a step group plus
+    /// an answer plus a settle edit has to land at once. Ignored when the
+    /// ceiling is off.
+    pub burst: u32,
+    /// Minimum spacing between two LIVE re-renders of the same message: the
+    /// flow ticker's clock and the tool-group status edits. Content edits and
+    /// sends never wait on it. `0` = no spacing.
+    pub chrome_min_spacing_ms: u64,
+    /// Fallback park window for a 429 that named no `Retry-After`, and the
+    /// safety ceiling on a park that did (4x this number): a response asking
+    /// for an hour parks the conversation for the ceiling and then resets,
+    /// because a governor that stalls a conversation forever is a worse
+    /// outage than the one it prevents.
+    pub pause_secs: u64,
+}
+
+impl Default for SlackGovernorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            // Generous on purpose: the real budget is Slack's own per-method
+            // tier limit, enforced by the connector. This layer exists to
+            // catch a runaway ticker and to remember a `Retry-After`, not to
+            // second-guess the API.
+            writes_per_minute: 50,
+            burst: 10,
+            chrome_min_spacing_ms: 1000,
+            pause_secs: 5,
+        }
+    }
 }
 
 impl SlackConfig {
@@ -2338,12 +2459,14 @@ pub struct MemoryConfig {
     #[serde(default)]
     pub external_allowed_in_shared: bool,
 
-    /// Allow the internal memory surfaces to return content in shared/group
-    /// sessions (#1957): `scope="brain"`, `scope="memory"` (the default),
-    /// `load_brain_file`, and the per-turn MEMORY.md recall. Default-deny:
-    /// these carry the owner's personal context (USER.md, MEMORY.md, daily
-    /// logs, TOOLS.md peer keys), so they stay owner-session-only unless the
-    /// operator explicitly opts in.
+    /// Allow the internal memory surfaces (`scope="brain"`/`scope="memory"`
+    /// results, personal-context brain files through `load_brain_file`, and
+    /// the per-turn MEMORY.md recall) in shared/group sessions (#1957).
+    /// Default-deny, mirroring `external_allowed_in_shared`: the prompt
+    /// rule ("MEMORY.md … load/write only in the MAIN session, never in
+    /// shared/group chats") was prose-only, and group-readable sessions
+    /// could still retrieve the owner's personal context off every surface
+    /// except `external`. Opt in per instance when the group IS the owner's.
     #[serde(default)]
     pub internal_allowed_in_shared: bool,
 

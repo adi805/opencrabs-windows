@@ -12,6 +12,7 @@ pub(crate) mod input;
 pub(crate) mod ledger_scan;
 pub(crate) mod messaging;
 pub mod mission_control;
+pub(crate) mod mouse_frag;
 pub mod profiles_dialog;
 pub(crate) mod reasoning_split;
 pub mod skills_dialog;

@@ -216,6 +216,43 @@ impl ChannelMessageRepository {
             .context("Failed to fetch recent general-topic messages")
     }
 
+    /// #719: General-topic content search — `recent_general()`'s sibling for
+    /// the `search` operation. General rows persist with `thread_id IS NULL`
+    /// (General messages carry no `message_thread_id`), so "search THIS topic"
+    /// for General means `thread_id IS NULL`. `search()`'s `Option<&str>`
+    /// cannot express that state: `None` there means "no thread filter" and
+    /// matches every topic's rows, so a General-bound session searching its own
+    /// history got the whole forum back.
+    pub async fn search_general(
+        &self,
+        channel: &str,
+        chat_id: &str,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<ChannelMessage>> {
+        let ch = channel.to_string();
+        let cid = chat_id.to_string();
+        let pattern = format!("%{query}%");
+        self.pool
+            .get()
+            .await
+            .context("Failed to get connection")?
+            .interact(move |conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT * FROM channel_messages \
+                         WHERE channel = ?1 AND channel_chat_id = ?2 \
+                         AND content LIKE ?3 AND thread_id IS NULL \
+                         ORDER BY created_at DESC LIMIT ?4",
+                )?;
+                let rows =
+                    stmt.query_map(params![ch, cid, pattern, limit], ChannelMessage::from_row)?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()
+            })
+            .await
+            .map_err(interact_err)?
+            .context("Failed to search general-topic messages")
+    }
+
     /// Get recent messages for a specific chat, optionally filtered by thread_id.
     /// When `thread_id` is Some, only messages belonging to that forum topic are returned.
     pub async fn recent(

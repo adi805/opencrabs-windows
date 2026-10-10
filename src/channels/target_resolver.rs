@@ -247,18 +247,20 @@ pub async fn resolve_target(
                 crate::cli::session_resolve::resolve_one_by_prefix(sessions, id)
                     .map_err(|e| anyhow!("{e}"))?
             };
-            let binding = world.binding_for_session(session).await;
+            // #1961: a `session:<id>` delivery must land IN that session, or
+            // fail loudly. Baking this to the session's bound channel/thread
+            // made delivery resolve "whoever owns the thread at that instant":
+            // when a re-spawn bound a new uuid to the same thread, the wake
+            // surfaced in an unidentified session and the lane's duty was
+            // silently refused. The queue form is the exact-address one; the
+            // scheduler's `session` arm already delivers through it, and a
+            // session that cannot receive fails there with a visible verdict.
+            // (Re-pointing via `binding_for_session` is deliberately NOT used
+            // to carry lane identity: the downstream guard refuses a wake
+            // acting as a lane it is not bound to, and that guard is correct.)
             Ok(ResolvedTarget {
                 session: Some(session),
-                destination: match binding {
-                    Some(b) => TargetDestination::Channel {
-                        channel: b.channel,
-                        chat_id: b.chat_id,
-                        thread: b.thread,
-                        session: Some(session),
-                    },
-                    None => TargetDestination::Session(session),
-                },
+                destination: TargetDestination::Session(session),
             })
         }
         "telegram" => {

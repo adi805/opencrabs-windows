@@ -435,7 +435,7 @@ add a provider — check them:
 Test the full flow:
 1. Add provider to config.toml
 2. Add API key to keys.toml
-3. Run `/onboard:provider` and verify it appears in the list
+3. Run `/models` and verify it appears in the list
 4. Select the provider and verify model fetching works
 5. Send a message and verify streaming works
 6. Test tool calls and verify they parse correctly

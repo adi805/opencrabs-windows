@@ -1876,6 +1876,7 @@ pub(crate) async fn handle_message(
         thread_id,
         typing_cancel.clone(),
         agent.background_manager(),
+        agent.subagent_manager(),
         session_id,
     );
 
@@ -2550,6 +2551,8 @@ pub(crate) async fn handle_message(
         compacting: false,
         pending_suggestions: None,
         pending_trailer: None,
+        delivered_files: Vec::new(),
+        media_intermediates: Vec::new(),
         msg_id: None,
         thinking: String::new(),
         tool_msgs: Vec::new(),
