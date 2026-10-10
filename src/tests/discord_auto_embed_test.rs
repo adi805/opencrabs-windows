@@ -191,7 +191,10 @@ fn content_only_edit_becomes_a_card() {
 #[test]
 fn edit_with_components_still_becomes_a_card() {
     // The edit half mutates in place too, so a pager's button row survives the
-    // wrap exactly as it does on the create path.
+    // wrap exactly as it does on the create path. This is the path the
+    // tool-group Expand/Collapse toggle redraws through, so the row must stay
+    // alive while the text moves into the embed; losing it would leave a card
+    // with no way back to its collapsed state.
     let rows = buttons("next");
     let edit = EditMessage::new().content("page 2").components(rows);
     let out = auto_embed_edit(edit);
@@ -202,6 +205,10 @@ fn edit_with_components_still_becomes_a_card() {
     assert!(
         json.get("components").is_some(),
         "the button row must survive the wrap: {json}"
+    );
+    assert!(
+        json["content"].as_str().unwrap_or_default().is_empty(),
+        "the text must move into the embed, not be duplicated above it: {json}"
     );
 }
 
@@ -216,34 +223,6 @@ fn a_card_stays_a_card_across_create_then_edit() {
     let ej = serde_json::to_value(auto_embed_edit(em)).unwrap();
     assert_eq!(embeds(&cj)[0]["description"], serde_json::json!("report"));
     assert_eq!(embeds(&ej)[0]["description"], serde_json::json!("report"));
-}
-
-#[test]
-fn edit_with_components_still_becomes_a_card() {
-    // The tool-group Expand/Collapse toggle redraws through `writes::edit`, so
-    // the edit path is the one that must keep a button row alive while the text
-    // moves into the embed. Losing the row would leave a card with no way back
-    // to its collapsed state.
-    let rows = buttons("toolgroup:7");
-    let msg = EditMessage::new()
-        .content("• 3 tool calls")
-        .components(rows);
-    let out = auto_embed_edit(msg);
-    let json = serde_json::to_value(&out).unwrap();
-    let blocks = embeds(&json);
-    assert_eq!(blocks.len(), 1, "{json}");
-    assert_eq!(
-        blocks[0]["description"],
-        serde_json::json!("• 3 tool calls")
-    );
-    assert!(
-        json.get("components").is_some(),
-        "the button row must survive the wrap: {json}"
-    );
-    assert!(
-        json["content"].as_str().unwrap_or_default().is_empty(),
-        "the text must move into the embed, not be duplicated above it: {json}"
-    );
 }
 
 #[test]
