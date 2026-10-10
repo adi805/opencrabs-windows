@@ -401,7 +401,6 @@ impl EventHandler for Handler {
             // and the history line want the command text itself, which for a
             // chat-input command is the same string (#1850).
             let invocation = super::commands::invocation(command);
-            let user_name = command.user.name.clone();
             let owner = crate::config::owner::is_owner(
                 &dc.allowed_users,
                 &dc.bot_owner,
@@ -454,16 +453,6 @@ impl EventHandler for Handler {
                 return;
             }
 
-            let idle = dc.session_idle_hours;
-            // History keeps the invocation the way a typed message would:
-            // `Sender: /cmd args` in a guild, bare in the owner's DM, the same
-            // rule `handler.rs` uses. `context_text` is the invocation itself,
-            // which is what the model sees when you type it.
-            let history_line = if owner && is_dm {
-                invocation.clone()
-            } else {
-                format!("{user_name}: {invocation}")
-            };
             super::interactions::handle_invoked_request(
                 &ctx,
                 command,
