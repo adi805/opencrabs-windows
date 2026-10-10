@@ -1,4 +1,4 @@
-//! Live context budget on the Discord flow card (#1144 / #1183 parity).
+//! Live context budget on the Discord flow card (#1841 parity).
 //!
 //! Telegram stamps the `ctx: used/max pct` segment only when the turn is
 //! delivered (`src/channels/telegram/flow.rs`), so on Discord the card would

@@ -1245,7 +1245,7 @@ pub(crate) async fn handle_message(
                     });
                 }
                 ProgressEvent::TokenCount(count) => {
-                    // Live ctx budget on the flow card (#1144/#1183 parity):
+                    // Live ctx budget on the flow card (#1841 parity):
                     // Telegram stamps `ctx` only at delivery, so Discord
                     // streams the same string from the tool loop's real token
                     // count instead — the card shows the budget growing while

@@ -50,7 +50,7 @@ pub(crate) struct GroupState {
     /// silence threshold so a stalled turn says so instead of looking
     /// frozen.
     pub last_activity_at: Instant,
-    /// Live ctx budget line while the turn runs (#1144/#1183 parity). The
+    /// Live ctx budget line while the turn runs (#1841 parity). The
     /// settled chrome already carries `ctx`; this is the same string
     /// streamed from `ProgressEvent::TokenCount` mid-turn, so the card shows
     /// the budget as it grows instead of only at settle. `None` until the
@@ -570,7 +570,7 @@ impl DiscordState {
     }
 
     /// Store the live ctx budget on the card while the turn runs
-    /// (#1144/#1183 parity): the settled chrome already carries `ctx`, but
+    /// (#1841 parity): the settled chrome already carries `ctx`, but
     /// only at settle. Discord streams the same string from
     /// `ProgressEvent::TokenCount` mid-turn, so the live line shows the
     /// budget as it grows. Returns the updated state, or None when the
