@@ -1826,8 +1826,11 @@ pub(crate) async fn handle_message(
                         // Only ever appended to an answer that exists. On an
                         // empty answer the wire text became "\n\n{f}", so
                         // Discord got a message whose entire content was the
-                        // footer — an orphan `🛠️ …` line with no answer above
-                        // it (the owner's screenshot).
+                        // footer — an orphan evidence line with no answer above
+                        // it (the owner's screenshot). The header literal is
+                        // deliberately NOT spelled out here: NFR-004/AC-020
+                        // sweeps raw source, comments included, and
+                        // src/channels/evidence.rs must stay the only renderer.
                         Some(f) if !text_only.trim().is_empty() => {
                             format!("{text_only}\n\n{f}")
                         }
