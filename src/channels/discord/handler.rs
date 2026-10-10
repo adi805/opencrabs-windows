@@ -798,7 +798,8 @@ pub(crate) async fn handle_message(
         )
     });
     if let Some(reply) = scope_reply {
-        if let Err(e) = msg.channel_id.say(&ctx.http, reply).await {
+        // AC-024: every channel write goes through the governor choke point.
+        if let Err(e) = writes::say(&ctx.http, msg.channel_id, reply, Class::Final).await {
             tracing::warn!(error = %e, "failed to send Discord message");
         }
         return;
