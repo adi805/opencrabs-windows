@@ -8,6 +8,7 @@ use super::handler;
 use super::history;
 use super::newsletter;
 use crate::brain::agent::AgentService;
+use crate::channels::owner_alert::OwnerAlert;
 use crate::config::Config;
 use crate::db::ChannelMessageRepository;
 use crate::services::{ServiceContext, SessionService};
@@ -22,6 +23,81 @@ use whatsapp_rust::bot::Bot;
 use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
 use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
+/// #1999: a ban, an account lock or a connect failure used to land in the
+/// debug-only catch-all, so the server's one-time reason never reached a
+/// human. Each formatter turns one payload into the line the log and the
+/// onboarding UI get. They are pure so the mapping is pinned without a live
+/// socket; the event arms wire them in.
+pub(crate) fn logout_notice(reason: &ConnectFailureReason, server_header: Option<&str>) -> String {
+    let mut msg = format!("WhatsApp logged out (reason: {reason:?})");
+    if let Some(header) = server_header {
+        msg.push_str(&format!(": {header}"));
+    }
+    msg
+}
+
+pub(crate) fn temp_ban_notice(
+    code: &TempBanReason,
+    expire: chrono::Duration,
+    message: Option<&str>,
+    url: Option<&str>,
+) -> String {
+    let mut msg = format!(
+        "WhatsApp temporarily banned ({code:?}); usable again in {} min",
+        expire.num_minutes().max(1)
+    );
+    if let Some(m) = message {
+        msg.push_str(&format!(": {m}"));
+    }
+    if let Some(u) = url {
+        msg.push_str(&format!(" Appeal: {u}"));
+    }
+    msg
+}
+
+pub(crate) fn connect_failure_notice(
+    reason: &ConnectFailureReason,
+    message: Option<&str>,
+) -> String {
+    let mut msg = format!("WhatsApp connect failure ({reason:?})");
+    if let Some(m) = message {
+        msg.push_str(&format!(": {m}"));
+    }
+    msg
+}
+
+/// The owner-facing line for a temporary ban (#1999). Every ban is alertable:
+/// the server has already decided this account is restricted.
+pub(crate) fn ban_alert(
+    code: &TempBanReason,
+    expire: chrono::Duration,
+    url: Option<&str>,
+) -> String {
+    let mut msg = format!(
+        "WhatsApp temporary ban ({code:?}), expires in about {} h.",
+        expire.num_hours()
+    );
+    if let Some(url) = url {
+        msg.push_str(&format!(" Appeal: {url}"));
+    }
+    msg
+}
+
+/// The owner-facing line for an account lock or a connect-time temporary ban
+/// (#1999). `None` for everything else, including a routine logout and a manual
+/// unlink (`device_removed`), which need no alert.
+pub(crate) fn lock_alert(reason: &ConnectFailureReason) -> Option<String> {
+    match reason {
+        ConnectFailureReason::AccountLocked => Some(
+            "WhatsApp account locked (403). Do not re-pair this number: the lock is server-side. Check the account in the WhatsApp app.".to_string(),
+        ),
+        ConnectFailureReason::TempBanned => Some(
+            "WhatsApp temporary ban at connect (402). Messages will not go through until it expires.".to_string(),
+        ),
+        _ => None,
+    }
+}
+
 /// WhatsApp agent that forwards messages to the AgentService
 pub struct WhatsAppAgent {
     agent_service: Arc<AgentService>,
@@ -30,6 +106,7 @@ pub struct WhatsAppAgent {
     whatsapp_state: Arc<WhatsAppState>,
     config_rx: tokio::sync::watch::Receiver<Config>,
     channel_msg_repo: ChannelMessageRepository,
+    owner_alert: OwnerAlert,
 }
 
 impl WhatsAppAgent {
@@ -40,6 +117,7 @@ impl WhatsAppAgent {
         whatsapp_state: Arc<WhatsAppState>,
         config_rx: tokio::sync::watch::Receiver<Config>,
         channel_msg_repo: ChannelMessageRepository,
+        owner_alert: OwnerAlert,
     ) -> Self {
         Self {
             agent_service,
@@ -48,6 +126,7 @@ impl WhatsAppAgent {
             whatsapp_state,
             config_rx,
             channel_msg_repo,
+            owner_alert,
         }
     }
 
@@ -55,6 +134,7 @@ impl WhatsAppAgent {
     /// Always starts — if no session exists, emits QR events for onboarding.
     /// If already paired, reconnects and handles messages.
     pub fn start(self) -> tokio::task::JoinHandle<()> {
+        let owner_alert = self.owner_alert.clone();
         tokio::spawn(async move {
             // Spawn the outbound rate-limit drainer exactly once per
             // process (#1407). The drainer snapshots the rate_limit
@@ -126,6 +206,7 @@ impl WhatsAppAgent {
                     let owner_jid = owner_jid_clone.clone();
                     let config_rx = config_rx.clone();
                     let channel_msg_repo = channel_msg_repo.clone();
+                    let owner_alert = owner_alert.clone();
                     async move {
                         match &*event {
                             Event::PairingQrCode(qr) => {
@@ -429,8 +510,55 @@ impl WhatsAppAgent {
                                     ));
                                 }
                             }
-                            Event::LoggedOut(_) => {
-                                tracing::warn!("WhatsApp: logged out");
+                            Event::LoggedOut(lo) => {
+                                tracing::error!(
+                                    reason = ?lo.reason,
+                                    on_connect = lo.on_connect,
+                                    "WhatsApp: logged out"
+                                );
+                                // The raw stanza carries a one-time appeal token;
+                                // it is never logged.
+                                if let Some(msg) = lock_alert(&lo.reason) {
+                                    owner_alert(msg);
+                                }
+                                wa_state.broadcast_error(&logout_notice(
+                                    &lo.reason,
+                                    lo.logout_message
+                                        .as_ref()
+                                        .and_then(|m| m.header.as_deref()),
+                                ));
+                            }
+                            Event::TemporaryBan(ban) => {
+                                tracing::error!(
+                                    code = ?ban.code,
+                                    expire_secs = ban.expire.num_seconds(),
+                                    "WhatsApp: temporary ban"
+                                );
+                                tracing::debug!(raw = ?ban.raw, "WhatsApp: temporary ban stanza");
+                                owner_alert(ban_alert(
+                                    &ban.code,
+                                    ban.expire,
+                                    ban.url.as_deref(),
+                                ));
+                                wa_state.broadcast_error(&temp_ban_notice(
+                                    &ban.code,
+                                    ban.expire,
+                                    ban.message.as_deref(),
+                                    ban.url.as_deref(),
+                                ));
+                            }
+                            Event::ConnectFailure(cf) => {
+                                tracing::error!(
+                                    reason = ?cf.reason,
+                                    "WhatsApp: connect failure"
+                                );
+                                if let Some(msg) = lock_alert(&cf.reason) {
+                                    owner_alert(msg);
+                                }
+                                wa_state.broadcast_error(&connect_failure_notice(
+                                    &cf.reason,
+                                    cf.message.as_deref(),
+                                ));
                             }
                             Event::Disconnected(_) => {
                                 tracing::warn!("WhatsApp: disconnected");
@@ -453,6 +581,25 @@ impl WhatsAppAgent {
                                         wa_state.broadcast_delivered(id);
                                     }
                                 }
+                            }
+                            Event::ClientOutdated(_) => {
+                                tracing::error!(
+                                    "WhatsApp: the server refuses this client build; update OpenCrabs"
+                                );
+                            }
+                            Event::StreamReplaced(_) => {
+                                tracing::warn!(
+                                    "WhatsApp: this account's stream was replaced by another connection"
+                                );
+                            }
+                            Event::StreamError(_) => {
+                                tracing::warn!("WhatsApp: stream error");
+                            }
+                            Event::UndecryptableMessage(_) => {
+                                tracing::warn!("WhatsApp: an incoming message could not be decrypted");
+                            }
+                            Event::IdentityChange(_) => {
+                                tracing::warn!("WhatsApp: a contact's identity key changed");
                             }
                             other => {
                                 tracing::debug!("WhatsApp: unhandled event: {:?}", other);

@@ -11,6 +11,7 @@ mod factory;
 pub(crate) mod group_history;
 pub mod manager;
 pub(crate) mod model_menu;
+pub(crate) mod owner_alert;
 pub mod question_common;
 pub mod session_init;
 pub mod session_resolve;
