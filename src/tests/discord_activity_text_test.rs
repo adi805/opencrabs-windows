@@ -149,8 +149,15 @@ fn activity_is_capped_and_raw_output_skipped() {
         "activity is clipped at 100 chars: {first}"
     );
     assert!(
-        text.contains("-# /tmp/build-output.txt"),
-        "the raw note stays visible as a transcript row: {text}"
+        !text.contains("-# /tmp/build-output.txt"),
+        "a collapsed card keeps the raw note out of the live view: {text}"
+    );
+    // The note is still the transcript row — it just lives behind Expand now.
+    let mut expanded = g.clone();
+    expanded.expanded = true;
+    assert!(
+        render_content(&expanded).contains("-# /tmp/build-output.txt"),
+        "Expand reveals the raw note as a transcript row"
     );
 }
 

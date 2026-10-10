@@ -52,6 +52,37 @@ fn toggle_button_only_for_multi_tool_groups() {
     assert_eq!(render_components(&group(2, false, false), 7).len(), 1);
 }
 
+#[test]
+fn notes_are_hidden_until_expanded() {
+    // The live view of a collapsed multi-tool card stops at the summary clock:
+    // narration is the transcript tail and belongs behind Expand.
+    let mut collapsed = group(3, false, false);
+    collapsed.notes = vec!["reading origin/main".to_string()];
+    let body = render_content(&collapsed);
+    assert!(body.contains("3 tool calls"), "summary stays: {body}");
+    assert!(
+        !body.contains("reading origin/main"),
+        "notes must not leak into the collapsed live view: {body}"
+    );
+
+    let mut expanded = group(3, true, true);
+    expanded.notes = vec!["reading origin/main".to_string()];
+    let body = render_content(&expanded);
+    assert!(
+        body.contains("reading origin/main"),
+        "Expand reveals the notes: {body}"
+    );
+
+    // A single-tool card has no Expand button, so its notes stay reachable.
+    let mut single = group(1, true, false);
+    single.notes = vec!["reading origin/main".to_string()];
+    let body = render_content(&single);
+    assert!(
+        body.contains("reading origin/main"),
+        "single-tool notes stay visible (no Expand to reveal them): {body}"
+    );
+}
+
 #[tokio::test]
 async fn toggle_flips_and_updates_preserve_expansion() {
     let state = DiscordState::new();

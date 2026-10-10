@@ -8,7 +8,10 @@
 //! With `trace_narration` enabled the same bubble also carries the turn's
 //! intermediate narration as dim subtext notes (agent-disco-style live
 //! trace): one editable work-log per turn instead of one message per
-//! intermediate.
+//! intermediate. The notes are the card's transcript tail, so a collapsed
+//! multi-tool card hides them — the live view stops at the summary clock and
+//! Expand reveals the narration. A single-tool card has no Expand button and
+//! therefore keeps its notes visible.
 
 use serenity::builder::{CreateActionRow, CreateButton};
 use serenity::model::application::ButtonStyle;
@@ -29,7 +32,9 @@ pub(crate) struct GroupEntry {
 #[derive(Debug, Clone)]
 pub(crate) struct GroupState {
     pub entries: Vec<GroupEntry>,
-    /// Narration lines folded into the bubble (live trace). Authoritative
+    /// Narration lines folded into the bubble (live trace). Rendered only when
+    /// the card is expanded, or when it is a single-tool card (which has no
+    /// Expand button) — see `render_content`. Authoritative
     /// state lives in [`DiscordState`]; only [`DiscordState::append_note`]
     /// and [`DiscordState::drop_note_if`] mutate them —
     /// [`DiscordState::upsert_tool_group`] preserves the stored notes the
@@ -487,15 +492,26 @@ pub(crate) fn render_content(group: &GroupState) -> String {
     } else {
         summary_line(group)
     };
-    let mut body = if group.notes.is_empty() {
+    // Notes are the card's transcript tail, NOT part of the live view
+    // (#1844 follow-up): a collapsed multi-tool card shows the summary line
+    // through its clock and nothing else, and the narration appears only when
+    // the user presses Expand. A single-tool card has no Expand button
+    // (`render_components` returns nothing below 2 entries), so its notes stay
+    // visible — hiding them there would make them unreachable.
+    let show_notes = group.expanded || group.entries.len() < 2;
+    let mut notes: Vec<String> = if show_notes {
+        group.notes.clone()
+    } else {
+        Vec::new()
+    };
+    let mut body = if notes.is_empty() {
         tools_part.clone()
     } else {
-        format!("{tools_part}\n{}", notes_block(&group.notes))
+        format!("{tools_part}\n{}", notes_block(&notes))
     };
     // Notes ride after the rows; if the whole body still overshoots, drop
     // the oldest notes first (the newest is what the ticker just wrote),
     // and hard-cut as the last resort.
-    let mut notes: Vec<String> = group.notes.clone();
     while body.chars().count() > CONTENT_MAX_CHARS && notes.len() > 1 {
         notes.remove(0);
         body = format!("{tools_part}\n{}", notes_block(&notes));
