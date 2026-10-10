@@ -503,22 +503,40 @@ mod repository {
         let chat = "-100718";
 
         // Interleave General and topic rows so ordering cannot fake a pass.
-        repo.insert(&msg("telegram", chat, "Forum", "Alice", "needle general one"))
-            .await
-            .unwrap();
+        repo.insert(&msg(
+            "telegram",
+            chat,
+            "Forum",
+            "Alice",
+            "needle general one",
+        ))
+        .await
+        .unwrap();
         let mut topic_ten = msg("telegram", chat, "Forum", "Bob", "needle topic ten");
         topic_ten.thread_id = Some("10".into());
         repo.insert(&topic_ten).await.unwrap();
-        repo.insert(&msg("telegram", chat, "Forum", "Alice", "needle general two"))
-            .await
-            .unwrap();
+        repo.insert(&msg(
+            "telegram",
+            chat,
+            "Forum",
+            "Alice",
+            "needle general two",
+        ))
+        .await
+        .unwrap();
         let mut topic_twenty = msg("telegram", chat, "Forum", "Bob", "needle topic twenty");
         topic_twenty.thread_id = Some("20".into());
         repo.insert(&topic_twenty).await.unwrap();
         // A different chat's General row must not leak in.
-        repo.insert(&msg("telegram", "other-chat", "Other", "Eve", "needle elsewhere"))
-            .await
-            .unwrap();
+        repo.insert(&msg(
+            "telegram",
+            "other-chat",
+            "Other",
+            "Eve",
+            "needle elsewhere",
+        ))
+        .await
+        .unwrap();
 
         let general = repo
             .search_general("telegram", chat, "needle", 30)
@@ -993,30 +1011,53 @@ mod topic_scope {
     #[tokio::test]
     async fn session_scope_reads_only_the_bound_topic() {
         let (_db, repo, tool) = setup().await;
-        repo.insert(&row(CHAT, "mine", Some("30129"))).await.unwrap();
-        repo.insert(&row(CHAT, "theirs", Some("42360"))).await.unwrap();
+        repo.insert(&row(CHAT, "mine", Some("30129")))
+            .await
+            .unwrap();
+        repo.insert(&row(CHAT, "theirs", Some("42360")))
+            .await
+            .unwrap();
         repo.insert(&row(CHAT, "general talk", None)).await.unwrap();
 
         let input = serde_json::json!({"operation": "recent", "chat_id": CHAT});
-        let out = tool.execute(input, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
+        let out = tool
+            .execute(input, &ctx_with(CHAT, Some(30129), None))
+            .await
+            .unwrap();
         assert!(out.success);
         assert!(out.output.contains("mine"), "{}", out.output);
         assert!(!out.output.contains("theirs"), "{}", out.output);
         assert!(!out.output.contains("general talk"), "{}", out.output);
-        assert!(out.output.contains("topic 30129 inherited"), "{}", out.output);
+        assert!(
+            out.output.contains("topic 30129 inherited"),
+            "{}",
+            out.output
+        );
     }
 
     /// Explicit `all` is the only way to a wide read, and it says so.
     #[tokio::test]
     async fn explicit_all_spans_topics_and_is_labelled() {
         let (_db, repo, tool) = setup().await;
-        repo.insert(&row(CHAT, "mine", Some("30129"))).await.unwrap();
-        repo.insert(&row(CHAT, "theirs", Some("42360"))).await.unwrap();
+        repo.insert(&row(CHAT, "mine", Some("30129")))
+            .await
+            .unwrap();
+        repo.insert(&row(CHAT, "theirs", Some("42360")))
+            .await
+            .unwrap();
 
-        let input = serde_json::json!({"operation": "recent", "chat_id": CHAT, "topic_scope": "all"});
-        let out = tool.execute(input, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
+        let input =
+            serde_json::json!({"operation": "recent", "chat_id": CHAT, "topic_scope": "all"});
+        let out = tool
+            .execute(input, &ctx_with(CHAT, Some(30129), None))
+            .await
+            .unwrap();
         assert!(out.success);
-        assert!(out.output.contains("mine") && out.output.contains("theirs"), "{}", out.output);
+        assert!(
+            out.output.contains("mine") && out.output.contains("theirs"),
+            "{}",
+            out.output
+        );
         assert!(out.output.contains("all topics"), "{}", out.output);
         assert!(!out.output.contains("inherited"), "{}", out.output);
     }
@@ -1029,11 +1070,18 @@ mod topic_scope {
     async fn general_scope_reads_null_rows_only() {
         let (_db, repo, tool) = setup().await;
         repo.insert(&row(CHAT, "general talk", None)).await.unwrap();
-        repo.insert(&row(CHAT, "legacy sentinel", Some("1"))).await.unwrap();
-        repo.insert(&row(CHAT, "a topic", Some("30129"))).await.unwrap();
+        repo.insert(&row(CHAT, "legacy sentinel", Some("1")))
+            .await
+            .unwrap();
+        repo.insert(&row(CHAT, "a topic", Some("30129")))
+            .await
+            .unwrap();
 
         let input = serde_json::json!({"operation": "recent", "chat_id": CHAT});
-        let out = tool.execute(input, &ctx_with(CHAT, Some(1), None)).await.unwrap();
+        let out = tool
+            .execute(input, &ctx_with(CHAT, Some(1), None))
+            .await
+            .unwrap();
         assert!(out.success);
         assert!(out.output.contains("general talk"), "{}", out.output);
         assert!(!out.output.contains("legacy sentinel"), "{}", out.output);
@@ -1047,12 +1095,18 @@ mod topic_scope {
     async fn null_binding_on_a_known_forum_is_general() {
         let (_db, repo, tool) = setup().await;
         repo.insert(&row(CHAT, "general talk", None)).await.unwrap();
-        repo.insert(&row(CHAT, "a topic", Some("30129"))).await.unwrap();
+        repo.insert(&row(CHAT, "a topic", Some("30129")))
+            .await
+            .unwrap();
 
-        let world: Arc<dyn TargetResolution + Send + Sync> =
-            Arc::new(FakeWorld { forums: vec![CHAT.parse().unwrap()] });
+        let world: Arc<dyn TargetResolution + Send + Sync> = Arc::new(FakeWorld {
+            forums: vec![CHAT.parse().unwrap()],
+        });
         let input = serde_json::json!({"operation": "recent", "chat_id": CHAT});
-        let out = tool.execute(input, &ctx_with(CHAT, None, Some(world))).await.unwrap();
+        let out = tool
+            .execute(input, &ctx_with(CHAT, None, Some(world)))
+            .await
+            .unwrap();
         assert!(out.success);
         assert!(out.output.contains("general talk"), "{}", out.output);
         assert!(!out.output.contains("a topic"), "{}", out.output);
@@ -1063,14 +1117,22 @@ mod topic_scope {
     async fn null_binding_outside_a_forum_reads_everything() {
         let (_db, repo, tool) = setup().await;
         repo.insert(&row(CHAT, "first", None)).await.unwrap();
-        repo.insert(&row(CHAT, "second", Some("30129"))).await.unwrap();
+        repo.insert(&row(CHAT, "second", Some("30129")))
+            .await
+            .unwrap();
 
-        let world: Arc<dyn TargetResolution + Send + Sync> =
-            Arc::new(FakeWorld { forums: vec![] });
+        let world: Arc<dyn TargetResolution + Send + Sync> = Arc::new(FakeWorld { forums: vec![] });
         let input = serde_json::json!({"operation": "recent", "chat_id": CHAT});
-        let out = tool.execute(input, &ctx_with(CHAT, None, Some(world))).await.unwrap();
+        let out = tool
+            .execute(input, &ctx_with(CHAT, None, Some(world)))
+            .await
+            .unwrap();
         assert!(out.success);
-        assert!(out.output.contains("first") && out.output.contains("second"), "{}", out.output);
+        assert!(
+            out.output.contains("first") && out.output.contains("second"),
+            "{}",
+            out.output
+        );
     }
 
     /// No ambient binding (cron / CLI / sub-agent) → unfiltered, unchanged.
@@ -1078,12 +1140,18 @@ mod topic_scope {
     async fn no_origin_binding_is_unfiltered() {
         let (_db, repo, tool) = setup().await;
         repo.insert(&row(CHAT, "first", None)).await.unwrap();
-        repo.insert(&row(CHAT, "second", Some("30129"))).await.unwrap();
+        repo.insert(&row(CHAT, "second", Some("30129")))
+            .await
+            .unwrap();
 
         let input = serde_json::json!({"operation": "recent", "chat_id": CHAT});
         let out = tool.execute(input, &ctx()).await.unwrap();
         assert!(out.success);
-        assert!(out.output.contains("first") && out.output.contains("second"), "{}", out.output);
+        assert!(
+            out.output.contains("first") && out.output.contains("second"),
+            "{}",
+            out.output
+        );
     }
 
     /// A foreign chat_id must not inherit the session's topic (the decision
@@ -1092,14 +1160,29 @@ mod topic_scope {
     async fn foreign_chat_does_not_inherit_the_topic() {
         let (_db, repo, tool) = setup().await;
         let other = "-100999";
-        repo.insert(&row(other, "other general", None)).await.unwrap();
-        repo.insert(&row(other, "other topic", Some("42360"))).await.unwrap();
+        repo.insert(&row(other, "other general", None))
+            .await
+            .unwrap();
+        repo.insert(&row(other, "other topic", Some("42360")))
+            .await
+            .unwrap();
 
         let input = serde_json::json!({"operation": "recent", "chat_id": other});
-        let out = tool.execute(input, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
+        let out = tool
+            .execute(input, &ctx_with(CHAT, Some(30129), None))
+            .await
+            .unwrap();
         assert!(out.success);
-        assert!(out.output.contains("other general") && out.output.contains("other topic"), "{}", out.output);
-        assert!(out.output.contains("all topics inherited"), "{}", out.output);
+        assert!(
+            out.output.contains("other general") && out.output.contains("other topic"),
+            "{}",
+            out.output
+        );
+        assert!(
+            out.output.contains("all topics inherited"),
+            "{}",
+            out.output
+        );
     }
 
     /// Explicit values, including the deprecated alias, are honoured verbatim.
@@ -1107,19 +1190,44 @@ mod topic_scope {
     async fn explicit_scopes_and_the_deprecated_alias() {
         let (_db, repo, tool) = setup().await;
         repo.insert(&row(CHAT, "general talk", None)).await.unwrap();
-        repo.insert(&row(CHAT, "topic five", Some("5"))).await.unwrap();
+        repo.insert(&row(CHAT, "topic five", Some("5")))
+            .await
+            .unwrap();
 
-        let general = serde_json::json!({"operation": "recent", "chat_id": CHAT, "topic_scope": "general"});
-        let out = tool.execute(general, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
-        assert!(out.output.contains("general talk") && !out.output.contains("topic five"), "{}", out.output);
+        let general =
+            serde_json::json!({"operation": "recent", "chat_id": CHAT, "topic_scope": "general"});
+        let out = tool
+            .execute(general, &ctx_with(CHAT, Some(30129), None))
+            .await
+            .unwrap();
+        assert!(
+            out.output.contains("general talk") && !out.output.contains("topic five"),
+            "{}",
+            out.output
+        );
 
-        let thread = serde_json::json!({"operation": "recent", "chat_id": CHAT, "topic_scope": "thread:5"});
-        let out = tool.execute(thread, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
-        assert!(out.output.contains("topic five") && !out.output.contains("general talk"), "{}", out.output);
+        let thread =
+            serde_json::json!({"operation": "recent", "chat_id": CHAT, "topic_scope": "thread:5"});
+        let out = tool
+            .execute(thread, &ctx_with(CHAT, Some(30129), None))
+            .await
+            .unwrap();
+        assert!(
+            out.output.contains("topic five") && !out.output.contains("general talk"),
+            "{}",
+            out.output
+        );
 
         let alias = serde_json::json!({"operation": "recent", "chat_id": CHAT, "thread_id": "5"});
-        let out = tool.execute(alias, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
-        assert!(out.output.contains("topic five") && !out.output.contains("general talk"), "{}", out.output);
+        let out = tool
+            .execute(alias, &ctx_with(CHAT, Some(30129), None))
+            .await
+            .unwrap();
+        assert!(
+            out.output.contains("topic five") && !out.output.contains("general talk"),
+            "{}",
+            out.output
+        );
     }
 
     /// An unknown scope is refused, never silently widened to `all`.
@@ -1127,7 +1235,10 @@ mod topic_scope {
     async fn unknown_scope_is_refused() {
         let (_db, _repo, tool) = setup().await;
         let input = serde_json::json!({"operation": "recent", "chat_id": CHAT, "topic_scope": "everything"});
-        let err = tool.execute(input, &ctx_with(CHAT, Some(30129), None)).await.unwrap_err();
+        let err = tool
+            .execute(input, &ctx_with(CHAT, Some(30129), None))
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("unknown topic_scope"), "{err}");
     }
 
@@ -1135,18 +1246,28 @@ mod topic_scope {
     #[tokio::test]
     async fn search_also_inherits_the_session_topic() {
         let (_db, repo, tool) = setup().await;
-        repo.insert(&row(CHAT, "needle mine", Some("30129"))).await.unwrap();
-        repo.insert(&row(CHAT, "needle theirs", Some("42360"))).await.unwrap();
+        repo.insert(&row(CHAT, "needle mine", Some("30129")))
+            .await
+            .unwrap();
+        repo.insert(&row(CHAT, "needle theirs", Some("42360")))
+            .await
+            .unwrap();
 
         let input = serde_json::json!({"operation": "search", "chat_id": CHAT, "query": "needle"});
-        let out = tool.execute(input, &ctx_with(CHAT, Some(30129), None)).await.unwrap();
+        let out = tool
+            .execute(input, &ctx_with(CHAT, Some(30129), None))
+            .await
+            .unwrap();
         assert!(out.success);
         assert!(out.output.contains("needle mine"), "{}", out.output);
         assert!(!out.output.contains("needle theirs"), "{}", out.output);
 
         // General arm of search uses search_general(), not search(None).
         let general = serde_json::json!({"operation": "search", "chat_id": CHAT, "query": "needle", "topic_scope": "general"});
-        let out = tool.execute(general, &ctx_with(CHAT, Some(1), None)).await.unwrap();
+        let out = tool
+            .execute(general, &ctx_with(CHAT, Some(1), None))
+            .await
+            .unwrap();
         assert!(out.success, "{}", out.output);
     }
 
@@ -1158,10 +1279,12 @@ mod topic_scope {
         let props = schema["properties"].as_object().unwrap();
         assert!(props.contains_key("topic_scope"));
         assert!(props.contains_key("thread_id"));
-        assert!(props["thread_id"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("DEPRECATED"));
+        assert!(
+            props["thread_id"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("DEPRECATED")
+        );
     }
 }
 

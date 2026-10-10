@@ -307,7 +307,8 @@ impl Tool for ChannelSearchTool {
                     }
                 };
 
-                let (scope, inherited) = resolve_topic_scope(&input, context, Some(chat_id)).await?;
+                let (scope, inherited) =
+                    resolve_topic_scope(&input, context, Some(chat_id)).await?;
 
                 let messages = match &scope {
                     TopicScope::General => {
@@ -316,7 +317,9 @@ impl Tool for ChannelSearchTool {
                             .await
                     }
                     TopicScope::Thread(t) => {
-                        self.repo.recent(channel, chat_id, n, Some(t.as_str()), None).await
+                        self.repo
+                            .recent(channel, chat_id, n, Some(t.as_str()), None)
+                            .await
                     }
                     TopicScope::All => self.repo.recent(channel, chat_id, n, None, None).await,
                 }
@@ -365,18 +368,26 @@ impl Tool for ChannelSearchTool {
                 let (scope, inherited) = resolve_topic_scope(&input, context, chat_id).await?;
                 if matches!(scope, TopicScope::General) && chat_id.is_none() {
                     return Ok(ToolResult::error(
-                        "'topic_scope: general' requires 'chat_id' — General is per-chat.".to_string(),
+                        "'topic_scope: general' requires 'chat_id' — General is per-chat."
+                            .to_string(),
                     ));
                 }
 
                 let messages = match &scope {
                     TopicScope::General => {
                         self.repo
-                            .search_general(channel.unwrap_or("telegram"), chat_id.unwrap_or_default(), query, n)
+                            .search_general(
+                                channel.unwrap_or("telegram"),
+                                chat_id.unwrap_or_default(),
+                                query,
+                                n,
+                            )
                             .await
                     }
                     TopicScope::Thread(t) => {
-                        self.repo.search(channel, chat_id, query, n, Some(t.as_str())).await
+                        self.repo
+                            .search(channel, chat_id, query, n, Some(t.as_str()))
+                            .await
                     }
                     TopicScope::All => self.repo.search(channel, chat_id, query, n, None).await,
                 }
@@ -434,7 +445,8 @@ impl Tool for ChannelSearchTool {
                     }
                 };
 
-                let (scope, inherited) = resolve_topic_scope(&input, context, Some(chat_id)).await?;
+                let (scope, inherited) =
+                    resolve_topic_scope(&input, context, Some(chat_id)).await?;
 
                 let messages = match &scope {
                     TopicScope::General => {
@@ -443,7 +455,9 @@ impl Tool for ChannelSearchTool {
                             .await
                     }
                     TopicScope::Thread(t) => {
-                        self.repo.recent(channel, chat_id, n, Some(t.as_str()), None).await
+                        self.repo
+                            .recent(channel, chat_id, n, Some(t.as_str()), None)
+                            .await
                     }
                     TopicScope::All => self.repo.recent(channel, chat_id, n, None, None).await,
                 }
