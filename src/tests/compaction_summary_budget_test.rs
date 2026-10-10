@@ -13,13 +13,13 @@
 //! literal, which is the one edit that silently restores the 4.44x disagreement.
 
 use crate::brain::agent::service::AgentService;
+use crate::brain::agent::service::AgentService;
 use crate::brain::agent::service::context::parse_context_manifest;
 use crate::brain::agent::service::request_budget::{
+    COMPACTION_SUMMARY_MAX_TOKENS, COMPACTION_SUMMARY_REASONING_HEADROOM_TOKENS,
     compaction_summary_input_reserve, compaction_summary_output_tokens,
-    compaction_summary_request_allowance, COMPACTION_SUMMARY_MAX_TOKENS,
-    COMPACTION_SUMMARY_REASONING_HEADROOM_TOKENS,
+    compaction_summary_request_allowance,
 };
-use crate::brain::agent::service::AgentService;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 
