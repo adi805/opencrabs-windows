@@ -31,6 +31,7 @@ pub(crate) mod commands;
 pub(crate) mod component_spec;
 mod connection;
 pub(crate) mod context_menu;
+pub(crate) mod cowork;
 pub(crate) mod embed;
 pub(crate) mod flags;
 pub(crate) mod formatting_prompt;
