@@ -15,7 +15,6 @@
 
 use super::builder::AgentService;
 use super::compaction_notice::CompactionNotifier;
-use super::request_budget::COMPACTION_SUMMARY_MAX_TOKENS;
 use super::types::{ProgressCallback, ProgressEvent};
 use crate::brain::agent::context::{AgentContext, CompactionScope};
 use uuid::Uuid;
@@ -31,7 +30,10 @@ use uuid::Uuid;
 /// the DB, a fresh loop on every user message). A marker with no summary is
 /// lossy; no marker at all is unrecoverable.
 pub(crate) enum CompactionOutcome {
-    /// A summary was produced and swapped into the live context.
+    /// A summary was produced and swapped into the live context. The String is
+    /// the exact marker text the apply step welded into the context — banner
+    /// plus summary — so the persisted row carries the same bytes the live
+    /// context does (#1928).
     Summarised(String),
     /// Every summariser attempt failed, so the oldest messages were dropped
     /// to fit the window instead. Nothing before this point survives.
@@ -44,9 +46,19 @@ impl CompactionOutcome {
     /// own wording without copying the marker text five times.
     pub(crate) fn marker(&self, trigger: &str) -> String {
         match self {
-            Self::Summarised(summary) => format!(
-                "[CONTEXT COMPACTION — The conversation was automatically compacted{trigger}. \
-                 Below is a structured summary of everything before this point.]\n\n{summary}"
+            // #1928: the payload IS the applied marker (banner + summary).
+            // Persist those bytes; rebuilding the banner here is exactly how
+            // the in-memory marker and the DB row drifted apart — a delta
+            // segment's sentinel never reached the DB, so the loader counted
+            // every segment as a fresh boundary and kept only the newest.
+            // The trigger decoration rides the full-window banner's
+            // "compacted." sentence; the delta and consolidation banners carry
+            // no such sentence and are persisted unchanged.
+            Self::Summarised(applied_marker) if trigger.is_empty() => applied_marker.clone(),
+            Self::Summarised(applied_marker) => applied_marker.replacen(
+                "automatically compacted.",
+                &format!("automatically compacted{trigger}."),
+                1,
             ),
             Self::Truncated => format!(
                 "[CONTEXT COMPACTION — The conversation was automatically compacted{trigger}. \
@@ -154,7 +166,8 @@ pub(crate) enum PendingState {
     Empty,
     /// Still thinking, and this visit is not obliged to wait for it.
     StillRunning,
-    /// A summary landed and was swapped into the live context.
+    /// A summary landed and was swapped into the live context. Carries the
+    /// exact marker text the apply welded in (#1928).
     Applied(String),
     /// The task finished without a summary. Spawning another would just
     /// repeat the same failing call on every visit, so the caller falls back
@@ -332,8 +345,8 @@ impl AgentService {
         let pending_state = self
             .resolve_pending_compaction(session_id, context, phase, usage_pct, progress_callback)
             .await;
-        if let PendingState::Applied(summary) = pending_state {
-            return Some(CompactionOutcome::Summarised(summary));
+        if let PendingState::Applied(applied_marker) = pending_state {
+            return Some(CompactionOutcome::Summarised(applied_marker));
         }
 
         // ── Tier 1: soft trigger at 65% - LLM compaction ──
@@ -416,7 +429,7 @@ impl AgentService {
 
         // Up to 3 attempts — transient summarizer errors (network blip,
         // tokenizer-edge 400) usually self-resolve on retry.
-        let mut summary_result = None;
+        let mut summary_result: Option<(String, String)> = None;
         const MAX_ATTEMPTS: u32 = 3;
         for attempt in 1..=MAX_ATTEMPTS {
             match self
@@ -429,8 +442,8 @@ impl AgentService {
                 )
                 .await
             {
-                Ok(summary) => {
-                    summary_result = Some(summary);
+                Ok((summary, applied_marker)) => {
+                    summary_result = Some((summary, applied_marker));
                     break;
                 }
                 Err(e) => {
@@ -453,7 +466,7 @@ impl AgentService {
                 context.token_count,
                 target_tokens,
             );
-            if let Ok(summary) = self
+            if let Ok((summary, applied_marker)) = self
                 .compact_context(
                     session_id,
                     context,
@@ -463,7 +476,7 @@ impl AgentService {
                 )
                 .await
             {
-                summary_result = Some(summary);
+                summary_result = Some((summary, applied_marker));
             }
         }
 
@@ -489,7 +502,7 @@ impl AgentService {
         // compaction receipt, #29) and clear the #909 pressure throttle so
         // the settled ctx footer never wears the ❕ until usage climbs the
         // 55% floor again.
-        if let Some(ref summary) = summary_result {
+        if let Some((ref summary, _)) = summary_result {
             self.note_compaction_success(
                 session_id,
                 context,
@@ -502,7 +515,7 @@ impl AgentService {
 
         // Emit the token count the NEXT request will start with.
         if let Some(cb) = progress_callback {
-            if let Some(ref summary) = summary_result {
+            if let Some((ref summary, _)) = summary_result {
                 let marker_tokens = AgentContext::estimate_tokens(summary) + 100;
                 let brain_tokens = self
                     .default_system_brain
@@ -519,7 +532,7 @@ impl AgentService {
         }
 
         match summary_result {
-            Some(summary) => Some(CompactionOutcome::Summarised(summary)),
+            Some((_, applied_marker)) => Some(CompactionOutcome::Summarised(applied_marker)),
             None if truncated => Some(CompactionOutcome::Truncated),
             None => None,
         }
@@ -679,7 +692,8 @@ impl AgentService {
 
         match handle.await {
             Ok(Ok(summary)) => {
-                Self::apply_compaction_summary_after(context, scope, &summary, snapshot_len);
+                let applied_marker =
+                    Self::apply_compaction_summary_after(context, scope, &summary, snapshot_len);
                 self.note_compaction_success(
                     session_id,
                     context,
@@ -691,7 +705,7 @@ impl AgentService {
                 if let Some(cb) = progress_callback {
                     cb(session_id, ProgressEvent::TokenCount(context.token_count));
                 }
-                PendingState::Applied(summary)
+                PendingState::Applied(applied_marker)
             }
             Ok(Err(e)) => {
                 tracing::error!(
@@ -745,11 +759,15 @@ impl AgentService {
         let fallbacks = self.fallback_chain_snapshot();
         let max_tokens = context.max_tokens;
         let model = model_name.to_string();
-        let max_output = COMPACTION_SUMMARY_MAX_TOKENS;
+        let max_output = super::request_budget::compaction_summary_request_allowance();
         let working_dir = self.get_working_directory_for_session(session_id);
         let auto_approve = self.auto_approve_tools;
         let subagents = self.subagent_manager.clone();
         let attempt_deadline = self.compaction_attempt_deadline(session_id);
+        // #1960: read the live skill inventory BEFORE the spawn, so the
+        // summariser is told which skills the session actually holds instead of
+        // guessing from the transcript.
+        let active_skills = self.skill_inventory_for_session(session_id);
         // Its own token: this task answers to session teardown, never to a
         // context that grew impatient.
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -768,6 +786,7 @@ impl AgentService {
                 max_output,
                 working_dir,
                 auto_approve,
+                active_skills,
                 cancel,
                 attempt_deadline,
                 None,

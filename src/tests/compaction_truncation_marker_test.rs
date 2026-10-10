@@ -16,9 +16,19 @@ use crate::brain::agent::service::compaction::CompactionOutcome;
 /// That prefix is the only thing standing between a restart and a replay.
 const MARKER_PREFIX: &str = "[CONTEXT COMPACTION";
 
+/// The outcome carries the APPLIED marker text — banner included — so the
+/// persisted row and the live context cannot drift (#1928). Build one the way
+/// the apply step does.
+fn summarised(payload: &str) -> CompactionOutcome {
+    CompactionOutcome::Summarised(format!(
+        "[CONTEXT COMPACTION — The conversation was automatically compacted. \
+         Below is a structured summary of everything before this point.]\n\n{payload}"
+    ))
+}
+
 #[test]
 fn summarised_marker_carries_the_summary() {
-    let out = CompactionOutcome::Summarised("## What happened\nWe fixed the parser.".into());
+    let out = summarised("## What happened\nWe fixed the parser.");
     let marker = out.marker("");
     assert!(marker.starts_with(MARKER_PREFIX));
     assert!(marker.contains("We fixed the parser."));
@@ -50,7 +60,7 @@ fn truncated_marker_does_not_promise_a_summary() {
 fn trigger_wording_rides_both_variants() {
     let trigger = " after token calibration revealed high context usage";
     for marker in [
-        CompactionOutcome::Summarised("body".into()).marker(trigger),
+        summarised("body").marker(trigger),
         CompactionOutcome::Truncated.marker(trigger),
     ] {
         assert!(marker.starts_with(MARKER_PREFIX));
@@ -120,10 +130,7 @@ fn loader_ignores_an_assistant_row_quoting_the_marker() {
 
     let all = vec![
         row("user", "ancient history"),
-        row(
-            "user",
-            &CompactionOutcome::Summarised("real anchor".into()).marker(""),
-        ),
+        row("user", &summarised("real anchor").marker("")),
         row("user", "work done after the real compaction"),
         // An assistant row echoing the banner — the 2026-09-12 self-re-anchor.
         row(
@@ -179,7 +186,7 @@ fn loader_ignores_a_user_row_quoting_the_marker_mid_text() {
     };
 
     let all = vec![
-        row(&CompactionOutcome::Summarised("real anchor".into()).marker("")),
+        row(&summarised("real anchor").marker("")),
         row("kept history"),
         row("I read this out of the log: [CONTEXT COMPACTION - a lane's tool result]"),
     ];
