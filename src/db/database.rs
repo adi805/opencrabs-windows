@@ -526,30 +526,25 @@ impl Database {
 
         tracing::info!("Database migrations completed");
 
-        // Run integrity check on startup
-        let integrity_ok = self
-            .pool
-            .get()
-            .await
-            .context("Failed to get connection for integrity check")?
-            .interact(|conn| -> rusqlite::Result<bool> {
-                let result: String =
-                    conn.pragma_query_value(None, "integrity_check", |r| r.get(0))?;
-                Ok(result == "ok")
-            })
-            .await
-            .map_err(interact_err)?
-            .context("Failed to run integrity check")?;
-
-        if !integrity_ok {
-            tracing::error!(
-                "Database integrity check FAILED — data may be corrupted. \
-                 Consider backing up and recreating the database."
-            );
-            DB_INTEGRITY_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
-        } else {
-            tracing::debug!("Database integrity check passed");
-        }
+        // #459/#677: no `PRAGMA integrity_check` here.
+        //
+        // The scan reads every page, so its cost is O(database size): measured
+        // 93-149 s on the live ops database (2026-09-25) and 189-223 s per
+        // daemon boot (2026-09-28). Placed here it is paid by EVERY database
+        // open -- every cold CLI verb (`cron list`, `doctor`, `agent`, `run`)
+        // and the daemon's own start -- and none of those foreground callers
+        // can act on the verdict.
+        //
+        // The 2026-09-29 sync (d1e4b98ea) re-imported upstream's copy of this
+        // block over #459's removal, restoring the O(database size) scan on the
+        // open path. It is removed again here, and pinned by
+        // `run_migrations_does_not_scan_on_every_open` in
+        // `src/tests/db_pre_migration_snapshot_test.rs` so the next sync fails
+        // loudly instead of silently re-adding it.
+        //
+        // The capability is retained, not deleted: `Database::run_integrity_check()`
+        // (below) returns the verdict as a value, and the #1779 preflight still
+        // runs, gated on a pending write, ahead of the migrations above.
 
         Ok(())
     }
