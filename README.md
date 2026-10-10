@@ -644,12 +644,21 @@ and database — so a GUI is another window onto one crab, not a second installa
 | `opencrabs logs status\|view\|clean\|open` | Log management |
 | `opencrabs service install\|start\|stop\|restart\|status\|uninstall` | OS service management (launchd on macOS, systemd on Linux, a per-profile Scheduled Task on Windows) |
 | `opencrabs daemon` | Run in headless daemon mode — channels only, no TUI |
+| `opencrabs acp` | Serve the Agent Client Protocol (ACP) over stdio JSON-RPC: editors and GUI harnesses like Zed and [MonoCode](https://github.com/hardbeat920/monocode) drive OpenCrabs as their coding agent. See [MonoCode GUI](#monocode-gui) |
 | `opencrabs evolve` | Update to the latest release binary and hot-restart, the same path as the `/evolve` command and the automatic 24h check. `--check-only` reports whether an update exists without installing it |
 | `opencrabs completions <shell>` | Generate shell completions (bash, zsh, fish, powershell) |
 | `opencrabs migrate <source>` | Migrate from OpenClaw or Hermes. Scans the system, shows interactive picker, spawns agent to handle migration. `--dry-run` to preview |
 | `opencrabs version` | Print version and exit |
 
 Global flags: `--debug` (enable file logging), `--config <path>` (custom config file), `--profile <name>` / `-p <name>` (run as a named profile).
+
+### MonoCode GUI
+
+Prefer windows and buttons over the TUI? [MonoCode](https://github.com/hardbeat920/monocode) (MIT, Tauri desktop app for macOS/Linux/Windows) runs OpenCrabs as a native coding-agent provider over ACP. No proxy, no token reselling: MonoCode spawns your local `opencrabs` binary and drives it over stdio JSON-RPC.
+
+1. **Install OpenCrabs v0.5.2 or newer**: `opencrabs acp` ships the ACP server (#1540)
+2. **Get a MonoCode build carrying the OpenCrabs provider**: the provider adapter is upstream PR [hardbeat920/monocode#343](https://github.com/hardbeat920/monocode/pull/343) (draft, pending merge); builds with it expose OpenCrabs directly in the provider picker
+3. **Pick OpenCrabs and go**: sessions, resume, slash commands, approval gates, plan mode, compaction and model switching all speak native ACP. Sessions born in MonoCode appear in `opencrabs session list` and resume in the TUI as first-class sessions
 
 ### Debug Logging
 

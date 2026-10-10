@@ -8,7 +8,7 @@ use super::SlackState;
 use crate::brain::agent::service::MessageEnqueueCallback;
 use crate::channels::bg_resume::{self, AgentHolder};
 use slack_morphism::prelude::{
-    SlackApiChatPostMessageRequest, SlackApiToken, SlackApiTokenValue, SlackMessageContent,
+    SlackApiChatPostMessageRequest, SlackApiToken, SlackApiTokenValue, SlackMessageContent, SlackTs,
 };
 use std::sync::Arc;
 
@@ -28,9 +28,14 @@ pub(crate) fn build_enqueue_callback(
                 tracing::warn!("[bg-resume] slack: agent gone; dropping resume");
                 return;
             };
-            let Some(content) =
-                bg_resume::run_resume_turn(agent, session_id, msg.context_text, "slack", &channel)
-                    .await
+            let Some(content) = bg_resume::run_resume_turn(
+                agent.clone(),
+                session_id,
+                msg.context_text,
+                "slack",
+                &channel,
+            )
+            .await
             else {
                 return;
             };
@@ -49,15 +54,32 @@ pub(crate) fn build_enqueue_callback(
             else {
                 return;
             };
-            let api_token = SlackApiToken::new(SlackApiTokenValue::from(token_val));
+            let api_token = SlackApiToken::new(SlackApiTokenValue::from(token_val.clone()));
             let session = client.open_session(&api_token);
-            let req = SlackApiChatPostMessageRequest::new(
+            let mut req = SlackApiChatPostMessageRequest::new(
                 channel.clone().into(),
                 SlackMessageContent::new().with_text(content),
             );
+            // Land the answer in the thread that started the turn (#1988):
+            // top-level sessions have no entry and keep posting at channel
+            // root, same as before.
+            if let Some(thread) = state.session_thread(session_id).await {
+                req = req.with_thread_ts(SlackTs::new(thread));
+            }
             if let Err(e) = session.chat_post_message(&req).await {
                 tracing::warn!("[bg-resume] slack: chat_post_message failed: {e}");
             }
+            // The completion just delivered is the event the channel's waiting
+            // step group is holding for (#1988): flip it now instead of
+            // leaving the ⏳ line until the next inbound message.
+            super::handler::flip_waiting_group(
+                &client,
+                &state,
+                agent.as_ref(),
+                token_val,
+                &channel,
+            )
+            .await;
         });
     })
 }

@@ -90,31 +90,41 @@ impl GroupState {
     }
 
     /// Stamp the delivery outcome (#1797). A Finished turn that ends with
-    /// detached background tasks still running overrides to the waiting
-    /// state (the Slack mirror of Telegram's #1144 header), and a `None`
-    /// ctx keeps whatever was stamped at first settle so the later flip to
+    /// background work still running overrides to the waiting state (the
+    /// Slack mirror of Telegram's #1144 header). Since #1988 the verb
+    /// arrives precomputed from the shared `waiting_verb`, which folds
+    /// detached tasks AND working sub-agents into one count; the gate
+    /// below keeps it off every non-Finished outcome, and a `None` ctx
+    /// keeps whatever was stamped at first settle so the later flip to
     /// Finished re-renders with the same budget.
-    pub(crate) fn settle(&mut self, outcome: TurnOutcome, bg: usize, ctx: Option<String>) {
-        let waiting = outcome == TurnOutcome::Finished && bg > 0;
+    pub(crate) fn settle(
+        &mut self,
+        outcome: TurnOutcome,
+        waiting: Option<String>,
+        ctx: Option<String>,
+    ) {
+        let is_waiting = outcome == TurnOutcome::Finished && waiting.is_some();
         let prev_ctx = self.settled.as_ref().and_then(|s| s.ctx.clone());
-        let (icon, verb) = if waiting {
-            (
-                "⏳",
-                format!(
-                    "Waiting for {bg} background task{}",
-                    if bg == 1 { "" } else { "s" }
-                ),
-            )
-        } else {
-            let (icon, verb) = outcome.icon_verb();
-            (icon, verb.to_string())
+        let (icon, verb) = match waiting {
+            Some(verb) if is_waiting => ("⏳", verb),
+            _ => {
+                let (icon, verb) = outcome.icon_verb();
+                (icon, verb.to_string())
+            }
         };
         self.settled = Some(SettledStatus {
             icon,
             verb,
             ctx: ctx.or(prev_ctx),
-            waiting,
+            waiting: is_waiting,
         });
+    }
+
+    /// The flow ticker's stop condition (#1988): the group settled on a
+    /// TERMINAL line. A waiting settle is not terminal, its `🕒` keeps
+    /// rolling until the flip replaces it with the finished line.
+    pub(crate) fn settled_terminal(&self) -> bool {
+        self.settled.as_ref().is_some_and(|s| !s.waiting)
     }
 }
 
@@ -141,9 +151,10 @@ impl TurnOutcome {
 }
 
 /// The group's post-delivery status (#1797): icon + verb, the ctx budget
-/// captured at first settle, and whether the turn ended with detached
-/// background tasks still running. A waiting group keeps the live `🕒`
-/// glyph until the flip re-renders it terminal.
+/// captured at first settle, and whether the turn ended with background
+/// work (detached tasks and/or working sub-agents, #1988) still running.
+/// A waiting group keeps the live `🕒` glyph until the flip re-renders it
+/// terminal.
 #[derive(Debug, Clone)]
 pub(crate) struct SettledStatus {
     pub icon: &'static str,
@@ -428,13 +439,13 @@ impl SlackState {
         &self,
         ts: &str,
         outcome: TurnOutcome,
-        bg: usize,
+        waiting: Option<String>,
         ctx: Option<String>,
     ) -> Option<GroupState> {
         let mut guard = self.tool_groups.lock().await;
         let (_, map) = &mut *guard;
         let group = map.get_mut(ts)?;
-        group.settle(outcome, bg, ctx);
+        group.settle(outcome, waiting, ctx);
         Some(group.clone())
     }
 
@@ -448,25 +459,22 @@ impl SlackState {
         map.get(ts).cloned()
     }
 
-    /// Record the channel's most recent background-waiting group (#1797):
-    /// (channel id, group message ts, owning session). One per channel: a
-    /// channel has at most one live turn, so at most one waiting group.
+    /// Record the channel's most recent background-waiting group (#1797),
+    /// keyed per channel since #1988: one entry per channel (a channel has
+    /// at most one live turn). The old single global slot let a second
+    /// channel's note clobber the first waiting group, which then never
+    /// flipped.
     pub(crate) async fn note_waiting_group(&self, channel: String, ts: String, session: Uuid) {
-        *self.waiting_group.lock().await = Some((channel, ts, session));
+        self.waiting_groups
+            .lock()
+            .await
+            .insert(channel, (ts, session));
     }
 
-    /// Take the channel's waiting group, if any (#1797). Called at the top
-    /// of handle_message: a background-task completion arrives as the
-    /// channel's next inbound event, and that is the flip point.
+    /// Take the channel's waiting group, if any (#1797). Flip points: the
+    /// background-completion path in `resume.rs` (#1988) and, as a
+    /// backstop, the top of handle_message.
     pub(crate) async fn take_waiting_group_for(&self, channel: &str) -> Option<(String, Uuid)> {
-        let mut guard = self.waiting_group.lock().await;
-        match guard.as_ref() {
-            Some((c, ts, session)) if c == channel => {
-                let out = Some((ts.clone(), *session));
-                guard.take();
-                out
-            }
-            _ => None,
-        }
+        self.waiting_groups.lock().await.remove(channel)
     }
 }

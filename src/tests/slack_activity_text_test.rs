@@ -149,7 +149,7 @@ fn settled_line_never_carries_activity() {
             status: Some(true),
         },
     ]);
-    g.settle(TurnOutcome::Finished, 0, Some("ctx".into()));
+    g.settle(TurnOutcome::Finished, None, Some("ctx".into()));
     let text = text_of(&g);
     assert!(
         !text.contains("mid-turn narration"),

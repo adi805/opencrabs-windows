@@ -625,7 +625,7 @@ impl DiscordState {
         message_id: u64,
         outcome: TurnOutcome,
         bg: usize,
-        agents: crate::channels::telegram::flow::SubagentCounts,
+        agents: crate::channels::background_work::SubagentCounts,
         ctx: Option<String>,
     ) -> Option<GroupState> {
         let mut guard = self.tool_groups.lock().await;
@@ -633,7 +633,7 @@ impl DiscordState {
         let group = map.get_mut(&message_id)?;
         let prev_ctx = group.settled.as_ref().and_then(|s| s.ctx.clone());
         let agent_phrase = (!agents.is_empty())
-            .then(|| crate::channels::telegram::flow::subagent_waiting_phrase(agents));
+            .then(|| crate::channels::background_work::subagent_waiting_phrase(agents));
         let (icon, verb) = settled_icon_verb(outcome, bg, agent_phrase.as_deref());
         group.settled = Some(SettledStatus {
             outcome,
@@ -652,7 +652,7 @@ impl DiscordState {
     pub(crate) fn waiting_counts(
         agent: &crate::brain::agent::AgentService,
         session_id: uuid::Uuid,
-    ) -> (usize, crate::channels::telegram::flow::SubagentCounts) {
+    ) -> (usize, crate::channels::background_work::SubagentCounts) {
         let bg = agent
             .background_manager()
             .map(|bm| bm.running_tasks(session_id).len())

@@ -826,44 +826,10 @@ impl FlowOutcome {
     }
 }
 
-/// Alive sub-agent counts captured at settle (#1183): `working` counts
-/// children mid-round (`Running`), `awaiting` counts children parked at a
-/// round boundary whose output is ready to collect (`AwaitingInput`). The
-/// settle card distinguishes the two because they need different things from
-/// the user: working agents just need time, parked ones need a
-/// `wait_agent`/`send_input`/`close_agent` decision.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SubagentCounts {
-    pub(crate) working: usize,
-    pub(crate) awaiting: usize,
-}
-
-impl SubagentCounts {
-    /// Total alive agents, working or parked.
-    pub(crate) fn total(self) -> usize {
-        self.working + self.awaiting
-    }
-
-    /// True when no alive agents belong to this session's settle.
-    pub(crate) fn is_empty(self) -> bool {
-        self.total() == 0
-    }
-}
-
-/// The sub-agent share of the waiting verb (#1183): "N working agents",
-/// "N agents awaiting collection", or the split form when both exist. Pure so
-/// the header grammar is pinnable without live managers.
-pub(crate) fn subagent_waiting_phrase(agents: SubagentCounts) -> String {
-    let n = agents.total();
-    let noun = if n == 1 { "agent" } else { "agents" };
-    match (agents.working, agents.awaiting) {
-        (working, 0) => format!("{working} working {noun}"),
-        (0, awaiting) => format!("{awaiting} {noun} awaiting collection"),
-        (working, awaiting) => {
-            format!("{n} {noun} ({working} working, {awaiting} awaiting collection)")
-        }
-    }
-}
+/// Alive sub-agent counts and the waiting-verb decision live in the shared
+/// [`crate::channels::background_work`] module (#1985); re-exported here so
+/// the flow renderer keeps its path.
+pub(crate) use crate::channels::background_work::{SubagentCounts, waiting_verb};
 
 /// Settled header icon+verb, overridden to a waiting state when the turn
 /// finished with background work still alive (#1144, #1183). A settled card
@@ -872,30 +838,19 @@ pub(crate) fn subagent_waiting_phrase(agents: SubagentCounts) -> String {
 /// the same override to sub-agents, which live in a separate registry the
 /// background-task count never read: a turn ending with two agents mid-work
 /// still said "Finished". The verb folds both registries, e.g. "Waiting for
-/// 1 background task + 2 working agents". The icon is a static ref; the verb
-/// is an owned [`String`] because it carries the counts, so callers pass
-/// `verb.as_str()` into [`FlowHeader::Settled`].
+/// 1 background task + 2 working agents"; the folding itself is the shared
+/// [`waiting_verb`], this wrapper only pairs it with the Telegram icon. The
+/// icon is a static ref; the verb is an owned [`String`] because it carries
+/// the counts, so callers pass `verb.as_str()` into [`FlowHeader::Settled`].
 pub(crate) fn settled_icon_verb(
     bg_count: Option<usize>,
     agents: SubagentCounts,
     outcome: FlowOutcome,
 ) -> (&'static str, String) {
-    if outcome == FlowOutcome::Finished {
-        let bg = bg_count.unwrap_or(0);
-        if bg > 0 || !agents.is_empty() {
-            let mut parts: Vec<String> = Vec::new();
-            if bg > 0 {
-                parts.push(if bg == 1 {
-                    "1 background task".to_string()
-                } else {
-                    format!("{bg} background tasks")
-                });
-            }
-            if !agents.is_empty() {
-                parts.push(subagent_waiting_phrase(agents));
-            }
-            return ("⏳", format!("Waiting for {}", parts.join(" + ")));
-        }
+    if outcome == FlowOutcome::Finished
+        && let Some(verb) = waiting_verb(bg_count, agents)
+    {
+        return ("⏳", verb);
     }
     let (icon, verb) = outcome.icon_verb();
     (icon, verb.to_string())
