@@ -10,18 +10,6 @@
 /// Maximum share of a context window one request may reserve for output.
 const OUTPUT_WINDOW_PERCENT: u32 = 20;
 
-/// Output allowance for one compaction continuation document, in tokens.
-///
-/// The continuation document is the woken agent's *entire memory*, so it is
-/// sized on its own terms rather than inheriting the chat allowance (#1930).
-/// A chat turn may legitimately emit 40 000 tokens; a document that large
-/// defeats its own purpose — every round re-bills a document several times its
-/// useful size, so the session lands near where it started and re-crosses the
-/// compaction trigger. Both sides of the budget read this one constant: the
-/// summariser's `max_output_tokens` and the input-side `output_reserve` derive
-/// from it, so the allowance and the reserve cannot drift apart.
-pub const COMPACTION_SUMMARY_MAX_TOKENS: u32 = 3_000;
-
 /// Prompt and instruction headroom reserved on top of the document allowance
 /// when the compaction input budget is computed.
 pub const COMPACTION_PROMPT_RESERVE_TOKENS: u32 = 1_000;
@@ -55,7 +43,7 @@ pub(crate) fn bounded_output_tokens(configured_max: u32, context_window: u32) ->
 /// 40 000 tokens while the reserve was a hard-coded 9 000 (4.44x), and 208 of
 /// 210 live markers exceeded this budget (mean 27.8 KB, max 69.2 KB).
 /// See opencrabs/opencrabs#1930.
-pub(crate) const COMPACTION_SUMMARY_MAX_TOKENS: u32 = 3_000;
+pub const COMPACTION_SUMMARY_MAX_TOKENS: u32 = 3_000;
 
 /// Reasoning tokens the summariser may burn INSIDE its output allowance.
 ///
