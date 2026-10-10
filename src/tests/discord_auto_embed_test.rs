@@ -11,10 +11,12 @@
 //! its later edits must always agree.
 
 use crate::channels::discord::embed::{
-    AUTO_EMBED_COLOR, DESCRIPTION_MAX, auto_embed_create, auto_embed_edit, builder_content,
-    should_embed,
+    AUTO_EMBED_COLOR, DESCRIPTION_MAX, auto_embed_create, auto_embed_edit, auto_embed_update,
+    builder_content, should_embed,
 };
-use serenity::builder::{CreateActionRow, CreateButton, CreateMessage, EditMessage};
+use serenity::builder::{
+    CreateActionRow, CreateButton, CreateInteractionResponseMessage, CreateMessage, EditMessage,
+};
 use serenity::model::channel::MessageFlags;
 
 /// Embed blocks in a serialised builder (`[]` when none were set).
@@ -218,6 +220,54 @@ fn a_card_stays_a_card_across_create_then_edit() {
     assert_eq!(embeds(&ej)[0]["description"], serde_json::json!("report"));
 }
 
+#[test]
+fn content_only_update_becomes_a_card() {
+    let msg = CreateInteractionResponseMessage::new().content("hello");
+    let out = auto_embed_update(msg);
+    let json = serde_json::to_value(&out).unwrap();
+    let blocks = embeds(&json);
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0]["description"], serde_json::json!("hello"));
+    assert!(
+        json["content"].as_str().unwrap_or_default().is_empty(),
+        "the text must move into the embed, not be duplicated above it: {json}"
+    );
+}
+
+#[test]
+fn update_with_components_still_becomes_a_card() {
+    // The Expand/Collapse toggle answers with a raw interaction response, so it
+    // is the one card path the create/edit helpers never see. It must redraw the
+    // same shape: text moved into the embed, button row intact.
+    let rows = buttons("toolgroup:7");
+    let msg = CreateInteractionResponseMessage::new()
+        .content("• 3 tool calls")
+        .components(rows);
+    let out = auto_embed_update(msg);
+    let json = serde_json::to_value(&out).unwrap();
+    let blocks = embeds(&json);
+    assert_eq!(blocks.len(), 1, "{json}");
+    assert_eq!(blocks[0]["description"], serde_json::json!("• 3 tool calls"));
+    assert!(
+        json.get("components").is_some(),
+        "the button row must survive the wrap: {json}"
+    );
+}
+
+#[test]
+fn update_that_already_carries_an_embed_is_left_alone() {
+    let existing = serenity::builder::CreateEmbed::new().title("already");
+    let msg = CreateInteractionResponseMessage::new()
+        .content("hello")
+        .add_embed(existing);
+    let out = auto_embed_update(msg);
+    let json = serde_json::to_value(&out).unwrap();
+    assert_eq!(json["content"], serde_json::json!("hello"));
+    let blocks = embeds(&json);
+    assert_eq!(blocks.len(), 1, "{json}");
+    assert_eq!(blocks[0]["title"], serde_json::json!("already"));
+}
+
 /// The wiring, read out of the source. The tests above exercise the helpers
 /// directly, so a refactor that stopped calling them would leave every one of
 /// them green while the feature silently did nothing.
@@ -247,4 +297,16 @@ fn the_choke_point_applies_the_conversion() {
     // The plain path must survive: `say` keeps a real `channel.say` call, which
     // is also what discord_write_discipline_test requires of this file.
     assert!(flat.contains(".say("), "say must keep the plain path");
+
+    // The tool-group toggle answers with a raw interaction response, which never
+    // reaches writes.rs; its own choke point must be wired or the first Expand
+    // press flips a card back to plain text.
+    let agent_path = root.join("src/channels/discord/agent.rs");
+    let agent_src = std::fs::read_to_string(&agent_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", agent_path.display()));
+    let agent_flat: String = agent_src.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        agent_flat.contains("auto_embed_update("),
+        "the tool-group toggle must route through the update choke point"
+    );
 }

@@ -756,10 +756,18 @@ impl EventHandler for Handler {
                 };
                 let resp = match mid_str.parse::<u64>() {
                     Ok(mid) => match self.discord_state.toggle_tool_group(mid).await {
+                        // The card was created through `writes`, so it is an
+                        // embed; this response must redraw the SAME shape or the
+                        // first Expand press flips the card back to plain text
+                        // (#170). `auto_embed_update` is the choke point for the
+                        // raw interaction responses the create/edit helpers
+                        // cannot see.
                         Some(group) => CreateInteractionResponse::UpdateMessage(
-                            CreateInteractionResponseMessage::new()
-                                .content(super::tool_group::render_content(&group))
-                                .components(super::tool_group::render_components(&group, mid)),
+                            super::embed::auto_embed_update(
+                                CreateInteractionResponseMessage::new()
+                                    .content(super::tool_group::render_content(&group))
+                                    .components(super::tool_group::render_components(&group, mid)),
+                            ),
                         ),
                         None => {
                             tracing::debug!("Discord: tool group {mid} aged out — toggle ignored");
