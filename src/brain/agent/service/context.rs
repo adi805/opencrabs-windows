@@ -1,5 +1,4 @@
 use super::builder::AgentService;
-use super::request_budget::COMPACTION_SUMMARY_MAX_TOKENS;
 use crate::brain::agent::context::{AgentContext, CompactionScope};
 use crate::brain::agent::error::{AgentError, Result};
 use crate::brain::provider::{ContentBlock, LLMRequest, Message, Provider};

@@ -15,7 +15,6 @@
 
 use super::builder::AgentService;
 use super::compaction_notice::CompactionNotifier;
-use super::request_budget::COMPACTION_SUMMARY_MAX_TOKENS;
 use super::types::{ProgressCallback, ProgressEvent};
 use crate::brain::agent::context::{AgentContext, CompactionScope};
 use uuid::Uuid;
