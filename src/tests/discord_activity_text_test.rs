@@ -57,13 +57,20 @@ fn activity_prefers_the_latest_narration_note() {
         !first.contains("Reading the old renderer"),
         "older note never leads: {first}"
     );
-    // Discord renders narration as always-visible `-#` subtext rows (the
-    // transcript); the priority contract is about the summary line, not
-    // about hiding rows.
+    // Narration rows are EXPANSION-ONLY (#1990): collapsed, the bubble ends
+    // at the summary line (which already carries the latest note as its
+    // activity). Expanding is what reveals the transcript.
     assert!(
-        text.contains("-# Reading the old renderer"),
-        "narration rows stay visible: {text}"
+        !text.contains("-# Reading the old renderer"),
+        "collapsed card must not carry narration rows: {text}"
     );
+    g.expanded = true;
+    let expanded_text = render_content(&g);
+    assert!(
+        expanded_text.contains("-# Reading the old renderer"),
+        "expanding reveals the narration rows: {expanded_text}"
+    );
+    g.expanded = false;
     settled(&mut g, None);
     let settled_text = render_content(&g);
     let settled_first = settled_text.lines().next().expect("non-empty render");
@@ -149,8 +156,8 @@ fn activity_is_capped_and_raw_output_skipped() {
         "activity is clipped at 100 chars: {first}"
     );
     assert!(
-        text.contains("-# /tmp/build-output.txt"),
-        "the raw note stays visible as a transcript row: {text}"
+        !text.contains("-# /tmp/build-output.txt"),
+        "the raw note is hidden until the card is expanded: {text}"
     );
 }
 
