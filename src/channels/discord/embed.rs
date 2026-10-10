@@ -25,9 +25,7 @@
 //! is deliberately conservative: if fields are added later they must come out
 //! of the same budget, not sit on top of it.
 
-use serenity::builder::{
-    CreateEmbed, CreateInteractionResponseMessage, CreateMessage, EditMessage,
-};
+use serenity::builder::{CreateEmbed, CreateMessage, EditMessage};
 
 /// Max embeds attached to one message.
 pub const MAX_EMBEDS: usize = 10;
@@ -310,31 +308,6 @@ pub fn auto_embed_edit(builder: EditMessage) -> EditMessage {
         return builder;
     };
     if !should_embed(&body) || already_embedded(&value) {
-        return builder;
-    }
-    builder.content("").add_embed(auto_embed(&body))
-}
-
-/// Move an interaction response's text into an embed card, in place.
-///
-/// The third choke point, and the one the create/edit pair cannot reach: a
-/// component toggle answers with a raw `CreateInteractionResponse`, not through
-/// `writes`, so neither helper ever sees it. Without this the Expand/Collapse
-/// button rewrote a card back to plain text on the first press — the message
-/// arrived as a card and left as a bare string.
-///
-/// Same rule as [`auto_embed_create`], `carries_poll` included: Discord rejects
-/// a message holding both a poll and an embed.
-pub fn auto_embed_update(
-    builder: CreateInteractionResponseMessage,
-) -> CreateInteractionResponseMessage {
-    let Ok(value) = serde_json::to_value(&builder) else {
-        return builder;
-    };
-    let Some(body) = builder_content(&value).map(str::to_owned) else {
-        return builder;
-    };
-    if !should_embed(&body) || already_embedded(&value) || carries_poll(&value) {
         return builder;
     }
     builder.content("").add_embed(auto_embed(&body))
