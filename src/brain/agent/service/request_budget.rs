@@ -10,10 +10,6 @@
 /// Maximum share of a context window one request may reserve for output.
 const OUTPUT_WINDOW_PERCENT: u32 = 20;
 
-/// Prompt and instruction headroom reserved on top of the document allowance
-/// when the compaction input budget is computed.
-pub const COMPACTION_PROMPT_RESERVE_TOKENS: u32 = 1_000;
-
 /// Cap `configured_max` so output cannot consume more than 20% of `context_window`.
 ///
 /// A zero window means "unknown"; preserve the configured value rather than
