@@ -388,6 +388,26 @@ impl EventHandler for Handler {
                 return;
             }
 
+            // Per-channel `/respond_to` and `/cowork` need this channel's id,
+            // the owner verdict and the thread's parent. The admission gate
+            // itself stays in `interactions::handle_invoked_request`, where the
+            // fork enforces it; here we resolve only what the scope reply needs
+            // (#2014). The parent lookup runs for a guild channel only.
+            let cfg = self.config_rx.borrow().clone();
+            let dc = &cfg.channels.discord;
+            let is_dm = command.guild_id.is_none();
+            let channel_str = command.channel_id.get().to_string();
+            let owner = crate::config::owner::is_owner(
+                &dc.allowed_users,
+                &dc.bot_owner,
+                &command.user.id.get().to_string(),
+            );
+            let parent = if is_dm {
+                None
+            } else {
+                super::commands::parent_channel_id(&ctx.http, command.channel_id).await
+            };
+
             // `/respond_to` from the menu is answered here, not routed to the
             // model as a prompt. It never writes Telegram's section (#2013).
             if let Some(reply) = crate::channels::respond_to_scope::respond_to_discord_channel(

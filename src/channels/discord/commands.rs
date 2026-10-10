@@ -56,7 +56,7 @@ use serenity::http::Http;
 use serenity::model::application::{
     Command, CommandDataOptionValue, CommandInteraction, CommandOptionType, CommandType,
 };
-use serenity::model::id::GuildId;
+use serenity::model::id::{ChannelId, GuildId};
 
 use crate::brain::{BrainLoader, CommandLoader, UserCommand};
 
@@ -458,7 +458,8 @@ pub(crate) async fn sync_commands(
 /// no roles and no owner is UNCONFIGURED, and unconfigured denies everybody:
 /// the old "empty means everyone" reading made a half-configured Discord bot
 /// public. Otherwise the owner, an allowlisted id, or a holder of an allowed
-/// role is admitted.
+/// role is admitted, and so is any member of a channel that is `open` there
+/// (#2014). `open_here` never overrides `unconfigured`.
 ///
 /// Extracted pure so the branch can be pinned without a gateway.
 pub(crate) fn identity_admitted(
@@ -466,6 +467,7 @@ pub(crate) fn identity_admitted(
     is_owner: bool,
     in_allowlist: bool,
     role_granted: bool,
+    open_here: bool,
 ) -> bool {
     !unconfigured && (is_owner || in_allowlist || role_granted || open_here)
 }
