@@ -316,7 +316,11 @@ fn latest_activity(group: &GroupState) -> Option<String> {
         .next()
 }
 
-fn summary_line(group: &GroupState) -> String {
+/// `show_activity` is false when the caller renders the narration notes
+/// underneath anyway (an expanded card): the live arm leads with the latest
+/// note as its activity segment, so leaving it in *and* printing the notes
+/// block repeated the same sentence — once above the tool rows, once below.
+fn summary_line(group: &GroupState, show_activity: bool) -> String {
     let n = group.entries.len();
     let failed = group
         .entries
@@ -370,10 +374,10 @@ fn summary_line(group: &GroupState) -> String {
                 None => String::new(),
             };
             let base = match activity_segment(group) {
-                Some(activity) => {
+                Some(activity) if show_activity => {
                     format!("{icon} {activity} · {counts}{tail}{ctx_segment} · {clock}")
                 }
-                None => format!("{icon} {counts}{tail}{ctx_segment} · {clock}"),
+                _ => format!("{icon} {counts}{tail}{ctx_segment} · {clock}"),
             };
             match silence_segment(group) {
                 Some(silence) => format!("{base}\n{silence}"),
@@ -472,7 +476,7 @@ pub(crate) fn render_content(group: &GroupState) -> String {
         let e = &group.entries[0];
         format!(
             "{}\n{} **{}**{}",
-            summary_line(group),
+            summary_line(group, false),
             entry_icon(e.status),
             e.name,
             e.context
@@ -483,9 +487,9 @@ pub(crate) fn render_content(group: &GroupState) -> String {
             .iter()
             .map(|e| format!("{} **{}**{}", entry_icon(e.status), e.name, e.context))
             .collect();
-        clamp_rows(summary_line(group), lines)
+        clamp_rows(summary_line(group, false), lines)
     } else {
-        summary_line(group)
+        summary_line(group, true)
     };
     // Narration rows are EXPANSION-ONLY (#1990 parity). Collapsed, the card
     // stays a glance: the summary line already carries the latest narration

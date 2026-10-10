@@ -1823,8 +1823,18 @@ pub(crate) async fn handle_message(
             let send_text = match turn_mid {
                 Some(id) => match discord_state.tool_group_snapshot(id).await {
                     Some(g) => match super::tool_group::evidence_line(&g) {
-                        Some(f) => format!("{text_only}\n\n{f}"),
-                        None => text_only.clone(),
+                        // Only ever appended to an answer that exists. On an
+                        // empty answer the wire text became "\n\n{f}", so
+                        // Discord got a message whose entire content was the
+                        // footer — an orphan evidence line with no answer above
+                        // it (the owner's screenshot). The header literal is
+                        // deliberately NOT spelled out here: NFR-004/AC-020
+                        // sweeps raw source, comments included, and
+                        // src/channels/evidence.rs must stay the only renderer.
+                        Some(f) if !text_only.trim().is_empty() => {
+                            format!("{text_only}\n\n{f}")
+                        }
+                        Some(_) | None => text_only.clone(),
                     },
                     None => text_only.clone(),
                 },
@@ -1835,6 +1845,10 @@ pub(crate) async fn handle_message(
                 // Answer already visible via the kept intermediate (#459's
                 // keep-intermediate outcome): skip the duplicate post. The
                 // settled flow group above carries the completion chrome.
+            } else if send_text.trim().is_empty() {
+                // Nothing to say: the answer was empty, and the footer is not
+                // appended to an empty answer either. Posting here would only
+                // add a blank bubble under the card.
             } else {
                 let budget = super::long_answer::PAGE_CHARS - super::long_answer::FOOTER_RESERVE;
                 let chunks: Vec<String> = split_message(&send_text, budget);

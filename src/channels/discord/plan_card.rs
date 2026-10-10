@@ -146,16 +146,18 @@ pub(crate) fn render_plan_card(plan: &PlanDocument, prose: Option<&[ProseSection
     }
 
     let mut checklist = String::new();
+    let mut criteria_total = 0usize;
     for task in &plan.tasks {
         let mark = status_mark(&task.status);
         checklist.push_str(&format!("{mark} **{}. {}**", task.order, task.title));
-        if !task.acceptance_criteria.is_empty() {
-            checklist.push_str(&format!(
-                " _({} acceptance criteria)_",
-                task.acceptance_criteria.len()
-            ));
-        }
+        criteria_total += task.acceptance_criteria.len();
         checklist.push('\n');
+    }
+    // The criteria count rides ONCE, under the checklist. Per-row it repeated
+    // the same `_(2 acceptance criteria)_` on every line of an 11-task plan,
+    // pushing the titles out of the glance range the card exists for.
+    if criteria_total > 0 {
+        checklist.push_str(&format!("_({criteria_total} acceptance criteria)_\n"));
     }
     let checklist = checklist.trim_end();
 

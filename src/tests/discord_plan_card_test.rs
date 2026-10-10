@@ -48,9 +48,11 @@ fn button_count(row: &CreateActionRow) -> usize {
 }
 
 /// The card has to read like a checklist: one row per task, the task's own
-/// status mark, and its acceptance-criteria count when it has one.
+/// status mark, and the acceptance-criteria total stated ONCE underneath.
+/// Per-row counts turned an 11-task plan into 11 identical
+/// `_(2 acceptance criteria)_` tails that buried the titles.
 #[test]
-fn editing_plan_renders_the_checklist_with_marks_and_criteria_counts() {
+fn editing_plan_renders_the_checklist_with_marks_and_one_criteria_total() {
     let plan = plan_with(
         PlanStatus::Editing,
         vec![
@@ -65,12 +67,23 @@ fn editing_plan_renders_the_checklist_with_marks_and_criteria_counts() {
         "completed row: {body}"
     );
     assert!(
-        body.contains("_(2 acceptance criteria)_"),
-        "criteria count: {body}"
-    );
-    assert!(
         body.contains("☐ **2. honest settle**"),
         "pending row: {body}"
+    );
+    // The row ends at the title: the count must not ride it.
+    assert!(
+        !body.contains("port the write governor** _("),
+        "per-row criteria count came back: {body}"
+    );
+    // The total rides once, under the checklist.
+    assert!(
+        body.contains("_(2 acceptance criteria)_"),
+        "criteria total: {body}"
+    );
+    assert_eq!(
+        body.matches("acceptance criteria").count(),
+        1,
+        "the criteria line must appear exactly once: {body}"
     );
     // A task with no criteria must not render a "(0 acceptance criteria)"
     // stub: it says nothing and costs a row's worth of noise.
