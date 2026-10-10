@@ -360,7 +360,6 @@ pub(crate) async fn handle_message(
         .iter()
         .filter_map(|s| s.parse().ok())
         .collect();
-    let respond_to = &dc_cfg.respond_to;
     let allowed_channels: HashSet<String> = dc_cfg.allowed_channels.iter().cloned().collect();
     let idle_timeout_hours = dc_cfg.session_idle_hours;
     let voice_config = cfg.voice_config();
@@ -411,6 +410,21 @@ pub(crate) async fn handle_message(
         }
     };
 
+    // Channel settings (#2014). A thread or forum post resolves through its
+    // parent channel (#384); the lookup runs only when the operator set up
+    // something a parent can carry, so a default install costs nothing.
+    let is_dm = msg.guild_id.is_none();
+    let channel_str = msg.channel_id.get().to_string();
+    let needs_parent = !is_dm && (!allowed_channels.is_empty() || !dc_cfg.channels.is_empty());
+    let parent_id: Option<String> = if needs_parent {
+        super::commands::parent_channel_id(&ctx.http, msg.channel_id).await
+    } else {
+        None
+    };
+    let open_here = !is_dm && dc_cfg.channel_open(&channel_str, parent_id.as_deref());
+    let respond_to_here = dc_cfg.respond_to_for(&channel_str, parent_id.as_deref());
+    let respond_to = &respond_to_here;
+
     // Deny-by-default allowlist (OC-02). An empty allowlist used to accept
     // everyone, unlike Telegram, which denies an unconfigured channel. Now a
     // channel with no allowed_users, no allowed_roles, and no bot_owner denies;
@@ -436,7 +450,7 @@ pub(crate) async fn handle_message(
         });
     let unconfigured =
         allowed.is_empty() && dc_cfg.allowed_roles.is_empty() && dc_cfg.bot_owner.is_empty();
-    if unconfigured || !(is_owner || in_allowlist || role_granted) {
+    if unconfigured || !(is_owner || in_allowlist || role_granted || open_here) {
         tracing::debug!(
             "Discord: ignoring message from non-allowed user {} (deny-by-default, OC-02)",
             user_id
@@ -445,21 +459,15 @@ pub(crate) async fn handle_message(
     }
 
     // respond_to / allowed_channels filtering — DMs always pass
-    let is_dm = msg.guild_id.is_none();
     if !is_dm {
-        let channel_str = msg.channel_id.get().to_string();
-
         // Check allowed_channels (empty = all channels allowed). Threads and
         // forum posts (#384) carry their own channel id, so a miss falls back
         // to the PARENT channel: allow-listing a forum allows every post in
         // it, each post keeping its own per-thread session.
         if !allowed_channels.is_empty() && !allowed_channels.contains(&channel_str) {
-            let parent_allowed = match msg.channel_id.to_channel(&ctx.http).await {
-                Ok(serenity::model::channel::Channel::Guild(gc)) => gc
-                    .parent_id
-                    .is_some_and(|p| allowed_channels.contains(&p.get().to_string())),
-                _ => false,
-            };
+            let parent_allowed = parent_id
+                .as_deref()
+                .is_some_and(|p| allowed_channels.contains(p));
             if !parent_allowed {
                 tracing::debug!(
                     "Discord: ignoring message in non-allowed channel {} (parent not allowed either)",
@@ -492,7 +500,12 @@ pub(crate) async fn handle_message(
                 let bot_id = discord_state.bot_user_id().await;
                 let mentioned =
                     bot_id.is_some_and(|bid| msg.mentions.iter().any(|u| u.id.get() == bid));
-                if !mentioned {
+                // The owner's own /respond_to is solicited, so it passes the gate
+                // unmentioned (#2016). Everything else stays dropped.
+                let owner_scope_command = is_owner
+                    && (crate::channels::respond_to_scope::is_respond_to_command(&msg.content)
+                        || super::cowork::is_cowork_command(&msg.content));
+                if !mentioned && !owner_scope_command {
                     tracing::debug!("Discord: respond_to=mention, bot not mentioned — ignoring");
                     store_channel_msg(msg.content.clone()).await;
                     return;
@@ -758,6 +771,38 @@ pub(crate) async fn handle_message(
         session_meta.as_ref().and_then(|s| s.model.as_deref()),
     )
     .await;
+
+    // `/respond_to` and `/cowork` are answered here, not by the shared parser:
+    // `/respond_to` would write Telegram's section with no chat id (#2013), and
+    // `/cowork` is Telegram's group flow (#2015).
+    let cowork_name = if !is_dm && super::cowork::is_cowork_command(&content) {
+        super::cowork::channel_name(&ctx.http, msg.channel_id).await
+    } else {
+        None
+    };
+    let scope_reply = super::cowork::cowork_discord_channel(
+        &content,
+        is_owner,
+        !is_dm,
+        &channel_str,
+        cowork_name.as_deref(),
+        super::cowork::write_channel_open,
+    )
+    .or_else(|| {
+        crate::channels::respond_to_scope::respond_to_discord_channel(
+            &content,
+            is_owner,
+            &channel_str,
+            &respond_to_here,
+            super::commands::write_channel_respond_to,
+        )
+    });
+    if let Some(reply) = scope_reply {
+        if let Err(e) = msg.channel_id.say(&ctx.http, reply).await {
+            tracing::warn!(error = %e, "failed to send Discord message");
+        }
+        return;
+    }
 
     // ── Channel commands (/help, /usage, /models) ──────────────────────────
     {

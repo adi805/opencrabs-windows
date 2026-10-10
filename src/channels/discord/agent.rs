@@ -387,6 +387,83 @@ impl EventHandler for Handler {
                     .await;
                 return;
             };
+
+            // Per-channel `/respond_to` and `/cowork` need this channel's id,
+            // the owner verdict and the thread's parent. The admission gate
+            // itself stays in `interactions::handle_invoked_request`, where the
+            // fork enforces it; here we resolve only what the scope reply needs
+            // (#2014). The parent lookup runs for a guild channel only.
+            let cfg = self.config_rx.borrow().clone();
+            let dc = &cfg.channels.discord;
+            let is_dm = command.guild_id.is_none();
+            let channel_str = command.channel_id.get().to_string();
+            // The fork builds `request` from the command kind; the scope replies
+            // and the history line want the command text itself, which for a
+            // chat-input command is the same string (#1850).
+            let invocation = super::commands::invocation(command);
+            let user_name = command.user.name.clone();
+            let owner = crate::config::owner::is_owner(
+                &dc.allowed_users,
+                &dc.bot_owner,
+                &command.user.id.get().to_string(),
+            );
+            let parent = if is_dm {
+                None
+            } else {
+                super::commands::parent_channel_id(&ctx.http, command.channel_id).await
+            };
+
+            // `/respond_to` from the menu is answered here, not routed to the
+            // model as a prompt. It never writes Telegram's section (#2013).
+            let cowork_name = if !is_dm && super::cowork::is_cowork_command(&invocation) {
+                super::cowork::channel_name(&ctx.http, command.channel_id).await
+            } else {
+                None
+            };
+            let scope_reply = super::cowork::cowork_discord_channel(
+                &invocation,
+                owner,
+                !is_dm,
+                &channel_str,
+                cowork_name.as_deref(),
+                super::cowork::write_channel_open,
+            )
+            .or_else(|| {
+                crate::channels::respond_to_scope::respond_to_discord_channel(
+                    &invocation,
+                    owner,
+                    &channel_str,
+                    &dc.respond_to_for(&channel_str, parent.as_deref()),
+                    super::commands::write_channel_respond_to,
+                )
+            });
+            if let Some(reply) = scope_reply {
+                if let Err(e) = command
+                    .create_response(
+                        &ctx.http,
+                        serenity::builder::CreateInteractionResponse::Message(
+                            serenity::builder::CreateInteractionResponseMessage::new()
+                                .content(reply)
+                                .ephemeral(true),
+                        ),
+                    )
+                    .await
+                {
+                    tracing::warn!("Discord: /{} reply refused: {e}", command.data.name);
+                }
+                return;
+            }
+
+            let idle = dc.session_idle_hours;
+            // History keeps the invocation the way a typed message would:
+            // `Sender: /cmd args` in a guild, bare in the owner's DM, the same
+            // rule `handler.rs` uses. `context_text` is the invocation itself,
+            // which is what the model sees when you type it.
+            let history_line = if owner && is_dm {
+                invocation.clone()
+            } else {
+                format!("{user_name}: {invocation}")
+            };
             super::interactions::handle_invoked_request(
                 &ctx,
                 command,
