@@ -1,8 +1,8 @@
 //! FR-009 / AC-020 + AC-021: a long answer is a summary plus a pager, never a
 //! wall of consecutive messages, and the pager is exactly one Action Row.
 //!
-//! The pure parts — the page body, the button label, the custom-id round trip
-//! and the one-row-one-button rule — are unit-tested inline in
+//! The pure parts — the page body, the arrow labels, the custom-id round trip
+//! and the two-arrows-one-row rule — are unit-tested inline in
 //! `src/channels/discord/long_answer.rs`. What those tests cannot reach is the
 //! *decision* that routes a long answer into the pager at all, because it lives
 //! inside `handle_message` behind an `Http` call.

@@ -110,7 +110,8 @@ pub(crate) fn page_body(pages: &[String], page: usize) -> Option<String> {
     if pages.len() == 1 {
         return Some(body.clone());
     }
-    Some(format!("{body}\n\n-# Page {} of {}", page + 1, pages.len()))
+    let position = format!("-# Page {} of {}", page + 1, pages.len());
+    Some(format!("{body}\n\n{position}"))
 }
 
 use super::DiscordState;

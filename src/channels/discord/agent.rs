@@ -732,11 +732,8 @@ impl EventHandler for Handler {
                 if let (Some(mid), Some(pages), Some(page)) = (mid, pages.as_ref(), page)
                     && pages.len() > 1
                 {
-                    msg = msg.components(vec![super::long_answer::pager_row(
-                        mid,
-                        page,
-                        pages.len(),
-                    )]);
+                    let row = super::long_answer::pager_row(mid, page, pages.len());
+                    msg = msg.components(vec![row]);
                 }
                 let resp = CreateInteractionResponse::Message(msg);
                 if let Err(e) = comp.create_response(&ctx.http, resp).await {

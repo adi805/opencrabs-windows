@@ -1789,10 +1789,8 @@ pub(crate) async fn handle_message(
                 // keep-intermediate outcome): skip the duplicate post. The
                 // settled flow group above carries the completion chrome.
             } else {
-                let chunks: Vec<String> = split_message(
-                    &send_text,
-                    super::long_answer::PAGE_CHARS - super::long_answer::FOOTER_RESERVE,
-                );
+                let budget = super::long_answer::PAGE_CHARS - super::long_answer::FOOTER_RESERVE;
+                let chunks: Vec<String> = split_message(&send_text, budget);
                 // FR-009 (#1880): a long answer is a summary plus a pager,
                 // never a wall of consecutive messages (AC-020). Page 0 is
                 // posted in-channel; every later page answers EPHEMERALLY on
@@ -1800,8 +1798,8 @@ pub(crate) async fn handle_message(
                 // keep clean. Exactly one Action Row rides the message
                 // (AC-021).
                 // FR-007 (AC-010): decide the THREAD before the pager. The
-                // pager claims every answer past PAGE_CHARS, which is exactly
-                // the set a thread is for, so gating the thread behind
+                // pager claims every answer past the split budget, which is
+                // exactly the set a thread is for, so gating the thread behind
                 // `!paged` left it reachable only in the narrow band between
                 // the threshold and the page ceiling. The thread is the
                 // primary route; the in-place chunker is the fallback (the
