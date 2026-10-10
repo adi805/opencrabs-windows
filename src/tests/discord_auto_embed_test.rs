@@ -247,7 +247,10 @@ fn update_with_components_still_becomes_a_card() {
     let json = serde_json::to_value(&out).unwrap();
     let blocks = embeds(&json);
     assert_eq!(blocks.len(), 1, "{json}");
-    assert_eq!(blocks[0]["description"], serde_json::json!("• 3 tool calls"));
+    assert_eq!(
+        blocks[0]["description"],
+        serde_json::json!("• 3 tool calls")
+    );
     assert!(
         json.get("components").is_some(),
         "the button row must survive the wrap: {json}"

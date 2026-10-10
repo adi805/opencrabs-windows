@@ -199,7 +199,9 @@ mod tests {
     #[test]
     fn custom_id_round_trips_message_and_target() {
         let json = buttons_json(&pager_row(7, 2, 4));
-        let id = json[0]["custom_id"].as_str().expect("custom_id on the wire");
+        let id = json[0]["custom_id"]
+            .as_str()
+            .expect("custom_id on the wire");
         let rest = id.strip_prefix(PAGER_PREFIX).expect("prefix");
         let (mid, target) = rest.split_once(':').expect("two fields");
         assert_eq!(mid, "7");
