@@ -1367,7 +1367,9 @@ async fn handle_message(
             SlackChannelId::new(channel_id),
             SlackMessageContent::new().with_text(reply),
         );
-        if let Err(e) = session.chat_post_message(&request).await {
+        // AC-024/#2012: writes.rs is the Discord choke point and the Slack
+        // governor is this one's, so this reply pays the budget too.
+        if let Err(e) = session.post(&request).await {
             tracing::warn!(error = %e, "failed to post Slack message");
         }
         return;

@@ -407,8 +407,10 @@ fn slack_chat_writes_only_leave_through_the_governor() {
         handler.matches("session.post(").count(),
         // Upstream carries 32. The thread-adoption block (#1988) is not
         // ported — its plumbing does not exist on this trunk — so the one
-        // site inside it is absent. Every site that does exist pays.
-        31,
+        // site inside it is absent. The #2013 /respond_to reply, which the
+        // merge had left calling chat_post_message raw, takes that slot.
+        // Every site that does exist pays.
+        32,
         "every new-message site pays the budget: the count is the coverage"
     );
     assert_eq!(
