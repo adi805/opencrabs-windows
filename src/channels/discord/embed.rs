@@ -25,7 +25,7 @@
 //! is deliberately conservative: if fields are added later they must come out
 //! of the same budget, not sit on top of it.
 
-use serenity::builder::CreateEmbed;
+use serenity::builder::{CreateEmbed, CreateMessage, EditMessage};
 
 /// Max embeds attached to one message.
 pub const MAX_EMBEDS: usize = 10;
@@ -200,6 +200,117 @@ pub fn embed_builders(spec: &EmbedSpec) -> Vec<CreateEmbed> {
             b
         })
         .collect()
+}
+
+/// Accent colour for an auto-embedded message: Discord blurple, matching the
+/// rest of the Discord surface so a wrapped reply reads as part of the same
+/// family rather than a new colour per message.
+pub const AUTO_EMBED_COLOR: u32 = 0x5865F2;
+
+/// Read the `content` field out of a serialised message builder.
+///
+/// serenity 0.12 keeps `CreateMessage`/`EditMessage` fields private, and the
+/// builders are `Serialize` only (no `Deserialize`), so the field can neither
+/// be read directly nor written back. Serialising to a `serde_json::Value` is
+/// the one way to see what a builder carries, which is what both the
+/// conversion below and its "nothing but text" guard rest on.
+pub fn builder_content(value: &serde_json::Value) -> Option<&str> {
+    value.get("content").and_then(|c| c.as_str())
+}
+
+/// Whether a body should become an embed card.
+///
+/// Two bodies deliberately stay plain text. An empty or whitespace-only one has
+/// nothing to show and Discord rejects an embed with no description, so
+/// wrapping it would turn a no-op into a 400. A body past [`DESCRIPTION_MAX`]
+/// does not fit the description field, and clipping it would silently drop the
+/// tail of an answer, which is worse than a long plain message the pager and
+/// the chunker already know how to split.
+pub fn should_embed(body: &str) -> bool {
+    let trimmed = body.trim();
+    !trimmed.is_empty() && trimmed.chars().count() <= DESCRIPTION_MAX
+}
+
+/// The single embed an auto-wrapped message carries.
+fn auto_embed(body: &str) -> CreateEmbed {
+    CreateEmbed::new()
+        .color(AUTO_EMBED_COLOR)
+        .description(body.trim())
+}
+
+/// Whether the serialised builder already carries an embed.
+///
+/// Converting a message that already has one would stack a second card on top
+/// of it, so those keep the form their caller chose.
+fn already_embedded(value: &serde_json::Value) -> bool {
+    value
+        .get("embeds")
+        .and_then(|e| e.as_array())
+        .is_some_and(|e| !e.is_empty())
+}
+
+/// Whether the serialised builder carries a poll.
+///
+/// Discord rejects a message holding both a poll and an embed, so a poll keeps
+/// its plain form rather than turning a working send into a 400.
+fn carries_poll(value: &serde_json::Value) -> bool {
+    value.get("poll").is_some_and(|p| !p.is_null())
+}
+
+/// Move a message's text into an embed card, in place.
+///
+/// The text leaves `content` and becomes the embed's description, so it is
+/// never shown twice. Everything else the builder carries is left exactly as it
+/// was: serenity 0.12 keeps these fields private and its payload types
+/// (`CreateActionRow`, `CreatePoll`) are `Serialize`-only, so rebuilding the
+/// builder would drop a button row on the floor. Mutating in place instead of
+/// replacing is what lets a tool-call card keep its components *and* become a
+/// card.
+///
+/// Four shapes are deliberately left alone. A body [`should_embed`] refuses
+/// (empty, whitespace-only, or past [`DESCRIPTION_MAX`]) cannot fill a card. A
+/// builder with no text has nothing to move. One that already carries an embed
+/// would end up double-decked. One carrying a poll is refused by Discord
+/// alongside an embed. The last two are the only ways this could turn a working
+/// send into a rejected one.
+///
+/// The decision is a pure function of the body, which is what keeps a create
+/// and its later edits symmetric: a message that arrives as a card never flips
+/// back to plain text on the next edit.
+pub fn auto_embed_create(builder: CreateMessage) -> CreateMessage {
+    let Ok(value) = serde_json::to_value(&builder) else {
+        return builder;
+    };
+    let Some(body) = builder_content(&value).map(str::to_owned) else {
+        return builder;
+    };
+    if !should_embed(&body) || already_embedded(&value) || carries_poll(&value) {
+        return builder;
+    }
+    builder.content("").add_embed(auto_embed(&body))
+}
+
+/// Move an edited message's text into an embed card, in place.
+///
+/// Same rule as [`auto_embed_create`] and for the same reason: the text moves
+/// into the embed and any components the edit carries survive, so the create
+/// and edit halves of one tool-call card agree. Applied at the same choke point,
+/// so a message created as a card stays a card when it is edited.
+///
+/// Only two shapes are left alone here. serenity 0.12's `EditMessage` has no
+/// poll field at all, so unlike [`auto_embed_create`] there is no poll to guard
+/// against: a check that can never fire would be a claim, not a guard.
+pub fn auto_embed_edit(builder: EditMessage) -> EditMessage {
+    let Ok(value) = serde_json::to_value(&builder) else {
+        return builder;
+    };
+    let Some(body) = builder_content(&value).map(str::to_owned) else {
+        return builder;
+    };
+    if !should_embed(&body) || already_embedded(&value) {
+        return builder;
+    }
+    builder.content("").add_embed(auto_embed(&body))
 }
 
 #[cfg(test)]

@@ -89,11 +89,25 @@ pub(crate) async fn say(
     content: impl AsRef<str>,
     class: WriteClass,
 ) -> serenity::Result<Option<Message>> {
+    // `auto_embed` turns a text-only body into a card, and `ChannelId::say` can
+    // only carry plain text, so the card takes the `send_message` path while
+    // every other body (embedding off, or a body an embed cannot hold) keeps
+    // the exact `say` call it used before. The decision is a pure function of
+    // the body, so a create and its later edits always agree.
+    let card = crate::config::Config::current().channels.discord.auto_embed
+        && super::embed::should_embed(content.as_ref());
     if governor::admit(channel.get(), class).await == Admission::Drop {
         note_drop(channel, class);
         return Ok(None);
     }
-    let res = channel.say(http, content.as_ref()).await;
+    let res = if card {
+        let body = CreateMessage::new().content(content.as_ref());
+        channel
+            .send_message(http, super::embed::auto_embed_create(body))
+            .await
+    } else {
+        channel.say(http, content.as_ref()).await
+    };
     note_if_rate_limited(channel, &res);
     res.map(Some)
 }
@@ -103,9 +117,12 @@ pub(crate) async fn say(
 pub(crate) async fn send(
     http: &Http,
     channel: ChannelId,
-    builder: CreateMessage,
+    mut builder: CreateMessage,
     class: WriteClass,
 ) -> serenity::Result<Option<Message>> {
+    if crate::config::Config::current().channels.discord.auto_embed {
+        builder = super::embed::auto_embed_create(builder);
+    }
     if governor::admit(channel.get(), class).await == Admission::Drop {
         note_drop(channel, class);
         return Ok(None);
@@ -121,9 +138,15 @@ pub(crate) async fn edit(
     http: &Http,
     channel: ChannelId,
     message_id: MessageId,
-    builder: EditMessage,
+    mut builder: EditMessage,
     class: WriteClass,
 ) -> serenity::Result<Option<Message>> {
+    // Same conversion as `send`, applied to edits too: the decision is a pure
+    // function of the body, so a message created as a card stays a card when it
+    // is edited instead of reverting to plain text mid-turn.
+    if crate::config::Config::current().channels.discord.auto_embed {
+        builder = super::embed::auto_embed_edit(builder);
+    }
     if governor::admit(channel.get(), class).await == Admission::Drop {
         note_drop(channel, class);
         return Ok(None);

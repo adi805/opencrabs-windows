@@ -986,6 +986,7 @@ pub mod channel_commands_test;
 pub mod discord_ack_reaction_test;
 pub mod discord_activity_text_test;
 pub mod discord_application_commands_test;
+pub mod discord_auto_embed_test;
 pub mod discord_auto_thread_test;
 pub mod discord_autocomplete_test;
 pub mod discord_component_spec_test;
