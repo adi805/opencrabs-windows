@@ -47,6 +47,37 @@ pub const EXIT_TRANSPORT: i32 = 4;
 pub(crate) const MAX_ATTEMPTS: u32 = 3;
 pub(crate) const RETRY_BACKOFF_MS: [u64; 2] = [500, 1000];
 
+/// Classify a reqwest send failure into the #1959 candidate mechanisms so a
+/// single journal line can tell them apart. reqwest's `Display` is the same
+/// opaque `error sending request for url (...)` for every failure mode, and
+/// that uniformity is exactly what left 16 post-bind losses undiagnosable.
+/// The bottom of the source chain is usually hyper's io error ("Connection
+/// refused (os error 111)"), so it rides along.
+pub(crate) fn transport_cause(e: &reqwest::Error) -> String {
+    let kind = if e.is_connect() {
+        "connect: gateway refused or dropped the connection (listener not accepting)"
+    } else if e.is_timeout() {
+        "timeout: the send budget expired (accept backlog saturated or handler wedged)"
+    } else if e.is_body() {
+        "body: the request body failed to send"
+    } else if e.is_request() {
+        "request: failed after connect, before a usable response (server closed the connection mid-exchange)"
+    } else {
+        "unknown reqwest failure"
+    };
+    let mut out = kind.to_string();
+    let mut chain: Vec<String> = Vec::new();
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        chain.push(s.to_string());
+        src = s.source();
+    }
+    if !chain.is_empty() {
+        out.push_str(&format!("; cause chain: {}", chain.join(" -> ")));
+    }
+    out
+}
+
 /// One POST to the A2A gateway, retried `MAX_ATTEMPTS` times on transport
 /// errors. Shared by the send and status verbs (one copy, no drift): both dial
 /// the same endpoint with the same client, timeout and auth, and differ only in
@@ -79,7 +110,17 @@ pub(crate) async fn post_jsonrpc(
         let resp = match req.send().await {
             Ok(resp) => resp,
             Err(e) => {
-                last_error = format!("cannot reach the A2A gateway at {url}: {e}");
+                // #1959: the bare `{e}` Display is the same opaque string for
+                // every failure mode; classify so the journal can discriminate
+                // the mechanism, and number the attempt so a mid-exchange drop
+                // (last attempt dying) reads differently from a dead listener
+                // (every attempt failing).
+                last_error = format!(
+                    "cannot reach the A2A gateway at {url}: {} (attempt {}/{})",
+                    transport_cause(&e),
+                    attempt + 1,
+                    MAX_ATTEMPTS
+                );
                 continue;
             }
         };
@@ -93,8 +134,14 @@ pub(crate) async fn post_jsonrpc(
             // on the first attempt. A JSON-RPC `error` below IS a decision and
             // is never retried.
             Err(e) => {
-                last_error =
-                    format!("gateway at {url} returned HTTP {status} without a JSON-RPC body: {e}");
+                // #1959: same attempt numbering as the send branch: the
+                // mechanism differs by which attempt died and how.
+                last_error = format!(
+                    "gateway at {url} returned HTTP {status} without a JSON-RPC body: {e} \
+                     (attempt {}/{})",
+                    attempt + 1,
+                    MAX_ATTEMPTS
+                );
                 continue;
             }
         };

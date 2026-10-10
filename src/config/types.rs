@@ -2349,12 +2349,14 @@ pub struct MemoryConfig {
     #[serde(default)]
     pub external_allowed_in_shared: bool,
 
-    /// Allow the internal memory surfaces to return content in shared/group
-    /// sessions (#1957): `scope="brain"`, `scope="memory"` (the default),
-    /// `load_brain_file`, and the per-turn MEMORY.md recall. Default-deny:
-    /// these carry the owner's personal context (USER.md, MEMORY.md, daily
-    /// logs, TOOLS.md peer keys), so they stay owner-session-only unless the
-    /// operator explicitly opts in.
+    /// Allow the internal memory surfaces (`scope="brain"`/`scope="memory"`
+    /// results, personal-context brain files through `load_brain_file`, and
+    /// the per-turn MEMORY.md recall) in shared/group sessions (#1957).
+    /// Default-deny, mirroring `external_allowed_in_shared`: the prompt
+    /// rule ("MEMORY.md … load/write only in the MAIN session, never in
+    /// shared/group chats") was prose-only, and group-readable sessions
+    /// could still retrieve the owner's personal context off every surface
+    /// except `external`. Opt in per instance when the group IS the owner's.
     #[serde(default)]
     pub internal_allowed_in_shared: bool,
 

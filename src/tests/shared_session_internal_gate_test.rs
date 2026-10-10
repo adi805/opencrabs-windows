@@ -76,7 +76,13 @@ async fn a_private_session_is_not_gated() {
 }
 
 #[tokio::test]
-async fn load_brain_file_is_refused_in_a_shared_session() {
+async fn load_brain_file_refuses_personal_files_in_a_shared_session() {
+    // #1957's boundary is per FILE, not per tool: MEMORY.md, USER.md and the
+    // daily logs carry the owner's personal context and are refused, while the
+    // generic files (SOUL/AGENTS/CODE/TOOLS/SECURITY/BOOT) ship the same for
+    // everyone and stay reachable. The fork first denied the whole tool; that
+    // cruder gate was retired in favour of upstream's granular one, and this
+    // pins the half that must keep refusing.
     let s = Uuid::new_v4();
     mark_session_shared(s);
     let ctx = ToolExecutionContext::new(s);
@@ -85,8 +91,31 @@ async fn load_brain_file_is_refused_in_a_shared_session() {
         .await
         .expect("tool");
     let out = text(&r);
-    assert!(out.contains(GATE), "load_brain_file must be gated: {out}");
+    assert!(
+        out.contains("main-session-only"),
+        "a personal brain file must be gated: {out}"
+    );
     assert!(!r.success, "a gated call is not a success");
+}
+
+#[tokio::test]
+async fn load_brain_file_keeps_generic_files_reachable_in_a_shared_session() {
+    // The counterpart: a shared session must NOT be refused outright, because
+    // that is the difference between the retired whole-tool deny and the
+    // granular gate that replaced it. The assertion is about the gate, not
+    // about the file, so a missing file still satisfies it.
+    let s = Uuid::new_v4();
+    mark_session_shared(s);
+    let ctx = ToolExecutionContext::new(s);
+    let r = LoadBrainFileTool
+        .execute(json!({ "name": "AGENTS.md" }), &ctx)
+        .await
+        .expect("tool");
+    let out = text(&r);
+    assert!(
+        !out.contains("main-session-only"),
+        "a generic brain file must stay reachable: {out}"
+    );
 }
 
 #[tokio::test]
