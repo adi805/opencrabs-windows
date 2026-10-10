@@ -1216,6 +1216,7 @@ pub(crate) async fn handle_message(
         let group_msg_id = turn_group_mid.clone();
         let trace_narration = dc_cfg.trace_narration;
         let group_state_cb = discord_state.clone();
+        let agent_cb = agent.clone();
         let http = ctx.http.clone();
         let channel = target;
 
@@ -1240,6 +1241,42 @@ pub(crate) async fn handle_message(
                                 tracing::warn!(error = %e, "failed to broadcast Discord typing");
                             }
                             tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                        }
+                    });
+                }
+                ProgressEvent::TokenCount(count) => {
+                    // Live ctx budget on the flow card (#1841 parity):
+                    // Telegram stamps `ctx` only at delivery, so Discord
+                    // streams the same string from the tool loop's real token
+                    // count instead — the card shows the budget growing while
+                    // the turn runs, not only once it settles.
+                    let gmid = group_msg_id.clone();
+                    let dstate = group_state_cb.clone();
+                    let agent = agent_cb.clone();
+                    tokio::spawn(async move {
+                        let ctx_max = agent.context_limit_for_session(session_id);
+                        let ctx = crate::utils::format_ctx_footer(
+                            u32::try_from(count).unwrap_or(u32::MAX),
+                            ctx_max,
+                            None,
+                        );
+                        if let Some(mid) = *gmid.lock().await
+                            && let Some(group) = dstate.set_live_ctx(mid.get(), ctx).await
+                            // A settled card owns its ctx (#1841): re-rendering
+                            // it from a late count would only burn an edit.
+                            && group.settled.is_none()
+                        {
+                            let edit = EditMessage::new()
+                                .content(super::tool_group::render_content(&group))
+                                .components(super::tool_group::render_components(
+                                    &group,
+                                    mid.get(),
+                                ));
+                            if let Err(e) =
+                                writes::edit(&http, channel, mid, edit, Class::Edit).await
+                            {
+                                tracing::warn!("Discord: live ctx edit failed: {e}");
+                            }
                         }
                     });
                 }
@@ -1274,6 +1311,7 @@ pub(crate) async fn handle_message(
                                             notes: Vec::new(),
                                             expanded: false,
                                             started_at: Instant::now(),
+                                            live_ctx: None,
                                             settled: None,
                                         },
                                     )
@@ -1297,6 +1335,7 @@ pub(crate) async fn handle_message(
                                     notes: Vec::new(),
                                     expanded: false,
                                     started_at: Instant::now(),
+                                    live_ctx: None,
                                     settled: None,
                                 };
                                 let content = super::tool_group::render_content(&group);
@@ -1359,6 +1398,7 @@ pub(crate) async fn handle_message(
                                         notes: Vec::new(),
                                         expanded: false,
                                         started_at: Instant::now(),
+                                        live_ctx: None,
                                         settled: None,
                                     },
                                 )
@@ -1528,6 +1568,7 @@ pub(crate) async fn handle_message(
         notes: Vec::new(),
         expanded: false,
         started_at: Instant::now(),
+        live_ctx: None,
         settled: None,
     };
     match writes::say(
@@ -1686,11 +1727,17 @@ pub(crate) async fn handle_message(
             // ctx budget into the flow group, the Discord twin of Telegram's
             // settled flow header. Runs on every delivery outcome so the
             // chrome ends as the last word regardless of the answer path.
+            // Background-task / sub-agent counts ride along (#1144/#1183) so a
+            // Finished turn with detached work alive settles to the waiting
+            // pair instead of a false ✅.
+            let (bg_alive, agents_alive) = DiscordState::waiting_counts(&agent, session_id);
             if let Some(mid) = *turn_group_mid.lock().await
                 && let Some(group) = discord_state
                     .settle_tool_group(
                         mid.get(),
                         super::tool_group::TurnOutcome::Finished,
+                        bg_alive,
+                        agents_alive,
                         if ctx_line.is_empty() {
                             None
                         } else {
@@ -1789,7 +1836,8 @@ pub(crate) async fn handle_message(
                 // keep-intermediate outcome): skip the duplicate post. The
                 // settled flow group above carries the completion chrome.
             } else {
-                let chunks: Vec<String> = split_message(&send_text, super::long_answer::PAGE_CHARS);
+                let budget = super::long_answer::PAGE_CHARS - super::long_answer::FOOTER_RESERVE;
+                let chunks: Vec<String> = split_message(&send_text, budget);
                 // FR-009 (#1880): a long answer is a summary plus a pager,
                 // never a wall of consecutive messages (AC-020). Page 0 is
                 // posted in-channel; every later page answers EPHEMERALLY on
@@ -1797,8 +1845,8 @@ pub(crate) async fn handle_message(
                 // keep clean. Exactly one Action Row rides the message
                 // (AC-021).
                 // FR-007 (AC-010): decide the THREAD before the pager. The
-                // pager claims every answer past PAGE_CHARS, which is exactly
-                // the set a thread is for, so gating the thread behind
+                // pager claims every answer past the split budget, which is
+                // exactly the set a thread is for, so gating the thread behind
                 // `!paged` left it reachable only in the narrow band between
                 // the threshold and the page ceiling. The thread is the
                 // primary route; the in-place chunker is the fallback (the
@@ -1825,12 +1873,13 @@ pub(crate) async fn handle_message(
                             Ok(Some(sent)) => {
                                 let mid = sent.id.get();
                                 discord_state.store_long_answer(mid, chunks.clone()).await;
-                                // Page 0 is already in-channel, so the row must
-                                // open the first HIDDEN page (index 1). Pointing
-                                // it at page 0 made the button re-show the text
-                                // the reader was already looking at (FR-009).
+                                // Page 0 is in-channel, so the row is drawn
+                                // FOR page 0: `◀` is disabled there and `▶`
+                                // opens the first hidden page. Each arrow
+                                // names its own target, so the same row rides
+                                // every later page too (FR-009).
                                 let edit = EditMessage::new().components(vec![
-                                    super::long_answer::pager_row(mid, 1, chunks.len()),
+                                    super::long_answer::pager_row(mid, 0, chunks.len()),
                                 ]);
                                 if let Err(e) =
                                     writes::edit(&ctx.http, target, sent.id, edit, Class::Edit)
@@ -1956,6 +2005,8 @@ pub(crate) async fn handle_message(
                 target,
                 &discord_state,
                 &turn_group_mid,
+                &agent,
+                session_id,
                 super::tool_group::TurnOutcome::Cancelled,
                 None,
             )
@@ -1968,6 +2019,8 @@ pub(crate) async fn handle_message(
                 target,
                 &discord_state,
                 &turn_group_mid,
+                &agent,
+                session_id,
                 classify_outcome(&e),
                 None,
             )
@@ -2014,19 +2067,28 @@ pub(crate) fn classify_outcome(
 /// indistinguishable from a turn still working — and the card's icon came from
 /// tool status, so a timeout with all tools green rendered a green check. The
 /// trace is never deleted: the card is edited to its final shape.
+///
+/// `agent`/`session_id` supply the alive background-task and sub-agent counts
+/// (#1144/#1183). A failure settle keeps its terminal verb regardless, but the
+/// counts are read the same way on every path so the two registries are never
+/// consulted inconsistently.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn settle_outcome(
     http: &Http,
     channel: serenity::model::id::ChannelId,
     discord_state: &DiscordState,
     turn_group_mid: &Arc<Mutex<Option<serenity::model::id::MessageId>>>,
+    agent: &AgentService,
+    session_id: uuid::Uuid,
     outcome: super::tool_group::TurnOutcome,
     ctx: Option<String>,
 ) {
     let Some(mid) = *turn_group_mid.lock().await else {
         return;
     };
+    let (bg_alive, agents_alive) = DiscordState::waiting_counts(agent, session_id);
     let Some(group) = discord_state
-        .settle_tool_group(mid.get(), outcome, ctx)
+        .settle_tool_group(mid.get(), outcome, bg_alive, agents_alive, ctx)
         .await
     else {
         return;

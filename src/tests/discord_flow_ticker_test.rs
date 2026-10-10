@@ -21,6 +21,7 @@ fn live_group() -> GroupState {
         expanded: false,
         notes: Vec::new(),
         started_at: Instant::now(),
+        live_ctx: None,
         settled: None,
     }
 }
@@ -45,6 +46,8 @@ async fn snapshot_reports_settled_so_the_ticker_stops() {
         .settle_tool_group(
             111,
             crate::channels::discord::tool_group::TurnOutcome::Finished,
+            0,
+            crate::channels::telegram::flow::SubagentCounts::default(),
             None,
         )
         .await;

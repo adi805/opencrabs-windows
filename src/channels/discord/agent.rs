@@ -721,16 +721,18 @@ impl EventHandler for Handler {
                 let content = body.unwrap_or_else(|| {
                     "That pager aged out. Ask me again and I will repost the answer.".to_string()
                 });
-                // Carry the pager forward: page 0 is in-channel and every later
-                // page is reachable only by press, so an answer that carried no
-                // row would strand the rest of the body behind this one press
+                // Carry the pager forward: every page is reachable only by
+                // press, so the ephemeral answer re-draws the SAME row for the
+                // page it is showing. `◀` walks back, `▶` walks on, and the
+                // ends come back disabled instead of the row vanishing
                 // (FR-009).
                 let mut msg = CreateInteractionResponseMessage::new()
                     .content(content)
                     .ephemeral(true);
                 if let (Some(mid), Some(pages), Some(page)) = (mid, pages.as_ref(), page)
-                    && let Some(row) = super::long_answer::next_page_row(mid, page, pages.len())
+                    && pages.len() > 1
                 {
+                    let row = super::long_answer::pager_row(mid, page, pages.len());
                     msg = msg.components(vec![row]);
                 }
                 let resp = CreateInteractionResponse::Message(msg);
@@ -754,10 +756,18 @@ impl EventHandler for Handler {
                 };
                 let resp = match mid_str.parse::<u64>() {
                     Ok(mid) => match self.discord_state.toggle_tool_group(mid).await {
+                        // The card was created through `writes`, so it is an
+                        // embed; this response must redraw the SAME shape or the
+                        // first Expand press flips the card back to plain text
+                        // (#170). `auto_embed_update` is the choke point for the
+                        // raw interaction responses the create/edit helpers
+                        // cannot see.
                         Some(group) => CreateInteractionResponse::UpdateMessage(
-                            CreateInteractionResponseMessage::new()
-                                .content(super::tool_group::render_content(&group))
-                                .components(super::tool_group::render_components(&group, mid)),
+                            super::embed::auto_embed_update(
+                                CreateInteractionResponseMessage::new()
+                                    .content(super::tool_group::render_content(&group))
+                                    .components(super::tool_group::render_components(&group, mid)),
+                            ),
                         ),
                         None => {
                             tracing::debug!("Discord: tool group {mid} aged out — toggle ignored");

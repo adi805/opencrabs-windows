@@ -22,16 +22,17 @@ fn group_with(entries: Vec<GroupEntry>, notes: Vec<String>) -> GroupState {
         expanded: false,
         notes,
         started_at: Instant::now(),
+        live_ctx: None,
         settled: None,
     }
 }
 
 fn settled(group: &mut GroupState, ctx: Option<String>) {
-    group.settled = Some(crate::channels::discord::tool_group::SettledStatus {
-        outcome: crate::channels::discord::tool_group::TurnOutcome::Finished,
-        elapsed: Duration::from_secs(42),
+    group.settled = Some(crate::channels::discord::tool_group::SettledStatus::new(
+        crate::channels::discord::tool_group::TurnOutcome::Finished,
+        Duration::from_secs(42),
         ctx,
-    });
+    ));
 }
 
 #[test]

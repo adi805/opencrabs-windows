@@ -1004,6 +1004,7 @@ pub mod discord_handler_test;
 pub mod discord_history_dedup_test;
 pub mod discord_intent_coherence_test;
 pub mod discord_interaction_ack_test;
+pub mod discord_live_ctx_test;
 pub mod discord_long_answer_decision_test;
 pub mod discord_member_welcome_test;
 pub mod discord_mention_only_test;
@@ -1024,6 +1025,7 @@ pub mod discord_thread_title_test;
 pub mod discord_trace_answer_test;
 pub mod discord_trace_narration_default_test;
 pub mod discord_voice_message_test;
+pub mod discord_waiting_override_test;
 pub mod discord_write_discipline_test;
 #[cfg(unix)]
 pub mod flock_retry_test;

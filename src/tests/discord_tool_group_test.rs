@@ -6,6 +6,7 @@ use crate::channels::discord::DiscordState;
 use crate::channels::discord::tool_group::{
     GroupEntry, GroupState, SettledStatus, TurnOutcome, render_components, render_content,
 };
+use crate::channels::telegram::flow::SubagentCounts;
 use std::time::{Duration, Instant};
 
 fn entries(n: usize, done: bool) -> Vec<GroupEntry> {
@@ -25,6 +26,7 @@ fn group(n: usize, done: bool, expanded: bool) -> GroupState {
         expanded,
         notes: Vec::new(),
         started_at: Instant::now(),
+        live_ctx: None,
         settled: None,
     }
 }
@@ -78,11 +80,11 @@ fn live_summary_carries_the_rolling_clock_settled_freezes_it() {
     assert!(live.contains("🕒"));
 
     let mut done_group = group(2, true, false);
-    done_group.settled = Some(SettledStatus {
-        outcome: TurnOutcome::Finished,
-        elapsed: Duration::from_secs(90),
-        ctx: Some("ctx: 84K/200K 42%".into()),
-    });
+    done_group.settled = Some(SettledStatus::new(
+        TurnOutcome::Finished,
+        Duration::from_secs(90),
+        Some("ctx: 84K/200K 42%".into()),
+    ));
     let settled = render_content(&done_group);
     assert!(settled.contains("⏱️ 1:30"));
     assert!(settled.contains("ctx: 84K/200K 42%"));
@@ -96,7 +98,13 @@ async fn settle_freezes_elapsed_and_stamps_ctx() {
     g.started_at = Instant::now() - Duration::from_secs(90);
     state.upsert_tool_group(77, g).await;
     let stamped = state
-        .settle_tool_group(77, TurnOutcome::Finished, Some("ctx: 1K/2K 50%".into()))
+        .settle_tool_group(
+            77,
+            TurnOutcome::Finished,
+            0,
+            SubagentCounts::default(),
+            Some("ctx: 1K/2K 50%".into()),
+        )
         .await
         .expect("group exists");
     let s = stamped.settled.as_ref().expect("stamped at settle");
@@ -113,7 +121,13 @@ async fn upsert_preserves_started_at_and_settled() {
     g.started_at = Instant::now() - Duration::from_secs(30);
     state.upsert_tool_group(88, g).await;
     state
-        .settle_tool_group(88, TurnOutcome::Finished, Some("ctx: A".into()))
+        .settle_tool_group(
+            88,
+            TurnOutcome::Finished,
+            0,
+            SubagentCounts::default(),
+            Some("ctx: A".into()),
+        )
         .await;
     // A late progress update must not restart the clock or clear the stamp.
     let stored = state.upsert_tool_group(88, group(1, true, false)).await;
@@ -126,10 +140,22 @@ async fn resettle_with_no_ctx_keeps_the_stamped_budget() {
     let state = DiscordState::new();
     state.upsert_tool_group(99, group(1, true, false)).await;
     state
-        .settle_tool_group(99, TurnOutcome::Finished, Some("ctx: B".into()))
+        .settle_tool_group(
+            99,
+            TurnOutcome::Finished,
+            0,
+            SubagentCounts::default(),
+            Some("ctx: B".into()),
+        )
         .await;
     let again = state
-        .settle_tool_group(99, TurnOutcome::Finished, None)
+        .settle_tool_group(
+            99,
+            TurnOutcome::Finished,
+            0,
+            SubagentCounts::default(),
+            None,
+        )
         .await
         .expect("group exists");
     assert_eq!(

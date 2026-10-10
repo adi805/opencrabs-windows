@@ -395,6 +395,7 @@ pub(crate) async fn route_followup_turn(
                                             notes: Vec::new(),
                                             expanded: false,
                                             started_at: std::time::Instant::now(),
+                                            live_ctx: None,
                                             settled: None,
                                         },
                                     )
@@ -420,6 +421,7 @@ pub(crate) async fn route_followup_turn(
                                     notes: Vec::new(),
                                     expanded: false,
                                     started_at: std::time::Instant::now(),
+                                    live_ctx: None,
                                     settled: None,
                                 };
                                 let content = super::tool_group::render_content(&group);
@@ -484,6 +486,7 @@ pub(crate) async fn route_followup_turn(
                                         notes: Vec::new(),
                                         expanded: false,
                                         started_at: std::time::Instant::now(),
+                                        live_ctx: None,
                                         settled: None,
                                     },
                                 )
@@ -635,6 +638,7 @@ pub(crate) async fn route_followup_turn(
         notes: Vec::new(),
         expanded: false,
         started_at: std::time::Instant::now(),
+        live_ctx: None,
         settled: None,
     };
     match writes::say(
@@ -754,11 +758,16 @@ pub(crate) async fn route_followup_turn(
                 }
             }
 
+            // Alive background-task / sub-agent counts at settle (#1144/#1183),
+            // read once and shared by the settled-chrome override below.
+            let (bg_alive, agents_alive) = super::DiscordState::waiting_counts(&agent, session_id);
             if let Some(mid) = *turn_group_mid.lock().await
                 && let Some(group) = discord_state
                     .settle_tool_group(
                         mid.get(),
                         super::tool_group::TurnOutcome::Finished,
+                        bg_alive,
+                        agents_alive,
                         if ctx_line.is_empty() {
                             None
                         } else {
@@ -824,6 +833,8 @@ pub(crate) async fn route_followup_turn(
                 channel,
                 &discord_state,
                 &turn_group_mid,
+                &agent,
+                session_id,
                 super::tool_group::TurnOutcome::Cancelled,
                 None,
             )
@@ -836,6 +847,8 @@ pub(crate) async fn route_followup_turn(
                 channel,
                 &discord_state,
                 &turn_group_mid,
+                &agent,
+                session_id,
                 super::handler::classify_outcome(&e),
                 None,
             )
