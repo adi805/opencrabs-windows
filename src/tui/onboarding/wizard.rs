@@ -158,7 +158,7 @@ pub struct OnboardingWizard {
     pub focused_field: usize,
     pub error_message: Option<String>,
 
-    /// Opened from chat via slash command (e.g. /doctor, /onboard:provider).
+    /// Opened from chat via slash command (e.g. /doctor, /models).
     /// Shows only the target step: no progress dots, no navigation, Enter/Esc exit.
     pub quick_jump: bool,
     /// Set by `next_step()` when `quick_jump` is true — signals the step is done

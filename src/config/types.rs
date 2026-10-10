@@ -551,7 +551,7 @@ pub struct TelegramConfig {
     /// details). On by default (#425). Older clients and Telegram Web show
     /// rich messages as a "not supported" placeholder, so users on outdated
     /// clients can disable it in the onboard dialog or via
-    /// `/onboard:channels telegram richtext off`; the universal HTML
+    /// `/channels telegram richtext off`; the universal HTML
     /// rendering (which works on every client) is used instead.
     #[serde(default = "default_true")]
     pub rich_messages: bool,

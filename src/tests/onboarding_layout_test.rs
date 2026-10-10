@@ -2,10 +2,11 @@
 //! centered dialog, and the provider step's key and model fields stay on
 //! screen on small terminals.
 
+use crate::tui::onboarding::WizardMode;
 use crate::tui::onboarding::{AuthField, OnboardingStep, OnboardingWizard, PROVIDERS};
 use crate::tui::onboarding_layout::{
-    BandPadding, MAX_CONTENT_WIDTH, band_padding, content_width, scroll_offset, wrap_line,
-    wrap_lines,
+    BandPadding, MAX_CONTENT_WIDTH, NodeState, TimelineFit, band_padding, content_width,
+    node_state, scroll_offset, timeline_fit, wrap_line, wrap_lines,
 };
 use crate::tui::onboarding_render::render_onboarding;
 use crate::tui::render::theme::{self, Role};
@@ -208,7 +209,10 @@ fn header_and_footer_keep_off_the_screen_edges() {
             last.trim().is_empty(),
             "{w}x{h}: last row not blank: {last:?}"
         );
-        assert!(rows[1].contains("OpenCrabs"), "{w}x{h}: title not on row 1");
+        assert!(
+            rows[1].contains("Brain Fuel"),
+            "{w}x{h}: title not on row 1"
+        );
     }
 }
 
@@ -223,4 +227,154 @@ fn header_and_footer_are_tinted_bands() {
     assert_eq!(buf[(0, 39)].bg, tint, "footer band");
     // The content area stays untinted.
     assert_ne!(buf[(0, 20)].bg, tint, "content area");
+}
+
+// ── left-side step timeline (#1979) ─────────────────────────────────────
+
+#[test]
+fn flow_steps_agree_with_totals_and_numbering() {
+    let quick = OnboardingStep::flow_steps(WizardMode::QuickStart);
+    let full = OnboardingStep::flow_steps(WizardMode::Advanced);
+    assert_eq!(quick.len(), OnboardingStep::quick_total());
+    assert_eq!(full.len(), OnboardingStep::total());
+    for (i, s) in quick.iter().enumerate() {
+        assert_eq!(s.flow_number(WizardMode::QuickStart), i + 1, "{s:?}");
+    }
+    for (i, s) in full.iter().enumerate() {
+        assert_eq!(s.flow_number(WizardMode::Advanced), i + 1, "{s:?}");
+    }
+}
+
+#[test]
+fn node_states_split_around_the_current_step() {
+    assert_eq!(node_state(0, 2), NodeState::Done);
+    assert_eq!(node_state(1, 2), NodeState::Current);
+    assert_eq!(node_state(2, 2), NodeState::Upcoming);
+    // Past the last step (Complete): everything is done.
+    assert_eq!(node_state(5, 7), NodeState::Done);
+}
+
+#[test]
+fn timeline_fit_drops_connectors_before_hiding() {
+    // 6 steps: heading 3 (brand, counter, blank) + 6 nodes + 5 connectors.
+    assert_eq!(timeline_fit(6, 14), TimelineFit::Spacious);
+    assert_eq!(timeline_fit(6, 13), TimelineFit::Compact);
+    assert_eq!(timeline_fit(6, 9), TimelineFit::Compact);
+    assert_eq!(timeline_fit(6, 8), TimelineFit::Hidden);
+}
+
+fn mode_select_wizard() -> OnboardingWizard {
+    let mut w = OnboardingWizard::new();
+    w.step = OnboardingStep::ModeSelect;
+    w.mode = WizardMode::QuickStart;
+    w.quick_jump = false;
+    w.resume_notice = None;
+    w.error_message = None;
+    w
+}
+
+#[test]
+fn wide_screen_shows_the_timeline_instead_of_header_dots() {
+    let wizard = mode_select_wizard();
+    let text = screen_text(&wizard, 160, 45);
+    assert!(text.contains("Step 1 of 6"), "{text}");
+    for title in ["Home Base", "Brain Fuel", "Make It Yours"] {
+        assert!(text.contains(title), "timeline misses {title}\n{text}");
+    }
+    assert!(
+        !text.contains("1/6"),
+        "header still carries the counter\n{text}"
+    );
+    assert!(text.contains("◉"), "no current-step node\n{text}");
+}
+
+#[test]
+fn advanced_flow_timeline_lists_all_nine_steps() {
+    let mut wizard = mode_select_wizard();
+    wizard.mode = WizardMode::Advanced;
+    let text = screen_text(&wizard, 160, 45);
+    assert!(text.contains("Step 1 of 9"), "{text}");
+    for title in ["Chat Me Anywhere", "Voice Superpowers", "Image Handling"] {
+        assert!(text.contains(title), "timeline misses {title}\n{text}");
+    }
+}
+
+#[test]
+fn narrow_screen_keeps_the_header_dots() {
+    let wizard = mode_select_wizard();
+    let text = screen_text(&wizard, 80, 24);
+    assert!(text.contains("1/6"), "{text}");
+    assert!(!text.contains("Step 1 of"), "{text}");
+}
+
+#[test]
+fn deep_link_gets_no_timeline() {
+    let mut wizard = provider_step_wizard();
+    wizard.quick_jump = true;
+    let text = screen_text(&wizard, 160, 45);
+    assert!(!text.contains("Step 3 of"), "{text}");
+    assert!(text.contains("API Key:"), "{text}");
+}
+
+// ── header layout (#1980) ───────────────────────────────────────────────
+
+#[test]
+fn wide_header_is_the_step_and_the_timeline_carries_the_brand() {
+    let wizard = mode_select_wizard();
+    let (rows, _) = screen_rows(&wizard, 160, 45);
+    let rule = rows
+        .iter()
+        .position(|r| r.trim_start().starts_with('─'))
+        .expect("header rule");
+    let header = rows[..rule].join("\n");
+    assert!(header.contains("Pick Your Vibe"), "{header}");
+    assert!(
+        !header.contains("OpenCrabs Setup"),
+        "brand still in header\n{header}"
+    );
+    let body = rows[rule..].join("\n");
+    let brand = body.find("OpenCrabs Setup").expect("brand in timeline");
+    let counter = body.find("Step 1 of 6").expect("step counter");
+    assert!(brand < counter, "brand must sit above the counter\n{body}");
+}
+
+#[test]
+fn narrow_header_is_one_title_line_with_dots_below() {
+    let wizard = mode_select_wizard();
+    let (rows, _) = screen_rows(&wizard, 80, 40);
+    let title = rows
+        .iter()
+        .position(|r| r.contains("OpenCrabs Setup: Pick Your Vibe"))
+        .expect("one-line title");
+    let dots = rows.iter().position(|r| r.contains("1/6")).expect("dots");
+    assert!(dots > title, "dots must follow the title line");
+    assert!(!rows[title].contains("1/6"), "dots share the title line");
+}
+
+#[test]
+fn tall_header_spaces_its_lines_short_header_packs_them() {
+    let wizard = mode_select_wizard();
+    let (tall, _) = screen_rows(&wizard, 160, 45);
+    let t = tall
+        .iter()
+        .position(|r| r.contains("Pick Your Vibe"))
+        .unwrap();
+    assert!(
+        tall[t + 1].trim().is_empty(),
+        "no blank row under the title"
+    );
+    assert!(
+        tall[t + 2].contains("your call"),
+        "subtitle not after the gap"
+    );
+
+    let (short, _) = screen_rows(&wizard, 160, 26);
+    let t = short
+        .iter()
+        .position(|r| r.contains("Pick Your Vibe"))
+        .unwrap();
+    assert!(
+        short[t + 1].contains("your call"),
+        "short header should pack"
+    );
 }

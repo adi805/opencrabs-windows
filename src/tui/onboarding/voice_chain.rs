@@ -91,7 +91,7 @@ pub(crate) fn tts_chain(selected: TtsProvider, ready: TtsReady) -> Vec<String> {
 }
 
 /// Move `head` to the front of an existing chain, keeping the rest in
-/// order. The `/onboard:voice` command enables one engine at a time and
+/// order. The `/voice` command enables one engine at a time and
 /// has no page state to derive a full chain from; promoting what it just
 /// enabled keeps the chain pointing at a live provider (#1399).
 pub(crate) fn promote_head(chain: &[String], head: &str) -> Vec<String> {

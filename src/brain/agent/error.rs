@@ -153,7 +153,7 @@ pub fn format_user_error(err: &AgentError) -> String {
             401 | 403 => {
                 return format!(
                     "Authentication failed on the active provider \
-                     ({status}). Check your API key in `/onboard:provider` \
+                     ({status}). Check your API key in `/models` \
                      or `keys.toml`."
                 );
             }

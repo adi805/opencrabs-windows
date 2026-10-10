@@ -54,7 +54,7 @@ impl OnboardingWizard {
     /// Open a specific channel's setup screen, seeding its fields from the
     /// existing config (same effect as selecting it in the channels menu).
     ///
-    /// Used by the menu and by the `/onboard:channels <name>` deep-link so the
+    /// Used by the menu and by the `/channels <name>` deep-link so the
     /// TUI command jumps straight to e.g. the WhatsApp dialog. Returns `false`
     /// for an unrecognized channel name (caller falls back to the menu).
     pub fn open_channel_setup(&mut self, channel: &str) -> bool {

@@ -54,7 +54,7 @@ impl Tool for CoworkConnectTool {
     async fn execute(&self, _input: Value, _context: &ToolExecutionContext) -> Result<ToolResult> {
         let Some(bot_username) = self.telegram_state.bot_username().await else {
             return Ok(ToolResult::error(
-                "Telegram isn't connected yet — set it up first (/onboard:channels telegram) \
+                "Telegram isn't connected yet — set it up first (/channels telegram) \
                  so I can build the cowork link."
                     .into(),
             ));

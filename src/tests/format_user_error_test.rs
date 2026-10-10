@@ -92,7 +92,7 @@ fn maps_401_and_403_to_auth_failure() {
             "{code} must mention auth / API key: {msg}"
         );
         assert!(
-            msg.contains("/onboard:provider") || msg.contains("keys.toml"),
+            msg.contains("/models") || msg.contains("keys.toml"),
             "{code} must point the user at where to fix the key: {msg}"
         );
     }

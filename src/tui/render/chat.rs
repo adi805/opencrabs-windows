@@ -8,7 +8,7 @@ use super::super::markdown::parse_markdown;
 use super::hints;
 use super::theme::{self, Role};
 use super::tools::{render_approve_menu, render_inline_approval, render_tool_group};
-use super::utils::wrap_line_with_padding;
+use super::utils::{apply_rtl, wrap_line_with_padding};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -855,7 +855,9 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
                 } else {
                     spans.push(Span::styled("   ", Style::default()));
                 }
-                spans.push(Span::styled(text_line.to_string(), system_style));
+                // #1897: system text bypasses parse_markdown, so reorder it here.
+                let body = apply_rtl(text_line).unwrap_or_else(|| text_line.to_string());
+                spans.push(Span::styled(body, system_style));
 
                 // Show expand/collapse hint on the first line only
                 if i == 0 && app.messages[msg_idx].details.is_some() {

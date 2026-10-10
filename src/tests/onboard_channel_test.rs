@@ -1,4 +1,5 @@
-//! Tests for the channel-capable `/onboard:*` handlers — the routing, menus,
+//! Tests for the channel-capable setup handlers (`/image`, `/voice`,
+//! `/channels`, #1981) — the routing, menus,
 //! and argument validation. Config-writing paths touch real config files and
 //! are exercised manually; here we cover the pure dispatch/guidance surface.
 
@@ -11,7 +12,19 @@ fn unknown_step_errors() {
     let r = dispatch("frobnicate", "");
     let r = r.unwrap();
     assert!(!r.success);
-    assert!(r.error.unwrap().contains("image, voice, channels"));
+    // Names the direct commands, not the legacy /onboard:<step> spelling.
+    assert!(r.error.unwrap().contains("/image, /voice, /channels"));
+}
+
+#[test]
+fn workspace_and_daemon_answer_tui_only() {
+    for step in ["workspace", "daemon"] {
+        let r = dispatch(step, "").unwrap();
+        assert!(r.success, "{step}");
+        let out = r.output;
+        assert!(out.contains(&format!("/{step}")), "{step}: {out}");
+        assert!(out.contains("TUI-only"), "{step}: {out}");
+    }
 }
 
 #[test]

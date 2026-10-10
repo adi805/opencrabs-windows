@@ -47,26 +47,47 @@ fn a_skill_lookup_by_slash_name_succeeds() {
 }
 
 #[test]
-fn the_onboard_colon_form_is_recognised() {
-    // The dispatch guard is `c == "/onboard" || c.starts_with("/onboard:")`.
-    let matches = |c: &str| c == "/onboard" || c.starts_with("/onboard:");
-    for c in [
-        "/onboard",
-        "/onboard:voice",
-        "/onboard:channels",
-        "/onboard:image",
+fn direct_setup_commands_route_to_their_step() {
+    // #1981: the direct commands are what users type now.
+    use crate::brain::tools::slash_onboard::setup_step_for;
+    for (cmd, step) in [
+        ("/voice", "voice"),
+        ("/channels", "channels"),
+        ("/image", "image"),
+        ("/brain", "brain"),
+        ("/workspace", "workspace"),
+        ("/daemon", "daemon"),
     ] {
-        assert!(matches(c), "not recognised: {c}");
+        assert_eq!(setup_step_for(cmd), Some(step), "{cmd}");
     }
 }
 
 #[test]
-fn an_unrelated_command_is_not_swallowed_by_the_onboard_guard() {
-    // `starts_with` is broad; it must not capture a different command that
-    // merely begins with the same letters.
-    let matches = |c: &str| c == "/onboard" || c.starts_with("/onboard:");
-    for c in ["/onboarding", "/on", "/board", "/models"] {
-        assert!(!matches(c), "wrongly captured: {c}");
+fn the_legacy_onboard_colon_form_still_routes() {
+    // #889 made the colon form resolve; #1981 keeps it as a fallback.
+    use crate::brain::tools::slash_onboard::setup_step_for;
+    for (cmd, step) in [
+        ("/onboard:voice", "voice"),
+        ("/onboard:channels", "channels"),
+        ("/onboard:image", "image"),
+    ] {
+        assert_eq!(setup_step_for(cmd), Some(step), "{cmd}");
+    }
+}
+
+#[test]
+fn unrelated_commands_are_not_setup_steps() {
+    use crate::brain::tools::slash_onboard::setup_step_for;
+    for c in [
+        "/onboard",
+        "/onboard:",
+        "/onboarding",
+        "/on",
+        "/board",
+        "/models",
+        "/voices",
+    ] {
+        assert_eq!(setup_step_for(c), None, "wrongly captured: {c}");
     }
 }
 

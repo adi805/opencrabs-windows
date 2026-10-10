@@ -50,6 +50,88 @@ pub(crate) const TICK_ALERT_AFTER_FAILURES: u32 = 3;
 /// new noise instead of the signal.
 pub(crate) const TICK_ALERT_MIN_SPACING: std::time::Duration = std::time::Duration::from_secs(3600);
 
+// ── scheduler liveness (#1925) ───────────────────────────────────────────────
+
+/// Process-wide liveness stamps (#1925). The #1893 escalation only exists
+/// inside the tick loop: when the loop never runs (scheduler lock held by a
+/// live pid, a panic before the loop, a spawn that was never reached) there is
+/// no counter, no notice and no log line at all. The loop stamps these; any
+/// already-running surface in the process can read them, and the daemon
+/// health endpoint reports them so an external `/health` poller sees the
+/// absence without OpenCrabs owning a new timer.
+///
+/// 0 means "never": a fresh process and a scheduler-less one are identical
+/// here, which is the point.
+pub(crate) static CRON_SPAWNED_AT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static CRON_LAST_TICK_AT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Staleness window (#1925). Polling is 60s, but a tick may run job bodies
+/// inline, so a healthy scheduler can legitimately go silent between tick
+/// completions for a while; 10 minutes rules out the blips without hiding an
+/// hour of dark schedule. The health endpoint always reports the raw age, so
+/// this constant only picks the label, never hides the number.
+pub(crate) const CRON_STALE_AFTER_SECS: u64 = 600;
+
+/// The liveness verdict for a given instant (#1925).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CronLiveness {
+    /// No scheduler loop in this process and no enabled jobs to notice.
+    Idle,
+    /// The #1925 silence: enabled jobs exist, and nothing is running them.
+    NotRunningWithJobs { enabled: u64 },
+    /// The loop ran but has not COMPLETED a tick inside the stale window.
+    /// Covers both "never completed a first tick" (setup wedged) and "stopped
+    /// completing them" (every tick failing: #1893 escalation only reaches a
+    /// human when a `deliver_to` target was ever read; this is the signal
+    /// that does not need one).
+    Stalled { age_secs: u64, enabled: u64 },
+    /// A tick completed inside the window (or startup is still inside grace).
+    Healthy { age_secs: u64 },
+}
+
+/// Pure liveness decision (#1925), taking the clock as an argument so the
+/// window is testable without waiting ten minutes. `spawned_at` is stamped
+/// once when the loop begins; `last_tick_at` only on a COMPLETED (Ok) tick.
+pub(crate) fn cron_liveness(
+    now: u64,
+    spawned_at: u64,
+    last_tick_at: u64,
+    enabled: u64,
+) -> CronLiveness {
+    if spawned_at == 0 {
+        return if enabled > 0 {
+            CronLiveness::NotRunningWithJobs { enabled }
+        } else {
+            CronLiveness::Idle
+        };
+    }
+    let age = if last_tick_at == 0 {
+        // Started but never completed a tick: measure from the loop's own
+        // start, which is the last proof of life there is.
+        now.saturating_sub(spawned_at)
+    } else {
+        now.saturating_sub(last_tick_at)
+    };
+    if age > CRON_STALE_AFTER_SECS {
+        CronLiveness::Stalled {
+            age_secs: age,
+            enabled,
+        }
+    } else {
+        CronLiveness::Healthy { age_secs: age }
+    }
+}
+
+/// Wall-clock unix seconds, 0 only if the system clock is before 1970.
+pub(crate) fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Whether this tick failure deserves a user-facing notice yet (#1893).
 ///
 /// Pure, and taking the clock as an argument, so the hour window is testable
@@ -128,6 +210,9 @@ impl CronScheduler {
     /// `spawn()` is the thin wrapper for callers that just want it backgrounded.
     pub async fn run(self) {
         let me = Arc::new(self);
+        // #1925: mark the instant the loop began. Readers age this stamp when
+        // no tick has completed yet.
+        CRON_SPAWNED_AT.store(epoch_secs(), std::sync::atomic::Ordering::Relaxed);
         tracing::info!(
             "Cron scheduler started — polling every 60s (shared Cron session, compaction-isolated)"
         );
@@ -153,6 +238,10 @@ impl CronScheduler {
                 Ok(()) => {
                     failures = 0;
                     last_alert = None;
+                    // #1925: a COMPLETED tick is the liveness proof. Failing
+                    // ticks deliberately do not stamp: a loop that only
+                    // errors must go Stalled, not stay "alive".
+                    CRON_LAST_TICK_AT.store(epoch_secs(), std::sync::atomic::Ordering::Relaxed);
                 }
                 Err(e) => {
                     failures = failures.saturating_add(1);
