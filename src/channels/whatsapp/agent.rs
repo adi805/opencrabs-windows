@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::store::Store;
-use wacore::types::events::Event;
+use wacore::types::events::{ConnectFailureReason, Event, TempBanReason};
 use whatsapp_rust::TokioRuntime;
 use whatsapp_rust::bot::Bot;
 use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
