@@ -405,7 +405,10 @@ fn slack_chat_writes_only_leave_through_the_governor() {
 
     assert_eq!(
         handler.matches("session.post(").count(),
-        32,
+        // Upstream carries 32. The thread-adoption block (#1988) is not
+        // ported — its plumbing does not exist on this trunk — so the one
+        // site inside it is absent. Every site that does exist pays.
+        31,
         "every new-message site pays the budget: the count is the coverage"
     );
     assert_eq!(
