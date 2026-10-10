@@ -47,9 +47,54 @@ fn collapsed_shows_summary_expanded_lists_tools() {
 }
 
 #[test]
-fn toggle_button_only_for_multi_tool_groups() {
+fn toggle_button_appears_with_something_to_reveal() {
+    // One lone tool row and nothing else: expanding would show the same line
+    // the summary already carries, so there is no button.
     assert!(render_components(&group(1, false, false), 7).is_empty());
     assert_eq!(render_components(&group(2, false, false), 7).len(), 1);
+
+    // Narration counts as something to reveal (#1990): notes are
+    // expansion-only, so without the button the transcript is unreachable.
+    let mut narrated = group(1, false, false);
+    narrated.notes = vec!["Scanning the repository".to_string()];
+    assert_eq!(
+        render_components(&narrated, 7).len(),
+        1,
+        "a narration-only card must still offer Expand"
+    );
+}
+
+#[test]
+fn narration_rows_are_expansion_only() {
+    let mut g = group(3, false, false);
+    g.notes = vec![
+        "Reading the old renderer".to_string(),
+        "Scanning the repository".to_string(),
+    ];
+
+    let collapsed = render_content(&g);
+    assert!(
+        !collapsed.contains("-#"),
+        "collapsed card ends at the summary line, no narration rows: {collapsed}"
+    );
+    // The newest note still leads as the live activity — hiding the rows is
+    // not hiding the signal.
+    assert!(
+        collapsed.contains("Scanning the repository"),
+        "the latest note stays as the summary activity: {collapsed}"
+    );
+
+    g.expanded = true;
+    let expanded = render_content(&g);
+    assert!(
+        expanded.contains("-# Reading the old renderer")
+            && expanded.contains("-# Scanning the repository"),
+        "expanding reveals every narration row: {expanded}"
+    );
+    assert!(
+        expanded.contains("3 tool calls"),
+        "the summary line survives the expansion: {expanded}"
+    );
 }
 
 #[tokio::test]

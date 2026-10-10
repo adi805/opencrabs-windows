@@ -487,15 +487,25 @@ pub(crate) fn render_content(group: &GroupState) -> String {
     } else {
         summary_line(group)
     };
-    let mut body = if group.notes.is_empty() {
-        tools_part.clone()
-    } else {
+    // Narration rows are EXPANSION-ONLY (#1990 parity). Collapsed, the card
+    // stays a glance: the summary line already carries the latest narration
+    // as its activity segment, so repeating every note as `-#` subtext below
+    // it made the bubble a transcript nobody asked for. Expanding reveals
+    // them, which is why `render_components` must offer the toggle whenever
+    // notes exist — otherwise a narration-only card has no way to open them.
+    let mut body = if group.expanded && !group.notes.is_empty() {
         format!("{tools_part}\n{}", notes_block(&group.notes))
+    } else {
+        tools_part.clone()
     };
     // Notes ride after the rows; if the whole body still overshoots, drop
     // the oldest notes first (the newest is what the ticker just wrote),
     // and hard-cut as the last resort.
-    let mut notes: Vec<String> = group.notes.clone();
+    let mut notes: Vec<String> = if group.expanded {
+        group.notes.clone()
+    } else {
+        Vec::new()
+    };
     while body.chars().count() > CONTENT_MAX_CHARS && notes.len() > 1 {
         notes.remove(0);
         body = format!("{tools_part}\n{}", notes_block(&notes));
@@ -503,10 +513,12 @@ pub(crate) fn render_content(group: &GroupState) -> String {
     hard_clip(body)
 }
 
-/// Toggle components for the group message; empty for single-tool groups
-/// (a lone line has nothing extra to reveal).
+/// Toggle components for the group message; empty when there is nothing to
+/// reveal. Two rows of tools always count, and so does ANY narration note:
+/// since notes are expansion-only (#1990), a card whose only extra content is
+/// narration must still offer the way in, or the transcript is unreachable.
 pub(crate) fn render_components(group: &GroupState, message_id: u64) -> Vec<CreateActionRow> {
-    if group.entries.len() < 2 {
+    if group.entries.len() < 2 && group.notes.is_empty() {
         return Vec::new();
     }
     let label = if group.expanded {
