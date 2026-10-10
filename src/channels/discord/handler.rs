@@ -183,6 +183,34 @@ pub(super) fn spawn_flow_ticker(
         loop {
             tokio::time::sleep(FLOW_TICKER_INTERVAL).await;
             if born.elapsed() > FLOW_TICKER_CAP {
+                // The turn outlived the ticker. Settle the card before leaving:
+                // the cap exists so no task is immortal, but a bare `break`
+                // left the card rendering the live `🕒` chrome with a frozen
+                // clock — the #1880 failure mode, reached from the ticker side
+                // instead of from the turn. `TimedOut` is honest here: the cap
+                // is 30 min against a turn budget measured in minutes, so the
+                // turn is long gone by the time this fires.
+                if let Some(mid) = *group_mid.lock().await
+                    && let Some(group) = dstate
+                        .settle_tool_group(
+                            mid.get(),
+                            super::tool_group::TurnOutcome::TimedOut,
+                            0,
+                            crate::channels::background_work::SubagentCounts::default(),
+                            None,
+                        )
+                        .await
+                {
+                    let edit = EditMessage::new()
+                        .content(super::tool_group::render_content(&group))
+                        .components(super::tool_group::render_components(&group, mid.get()));
+                    if let Err(e) = writes::edit(&http, channel, mid, edit, Class::Final).await {
+                        tracing::warn!(
+                            "Discord: flow ticker hard-stop settle failed (mid={}): {e}",
+                            mid.get()
+                        );
+                    }
+                }
                 break;
             }
             // Plan card (FR-008): advance the checklist on the same 4 s beat
