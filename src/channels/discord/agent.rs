@@ -721,17 +721,22 @@ impl EventHandler for Handler {
                 let content = body.unwrap_or_else(|| {
                     "That pager aged out. Ask me again and I will repost the answer.".to_string()
                 });
-                // Carry the pager forward: page 0 is in-channel and every later
-                // page is reachable only by press, so an answer that carried no
-                // row would strand the rest of the body behind this one press
+                // Carry the pager forward: every page is reachable only by
+                // press, so the ephemeral answer re-draws the SAME row for the
+                // page it is showing. `◀` walks back, `▶` walks on, and the
+                // ends come back disabled instead of the row vanishing
                 // (FR-009).
                 let mut msg = CreateInteractionResponseMessage::new()
                     .content(content)
                     .ephemeral(true);
                 if let (Some(mid), Some(pages), Some(page)) = (mid, pages.as_ref(), page)
-                    && let Some(row) = super::long_answer::next_page_row(mid, page, pages.len())
+                    && pages.len() > 1
                 {
-                    msg = msg.components(vec![row]);
+                    msg = msg.components(vec![super::long_answer::pager_row(
+                        mid,
+                        page,
+                        pages.len(),
+                    )]);
                 }
                 let resp = CreateInteractionResponse::Message(msg);
                 if let Err(e) = comp.create_response(&ctx.http, resp).await {

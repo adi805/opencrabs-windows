@@ -1789,7 +1789,10 @@ pub(crate) async fn handle_message(
                 // keep-intermediate outcome): skip the duplicate post. The
                 // settled flow group above carries the completion chrome.
             } else {
-                let chunks: Vec<String> = split_message(&send_text, super::long_answer::PAGE_CHARS);
+                let chunks: Vec<String> = split_message(
+                    &send_text,
+                    super::long_answer::PAGE_CHARS - super::long_answer::FOOTER_RESERVE,
+                );
                 // FR-009 (#1880): a long answer is a summary plus a pager,
                 // never a wall of consecutive messages (AC-020). Page 0 is
                 // posted in-channel; every later page answers EPHEMERALLY on
@@ -1825,12 +1828,13 @@ pub(crate) async fn handle_message(
                             Ok(Some(sent)) => {
                                 let mid = sent.id.get();
                                 discord_state.store_long_answer(mid, chunks.clone()).await;
-                                // Page 0 is already in-channel, so the row must
-                                // open the first HIDDEN page (index 1). Pointing
-                                // it at page 0 made the button re-show the text
-                                // the reader was already looking at (FR-009).
+                                // Page 0 is in-channel, so the row is drawn
+                                // FOR page 0: `◀` is disabled there and `▶`
+                                // opens the first hidden page. Each arrow
+                                // names its own target, so the same row rides
+                                // every later page too (FR-009).
                                 let edit = EditMessage::new().components(vec![
-                                    super::long_answer::pager_row(mid, 1, chunks.len()),
+                                    super::long_answer::pager_row(mid, 0, chunks.len()),
                                 ]);
                                 if let Err(e) =
                                     writes::edit(&ctx.http, target, sent.id, edit, Class::Edit)
