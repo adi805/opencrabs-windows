@@ -58,15 +58,11 @@ fn arm_body(action: &str) -> &'static str {
             && !after[..rel].contains('\n')
         {
             let rest = &after[rel..];
-            let mut end = rest.len();
-            for candidate in [
+            let ends = [
                 rest.find("\n            \""),
                 rest.find("\n            unknown"),
-            ] {
-                if let Some(i) = candidate {
-                    end = end.min(i);
-                }
-            }
+            ];
+            let end = ends.into_iter().flatten().min().unwrap_or(rest.len());
             return &rest[..end];
         }
         from = at + needle.len();
