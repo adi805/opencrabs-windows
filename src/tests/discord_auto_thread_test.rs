@@ -59,7 +59,7 @@ fn the_thread_is_decided_before_the_pager() {
 /// be posted twice: once as page 0 and once in the thread.
 #[test]
 fn a_wanted_thread_suppresses_the_pager() {
-    let flat_src = flatten(&handler_src());
+    let flat_src = flatten(handler_src());
     assert!(
         flat_src.contains("if!want_thread&&chunks.len()>1"),
         "the pager no longer excludes an answer that wants a thread, so the \
@@ -100,7 +100,7 @@ fn a_refused_thread_falls_back_to_the_in_place_chunker() {
 /// reject and only then fall back to posting in place.
 #[test]
 fn a_thread_is_not_opened_inside_a_thread_or_a_dm() {
-    let flat_src = flatten(&handler_src());
+    let flat_src = flatten(handler_src());
     assert!(
         flat_src.contains("want_thread=long_enough&&!is_dm&&!channel_is_thread("),
         "the thread decision no longer excludes a DM or an answer that already \

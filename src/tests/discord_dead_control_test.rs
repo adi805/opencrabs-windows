@@ -67,7 +67,7 @@ fn tool_group_arm() -> String {
 /// would remove a control that is fine.
 #[test]
 fn a_pager_whose_pages_aged_out_takes_its_arrows_off() {
-    let arm = flatten(&pager_arm());
+    let arm = flatten(pager_arm());
     assert!(
         arm.contains("strip_controls("),
         "the pager's aged-out arm no longer takes the arrows off, so the card \
@@ -88,7 +88,7 @@ fn a_pager_whose_pages_aged_out_takes_its_arrows_off() {
 /// notice is ephemeral; only the control goes (#1880, L3).
 #[test]
 fn a_tool_group_that_aged_out_takes_its_button_off() {
-    let branch = flatten(&tool_group_arm());
+    let branch = flatten(tool_group_arm());
     assert_eq!(
         branch.matches("strip_controls(").count(),
         2,
@@ -174,7 +174,7 @@ fn the_pager_store_hands_back_what_it_evicted() {
 /// itself be droppable (#1880, M4).
 #[test]
 fn eviction_takes_the_row_off_the_card_it_forgets() {
-    let handler = flatten(&read("handler.rs"));
+    let handler = flatten(read("handler.rs"));
     let store = handler
         .find("store_long_answer(mid,target,chunks.clone())")
         .expect("the pager store call moved: this test pins what happens to its result");

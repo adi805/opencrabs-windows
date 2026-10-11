@@ -133,7 +133,7 @@ const EXECUTE_NEEDLE: &str = "tool_registry.execute(&tool_name";
 /// shared helper so this file cannot drift from the other source-shape tests
 /// (#197).
 fn flat_source(name: &str) -> String {
-    flatten(&read_in(SERVICE_DIR, name))
+    flatten(read_in(SERVICE_DIR, name))
 }
 
 #[test]

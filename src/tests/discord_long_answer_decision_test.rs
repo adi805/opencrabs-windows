@@ -53,7 +53,7 @@ fn handler_src() -> String {
 /// test that pinned the old argument would fail on a change that is correct.
 #[test]
 fn a_long_answer_routes_into_the_pager_not_a_wall() {
-    let flat_src = flatten(&handler_src());
+    let flat_src = flatten(handler_src());
 
     assert!(
         flat_src.contains("super::long_answer::PAGE_CHARS"),
@@ -89,7 +89,7 @@ fn a_long_answer_routes_into_the_pager_not_a_wall() {
 /// page nothing can serve (#1880, M4).
 #[test]
 fn the_pages_are_stored_before_the_pager_row_is_attached() {
-    let flat_src = flatten(&handler_src());
+    let flat_src = flatten(handler_src());
 
     let store = flat_src
         .find("store_long_answer(mid,target,chunks.clone())")
@@ -201,7 +201,7 @@ fn pager_branch() -> String {
 /// looking for a builder that was removed (#1880, L1).
 #[test]
 fn the_pager_starts_on_page_zero_and_redraws_the_row_in_place() {
-    let flat_handler = flatten(&handler_src());
+    let flat_handler = flatten(handler_src());
     assert!(
         flat_handler.contains("pager_row(mid,0,chunks.len())"),
         "the row attached to page 0 no longer starts at page 0, so `◀` on the \
@@ -209,7 +209,7 @@ fn the_pager_starts_on_page_zero_and_redraws_the_row_in_place() {
     );
 
     assert!(
-        flatten(&pager_branch()).contains("pager_row("),
+        flatten(pager_branch()).contains("pager_row("),
         "the pager press no longer carries a row, so every page after the \
          first press is stored but unreachable (AC-020)"
     );
@@ -224,7 +224,7 @@ fn the_pager_starts_on_page_zero_and_redraws_the_row_in_place() {
 /// none of them can see this.
 #[test]
 fn the_pager_attach_is_not_a_droppable_class() {
-    let flat_handler = flatten(&handler_src());
+    let flat_handler = flatten(handler_src());
     let row = flat_handler
         .find("pager_row(mid,0,chunks.len())")
         .expect("the page-0 pager row moved: this test pins the attach class");
@@ -263,7 +263,7 @@ fn the_pager_attach_is_not_a_droppable_class() {
 /// silently reintroduce the bug, which is exactly what happened once already.
 #[test]
 fn a_page_press_edits_the_card_instead_of_posting_an_ephemeral_bubble() {
-    let branch = flatten(&pager_branch());
+    let branch = flatten(pager_branch());
     let update = branch
         .find("CreateInteractionResponse::UpdateMessage(")
         .expect(
@@ -303,7 +303,7 @@ fn a_page_press_edits_the_card_instead_of_posting_an_ephemeral_bubble() {
 /// goes into `UpdateMessage`, which is the only thing that matters.
 #[test]
 fn a_page_press_renders_the_same_card_shape_as_page_zero() {
-    let branch = flatten(&pager_branch());
+    let branch = flatten(pager_branch());
 
     let embed = branch.find("auto_embed_response(").expect(
         "the pager press no longer applies the auto-embed decision, so a \
@@ -324,7 +324,7 @@ fn a_page_press_renders_the_same_card_shape_as_page_zero() {
     // governed send path, this test would be pinning a decision against a
     // create that no longer embeds, and the pair would be symmetric by
     // accident rather than by rule.
-    let handler = flatten(&handler_src());
+    let handler = flatten(handler_src());
     assert!(
         handler.contains("writes::send(") && handler.contains("Class::Final)"),
         "page 0 no longer goes through the governed send path, so the embed \
