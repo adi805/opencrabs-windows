@@ -627,7 +627,9 @@ impl Tool for WhatsAppSendTool {
                         "get_profile_picture", "get_group_profile_picture",
                         "is_on_whatsapp", "get_user_info",
                         "archive_chat", "unarchive_chat", "mute_chat", "unmute_chat",
-                        "star_message", "unstar_message", "clear_chat", "save_contact"
+                        "star_message", "unstar_message", "clear_chat", "save_contact",
+                        "set_available", "set_unavailable", "subscribe_presence",
+                        "unsubscribe_presence"
                     ],
                     "description": "The WhatsApp action to perform."
                 },
@@ -637,7 +639,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "phone": {
                     "type": "string",
-                    "description": "Phone number in E.164 format (e.g. '+15551234567'). For the chat actions (archive_chat, unarchive_chat, mute_chat, unmute_chat, clear_chat, star_message, unstar_message) it names the chat to act on; for save_contact it is required. Omit to message the owner."
+                    "description": "Phone number in E.164 format (e.g. '+15551234567'). For the chat actions (archive_chat, unarchive_chat, mute_chat, unmute_chat, clear_chat, star_message, unstar_message) it names the chat to act on; for save_contact it is required, and for subscribe_presence / unsubscribe_presence it names the contact whose updates to watch. Omit to message the owner."
                 },
                 "message_id": {
                     "type": "string",
@@ -3063,6 +3065,80 @@ impl Tool for WhatsAppSendTool {
                 }
             }
 
+            // ── presence: our own online state ───────────────────────────────
+            // Presence is not a message, so these are not charged to the send
+            // budget. The channel sets `available` on connect, so exposing both
+            // directions here is what makes going offline reversible: an agent
+            // that could only go unavailable would have to reconnect to return.
+            "set_available" | "set_unavailable" => {
+                let going_online = action == "set_available";
+                let result = if going_online {
+                    client.presence().set_available().await
+                } else {
+                    client.presence().set_unavailable().await
+                };
+                let state = if going_online {
+                    "available"
+                } else {
+                    "unavailable"
+                };
+                match result {
+                    Ok(()) => Ok(ToolResult::success(format!("Presence set to {state}."))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set presence to {state}: {e}"
+                    ))),
+                }
+            }
+
+            // ── presence: watching a contact ─────────────────────────────────
+            // A subscription names the contact whose updates we want, so it
+            // requires an explicit `phone`: the session-then-owner fallback
+            // would subscribe to whoever happens to be talking, which is not
+            // what the caller asked for.
+            "subscribe_presence" | "unsubscribe_presence" => {
+                if input.get("phone").and_then(|v| v.as_str()).is_none() {
+                    return Ok(ToolResult::error(
+                        "subscribe_presence and unsubscribe_presence need 'phone': the \
+                         subscription names the contact to watch, and there is no sensible \
+                         fallback."
+                            .to_string(),
+                    ));
+                }
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let subscribing = action == "subscribe_presence";
+                let result = if subscribing {
+                    client.presence().subscribe(jid.clone()).await
+                } else {
+                    client.presence().unsubscribe(&jid).await
+                };
+                match result {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "{} presence updates from {jid_str}.",
+                        if subscribing {
+                            "Subscribed to"
+                        } else {
+                            "Unsubscribed from"
+                        }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to {} presence updates from {jid_str}: {e}",
+                        if subscribing {
+                            "subscribe to"
+                        } else {
+                            "unsubscribe from"
+                        }
+                    ))),
+                }
+            }
+
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{}'. Valid actions: send, reply, delete, send_photo, \
                  send_document, send_audio, send_video, send_sticker, send_location, \
@@ -3080,7 +3156,8 @@ impl Tool for WhatsAppSendTool {
                  cancel_membership_requests, get_participating, is_admin, \
                  get_profile_picture, get_group_profile_picture, is_on_whatsapp, \
                  get_user_info, archive_chat, unarchive_chat, mute_chat, unmute_chat, \
-                 star_message, unstar_message, clear_chat, save_contact",
+                 star_message, unstar_message, clear_chat, save_contact, set_available, \
+                 set_unavailable, subscribe_presence, unsubscribe_presence",
                 unknown
             ))),
         }

@@ -1205,6 +1205,7 @@ pub mod whatsapp_owner_filter_test;
 pub mod whatsapp_photo_batching_test;
 pub mod whatsapp_poll_test;
 pub mod whatsapp_preamble_test;
+pub mod whatsapp_presence_test;
 pub mod whatsapp_qr_replay_test;
 pub mod whatsapp_rate_limit_test;
 pub mod whatsapp_reaction_test;
