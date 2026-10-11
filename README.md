@@ -36,7 +36,7 @@
 - [📚 Documentation](#-documentation)
 - [Why OpenCrabs?](#why-opencrabs)
 - [📊 Benchmarks](#-benchmarks)
-- [🎬 Full onboard](#-full-onboard)
+- [🎬 Onboarding Videos](#-onboarding-videos)
 - [🎬 Demo](#-demo)
 - [🖥️ Split Panes](#-split-panes)
 - [🎯 Core Features](#-core-features)
@@ -234,9 +234,15 @@ Graph: 15,769 symbols / 95,601 call edges / 5,649 imports, full-repo index in 12
 
 ---
 
-## 🎬 Full onboard
+## 🎬 Onboarding Videos
 
-https://github.com/user-attachments/assets/833dd5e9-3bcc-432a-96ac-3a5bb97b5966
+| OS | Quick start | Advanced setup (Telegram, voice, images) |
+|----|-------------|------------------------------------------|
+| macOS | [Install in under 2 minutes (Homebrew)](https://youtu.be/1_Ta9BFxlSk) | [Advanced setup on macOS](https://youtu.be/Lq891K2GFzU) |
+| Ubuntu/Linux | [Install in 3 minutes (one paste)](https://youtu.be/sXfaKfQiAxo) | [Advanced setup on Linux](https://youtu.be/uZLwzerkQt0) |
+| Windows | [Install in 2 minutes (PowerShell)](https://youtu.be/kY8SW83obOc) | [Advanced setup on Windows](https://youtu.be/TZn1aYgpRuI) |
+
+All videos: [youtube.com/@OpenCrabs](https://www.youtube.com/@OpenCrabs)
 
 ## 🎬 Demo
 
