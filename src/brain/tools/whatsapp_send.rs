@@ -10,6 +10,7 @@ use super::r#trait::{Tool, ToolCapability, ToolExecutionContext, ToolHints, Tool
 use crate::channels::whatsapp::WhatsAppState;
 use crate::channels::whatsapp::broadcast;
 use crate::channels::whatsapp::interactive;
+use crate::channels::whatsapp::poll::resolve_options;
 use crate::channels::whatsapp::rate_limit::GateOutcome;
 use crate::config::Config;
 use async_trait::async_trait;
@@ -19,7 +20,7 @@ use wacore_binary::jid::{Jid, Server};
 use whatsapp_rust::features::{
     GroupCreateOptions, GroupDescription, GroupParticipantOptions, GroupSubject, JoinGroupResult,
     MemberAddMode, MembershipApprovalMode, ParticipantChangeResponse, PictureType,
-    PreviousDescription,
+    PollVoteCiphertext, PreviousDescription,
 };
 
 /// Tool for comprehensive WhatsApp control (14 actions).
@@ -332,6 +333,129 @@ pub(crate) fn resolve_optional_participant(
     }
 }
 
+/// Parse and validate the `poll_options` array.
+///
+/// Shared by `send_poll` and `create_quiz` so the two cannot drift apart on
+/// what counts as a usable poll: WhatsApp itself accepts 2 to 12 options, and
+/// a single-option poll has nothing to choose between.
+#[allow(clippy::result_large_err)]
+fn poll_options(input: &Value) -> std::result::Result<Vec<String>, ToolResult> {
+    let Some(arr) = input.get("poll_options").and_then(|v| v.as_array()) else {
+        return Err(ToolResult::error(
+            "Missing required 'poll_options' parameter.".to_string(),
+        ));
+    };
+    let opts: Vec<String> = arr
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    if opts.len() < 2 {
+        return Err(ToolResult::error(
+            "'poll_options' must have at least 2 options.".to_string(),
+        ));
+    }
+    if opts.len() > 12 {
+        return Err(ToolResult::error(
+            "'poll_options' supports a maximum of 12 options.".to_string(),
+        ));
+    }
+    Ok(opts)
+}
+
+/// Parse a named array parameter into plain strings.
+///
+/// The poll actions name things (option labels, not JIDs), so they cannot
+/// borrow the JID parsers. An empty list is a refusal for the same reason a
+/// missing one is: an action that names nothing has nothing to act on.
+#[allow(clippy::result_large_err)]
+fn string_list(input: &Value, key: &str) -> std::result::Result<Vec<String>, ToolResult> {
+    let Some(arr) = input.get(key).and_then(|v| v.as_array()) else {
+        return Err(ToolResult::error(format!(
+            "Missing required parameter '{key}' (an array of strings)."
+        )));
+    };
+    let items: Vec<String> = arr
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    if items.is_empty() {
+        return Err(ToolResult::error(format!(
+            "'{key}' must hold at least one entry."
+        )));
+    }
+    Ok(items)
+}
+
+/// Decode a base64 string parameter into bytes.
+#[allow(clippy::result_large_err)]
+fn decode_b64(input: &Value, key: &str) -> std::result::Result<Vec<u8>, ToolResult> {
+    use base64::Engine as _;
+    let raw = get_str(input, key)?;
+    base64::engine::general_purpose::STANDARD
+        .decode(raw.trim())
+        .map_err(|e| ToolResult::error(format!("'{key}' is not valid base64: {e}")))
+}
+
+/// The JID of the account that authored a poll.
+///
+/// `vote` and `decrypt_vote` both key their crypto on the creator, so it has
+/// to be the poll's real author and not whoever is talking now. Omitted means
+/// this account, which is the only case the channel has persisted a secret for.
+#[allow(clippy::result_large_err)]
+fn poll_creator(
+    client: &whatsapp_rust::client::Client,
+    input: &Value,
+) -> std::result::Result<Jid, ToolResult> {
+    match input.get("poll_creator_jid").and_then(|v| v.as_str()) {
+        Some(raw) => raw
+            .parse()
+            .map_err(|e| ToolResult::error(format!("'poll_creator_jid' is not a JID: {e}"))),
+        None => client.pn().ok_or_else(|| {
+            ToolResult::error(
+                "Not logged in, so the poll's author cannot be assumed to be this account; \
+                 pass 'poll_creator_jid'."
+                    .to_string(),
+            )
+        }),
+    }
+}
+
+/// The poll's message secret: the caller's, or the one already stored.
+///
+/// A poll's votes are encrypted against a secret minted when the poll was
+/// created, and the channel persists it for every poll this account sent, so
+/// the common case needs no input at all. `poll_secret` covers a poll authored
+/// elsewhere. Missing on both sides is an error rather than an empty key: the
+/// lib would fail on a zero-length secret anyway, and saying why is cheaper
+/// than decoding a crypto error.
+#[allow(clippy::result_large_err)]
+async fn resolve_poll_secret(
+    client: &whatsapp_rust::client::Client,
+    input: &Value,
+    chat: &str,
+    creator: &str,
+    poll_id: &str,
+) -> std::result::Result<Vec<u8>, ToolResult> {
+    if input.get("poll_secret").and_then(|v| v.as_str()).is_some() {
+        return decode_b64(input, "poll_secret");
+    }
+    match client
+        .persistence_manager()
+        .backend()
+        .get_msg_secret(chat, creator, poll_id)
+        .await
+    {
+        Ok(Some(secret)) => Ok(secret),
+        Ok(None) => Err(ToolResult::error(format!(
+            "No message secret is stored for poll {poll_id} in {chat}. Pass 'poll_secret' \
+             (base64) if you have it; without it a vote cannot be encrypted or decrypted."
+        ))),
+        Err(e) => Err(ToolResult::error(format!(
+            "Could not read the poll's message secret: {e}"
+        ))),
+    }
+}
+
 /// Parse a named array parameter into JIDs.
 ///
 /// Shared by `resolve_participants` and `resolve_contacts` so the two spellings
@@ -629,7 +753,8 @@ impl Tool for WhatsAppSendTool {
                         "archive_chat", "unarchive_chat", "mute_chat", "unmute_chat",
                         "star_message", "unstar_message", "clear_chat", "save_contact",
                         "set_available", "set_unavailable", "subscribe_presence",
-                        "unsubscribe_presence"
+                        "unsubscribe_presence",
+                        "create_quiz", "vote", "decrypt_vote", "aggregate_votes"
                     ],
                     "description": "The WhatsApp action to perform."
                 },
@@ -721,12 +846,12 @@ impl Tool for WhatsAppSendTool {
                 },
                 "poll_question": {
                     "type": "string",
-                    "description": "Poll question text for send_poll"
+                    "description": "Poll question text for send_poll and create_quiz"
                 },
                 "poll_options": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Array of poll option strings (2-12) for send_poll"
+                    "description": "Array of poll option strings (2-12) for send_poll and create_quiz. For aggregate_votes it is optional, and only fills in the option order for a poll whose own list has already aged out."
                 },
                 "typing_active": {
                     "type": "boolean",
@@ -786,6 +911,39 @@ impl Tool for WhatsAppSendTool {
                 "save_on_primary_addressbook": {
                     "type": "boolean",
                     "description": "For save_contact: also save to the phone's own address book. Default true."
+                },
+                "quiz_correct_index": {
+                    "type": "integer",
+                    "description": "For create_quiz: the 0-based index into 'poll_options' of the correct answer. Required, because option 0 is a real answer and a missing index must not read as one."
+                },
+                "poll_msg_id": {
+                    "type": "string",
+                    "description": "The poll's WhatsApp message ID, for vote, decrypt_vote and aggregate_votes. It is the key every vote is filed under."
+                },
+                "option_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "For vote: the option labels to select, spelled exactly as they appear in the poll. A label the poll does not carry is refused by the lib rather than silently dropped."
+                },
+                "poll_creator_jid": {
+                    "type": "string",
+                    "description": "For vote and decrypt_vote: the JID of the account that created the poll. Omit when this account created it, which is the only case whose message secret is stored locally."
+                },
+                "poll_secret": {
+                    "type": "string",
+                    "description": "For vote and decrypt_vote: the poll's message secret, base64-encoded. Omit to use the secret already stored for a poll this account authored."
+                },
+                "voter_jid": {
+                    "type": "string",
+                    "description": "For decrypt_vote: the phone number or JID of the voter whose ciphertext this is. It keys the vote's encryption together with the creator, so the wrong one does not open."
+                },
+                "vote_payload": {
+                    "type": "string",
+                    "description": "For decrypt_vote: the base64 'enc_payload' of a raw poll vote."
+                },
+                "vote_iv": {
+                    "type": "string",
+                    "description": "For decrypt_vote: the base64 'enc_iv' of a raw poll vote."
                 },
                 "subject": {
                     "type": "string",
@@ -1627,27 +1785,7 @@ impl Tool for WhatsAppSendTool {
                 );
                 gate_send!(self, jid_str, "the poll");
                 let question = pget!(get_str(&input, "poll_question")).to_string();
-                let opts: Vec<String> = match input.get("poll_options").and_then(|v| v.as_array()) {
-                    Some(arr) => arr
-                        .iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect(),
-                    None => {
-                        return Ok(ToolResult::error(
-                            "Missing required 'poll_options' parameter.".to_string(),
-                        ));
-                    }
-                };
-                if opts.len() < 2 {
-                    return Ok(ToolResult::error(
-                        "'poll_options' must have at least 2 options.".to_string(),
-                    ));
-                }
-                if opts.len() > 12 {
-                    return Ok(ToolResult::error(
-                        "'poll_options' supports a maximum of 12 options.".to_string(),
-                    ));
-                }
+                let opts = pget!(poll_options(&input));
 
                 // #1482: built through the lib rather than by hand. A poll
                 // whose MessageContextInfo carries no `message_secret` can
@@ -3139,6 +3277,218 @@ impl Tool for WhatsAppSendTool {
                 }
             }
 
+            // ── create_quiz ──────────────────────────────────────────────────
+            // A quiz is a single-select poll that carries a correct answer, so
+            // it shares `poll_options` with send_poll and adds only the index.
+            // The lib mints the message secret for both, which is what makes a
+            // quiz's votes readable through the same path a poll's are.
+            "create_quiz" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                gate_send!(self, jid_str, "the quiz");
+                let question = pget!(get_str(&input, "poll_question")).to_string();
+                let opts = pget!(poll_options(&input));
+                // Not defaulted: option 0 is a real answer, so "absent" and
+                // "the first option" must not be allowed to look alike.
+                let Some(correct_index) = input
+                    .get("quiz_correct_index")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize)
+                else {
+                    return Ok(ToolResult::error(
+                        "create_quiz needs 'quiz_correct_index': the 0-based index of the \
+                         correct option in 'poll_options'."
+                            .to_string(),
+                    ));
+                };
+                if correct_index >= opts.len() {
+                    return Ok(ToolResult::error(format!(
+                        "'quiz_correct_index' {correct_index} is outside 'poll_options' (0..{}).",
+                        opts.len()
+                    )));
+                }
+                match client
+                    .polls()
+                    .create_quiz(jid, &question, &opts, correct_index)
+                    .await
+                {
+                    Ok((result, _secret)) => {
+                        self.whatsapp_state
+                            .polls
+                            .remember(result.message_id, opts)
+                            .await;
+                        Ok(ToolResult::success(format!(
+                            "Quiz '{}' sent to {} via WhatsApp.",
+                            question, jid_str
+                        )))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!("Failed to send quiz: {}", e))),
+                }
+            }
+
+            // ── vote ─────────────────────────────────────────────────────────
+            // Casting our own vote. The poll's message secret keys the vote
+            // encryption and is already persisted for every poll this account
+            // authored, so it is read back rather than asked for; `poll_secret`
+            // exists for a poll authored somewhere else.
+            "vote" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                gate_send!(self, jid_str, "the vote");
+                let poll_id = pget!(get_str(&input, "poll_msg_id")).to_string();
+                let selected = pget!(string_list(&input, "option_names"));
+                let creator = pget!(poll_creator(&client, &input));
+                let chat = jid.to_non_ad_string();
+                let creator_str = creator.to_non_ad_string();
+                let secret = pget!(
+                    resolve_poll_secret(&client, &input, &chat, &creator_str, &poll_id).await
+                );
+                match client
+                    .polls()
+                    .vote(jid, &poll_id, &creator, &secret, &selected)
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Voted on poll {poll_id} in {jid_str}: {}.",
+                        selected.join(", ")
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to vote: {}", e))),
+                }
+            }
+
+            // ── decrypt_vote ─────────────────────────────────────────────────
+            // The escape hatch for a vote the inbound decoder could not label:
+            // it takes the raw ciphertext and reports what it opens to. With
+            // the poll's own option list still inside the window the answer is
+            // labels; without it the option hashes are reported, which is the
+            // honest answer rather than a guess at what they meant.
+            "decrypt_vote" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let poll_id = pget!(get_str(&input, "poll_msg_id")).to_string();
+                let creator = pget!(poll_creator(&client, &input));
+                let voter = pget!(parse_contact_jid(
+                    pget!(get_str(&input, "voter_jid")),
+                    "voter_jid"
+                ));
+                let payload = pget!(decode_b64(&input, "vote_payload"));
+                let iv = pget!(decode_b64(&input, "vote_iv"));
+                let chat = jid.to_non_ad_string();
+                let creator_str = creator.to_non_ad_string();
+                let secret = pget!(
+                    resolve_poll_secret(&client, &input, &chat, &creator_str, &poll_id).await
+                );
+                let ciphertext = PollVoteCiphertext {
+                    enc_payload: &payload,
+                    enc_iv: &iv,
+                };
+                match client
+                    .polls()
+                    .decrypt_vote(ciphertext, &secret, &poll_id, &creator, &voter)
+                    .await
+                {
+                    Ok(hashes) => {
+                        let opened = match self.whatsapp_state.polls.get(&poll_id).await {
+                            Some(options) => resolve_options(&hashes, &options).join(", "),
+                            None => hashes
+                                .iter()
+                                .map(|h| h.iter().map(|b| format!("{b:02x}")).collect::<String>())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        };
+                        if opened.is_empty() {
+                            return Ok(ToolResult::success(format!(
+                                "The vote from {voter} on poll {poll_id} opens to no option: the \
+                                 voter cleared their answer, or the ciphertext belongs to \
+                                 another poll."
+                            )));
+                        }
+                        Ok(ToolResult::success(format!(
+                            "Vote from {voter} on poll {poll_id} in {jid_str}: {opened}"
+                        )))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to decrypt the vote: {}",
+                        e
+                    ))),
+                }
+            }
+
+            // ── aggregate_votes ──────────────────────────────────────────────
+            // "How many picked what" - the question that makes a poll worth
+            // running. The counting happens in the inbound decoder, which
+            // already resolves each arriving vote to labels; this only reads
+            // that tally back. It deliberately does NOT go through the lib's
+            // crypto aggregate, which needs every voter's raw ciphertext, and
+            // those are not retained: the decoded labels are.
+            "aggregate_votes" => {
+                let poll_id = pget!(get_str(&input, "poll_msg_id")).to_string();
+                let tally = self.whatsapp_state.votes.for_poll(&poll_id).await;
+                if tally.is_empty() {
+                    return Ok(ToolResult::success(format!(
+                        "No votes recorded for poll {poll_id}. Votes are counted as they arrive \
+                         on the live connection, so a poll outside the tracked window reads as \
+                         empty rather than as zero."
+                    )));
+                }
+                // The poll's own option list keeps the report in the order the
+                // poll asked its question; `poll_options` is the fallback for a
+                // list that has already aged out of the window.
+                let options = match self.whatsapp_state.polls.get(&poll_id).await {
+                    Some(options) => Some(options),
+                    None => match input.get("poll_options").and_then(|v| v.as_array()) {
+                        Some(_) => Some(pget!(poll_options(&input))),
+                        None => None,
+                    },
+                };
+                let mut order: Vec<String> = options.clone().unwrap_or_default();
+                for (_, chosen) in &tally {
+                    for label in chosen {
+                        if !order.iter().any(|known| known == label) {
+                            order.push(label.clone());
+                        }
+                    }
+                }
+                let mut lines = vec![format!(
+                    "Poll {poll_id}: {} vote(s) from {} voter(s).",
+                    tally.len(),
+                    tally.len()
+                )];
+                for label in &order {
+                    let voters: Vec<&str> = tally
+                        .iter()
+                        .filter(|(_, chosen)| chosen.iter().any(|c| c == label))
+                        .map(|(who, _)| who.as_str())
+                        .collect();
+                    lines.push(format!("- \"{label}\": {}", voters.len()));
+                    if !voters.is_empty() {
+                        lines.push(format!("  {}", voters.join(", ")));
+                    }
+                }
+                Ok(ToolResult::success(lines.join("\n")))
+            }
+
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{}'. Valid actions: send, reply, delete, send_photo, \
                  send_document, send_audio, send_video, send_sticker, send_location, \
@@ -3157,7 +3507,8 @@ impl Tool for WhatsAppSendTool {
                  get_profile_picture, get_group_profile_picture, is_on_whatsapp, \
                  get_user_info, archive_chat, unarchive_chat, mute_chat, unmute_chat, \
                  star_message, unstar_message, clear_chat, save_contact, set_available, \
-                 set_unavailable, subscribe_presence, unsubscribe_presence",
+                 set_unavailable, subscribe_presence, unsubscribe_presence, create_quiz, \
+                 vote, decrypt_vote, aggregate_votes",
                 unknown
             ))),
         }

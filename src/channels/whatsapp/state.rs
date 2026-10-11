@@ -96,6 +96,9 @@ pub struct WhatsAppState {
     /// options by hash, never by name, so labelling a vote needs the poll's
     /// own list. See `poll.rs`.
     pub(crate) polls: super::poll::PollOptions,
+    /// Decoded votes per poll (#1482 follow-up), so the tally outlives the
+    /// message that carried the vote. See `poll.rs`.
+    pub(crate) votes: super::poll::VoteTally,
     /// Bounded memory of recently seen messages (#1484), so `forward` can
     /// hand `Client::forward_message` the original proto. See `recent.rs`.
     pub(crate) recent: super::recent::RecentMessages,
@@ -142,6 +145,7 @@ impl WhatsAppState {
             session_jids: Mutex::new(HashMap::new()),
             jid_sessions: Mutex::new(HashMap::new()),
             polls: super::poll::PollOptions::default(),
+            votes: super::poll::VoteTally::default(),
             recent: super::recent::RecentMessages::default(),
             blocklist: super::blocklist::Blocklist::default(),
             outbox: super::outbox::Outbox::default(),
