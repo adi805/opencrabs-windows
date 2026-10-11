@@ -241,6 +241,28 @@ pub(crate) fn resolve_group_jid(input: &Value) -> std::result::Result<Jid, ToolR
     Ok(jid)
 }
 
+/// Resolve the chat a per-chat action (archive, mute, clear, star) targets.
+///
+/// A group is named with `group_jid`, a person with `phone`. The group branch
+/// goes through `resolve_group_jid` so a group id can never be read as a phone
+/// number; everything else takes the normal `resolve_jid` path (explicit
+/// `phone`, else the session chat, else the owner).
+#[allow(clippy::result_large_err)]
+pub(crate) async fn resolve_chat_jid(
+    input: &Value,
+    whatsapp_state: &WhatsAppState,
+    config_rx: &tokio::sync::watch::Receiver<Config>,
+    session_id: uuid::Uuid,
+) -> std::result::Result<(Jid, String), ToolResult> {
+    if input.get("group_jid").and_then(|v| v.as_str()).is_some() {
+        let jid = resolve_group_jid(input)?;
+        let jid_str = jid.to_string();
+        Ok((jid, jid_str))
+    } else {
+        resolve_jid(input, whatsapp_state, config_rx, session_id).await
+    }
+}
+
 /// Parse the `participants` array into JIDs.
 ///
 /// Each entry is either a full JID or a bare phone number, which is wrapped as
@@ -262,6 +284,54 @@ pub(crate) fn resolve_contacts(input: &Value) -> std::result::Result<Vec<Jid>, T
     resolve_jid_list(input, "contacts")
 }
 
+/// Normalize one contact spelling into a JID.
+///
+/// Accepts a bare phone number (with an optional leading `+` and `:device`
+/// suffix) or a full JID. Shared by the array parsers and by the single
+/// optional `participant`, so a spelling cannot mean one thing in a list and
+/// another thing on its own.
+#[allow(clippy::result_large_err)]
+fn parse_contact_jid(raw: &str, key: &str) -> std::result::Result<Jid, ToolResult> {
+    let raw = raw.trim().trim_start_matches('+');
+    if raw.is_empty() {
+        return Err(ToolResult::error(format!(
+            "'{key}' contains an empty entry."
+        )));
+    }
+    let jid_str = if raw.contains('@') {
+        raw.to_string()
+    } else {
+        let user = raw.split(':').next().unwrap_or(raw);
+        format!("{user}@s.whatsapp.net")
+    };
+    jid_str
+        .parse()
+        .map_err(|e| ToolResult::error(format!("Invalid '{key}' entry '{raw}': {e}")))
+}
+
+/// Parse the optional `participant` parameter into a JID.
+///
+/// Absent means "no participant", which is the right shape for a direct message
+/// or for a message this account sent. Present but unusable is an error rather
+/// than a silent `None`: on a group message from someone else the participant is
+/// part of the message key, so dropping it would address a different message
+/// than the caller named.
+#[allow(clippy::result_large_err)]
+pub(crate) fn resolve_optional_participant(
+    input: &Value,
+) -> std::result::Result<Option<Jid>, ToolResult> {
+    match input.get("participant") {
+        None => Ok(None),
+        Some(value) if value.is_null() => Ok(None),
+        Some(value) => {
+            let raw = value.as_str().ok_or_else(|| {
+                ToolResult::error("'participant' must be a phone number or JID string.".to_string())
+            })?;
+            Ok(Some(parse_contact_jid(raw, "participant")?))
+        }
+    }
+}
+
 /// Parse a named array parameter into JIDs.
 ///
 /// Shared by `resolve_participants` and `resolve_contacts` so the two spellings
@@ -280,22 +350,7 @@ fn resolve_jid_list(input: &Value, key: &str) -> std::result::Result<Vec<Jid>, T
     }
     let mut jids = Vec::with_capacity(raw_list.len());
     for entry in raw_list {
-        let raw = entry.as_str().unwrap_or("").trim().trim_start_matches('+');
-        if raw.is_empty() {
-            return Err(ToolResult::error(format!(
-                "'{key}' contains an empty entry."
-            )));
-        }
-        let jid_str = if raw.contains('@') {
-            raw.to_string()
-        } else {
-            let user = raw.split(':').next().unwrap_or(raw);
-            format!("{user}@s.whatsapp.net")
-        };
-        let jid: Jid = jid_str
-            .parse()
-            .map_err(|e| ToolResult::error(format!("Invalid '{key}' entry '{raw}': {e}")))?;
-        jids.push(jid);
+        jids.push(parse_contact_jid(entry.as_str().unwrap_or(""), key)?);
     }
     Ok(jids)
 }
@@ -570,7 +625,9 @@ impl Tool for WhatsAppSendTool {
                         "reject_membership_requests", "cancel_membership_requests",
                         "get_participating", "is_admin",
                         "get_profile_picture", "get_group_profile_picture",
-                        "is_on_whatsapp", "get_user_info"
+                        "is_on_whatsapp", "get_user_info",
+                        "archive_chat", "unarchive_chat", "mute_chat", "unmute_chat",
+                        "star_message", "unstar_message", "clear_chat", "save_contact"
                     ],
                     "description": "The WhatsApp action to perform."
                 },
@@ -580,15 +637,15 @@ impl Tool for WhatsAppSendTool {
                 },
                 "phone": {
                     "type": "string",
-                    "description": "Phone number in E.164 format (e.g. '+15551234567'). Omit to message the owner."
+                    "description": "Phone number in E.164 format (e.g. '+15551234567'). For the chat actions (archive_chat, unarchive_chat, mute_chat, unmute_chat, clear_chat, star_message, unstar_message) it names the chat to act on; for save_contact it is required. Omit to message the owner."
                 },
                 "message_id": {
                     "type": "string",
-                    "description": "WhatsApp message ID for reply, delete, react, mark_read, forward"
+                    "description": "WhatsApp message ID for reply, delete, react, mark_read, forward, star_message, unstar_message"
                 },
                 "from_me": {
                     "type": "boolean",
-                    "description": "Whether the target message was sent by us (for react/mark_read). Default false."
+                    "description": "Whether the target message was sent by us (for react/mark_read/star_message/unstar_message). Default false."
                 },
                 "media_path": {
                     "type": "string",
@@ -699,6 +756,34 @@ impl Tool for WhatsAppSendTool {
                 "preview": {
                     "type": "boolean",
                     "description": "For get_profile_picture and get_group_profile_picture: true returns the small preview thumbnail, false (the default) the full-size picture."
+                },
+                "participant": {
+                    "type": "string",
+                    "description": "For star_message and unstar_message: the phone number or JID of the sender whose message is being starred, required when the message is a group message from someone else. Omit for a DM or for your own message."
+                },
+                "mute_until_ms": {
+                    "type": "integer",
+                    "description": "For mute_chat: a Unix epoch timestamp in milliseconds to mute until. Omit to mute indefinitely."
+                },
+                "delete_starred": {
+                    "type": "boolean",
+                    "description": "For clear_chat: also remove the starred messages in the chat. Default false."
+                },
+                "delete_media": {
+                    "type": "boolean",
+                    "description": "For clear_chat: also remove downloaded media. Default false."
+                },
+                "full_name": {
+                    "type": "string",
+                    "description": "For save_contact: the contact's full name."
+                },
+                "first_name": {
+                    "type": "string",
+                    "description": "For save_contact: the contact's short name. Omitted when not given, rather than derived from full_name."
+                },
+                "save_on_primary_addressbook": {
+                    "type": "boolean",
+                    "description": "For save_contact: also save to the phone's own address book. Default true."
                 },
                 "subject": {
                     "type": "string",
@@ -2764,6 +2849,220 @@ impl Tool for WhatsAppSendTool {
                 }
             }
 
+            "archive_chat" | "unarchive_chat" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let archiving = action == "archive_chat";
+                let result = if archiving {
+                    client.chat_actions().archive_chat(&jid, None).await
+                } else {
+                    client.chat_actions().unarchive_chat(&jid, None).await
+                };
+                match result {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Chat with {} {}.",
+                        jid_str,
+                        if archiving { "archived" } else { "unarchived" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to {} chat {jid_str}: {e}",
+                        if archiving { "archive" } else { "unarchive" }
+                    ))),
+                }
+            }
+
+            "mute_chat" | "unmute_chat" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let muting = action == "mute_chat";
+                let mute_until = match input.get("mute_until_ms") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(pget!(v.as_i64().ok_or_else(|| {
+                        ToolResult::error(
+                            "'mute_until_ms' must be an integer Unix epoch timestamp in \
+                         milliseconds."
+                                .to_string(),
+                        )
+                    }))),
+                };
+                let result = if !muting {
+                    client.chat_actions().unmute_chat(&jid).await
+                } else {
+                    match mute_until {
+                        Some(until) => client.chat_actions().mute_chat_until(&jid, until).await,
+                        None => client.chat_actions().mute_chat(&jid).await,
+                    }
+                };
+                match result {
+                    Ok(_) => Ok(ToolResult::success(match (muting, mute_until) {
+                        (false, _) => format!("Chat with {jid_str} unmuted."),
+                        (true, Some(until)) => {
+                            format!("Chat with {jid_str} muted until {until} (epoch ms).")
+                        }
+                        (true, None) => format!("Chat with {jid_str} muted indefinitely."),
+                    })),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to {} chat {jid_str}: {e}",
+                        if muting { "mute" } else { "unmute" }
+                    ))),
+                }
+            }
+
+            "star_message" | "unstar_message" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let from_me = input
+                    .get("from_me")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let participant = pget!(resolve_optional_participant(&input));
+                let starring = action == "star_message";
+                let result = if starring {
+                    client
+                        .chat_actions()
+                        .star_message(&jid, participant.as_ref(), &msg_id, from_me)
+                        .await
+                } else {
+                    client
+                        .chat_actions()
+                        .unstar_message(&jid, participant.as_ref(), &msg_id, from_me)
+                        .await
+                };
+                match result {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Message {msg_id} in {jid_str} {}.",
+                        if starring { "starred" } else { "unstarred" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to {} message {msg_id} in {jid_str}: {e}",
+                        if starring { "star" } else { "unstar" }
+                    ))),
+                }
+            }
+
+            "clear_chat" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let delete_starred = match input.get("delete_starred") {
+                    Some(_) => pget!(get_bool(&input, "delete_starred")),
+                    None => false,
+                };
+                let delete_media = match input.get("delete_media") {
+                    Some(_) => pget!(get_bool(&input, "delete_media")),
+                    None => false,
+                };
+                let result = client
+                    .chat_actions()
+                    .clear_chat(&jid, delete_starred, delete_media, None)
+                    .await;
+                let mut note = String::new();
+                if delete_starred {
+                    note.push_str(", starred messages included");
+                }
+                if delete_media {
+                    note.push_str(", media included");
+                }
+                match result {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Chat with {jid_str} cleared{note}."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to clear chat {jid_str}: {e}"
+                    ))),
+                }
+            }
+
+            "save_contact" => {
+                // A contact is saved by number, so there is no chat or owner to
+                // fall back to: without 'phone' this would save the wrong person.
+                if input.get("phone").and_then(|v| v.as_str()).is_none() {
+                    return Ok(ToolResult::error(
+                        "save_contact requires 'phone': a contact is saved by number, so there \
+                         is no chat or owner to fall back to."
+                            .to_string(),
+                    ));
+                }
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let full_name = input
+                    .get("full_name")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let first_name = input
+                    .get("first_name")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                if full_name.is_none() && first_name.is_none() {
+                    return Ok(ToolResult::error(
+                        "save_contact needs 'full_name' or 'first_name' (at least one)."
+                            .to_string(),
+                    ));
+                }
+                let save_on_primary = match input.get("save_on_primary_addressbook") {
+                    Some(_) => pget!(get_bool(&input, "save_on_primary_addressbook")),
+                    None => true,
+                };
+                let shown = full_name.clone().or_else(|| first_name.clone());
+                let result = client
+                    .chat_actions()
+                    .save_contact(&jid, full_name, first_name, save_on_primary)
+                    .await;
+                match result {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Contact {jid_str} saved as '{}'{}.",
+                        shown.as_deref().unwrap_or(""),
+                        if save_on_primary {
+                            " (also to the phone's address book)"
+                        } else {
+                            ""
+                        }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to save contact {jid_str}: {e}"
+                    ))),
+                }
+            }
+
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{}'. Valid actions: send, reply, delete, send_photo, \
                  send_document, send_audio, send_video, send_sticker, send_location, \
@@ -2780,7 +3079,8 @@ impl Tool for WhatsAppSendTool {
                  approve_membership_requests, reject_membership_requests, \
                  cancel_membership_requests, get_participating, is_admin, \
                  get_profile_picture, get_group_profile_picture, is_on_whatsapp, \
-                 get_user_info",
+                 get_user_info, archive_chat, unarchive_chat, mute_chat, unmute_chat, \
+                 star_message, unstar_message, clear_chat, save_contact",
                 unknown
             ))),
         }
