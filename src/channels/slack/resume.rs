@@ -1,16 +1,13 @@
 //! Background-task resume producer for Slack (#731).
 //!
 //! Mirrors Telegram's `build_enqueue_callback`: when a detached long command
-//! finishes, resume the originating session and post the result to its Slack
-//! channel via `chat.postMessage` (same path as crash recovery in `cli/ui.rs`).
+//! finishes, resume the originating session in its Slack channel. The turn
+//! runs as a live flow message (#1986) and the answer lands in the session's
+//! thread, the same shape a typed message gets.
 
 use super::SlackState;
-use super::governor::GatedWrites;
 use crate::brain::agent::service::MessageEnqueueCallback;
 use crate::channels::bg_resume::{self, AgentHolder};
-use slack_morphism::prelude::{
-    SlackApiChatPostMessageRequest, SlackApiToken, SlackApiTokenValue, SlackMessageContent, SlackTs,
-};
 use std::sync::Arc;
 
 pub(crate) fn build_enqueue_callback(
@@ -25,25 +22,8 @@ pub(crate) fn build_enqueue_callback(
                 tracing::warn!("[bg-resume] slack: no channel for session {session_id}; dropping");
                 return;
             };
-            let Some(agent) = bg_resume::upgrade(&agent_holder) else {
-                tracing::warn!("[bg-resume] slack: agent gone; dropping resume");
-                return;
-            };
-            let Some(content) = bg_resume::run_resume_turn(
-                agent.clone(),
-                session_id,
-                msg.context_text,
-                "slack",
-                &channel,
-            )
-            .await
-            else {
-                return;
-            };
-            // Bounded wait rather than a drop (#1242). Like WhatsApp, this
-            // check sits AFTER the turn, so returning threw away a completed
-            // answer and the provider call behind it. Slack needs both halves
-            // to post, so the pair is what readiness means here.
+            // Transport first: the flow message posts live through the client,
+            // so the bounded wait (#1242) runs before the turn, as on Discord.
             let Some((token_val, client)) =
                 crate::channels::transport_ready::await_transport("slack", session_id, || async {
                     match (state.bot_token().await, state.client().await) {
@@ -55,21 +35,20 @@ pub(crate) fn build_enqueue_callback(
             else {
                 return;
             };
-            let api_token = SlackApiToken::new(SlackApiTokenValue::from(token_val.clone()));
-            let session = client.open_session(&api_token);
-            let mut req = SlackApiChatPostMessageRequest::new(
-                channel.clone().into(),
-                SlackMessageContent::new().with_text(content),
-            );
-            // Land the answer in the thread that started the turn (#1988):
-            // top-level sessions have no entry and keep posting at channel
-            // root, same as before.
-            if let Some(thread) = state.session_thread(session_id).await {
-                req = req.with_thread_ts(SlackTs::new(thread));
-            }
-            if let Err(e) = session.post(&req).await {
-                tracing::warn!("[bg-resume] slack: chat_post_message failed: {e}");
-            }
+            let Some(agent) = bg_resume::upgrade(&agent_holder) else {
+                tracing::warn!("[bg-resume] slack: agent gone; dropping resume");
+                return;
+            };
+            super::resume_turn::run_resume_flow_turn(
+                state.clone(),
+                client.clone(),
+                agent.clone(),
+                token_val.clone(),
+                session_id,
+                channel.clone(),
+                msg.context_text,
+            )
+            .await;
             // The completion just delivered is the event the channel's waiting
             // step group is holding for (#1988): flip it now instead of
             // leaving the ⏳ line until the next inbound message.

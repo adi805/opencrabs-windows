@@ -379,13 +379,17 @@ async fn a_disabled_governor_hands_every_surface_straight_through() {
 #[test]
 fn slack_chat_writes_only_leave_through_the_governor() {
     let handler = include_str!("../channels/slack/handler.rs");
+    let flow = include_str!("../channels/slack/flow_progress.rs");
     let resume = include_str!("../channels/slack/resume.rs");
+    let resume_turn = include_str!("../channels/slack/resume_turn.rs");
     let suggest = include_str!("../channels/slack/suggest_options.rs");
     let reactions = include_str!("../channels/slack/reactions.rs");
 
+    // The flow progress callback writes into the tool group, so it lives in
+    // its own module and counts toward the same coverage as handler.rs.
     for (name, src) in [
         ("handler.rs", handler),
-        ("resume.rs", resume),
+        ("flow_progress.rs", flow),
         ("suggest_options.rs", suggest),
         ("reactions.rs", reactions),
     ] {
@@ -403,19 +407,33 @@ fn slack_chat_writes_only_leave_through_the_governor() {
         );
     }
 
+    // The resume producers only delegate to the turn; they must not write
+    // to Slack around the gate.
+    for (name, src) in [("resume.rs", resume), ("resume_turn.rs", resume_turn)] {
+        assert!(
+            !src.contains(".chat_post_message("),
+            "{name}: an ungated chat.postMessage (#2012)"
+        );
+        assert!(
+            !src.contains(".chat_update("),
+            "{name}: an ungated chat.update (#2012)"
+        );
+    }
+
+    let count = |needle: &str| handler.matches(needle).count() + flow.matches(needle).count();
     assert_eq!(
-        handler.matches("session.post(").count(),
+        count("session.post("),
         32,
         "every new-message site pays the budget: the count is the coverage"
     );
     assert_eq!(
-        handler.matches("session.update(").count(),
+        count("session.update("),
         7,
         "content edits (settle stamps, flipped waiting lines, approval \
          labels, the user's toggle) stay content: 7 of them"
     );
     assert_eq!(
-        handler.matches("session.update_chrome(").count(),
+        count("session.update_chrome("),
         4,
         "exactly four sites re-render state already on screen: the ticker's \
          clock, the step-group append and the two tool-status edits. More \
