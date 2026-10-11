@@ -209,26 +209,6 @@ fn format_clock(elapsed: Duration) -> String {
     }
 }
 
-/// Elapsed against the turn's thinking-loop budget (FR-011): `M:SS / M:SS`.
-/// The denominator is read from `[agent] thinking_loop_timeout_secs` at
-/// render time, never a literal (AC-013, AC-023). `None` (0 = guard
-/// disabled) keeps the bare elapsed clock.
-fn clock(elapsed: Duration, budget: Option<Duration>) -> String {
-    let elapsed = format_clock(elapsed);
-    match budget {
-        Some(b) => format!("{elapsed} / {}", format_clock(b)),
-        None => elapsed,
-    }
-}
-
-/// Thinking-loop budget for the clock denominator (FR-011), read from config.
-fn budget() -> Option<Duration> {
-    let secs = crate::config::Config::current()
-        .agent
-        .thinking_loop_timeout_secs;
-    (secs > 0).then(|| Duration::from_secs(secs))
-}
-
 /// Idle threshold for the "still working" line (FR-006), read from
 /// `[channels.discord.progress] silence_warning_secs`. `0` disables.
 fn silence_threshold() -> Option<Duration> {
@@ -352,7 +332,7 @@ fn summary_line(group: &GroupState, show_activity: bool) -> String {
             if let Some(ctx) = &s.ctx {
                 line.push_str(&format!(" · {ctx}"));
             }
-            line.push_str(&format!(" · ⏱️ {}", clock(s.elapsed, budget())));
+            line.push_str(&format!(" · ⏱️ {}", format_clock(s.elapsed)));
             line
         }
         None => {
@@ -368,7 +348,7 @@ fn summary_line(group: &GroupState, show_activity: bool) -> String {
             } else {
                 ("✅", String::new())
             };
-            let clock = format!("🕒 {}", clock(group.started_at.elapsed(), budget()));
+            let clock = format!("🕒 {}", format_clock(group.started_at.elapsed()));
             let ctx_segment = match &group.live_ctx {
                 Some(ctx) => format!(" · {ctx}"),
                 None => String::new(),
