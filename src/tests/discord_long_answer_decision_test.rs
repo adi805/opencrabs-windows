@@ -12,7 +12,7 @@
 //! `discord_write_discipline_test` pins AC-024 and `discord_fr004_one_message_test`
 //! pins AC-008.
 //!
-//! Four properties, each of which can silently regress:
+//! Five properties, each of which can silently regress:
 //!
 //! * paging is keyed on the split result (`chunks.len() > 1`), not on a second
 //!   char threshold re-derived from the text, which would drift;
@@ -23,7 +23,9 @@
 //!   `for chunk in &chunks` loop sits inside the thread branch — that pair is
 //!   what keeps an answer from being posted twice. FR-007 moved the thread
 //!   decision ahead of the pager, so the exclusion is `!want_thread`, not the
-//!   old `!paged`.
+//!   old `!paged`;
+//! * a page press rewrites the card in place (`UpdateMessage`), so the arrows
+//!   and the text they control never split into two separate messages.
 //!
 //! Scope, stated so a later reader does not "fix" it by widening or narrowing:
 //! this pins the routing decision in `handler.rs`. It does not re-test the
@@ -161,14 +163,34 @@ fn the_scan_sees_the_send_path_it_governs() {
     }
 }
 
+/// The pager-press branch of `agent.rs`, sliced out so the assertions below
+/// talk about the page-turn path and nothing else. `agent.rs` answers
+/// components in a dozen places and most of them create a fresh message on
+/// purpose, so a whole-file scan cannot tell an in-place page turn from an
+/// unrelated bubble. The slice runs from the prefix match that opens the
+/// branch to the `toolgroup:` match that opens the next one.
+fn pager_branch() -> String {
+    let agent_path = discord_dir().join("agent.rs");
+    let src = std::fs::read_to_string(&agent_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", agent_path.display()));
+    let start = src
+        .find("strip_prefix(super::long_answer::PAGER_PREFIX)")
+        .expect("agent.rs no longer matches PAGER_PREFIX: the pager press moved");
+    let rest = &src[start..];
+    let end = rest
+        .find(r#"strip_prefix("toolgroup:")"#)
+        .expect("the toolgroup branch that closes the pager press moved");
+    rest[..end].to_string()
+}
+
 /// AC-020 from the reader's side. Page 0 posts in-channel, so the row attached
 /// to it must be drawn FOR page 0: `◀` sits there disabled and `▶` walks into
 /// the first hidden page. Drawing it for page 1 instead would put a live `◀`
 /// on the in-channel row, so the first press would jump backwards to text the
 /// reader already has, and a later page could never be walked back to. The
-/// ephemeral answer must re-draw the same row for whatever page it is showing,
-/// or every page after the first press is stored but unreachable. The tests
-/// above only pin that *a* row exists, so they cannot see this.
+/// press must re-draw the same row for whatever page it is showing, or every
+/// page after the first press is stored but unreachable. The tests above only
+/// pin that *a* row exists, so they cannot see this.
 #[test]
 fn the_pager_opens_a_hidden_page_and_carries_the_next_row_forward() {
     let flat_handler = flat(&handler_src());
@@ -178,12 +200,45 @@ fn the_pager_opens_a_hidden_page_and_carries_the_next_row_forward() {
          in-channel row is live and jumps to the wrong page (AC-020)"
     );
 
-    let agent_path = discord_dir().join("agent.rs");
-    let agent_src = std::fs::read_to_string(&agent_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", agent_path.display()));
     assert!(
-        flat(&agent_src).contains("pager_row("),
-        "the ephemeral answer no longer carries a row, so every page after the \
+        flat(&pager_branch()).contains("pager_row("),
+        "the pager press no longer carries a row, so every page after the \
          first press is stored but unreachable (AC-020)"
     );
+}
+
+/// AC-020, the shape the reader actually sees. A press must **rewrite the card
+/// that carries the arrows**, not post a fresh ephemeral bubble: answering
+/// ephemerally left the card frozen on page 0 while the requested page landed
+/// somewhere else in the channel, so the reader had to scroll for the page they
+/// had just asked for and the arrows they pressed never moved.
+///
+/// This pins the response *variant*, which is the entire difference between the
+/// two behaviours and is invisible to every other test here:
+/// `CreateInteractionResponse::UpdateMessage` rewrites the message the
+/// component is attached to, `::Message` creates one. A refactor that swapped
+/// them back would keep the row, keep the page body, keep the store intact, and
+/// silently reintroduce the bug, which is exactly what happened once already.
+#[test]
+fn a_page_press_edits_the_card_instead_of_posting_an_ephemeral_bubble() {
+    let branch = flat(&pager_branch());
+    let update = branch
+        .find("CreateInteractionResponse::UpdateMessage(")
+        .expect(
+            "the pager press no longer updates the card in place, so an arrow \
+             press spawns a new message and leaves the arrows behind (AC-020)",
+        );
+
+    // The aged-out fallback may still answer ephemerally (its pages are gone,
+    // and overwriting the card would destroy the page the reader can see), but
+    // it must not be reachable before the in-place edit, or the page body can
+    // still be routed into a fresh bubble.
+    if let Some(ephemeral) = branch.find(".ephemeral(true)") {
+        assert!(
+            ephemeral > update,
+            "the pager press answers ephemerally before the in-place edit, so \
+             the requested page lands in a bubble instead of on the card the \
+             arrows are attached to (AC-020)"
+        );
+    }
 }
