@@ -10,6 +10,7 @@ use super::r#trait::{Tool, ToolCapability, ToolExecutionContext, ToolHints, Tool
 use crate::channels::whatsapp::WhatsAppState;
 use crate::channels::whatsapp::broadcast;
 use crate::channels::whatsapp::interactive;
+use crate::channels::whatsapp::newsletter::post_body;
 use crate::channels::whatsapp::poll::resolve_options;
 use crate::channels::whatsapp::rate_limit::GateOutcome;
 use crate::config::Config;
@@ -19,8 +20,8 @@ use std::sync::Arc;
 use wacore_binary::jid::{Jid, Server};
 use whatsapp_rust::features::{
     GroupCreateOptions, GroupDescription, GroupParticipantOptions, GroupSubject, JoinGroupResult,
-    MemberAddMode, MembershipApprovalMode, ParticipantChangeResponse, PictureType,
-    PollVoteCiphertext, PreviousDescription,
+    MemberAddMode, MembershipApprovalMode, NewsletterMessage, NewsletterMetadata,
+    ParticipantChangeResponse, PictureType, PollVoteCiphertext, PreviousDescription,
 };
 
 /// Tool for comprehensive WhatsApp control (14 actions).
@@ -240,6 +241,90 @@ pub(crate) fn resolve_group_jid(input: &Value) -> std::result::Result<Jid, ToolR
         return Err(ToolResult::error(reason));
     }
     Ok(jid)
+}
+
+/// Resolve the target newsletter (channel) JID from `newsletter_jid`.
+///
+/// Channel JIDs are `<id>@newsletter`. A bare id is accepted and wrapped, the
+/// same way `resolve_group_jid` accepts a bare group id, because the invite and
+/// metadata surfaces hand channel ids out in that form. There is no owner
+/// fallback: a channel action that names no channel has no sensible default,
+/// and falling back would point a public post at a DM.
+#[allow(clippy::result_large_err)]
+pub(crate) fn resolve_newsletter_jid(input: &Value) -> std::result::Result<Jid, ToolResult> {
+    let raw = get_str(input, "newsletter_jid")?.trim();
+    let jid: Jid = if raw.contains('@') {
+        raw.parse()
+            .map_err(|e| ToolResult::error(format!("Invalid newsletter JID '{raw}': {e}")))?
+    } else {
+        format!("{raw}@newsletter")
+            .parse()
+            .map_err(|e| ToolResult::error(format!("Invalid channel id '{raw}': {e}")))?
+    };
+    if jid.server != Server::Newsletter {
+        return Err(ToolResult::error(format!(
+            "'{raw}' is not a newsletter JID (expected an @newsletter address or a bare channel id)."
+        )));
+    }
+    let jid_str = jid.to_string();
+    if !crate::cron::send_scope::may_send("whatsapp", &jid_str) {
+        let reason = crate::cron::send_scope::refusal_for("whatsapp", &jid_str);
+        tracing::warn!("whatsapp_send: {reason}");
+        return Err(ToolResult::error(reason));
+    }
+    Ok(jid)
+}
+
+/// Render a channel's metadata as the block every newsletter arm returns.
+///
+/// One formatter for `get_metadata`, `get_metadata_by_invite`, `join`, `create`
+/// and `update`: the same object reported five ways would drift into five
+/// shapes, and the caller cannot tell which fields an action chose to omit.
+fn describe_newsletter(m: &NewsletterMetadata) -> String {
+    let mut out = format!(
+        "{} ({})\n  subscribers: {}\n  state: {:?}\n  verification: {:?}",
+        m.name, m.jid, m.subscriber_count, m.state, m.verification
+    );
+    if let Some(role) = &m.role {
+        out.push_str(&format!("\n  your role: {role:?}"));
+    }
+    if let Some(desc) = m.description.as_deref().filter(|d| !d.is_empty()) {
+        out.push_str(&format!("\n  description: {desc}"));
+    }
+    if let Some(code) = m.invite_code.as_deref().filter(|c| !c.is_empty()) {
+        out.push_str(&format!("\n  invite code: {code}"));
+    }
+    out
+}
+
+/// Render a page of channel history, oldest first, one line per post.
+///
+/// The body comes from `post_body`, the same extractor the digest poller uses,
+/// so a captioned photo reads "📷 caption" here exactly as it does in the
+/// digest instead of vanishing because this arm only understood plain text.
+fn describe_newsletter_messages(jid: &Jid, list: &[NewsletterMessage]) -> String {
+    let mut out = format!("{} post(s) from {jid} (oldest first):", list.len());
+    for m in list {
+        let when = chrono::DateTime::from_timestamp(m.timestamp as i64, 0)
+            .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| format!("ts={}", m.timestamp));
+        let body = m
+            .message
+            .as_ref()
+            .map(post_body)
+            .unwrap_or_else(|| "[post without text]".to_string());
+        let flat = body.replace('\n', " ");
+        let flat: String = flat.chars().take(200).collect();
+        out.push_str(&format!(
+            "\n- server_id {} [{}] {:?}{} :: {}",
+            m.server_id,
+            when,
+            m.message_type,
+            if m.is_sender { " (you)" } else { "" },
+            flat
+        ));
+    }
+    out
 }
 
 /// Resolve the chat a per-chat action (archive, mute, clear, star) targets.
@@ -755,7 +840,11 @@ impl Tool for WhatsAppSendTool {
                         "star_message", "unstar_message", "clear_chat", "save_contact",
                         "set_available", "set_unavailable", "subscribe_presence",
                         "unsubscribe_presence",
-                        "create_quiz", "vote", "decrypt_vote", "aggregate_votes"
+                        "create_quiz", "vote", "decrypt_vote", "aggregate_votes",
+                        "newsletter_get_metadata", "newsletter_get_metadata_by_invite",
+                        "newsletter_join", "newsletter_leave",
+                        "newsletter_create", "newsletter_update",
+                        "newsletter_revoke_message", "newsletter_get_messages"
                     ],
                     "description": "The WhatsApp action to perform."
                 },
@@ -952,7 +1041,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "description": {
                     "type": "string",
-                    "description": "New group description for set_group_description. An empty string deletes the description."
+                    "description": "New group description for set_group_description, or the new channel description for newsletter_create / newsletter_update. An empty string deletes the description."
                 },
                 "invite_code": {
                     "type": "string",
@@ -999,6 +1088,18 @@ impl Tool for WhatsAppSendTool {
                 "allow_admin_reports": {
                     "type": "boolean",
                     "description": "For set_allow_admin_reports: true lets members report messages to the group admins."
+                },
+                "newsletter_jid": {
+                    "type": "string",
+                    "description": "Target newsletter (channel) for the newsletter_* actions, e.g. '1234@newsletter'. A bare channel id is accepted."
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "For newsletter_get_messages: how many posts to fetch, newest first. Default 20, capped at 100."
+                },
+                "before": {
+                    "type": "integer",
+                    "description": "For newsletter_get_messages: fetch posts older than this server_id, the pagination cursor from a previous page."
                 }
             },
             "required": ["action"]
@@ -2168,6 +2269,126 @@ impl Tool for WhatsAppSendTool {
                     "Failed to list newsletters: {e}"
                 ))),
             },
+
+            // ── newsletter (channel) reads ───────────────────────────────────
+            // #1485. Both readers only report what the server already knows
+            // about a channel, so neither posts anything and neither is gated.
+            "newsletter_get_metadata" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                match client.newsletter().get_metadata(&jid).await {
+                    Ok(m) => Ok(ToolResult::success(describe_newsletter(&m))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to read {jid}: {e}"))),
+                }
+            }
+
+            "newsletter_get_metadata_by_invite" => {
+                let code = pget!(get_str(&input, "invite_code")).to_string();
+                match client.newsletter().get_metadata_by_invite(&code).await {
+                    Ok(m) => Ok(ToolResult::success(describe_newsletter(&m))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to read the channel behind invite '{code}': {e}"
+                    ))),
+                }
+            }
+
+            "newsletter_get_messages" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                let count = input
+                    .get("count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(20)
+                    .clamp(1, 100) as u32;
+                let before = input.get("before").and_then(|v| v.as_u64());
+                match client
+                    .newsletter()
+                    .get_messages(jid.clone(), count, before)
+                    .await
+                {
+                    Ok(list) if list.is_empty() => Ok(ToolResult::success(format!(
+                        "{jid} returned no posts for that window."
+                    ))),
+                    Ok(list) => Ok(ToolResult::success(describe_newsletter_messages(
+                        &jid, &list,
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to read {jid} history: {e}"
+                    ))),
+                }
+            }
+
+            // ── newsletter (channel) writes ──────────────────────────────────
+            // #1485. Joining, leaving, creating, editing and revoking all move
+            // a public surface: what this account follows, owns, or has posted
+            // for every reader. They pass `send_scope` like any other outbound
+            // act, and none is charged to the message budget because a channel
+            // is not a conversation.
+            "newsletter_join" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                match client.newsletter().join(&jid).await {
+                    Ok(m) => Ok(ToolResult::success(format!(
+                        "Joined the channel.\n{}",
+                        describe_newsletter(&m)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to join {jid}: {e}"))),
+                }
+            }
+
+            "newsletter_leave" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                match client.newsletter().leave(&jid).await {
+                    Ok(()) => Ok(ToolResult::success(format!("Left {jid}."))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to leave {jid}: {e}"))),
+                }
+            }
+
+            "newsletter_create" => {
+                // The name travels in `message`, the same slot `create_label`
+                // uses, so "the string that names this thing" has one spelling.
+                let name = pget!(get_str(&input, "message")).to_string();
+                let description = input.get("description").and_then(|v| v.as_str());
+                match client.newsletter().create(&name, description).await {
+                    Ok(m) => Ok(ToolResult::success(format!(
+                        "Created the channel.\n{}",
+                        describe_newsletter(&m)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to create the channel: {e}"
+                    ))),
+                }
+            }
+
+            "newsletter_update" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                let name = input.get("message").and_then(|v| v.as_str());
+                let description = input.get("description").and_then(|v| v.as_str());
+                if name.is_none() && description.is_none() {
+                    return Ok(ToolResult::error(
+                        "newsletter_update needs 'message' (the new name) or 'description' \
+                         (the new description) to have anything to change."
+                            .to_string(),
+                    ));
+                }
+                match client.newsletter().update(&jid, name, description).await {
+                    Ok(m) => Ok(ToolResult::success(format!(
+                        "Updated the channel.\n{}",
+                        describe_newsletter(&m)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to update {jid}: {e}"))),
+                }
+            }
+
+            "newsletter_revoke_message" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                match client.newsletter().revoke_message(&jid, msg_id).await {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Deleted message {msg_id} from {jid}."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to delete {msg_id} from {jid}: {e}"
+                    ))),
+                }
+            }
 
             // ── create_label / assign_label ──────────────────────────────────
             // #1485. Labels are private organisation on the owner's own account:
@@ -3546,7 +3767,10 @@ impl Tool for WhatsAppSendTool {
                  get_user_info, archive_chat, unarchive_chat, mute_chat, unmute_chat, \
                  star_message, unstar_message, clear_chat, save_contact, set_available, \
                  set_unavailable, subscribe_presence, unsubscribe_presence, create_quiz, \
-                 vote, decrypt_vote, aggregate_votes",
+                 vote, decrypt_vote, aggregate_votes, newsletter_get_metadata, \
+                 newsletter_get_metadata_by_invite, newsletter_join, newsletter_leave, \
+                 newsletter_create, newsletter_update, newsletter_revoke_message, \
+                 newsletter_get_messages",
                 unknown
             ))),
         }

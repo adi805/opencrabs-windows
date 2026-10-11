@@ -272,7 +272,7 @@ pub(crate) async fn poll_once(
 /// Best-effort text of a newsletter post: plain, extended, then captioned
 /// media; everything else gets a typed placeholder so the digest line never
 /// disappears silently.
-fn post_body(m: &waproto::whatsapp::Message) -> String {
+pub(crate) fn post_body(m: &waproto::whatsapp::Message) -> String {
     if let Some(t) = m.conversation.as_deref().filter(|t| !t.is_empty()) {
         return t.to_string();
     }
