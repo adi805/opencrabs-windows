@@ -65,7 +65,13 @@ pub fn sources_in(dir: &str) -> Vec<(String, String)> {
 /// Without this the same call matches or not depending on whether rustfmt
 /// happened to wrap it, which is the reflow that makes a source-pinning test
 /// lie (#1880, F5 in `AUDIT-v0.5.10.md`).
-pub fn flatten(src: &str) -> String {
+///
+/// Takes anything that derefs to `&str` so a caller that already owns the
+/// source (`flatten(read("src/…"))`) and one that borrows a literal
+/// (`flatten("f(a,)")`) are both written the obvious way: the call shape is
+/// not the point of the test, the needle is.
+pub fn flatten(src: impl AsRef<str>) -> String {
+    let src = src.as_ref();
     let stripped: String = src.chars().filter(|c| !c.is_whitespace()).collect();
     stripped
         .replace(",)", ")")
