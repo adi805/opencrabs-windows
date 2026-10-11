@@ -127,6 +127,34 @@ pub(crate) fn settled_icon_verb(
     (icon, verb.to_string())
 }
 
+/// Stamp a settled status onto a group.
+///
+/// Pure and store-free on purpose. The live settle path stamps through
+/// `DiscordState::settle_tool_group`, while the flow ticker's orphan path has to
+/// produce the exact same chrome from a snapshot it already holds, because by
+/// then the group is no longer in the store to settle. Two implementations would
+/// drift, and the orphan card would freeze on a different line than every other
+/// card (#1880).
+pub(crate) fn stamp_settled(
+    group: &mut GroupState,
+    outcome: TurnOutcome,
+    bg: usize,
+    agents: crate::channels::background_work::SubagentCounts,
+    ctx: Option<String>,
+) {
+    let prev_ctx = group.settled.as_ref().and_then(|s| s.ctx.clone());
+    let agent_phrase = (!agents.is_empty())
+        .then(|| crate::channels::background_work::subagent_waiting_phrase(agents));
+    let (icon, verb) = settled_icon_verb(outcome, bg, agent_phrase.as_deref());
+    group.settled = Some(SettledStatus {
+        outcome,
+        elapsed: group.started_at.elapsed(),
+        ctx: ctx.or(prev_ctx),
+        icon,
+        verb,
+    });
+}
+
 /// Terminal outcome of a turn, stamped on the group at settle (FR-005, #1880).
 /// The Discord twin of Slack's `TurnOutcome` and Telegram's `FlowOutcome`.
 ///
@@ -627,17 +655,7 @@ impl DiscordState {
         let mut guard = self.tool_groups.lock().await;
         let (_, map) = &mut *guard;
         let group = map.get_mut(&message_id)?;
-        let prev_ctx = group.settled.as_ref().and_then(|s| s.ctx.clone());
-        let agent_phrase = (!agents.is_empty())
-            .then(|| crate::channels::background_work::subagent_waiting_phrase(agents));
-        let (icon, verb) = settled_icon_verb(outcome, bg, agent_phrase.as_deref());
-        group.settled = Some(SettledStatus {
-            outcome,
-            elapsed: group.started_at.elapsed(),
-            ctx: ctx.or(prev_ctx),
-            icon,
-            verb,
-        });
+        stamp_settled(group, outcome, bg, agents, ctx);
         Some(group.clone())
     }
 

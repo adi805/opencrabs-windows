@@ -295,3 +295,31 @@ async fn retention_drains_the_live_overflow_once_it_settles() {
         "the group just inserted must be retained"
     );
 }
+
+/// The ticker's orphan path stamps through the same function the live settle
+/// path uses, so a card whose group left the store freezes on exactly the chrome
+/// every other card settles to. The live `🕒` glyph must be gone and the settled
+/// `⏱️` one present, otherwise the card still reads as a turn in flight (#1880).
+#[test]
+fn stamp_settled_replaces_the_live_clock() {
+    let mut g = group(2, false, false);
+    let live = render_content(&g);
+    assert!(live.contains('🕒'), "fixture must start live: {live}");
+    crate::channels::discord::tool_group::stamp_settled(
+        &mut g,
+        TurnOutcome::TimedOut,
+        0,
+        SubagentCounts::default(),
+        None,
+    );
+    assert!(g.settled.is_some(), "the stamp must mark the group settled");
+    let settled = render_content(&g);
+    assert!(
+        !settled.contains('🕒'),
+        "a settled card must not keep the live clock: {settled}"
+    );
+    assert!(
+        settled.contains("⏱️"),
+        "a settled card must carry the frozen clock: {settled}"
+    );
+}

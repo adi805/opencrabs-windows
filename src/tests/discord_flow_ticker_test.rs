@@ -118,16 +118,17 @@ fn ticker_spawns_before_the_turn_dispatch() {
     );
 }
 
-/// A snapshot that comes back empty must not leave a live-looking control
-/// behind. The group is only gone because it settled and was evicted, so the
-/// card already carries its final line; the ticker's job on that path is to stop
-/// and to strip the toggle row, so no dead Expand button is left on a card that
-/// nothing can redraw any more (#1880, L3).
+/// A snapshot that comes back empty must settle the card, not walk away from
+/// it. The ticker's bare `break` left the live `🕒` chrome frozen on screen,
+/// which reads exactly like a turn still working (#1880). The arm now hands the
+/// last rendering it read to `settle_orphaned_card`, and that helper has to post
+/// it with the final class: a droppable class would let the repair be
+/// rate-limited away and leave the same frozen clock behind.
 #[test]
-fn a_missing_snapshot_strips_the_controls_instead_of_bare_breaking() {
+fn a_missing_snapshot_settles_the_card_instead_of_bare_breaking() {
     let handler = include_str!("../channels/discord/handler.rs");
     let start = handler
-        .find("tool_group_snapshot(mid.get()).await")
+        .find("let Some(group) = dstate.tool_group_snapshot(mid.get()).await")
         .expect("the ticker no longer reads the group snapshot");
     let rest = &handler[start..];
     let end = rest
@@ -135,12 +136,32 @@ fn a_missing_snapshot_strips_the_controls_instead_of_bare_breaking() {
         .expect("the settled check that follows the snapshot moved");
     let arm = &rest[..end];
     assert!(
-        arm.contains("components(Vec::new())"),
-        "the missing-snapshot arm no longer strips the toggle row, so an \
-         evicted card keeps a live-looking button that can never work"
+        arm.contains("settle_orphaned_card"),
+        "the missing-snapshot arm no longer settles the card it lost, so a card \
+         whose group left the store keeps its live clock"
     );
     assert!(
         arm.contains("break"),
         "the missing-snapshot arm must still stop the ticker"
+    );
+
+    let helper_start = handler
+        .find("async fn settle_orphaned_card(")
+        .expect("the orphan settle helper is gone");
+    let helper = &handler[helper_start..];
+    assert!(
+        helper.contains("stamp_settled("),
+        "the orphan helper no longer stamps a settled status, so a lost card \
+         would keep live chrome"
+    );
+    assert!(
+        helper.contains("Class::Final"),
+        "the orphan repair must not be droppable: a rate-limited drop leaves the \
+         frozen clock the helper exists to fix"
+    );
+    assert!(
+        helper.contains("components(Vec::new())"),
+        "with no rendering to post, the helper must at least drop the toggle row \
+         instead of leaving a control that can never work"
     );
 }
