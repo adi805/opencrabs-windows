@@ -15,10 +15,11 @@ use crate::config::Config;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
-use wacore_binary::jid::Jid;
+use wacore_binary::jid::{Jid, Server};
 use whatsapp_rust::features::{
     GroupCreateOptions, GroupDescription, GroupParticipantOptions, GroupSubject, JoinGroupResult,
-    MemberAddMode, MembershipApprovalMode, ParticipantChangeResponse, PreviousDescription,
+    MemberAddMode, MembershipApprovalMode, ParticipantChangeResponse, PictureType,
+    PreviousDescription,
 };
 
 /// Tool for comprehensive WhatsApp control (14 actions).
@@ -242,24 +243,43 @@ pub(crate) fn resolve_group_jid(input: &Value) -> std::result::Result<Jid, ToolR
 /// companion device, not a different person.
 #[allow(clippy::result_large_err)]
 pub(crate) fn resolve_participants(input: &Value) -> std::result::Result<Vec<Jid>, ToolResult> {
-    let Some(raw_list) = input.get("participants").and_then(|v| v.as_array()) else {
-        return Err(ToolResult::error(
-            "Missing required parameter 'participants' (an array of phone numbers or JIDs)."
-                .to_string(),
-        ));
+    resolve_jid_list(input, "participants")
+}
+
+/// Parse the `contacts` array into JIDs for the read-only contact queries.
+///
+/// Same normalization as `resolve_participants`, keyed on `contacts` because
+/// these actions ask ABOUT people rather than move them. An empty list is
+/// still a refusal: a query that names nobody has no answer to report, and
+/// defaulting it to "everyone" would fan the lookup out across the account.
+#[allow(clippy::result_large_err)]
+pub(crate) fn resolve_contacts(input: &Value) -> std::result::Result<Vec<Jid>, ToolResult> {
+    resolve_jid_list(input, "contacts")
+}
+
+/// Parse a named array parameter into JIDs.
+///
+/// Shared by `resolve_participants` and `resolve_contacts` so the two spellings
+/// cannot drift apart on normalization.
+#[allow(clippy::result_large_err)]
+fn resolve_jid_list(input: &Value, key: &str) -> std::result::Result<Vec<Jid>, ToolResult> {
+    let Some(raw_list) = input.get(key).and_then(|v| v.as_array()) else {
+        return Err(ToolResult::error(format!(
+            "Missing required parameter '{key}' (an array of phone numbers or JIDs)."
+        )));
     };
     if raw_list.is_empty() {
-        return Err(ToolResult::error(
-            "'participants' must name at least one person.".to_string(),
-        ));
+        return Err(ToolResult::error(format!(
+            "'{key}' must name at least one person."
+        )));
     }
     let mut jids = Vec::with_capacity(raw_list.len());
     for entry in raw_list {
         let raw = entry.as_str().unwrap_or("").trim().trim_start_matches('+');
         if raw.is_empty() {
-            return Err(ToolResult::error(
-                "'participants' contains an empty entry.".to_string(),
-            ));
+            return Err(ToolResult::error(format!(
+                "'{key}' contains an empty entry."
+            )));
         }
         let jid_str = if raw.contains('@') {
             raw.to_string()
@@ -269,7 +289,54 @@ pub(crate) fn resolve_participants(input: &Value) -> std::result::Result<Vec<Jid
         };
         let jid: Jid = jid_str
             .parse()
-            .map_err(|e| ToolResult::error(format!("Invalid participant '{raw}': {e}")))?;
+            .map_err(|e| ToolResult::error(format!("Invalid '{key}' entry '{raw}': {e}")))?;
+        jids.push(jid);
+    }
+    Ok(jids)
+}
+
+/// Parse the `group_jids` array into group JIDs.
+///
+/// Each entry may be a full `@g.us` JID or a bare group id, the same spellings
+/// `resolve_group_jid` accepts for a single group, and each one passes the same
+/// send-scope check.
+#[allow(clippy::result_large_err)]
+pub(crate) fn resolve_group_jids(input: &Value) -> std::result::Result<Vec<Jid>, ToolResult> {
+    let Some(raw_list) = input.get("group_jids").and_then(|v| v.as_array()) else {
+        return Err(ToolResult::error(
+            "Missing required parameter 'group_jids' (an array of group JIDs).".to_string(),
+        ));
+    };
+    if raw_list.is_empty() {
+        return Err(ToolResult::error(
+            "'group_jids' must name at least one group.".to_string(),
+        ));
+    }
+    let mut jids = Vec::with_capacity(raw_list.len());
+    for entry in raw_list {
+        let raw = entry.as_str().unwrap_or("").trim();
+        if raw.is_empty() {
+            return Err(ToolResult::error(
+                "'group_jids' contains an empty entry.".to_string(),
+            ));
+        }
+        let jid: Jid = if raw.contains('@') {
+            raw.parse()
+                .map_err(|e| ToolResult::error(format!("Invalid group JID '{raw}': {e}")))?
+        } else {
+            Jid::group(raw)
+        };
+        if jid.server != Server::Group {
+            return Err(ToolResult::error(format!(
+                "'{raw}' is not a group JID (expected an @g.us address or a bare group id)."
+            )));
+        }
+        let jid_str = jid.to_string();
+        if !crate::cron::send_scope::may_send("whatsapp", &jid_str) {
+            let reason = crate::cron::send_scope::refusal_for("whatsapp", &jid_str);
+            tracing::warn!("whatsapp_send: {reason}");
+            return Err(ToolResult::error(reason));
+        }
         jids.push(jid);
     }
     Ok(jids)
@@ -496,7 +563,9 @@ impl Tool for WhatsAppSendTool {
                         "set_no_frequently_forwarded", "set_allow_admin_reports",
                         "get_membership_requests", "approve_membership_requests",
                         "reject_membership_requests", "cancel_membership_requests",
-                        "get_participating", "is_admin"
+                        "get_participating", "is_admin",
+                        "get_profile_picture", "get_group_profile_picture",
+                        "is_on_whatsapp", "get_user_info"
                     ],
                     "description": "The WhatsApp action to perform."
                 },
@@ -611,6 +680,20 @@ impl Tool for WhatsAppSendTool {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Phone numbers (E.164, leading '+' optional) or JIDs. Used by create_group, add_participants, remove_participants, promote_participants, demote_participants, approve_membership_requests, reject_membership_requests, cancel_membership_requests and is_admin."
+                },
+                "contacts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Phone numbers (E.164, leading '+' optional) or JIDs to look up. Used by is_on_whatsapp and get_user_info."
+                },
+                "group_jids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Group JIDs to fetch profile pictures for (max 1000). Used by get_group_profile_picture."
+                },
+                "preview": {
+                    "type": "boolean",
+                    "description": "For get_profile_picture and get_group_profile_picture: true returns the small preview thumbnail, false (the default) the full-size picture."
                 },
                 "subject": {
                     "type": "string",
@@ -2549,6 +2632,133 @@ impl Tool for WhatsAppSendTool {
                     ))),
                 }
             }
+            "get_profile_picture" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let preview = match input.get("preview") {
+                    Some(_) => pget!(get_bool(&input, "preview")),
+                    None => false,
+                };
+                match client.contacts().get_profile_picture(&jid, preview).await {
+                    Ok(Some(pic)) => Ok(ToolResult::success(format!(
+                        "{jid_str}: {} profile picture at {} (id {}).",
+                        if preview { "preview" } else { "full-size" },
+                        pic.url,
+                        pic.id
+                    ))),
+                    Ok(None) => Ok(ToolResult::success(format!(
+                        "{jid_str}: no profile picture is visible to this account."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to fetch the profile picture for {jid_str}: {e}"
+                    ))),
+                }
+            }
+
+            "get_group_profile_picture" => {
+                let jids = pget!(resolve_group_jids(&input));
+                let preview = match input.get("preview") {
+                    Some(_) => pget!(get_bool(&input, "preview")),
+                    None => false,
+                };
+                let picture_type = if preview {
+                    PictureType::Preview
+                } else {
+                    PictureType::Image
+                };
+                match client
+                    .groups()
+                    .get_profile_pictures(jids, picture_type)
+                    .await
+                {
+                    Ok(pics) if pics.is_empty() => Ok(ToolResult::success(
+                        "No group profile pictures returned.".to_string(),
+                    )),
+                    Ok(pics) => {
+                        let mut out = format!("{} group picture(s):", pics.len());
+                        for p in &pics {
+                            out.push_str(&format!(
+                                "\n  {}: {}",
+                                p.group_jid,
+                                p.url.as_deref().unwrap_or("no picture")
+                            ));
+                        }
+                        Ok(ToolResult::success(out))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to fetch group profile pictures: {e}"
+                    ))),
+                }
+            }
+
+            "is_on_whatsapp" => {
+                let jids = pget!(resolve_contacts(&input));
+                match client.contacts().is_on_whatsapp(&jids).await {
+                    Ok(results) if results.is_empty() => Ok(ToolResult::success(
+                        "No lookup results returned.".to_string(),
+                    )),
+                    Ok(results) => {
+                        let mut lines: Vec<String> = Vec::with_capacity(results.len());
+                        for r in &results {
+                            let mut line = if r.is_registered {
+                                format!("{}: on WhatsApp", r.jid)
+                            } else {
+                                format!("{}: NOT registered on WhatsApp", r.jid)
+                            };
+                            if let Some(name) =
+                                r.verified_name.as_ref().and_then(|v| v.name.as_ref())
+                            {
+                                line.push_str(&format!(" (business: {name})"));
+                            }
+                            if let Some(code) = r.contact_error.as_ref().and_then(|e| e.code) {
+                                line.push_str(&format!(" [lookup error {code}]"));
+                            }
+                            lines.push(line);
+                        }
+                        Ok(ToolResult::success(lines.join("\n")))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to check whether the numbers are on WhatsApp: {e}"
+                    ))),
+                }
+            }
+
+            "get_user_info" => {
+                let jids = pget!(resolve_contacts(&input));
+                match client.contacts().get_user_info(&jids).await {
+                    Ok(info) if info.is_empty() => {
+                        Ok(ToolResult::success("No user info returned.".to_string()))
+                    }
+                    Ok(info) => {
+                        let mut entries: Vec<_> = info.into_iter().collect();
+                        entries.sort_by_key(|(jid, _)| jid.to_string());
+                        let mut out = format!("{} contact(s):", entries.len());
+                        for (jid, u) in entries {
+                            let name = u
+                                .verified_name
+                                .as_ref()
+                                .and_then(|v| v.name.clone())
+                                .unwrap_or_else(|| "none".to_string());
+                            out.push_str(&format!(
+                                "\n  {}: verified name '{name}', status '{}', {} device(s)",
+                                jid,
+                                u.status.as_deref().unwrap_or("none"),
+                                u.devices.len()
+                            ));
+                        }
+                        Ok(ToolResult::success(out))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!("Failed to fetch user info: {e}"))),
+                }
+            }
+
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{}'. Valid actions: send, reply, delete, send_photo, \
                  send_document, send_audio, send_video, send_sticker, send_location, \
@@ -2563,7 +2773,9 @@ impl Tool for WhatsAppSendTool {
                  set_limit_sharing, set_group_history, set_no_frequently_forwarded, \
                  set_allow_admin_reports, get_membership_requests, \
                  approve_membership_requests, reject_membership_requests, \
-                 cancel_membership_requests, get_participating, is_admin",
+                 cancel_membership_requests, get_participating, is_admin, \
+                 get_profile_picture, get_group_profile_picture, is_on_whatsapp, \
+                 get_user_info",
                 unknown
             ))),
         }
