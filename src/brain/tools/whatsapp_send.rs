@@ -2503,7 +2503,11 @@ impl Tool for WhatsAppSendTool {
             "newsletter_revoke_message" => {
                 let jid = pget!(resolve_newsletter_jid(&input));
                 let msg_id = pget!(get_str(&input, "message_id")).to_string();
-                match client.newsletter().revoke_message(&jid, msg_id).await {
+                match client
+                    .newsletter()
+                    .revoke_message(&jid, msg_id.clone())
+                    .await
+                {
                     Ok(()) => Ok(ToolResult::success(format!(
                         "Deleted message {msg_id} from {jid}."
                     ))),
