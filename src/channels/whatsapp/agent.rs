@@ -186,6 +186,16 @@ pub(crate) fn missed_call_alert(from: &Jid, reason: &MissedReason) -> String {
 /// `offer_notice` is a fan-out telling us a call exists: rejecting it would knock
 /// the call off the owner's other devices, so it is only logged.
 async fn decline_incoming_call(client: &Client, alert: OwnerAlert, call: &IncomingCall) {
+    // Logged before the action is inspected, so this line appears for every
+    // inbound call event: it is the evidence that call events reach `on_event`
+    // at all, independently of how the call is then handled. Without it, a
+    // silent phone is indistinguishable from a call event that never arrived.
+    tracing::info!(
+        target: "wa.call",
+        caller = %call.from.observe(),
+        action = ?call.action,
+        "WhatsApp: inbound call event"
+    );
     if let CallAction::Offer { call_id, call_creator, is_video, .. } = &call.action {
         // `reason="busy"`, never a bare reject: a reasonless reject reads as the
         // callee declining and tears the call down on every device (see

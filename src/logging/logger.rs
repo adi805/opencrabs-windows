@@ -415,6 +415,11 @@ pub fn init_logging(config: LogConfig) -> Result<LoggerGuard, Box<dyn std::error
         // whatsapp-rust logs TODO stubs for unimplemented upstream handlers — suppress
         .add_directive("whatsapp_rust::client=error".parse()?)
         .add_directive("whatsapp_rust=warn".parse()?)
+        // The blanket `whatsapp_rust=warn` above swallows the call handler's own
+        // debug detail, and that handler is the only place an inbound call is
+        // visible: raise just that module so a call that never reaches our event
+        // bus can still be told apart from a call that never arrived.
+        .add_directive("whatsapp_rust::handlers::call=debug".parse()?)
         // whatsapp-rust also emits under CUSTOM targets that the module
         // directives above never match: "Client/Keepalive" pings every ~30s
         // and "UnifiedSession" time-offset/append chatter (thousands of

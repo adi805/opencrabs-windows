@@ -152,7 +152,7 @@ grammers-crypto = { version = "0.10", optional = true }
 # previously pinned via git rev. Never re-add a git pin here: cargo publish
 # strips git/rev and verifies against the crates.io version, so any API only
 # present upstream breaks the release publish step.
-whatsapp-rust = { version = "0.7.0", optional = true, default-features = false, features = ["tokio-transport", "ureq-client", "tokio-native", "tokio-runtime"] }
+whatsapp-rust = { version = "0.7.0", optional = true, default-features = false, features = ["tokio-transport", "ureq-client", "tokio-native", "tokio-runtime", "tracing"] }
 whatsapp-rust-tokio-transport = { version = "0.7.0", optional = true }
 whatsapp-rust-ureq-http-client = { version = "0.7.0", optional = true }
 wacore = { version = "0.7.0", optional = true, default-features = false }
