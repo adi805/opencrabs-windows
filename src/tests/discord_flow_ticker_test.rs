@@ -5,7 +5,9 @@
 //! throttle (4 s, never Telegram's 1500 ms), the cap, and the spawn site.
 
 use crate::channels::discord::DiscordState;
-use crate::channels::discord::tool_group::{GroupEntry, GroupState};
+use crate::channels::discord::tool_group::{
+    GroupEntry, GroupState, TurnOutcome, settled_icon_verb,
+};
 use std::time::Instant;
 
 fn live_group() -> GroupState {
@@ -163,5 +165,73 @@ fn a_missing_snapshot_settles_the_card_instead_of_bare_breaking() {
         helper.contains("components(Vec::new())"),
         "with no rendering to post, the helper must at least drop the toggle row \
          instead of leaving a control that can never work"
+    );
+}
+
+/// #196: the store-miss repair has no cause to report. On that branch the group
+/// left the store while the turn may still be running, so the card must not
+/// print a timeout verdict — that tells the reader the turn died when it did
+/// not. Pinned through `settled_icon_verb`, the same function `stamp_settled`
+/// renders with, so this asserts the line the user reads and not the call.
+#[test]
+fn an_orphaned_settle_does_not_claim_a_timeout() {
+    let (icon, verb) = settled_icon_verb(TurnOutcome::Orphaned, 0, None);
+    assert_ne!(
+        verb, "Timed out",
+        "the store-miss path has no timeout to report: the turn may still be running (#196)"
+    );
+    assert_eq!(verb, "Orphaned");
+    assert_eq!(icon, "⚠");
+}
+
+/// The ticker-cap path keeps the real timeout. A 30 min cap against a turn
+/// budget measured in minutes means the turn is long gone by the time it fires,
+/// so that verdict is honest and must not be swept up by the #196 change.
+#[test]
+fn the_ticker_cap_still_reports_a_timeout() {
+    let handler = include_str!("../channels/discord/handler.rs");
+    let cap = handler
+        .find("if born.elapsed() > FLOW_TICKER_CAP {")
+        .expect("the ticker cap arm moved");
+    let rest = &handler[cap..];
+    let end = rest
+        .find("// Plan card (FR-008)")
+        .expect("the plan-card refresh that follows the cap moved");
+    let arm = &rest[..end];
+    assert!(
+        arm.contains("TurnOutcome::TimedOut"),
+        "the cap is an honest timeout and must keep saying so (#196)"
+    );
+}
+
+/// The helper must never stamp a timeout, whatever its caller passes: both call
+/// sites are the same situation. With nothing to render there is no verdict to
+/// post at all, so the empty arm has to return before the stamp — Discord drops
+/// the toggle row, Slack has no components to drop and can only warn.
+#[test]
+fn the_orphan_helper_stamps_a_verdict_that_is_not_a_timeout() {
+    let handler = include_str!("../channels/discord/handler.rs");
+    let helper_start = handler
+        .find("async fn settle_orphaned_card(")
+        .expect("the orphan settle helper is gone");
+    let helper = &handler[helper_start..];
+    let helper_end = helper
+        .find("\n}\n")
+        .expect("the helper's closing brace moved");
+    let helper = &helper[..helper_end];
+    assert!(
+        !helper.contains("TurnOutcome::TimedOut"),
+        "the store-miss repair must not claim a timeout: the turn may still be running (#196)"
+    );
+    assert!(
+        helper.contains("TurnOutcome::Orphaned"),
+        "the store-miss repair must stamp the cause-free verdict (#196)"
+    );
+    let none_arm = &helper[..helper
+        .find("return;")
+        .expect("the empty-rendering arm must return early")];
+    assert!(
+        !none_arm.contains("stamp_settled("),
+        "with no rendering to post the helper must not stamp a verdict (#196)"
     );
 }
