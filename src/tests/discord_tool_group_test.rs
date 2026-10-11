@@ -119,6 +119,37 @@ async fn retention_prunes_oldest_groups() {
     assert!(state.toggle_tool_group(24).await.is_some());
 }
 
+/// Cap pressure must evict a SETTLED group before a live one (#1880 ticker
+/// parity). Evicting a live group strands its card: the flow ticker's next
+/// snapshot returns None, the ticker leaves without settling, and the card
+/// keeps rendering the live `🕒` chrome with a frozen clock — on screen
+/// indistinguishable from a turn still working.
+///
+/// The live group goes in FIRST, so under plain oldest-first eviction it is
+/// the first casualty, which is exactly the case that strands a card mid-turn.
+#[tokio::test]
+async fn retention_evicts_settled_before_live() {
+    let state = DiscordState::new();
+    state.upsert_tool_group(1000, group(2, false, false)).await;
+    for i in 0..25u64 {
+        let mut g = group(2, true, false);
+        g.settled = Some(SettledStatus::new(
+            TurnOutcome::Finished,
+            Duration::from_secs(3),
+            None,
+        ));
+        state.upsert_tool_group(i, g).await;
+    }
+    assert!(
+        state.toggle_tool_group(1000).await.is_some(),
+        "a live group must survive cap pressure while settled groups remain evictable"
+    );
+    assert!(
+        state.toggle_tool_group(0).await.is_none(),
+        "settled groups must still be evicted, or the retention bound is not enforced"
+    );
+}
+
 #[test]
 fn live_summary_carries_the_rolling_clock_settled_freezes_it() {
     let live = render_content(&group(3, false, false));

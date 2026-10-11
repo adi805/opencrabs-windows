@@ -563,8 +563,19 @@ impl DiscordState {
             }
             None => {
                 order.push(message_id);
+                // Evict SETTLED groups first (#1880 ticker parity). Evicting a
+                // live one silently strands the card: the flow ticker's next
+                // snapshot returns None, the ticker leaves without settling,
+                // and the card keeps rendering the live `🕒` chrome with a
+                // frozen clock — on screen indistinguishable from a turn still
+                // working. Only when every retained group is still live does
+                // the oldest go, so the bound itself is never exceeded.
                 while order.len() > Self::TOOL_GROUP_CAP {
-                    let oldest = order.remove(0);
+                    let victim = order
+                        .iter()
+                        .position(|id| map.get(id).is_some_and(|g| g.settled.is_some()))
+                        .unwrap_or(0);
+                    let oldest = order.remove(victim);
                     map.remove(&oldest);
                 }
             }
