@@ -188,6 +188,11 @@ pub(crate) async fn route_followup_turn(
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let turn_group_mid: Arc<Mutex<Option<serenity::model::id::MessageId>>> =
         Arc::new(Mutex::new(None));
+    // The text a suggest_options surface halted on (see options_host.rs).
+    let options_host = Arc::new(std::sync::Mutex::new(
+        super::options_host::OptionsHost::default(),
+    ));
+    let options_host_cb = options_host.clone();
 
     // Progress callback: handle_message's tool-loop display arms, scoped to
     // the tap turn.
@@ -213,6 +218,9 @@ pub(crate) async fn route_followup_turn(
                     tool_name,
                     tool_input,
                 } => {
+                    if let Ok(mut host) = options_host_cb.lock() {
+                        host.on_tool_started(&tool_name);
+                    }
                     let ctx_hint = crate::utils::tool_context_hint(&tool_name, &tool_input);
                     let gmid = group_msg_id.clone();
                     let dstate = group_state_cb.clone();
@@ -391,6 +399,9 @@ pub(crate) async fn route_followup_turn(
                     if clean.trim().is_empty() {
                         return;
                     }
+                    if let Ok(mut host) = options_host_cb.lock() {
+                        host.on_text(&clean);
+                    }
                     if trace_narration {
                         let gmid = group_msg_id.clone();
                         let dstate = group_state_cb.clone();
@@ -504,11 +515,27 @@ pub(crate) async fn route_followup_turn(
                     });
                 }
                 ProgressEvent::SuggestedOptions(options) => {
+                    // Trace mode folded the answer into the bubble: post it
+                    // before the buttons. Trace off already posted it.
+                    let host = if trace_narration {
+                        options_host_cb.lock().ok().and_then(|mut h| h.take())
+                    } else {
+                        None
+                    };
                     let http = http.clone();
                     let state = group_state_cb.clone();
+                    let sent = sent.clone();
+                    let gmid = group_msg_id.clone();
                     let raw_options: Vec<String> =
                         options.into_iter().map(|item| item.label).collect();
                     tokio::spawn(async move {
+                        if let Some(host) = host {
+                            let mid = *gmid.lock().await;
+                            super::options_host::post_options_host(
+                                &state, channel, &http, &sent, mid, &host,
+                            )
+                            .await;
+                        }
                         super::suggest_options::render_suggestions(
                             &http,
                             &state,

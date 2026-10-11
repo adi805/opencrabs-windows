@@ -1305,6 +1305,13 @@ pub(crate) async fn handle_message(
     let last_trace_body: Arc<std::sync::Mutex<Option<String>>> =
         Arc::new(std::sync::Mutex::new(None));
     let last_trace_body_cb = last_trace_body.clone();
+    // The text a suggest_options surface halted on (trace mode posts it
+    // before the buttons, see options_host.rs).
+    let options_host = Arc::new(std::sync::Mutex::new(
+        super::options_host::OptionsHost::default(),
+    ));
+    let options_host_cb = options_host.clone();
+    let sent_intermediates_cb = sent_intermediates.clone();
 
     use serenity::model::id::MessageId;
 
@@ -1356,6 +1363,9 @@ pub(crate) async fn handle_message(
                     tool_name,
                     tool_input,
                 } => {
+                    if let Ok(mut host) = options_host_cb.lock() {
+                        host.on_tool_started(&tool_name);
+                    }
                     let ctx_hint = crate::utils::tool_context_hint(&tool_name, &tool_input);
                     let gmid = group_msg_id.clone();
                     let dstate = group_state_cb.clone();
@@ -1533,6 +1543,9 @@ pub(crate) async fn handle_message(
                     if clean.trim().is_empty() {
                         return;
                     }
+                    if let Ok(mut host) = options_host_cb.lock() {
+                        host.on_text(&clean);
+                    }
                     // Trace mode: fold the narration into the turn's bubble
                     // as a dim subtext note instead of posting it. Notes
                     // before the first tool are dropped — the bubble appears
@@ -1662,11 +1675,33 @@ pub(crate) async fn handle_message(
                 // buttons under the response. A tap injects the suggestion as a
                 // new turn via route_followup_turn (#1852).
                 ProgressEvent::SuggestedOptions(options) => {
+                    // Trace mode folded the answer into the bubble: post it
+                    // before the buttons. Trace off already posted it as a
+                    // message when it arrived.
+                    let host = if trace_narration {
+                        options_host_cb.lock().ok().and_then(|mut h| h.take())
+                    } else {
+                        None
+                    };
+                    if host.is_some()
+                        && let Ok(mut g) = last_trace_body_cb.lock()
+                    {
+                        *g = None;
+                    }
                     let http = http.clone();
                     let state = group_state_cb.clone();
+                    let sent = sent_intermediates_cb.clone();
+                    let gmid = group_msg_id.clone();
                     let raw_options: Vec<String> =
                         options.into_iter().map(|item| item.label).collect();
                     tokio::spawn(async move {
+                        if let Some(host) = host {
+                            let mid = *gmid.lock().await;
+                            super::options_host::post_options_host(
+                                &state, channel, &http, &sent, mid, &host,
+                            )
+                            .await;
+                        }
                         super::suggest_options::render_suggestions(
                             &http,
                             &state,
