@@ -20,21 +20,11 @@
 //! build when someone drops the strip; these can, which is the whole reason
 //! they exist.
 
-use std::path::Path;
+use crate::tests::source_shape::{flatten, read_in};
 
-fn discord_dir() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/channels/discord")
-}
-
+/// The named file in the discord channel module, read from the crate root.
 fn read(name: &str) -> String {
-    let path = discord_dir().join(name);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-/// The source with all whitespace removed, so a call split across lines still
-/// matches a needle written on one line.
-fn flat(src: &str) -> String {
-    src.chars().filter(|c| !c.is_whitespace()).collect()
+    read_in("src/channels/discord", name)
 }
 
 /// The pager press: from the prefix match that opens it to the tool-group match
@@ -77,7 +67,7 @@ fn tool_group_arm() -> String {
 /// would remove a control that is fine.
 #[test]
 fn a_pager_whose_pages_aged_out_takes_its_arrows_off() {
-    let arm = flat(&pager_arm());
+    let arm = flatten(pager_arm());
     assert!(
         arm.contains("strip_controls("),
         "the pager's aged-out arm no longer takes the arrows off, so the card \
@@ -98,7 +88,7 @@ fn a_pager_whose_pages_aged_out_takes_its_arrows_off() {
 /// notice is ephemeral; only the control goes (#1880, L3).
 #[test]
 fn a_tool_group_that_aged_out_takes_its_button_off() {
-    let branch = flat(&tool_group_arm());
+    let branch = flatten(tool_group_arm());
     assert_eq!(
         branch.matches("strip_controls(").count(),
         2,
@@ -129,7 +119,7 @@ fn the_strip_drops_the_controls_and_keeps_the_card() {
     let end = rest
         .find("\n}\n")
         .expect("the dead-control strip has no body end");
-    let body = flat(&rest[..end]);
+    let body = flatten(&rest[..end]);
 
     assert!(
         body.contains("EditMessage::new().components(Vec::new())"),
@@ -162,7 +152,7 @@ fn the_pager_store_hands_back_what_it_evicted() {
         .expect("the pager store moved");
     let rest = &long_answer[start..];
     let sig_end = rest.find('{').expect("the pager store has no body");
-    let signature = flat(&rest[..sig_end]);
+    let signature = flatten(&rest[..sig_end]);
 
     assert!(
         signature.contains("channel:ChannelId"),
@@ -184,7 +174,7 @@ fn the_pager_store_hands_back_what_it_evicted() {
 /// itself be droppable (#1880, M4).
 #[test]
 fn eviction_takes_the_row_off_the_card_it_forgets() {
-    let handler = flat(&read("handler.rs"));
+    let handler = flatten(read("handler.rs"));
     let store = handler
         .find("store_long_answer(mid,target,chunks.clone())")
         .expect("the pager store call moved: this test pins what happens to its result");

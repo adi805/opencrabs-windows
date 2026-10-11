@@ -14,6 +14,7 @@ use crate::channels::discord::embed::{
     AUTO_EMBED_COLOR, DESCRIPTION_MAX, auto_embed_create, auto_embed_edit, builder_content,
     should_embed,
 };
+use crate::tests::source_shape::{flatten, read};
 use serenity::builder::{CreateActionRow, CreateButton, CreateMessage, EditMessage};
 use serenity::model::channel::MessageFlags;
 
@@ -242,11 +243,7 @@ fn edit_that_already_carries_an_embed_is_left_alone() {
 /// them green while the feature silently did nothing.
 #[test]
 fn the_choke_point_applies_the_conversion() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let path = root.join("src/channels/discord/writes.rs");
-    let src =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+    let flat = flatten(read("src/channels/discord/writes.rs"));
     assert!(
         flat.contains("channels.discord.auto_embed"),
         "writes.rs must read the auto_embed flag"
@@ -273,10 +270,7 @@ fn the_choke_point_applies_the_conversion() {
     // something else acked first the response came back 40060 and the card was
     // never redrawn, so Expand looked dead. Pin the shape that fixes it, and pin
     // the absence of the raw-response path so it cannot come back.
-    let agent_path = root.join("src/channels/discord/agent.rs");
-    let agent_src = std::fs::read_to_string(&agent_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", agent_path.display()));
-    let agent_flat: String = agent_src.chars().filter(|c| !c.is_whitespace()).collect();
+    let agent_flat = flatten(read("src/channels/discord/agent.rs"));
     assert!(
         agent_flat.contains("writes::edit("),
         "the tool-group toggle must redraw through the governed write path"

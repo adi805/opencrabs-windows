@@ -14,7 +14,7 @@
 //!   `GroupState`, whose entries come from the tool-execution stream, so the
 //!   rendered count equals `entries.len()` at every size.
 
-use std::path::Path;
+use crate::tests::source_shape::{flatten, read};
 use std::time::Instant;
 
 use crate::channels::discord::tool_group::{GroupEntry, GroupState, render_content};
@@ -35,15 +35,6 @@ fn group(n: usize, expanded: bool) -> GroupState {
         live_ctx: None,
         settled: None,
     }
-}
-
-/// Flattened source: all whitespace removed, so a signature or a call split
-/// across lines still matches a single-line needle.
-fn flattened(relative: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
-    let src =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    src.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
 /// AC-009: the number in the card is `entries.len()` and nothing else. A model
@@ -75,7 +66,7 @@ fn the_rendered_count_is_exactly_the_number_of_tool_entries() {
 /// and this test turns that into a build failure instead of a silent drift.
 #[test]
 fn the_render_path_takes_no_model_text() {
-    let flat = flattened("src/channels/discord/tool_group.rs");
+    let flat = flatten(read("src/channels/discord/tool_group.rs"));
     for sig in [
         "fnsummary_line(group:&GroupState,show_activity:bool)->String",
         "fnrender_content(group:&GroupState)->String",
@@ -93,7 +84,7 @@ fn the_render_path_takes_no_model_text() {
 /// second `writes::say` in that arm means a second message per turn.
 #[test]
 fn the_tool_started_arm_creates_one_card_and_edits_after() {
-    let flat = flattened("src/channels/discord/handler.rs");
+    let flat = flatten(read("src/channels/discord/handler.rs"));
 
     let start = flat
         .find("ProgressEvent::ToolStarted")

@@ -21,7 +21,7 @@
 //! merely names a symbol does not: a needle carries the receiver dot and the
 //! opening paren.
 
-use std::path::Path;
+use crate::tests::source_shape::{flatten, sources_in};
 
 /// Receiver-shaped needles for a Discord channel write.
 const NEEDLES: &[&str] = &[".say(", ".send_message(", ".edit_message("];
@@ -36,32 +36,16 @@ const CHOKE_POINT: &str = "writes.rs";
 /// about it and governing it would be cargo cult.
 const ALLOWED: &[(&str, &str)] = &[("agent.rs", "agent_clone.send_message(")];
 
-fn discord_dir() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/channels/discord")
-}
-
 /// Every `.rs` file in the Discord module, sorted, as `(name, flattened source)`.
 ///
 /// Flattening removes all whitespace so `msg\n  .channel_id\n  .say(` reads as
-/// `msg.channel_id.say(`.
+/// `msg.channel_id.say(`, and collapses the trailing comma rustfmt inserts
+/// before a closing delimiter it wrapped. Both come from the shared helper so
+/// this file cannot drift from the other source-shape tests (#197).
 fn sources() -> Vec<(String, String)> {
-    let dir = discord_dir();
-    let mut paths: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        .collect();
-    paths.sort();
-    paths
+    sources_in("src/channels/discord")
         .into_iter()
-        .map(|p| {
-            let name = p.file_name().unwrap().to_string_lossy().into_owned();
-            let src =
-                std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
-            (name, flat)
-        })
+        .map(|(name, src)| (name, flatten(&src)))
         .collect()
 }
 

@@ -270,6 +270,16 @@ cargo test --all-features my_feature_test
 
 If you find an existing inline `#[cfg(test)] mod tests` while working on a file, move it into `src/tests/` as part of your change. Leaving the violation in place will fail review.
 
+### Source-Shape Tests Are Bounded
+
+A **source-shape test** reads a production source file as text and matches a needle against it instead of calling the code. It is acceptable **only when the decision under test is genuinely unreachable from a unit test**, typically because the arm lives behind an `Http` call. A doc comment cannot fail a build when someone drops the strip; a source-shape test can, which is the whole reason it is allowed.
+
+The file header must state that reachability argument. `src/tests/discord_dead_control_test.rs` is the worked example: it names the arm, says why a unit test cannot reach it, and says what the test does *not* cover. A source-shape test whose header cannot make that argument should be rewritten as a behavioural test.
+
+**Use the shared helper.** `src/tests/source_shape.rs` owns the one `flatten()` (whitespace stripped, and the trailing comma rustfmt inserts before a closing delimiter collapsed, so `f(a,)` and `f(a)` compare equal), plus `read()`, `read_in()` and `sources_in()`. Do not copy a flattener into a test file: before #197 eight files did, and only one of them handled the trailing comma, so the other seven passed or failed depending on whether rustfmt happened to wrap the line. Import from `crate::tests::source_shape`.
+
+Note the asymmetry: only the **source** is flattened. A needle is written the way the code reads on one line, so a needle containing whitespace never matches.
+
 ### Tests Never Touch the Live Config or Keys
 
 **No test may write `~/.opencrabs/config.toml`, `keys.toml`, or anything else in the live default home.** Any test that reaches a config or keys writer (the onboarding wizard's save, `Config::write_key`, `Config::write_array`, `save_keys`, a migration) must run under a home override so the write lands in a throwaway directory:
