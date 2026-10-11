@@ -399,8 +399,8 @@ impl SlackState {
     /// snap an expanded group shut) and, once stamped, the settle state and
     /// turn-start anchor (#1797): a straggler status update after delivery
     /// must never un-settle the group or restart its clock. Prunes the
-    /// oldest beyond the cap. Returns the stored state so callers render
-    /// exactly what is kept.
+    /// oldest SETTLED groups beyond the cap. Returns the stored state so
+    /// callers render exactly what is kept.
     pub(crate) async fn upsert_tool_group(&self, ts: String, mut group: GroupState) -> GroupState {
         let mut guard = self.tool_groups.lock().await;
         let (order, map) = &mut *guard;
@@ -412,8 +412,26 @@ impl SlackState {
             }
             None => {
                 order.push(ts.clone());
+                // Evict SETTLED groups only (#1880 ticker parity). A live group
+                // is never evicted: retention taking it would yank the card out
+                // from under a flow ticker still driving it, and the ticker's
+                // orphan answer (`settle_orphaned_card`) would then stamp an
+                // outcome the turn never reached. A group stamped `waiting` is
+                // still evictable here even though its clock is rolling, and its
+                // flip drops the final line when the entry is gone, so tightening
+                // this to `settled_terminal()` is a follow-up. With every
+                // retained group live the map runs over the cap instead: that
+                // overflow is bounded by how many turns are in flight at once,
+                // never by time, and the next settle gives eviction something
+                // to take.
                 while order.len() > Self::TOOL_GROUP_CAP {
-                    let oldest = order.remove(0);
+                    let Some(victim) = order
+                        .iter()
+                        .position(|ts| map.get(ts).is_some_and(|g| g.settled.is_some()))
+                    else {
+                        break;
+                    };
+                    let oldest = order.remove(victim);
                     map.remove(&oldest);
                 }
             }

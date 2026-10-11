@@ -415,9 +415,10 @@ fn slack_chat_writes_only_leave_through_the_governor() {
     );
     assert_eq!(
         handler.matches("session.update(").count(),
-        7,
+        8,
         "content edits (settle stamps, flipped waiting lines, approval \
-         labels, the user's toggle) stay content: 7 of them"
+         labels, the user's toggle, the orphan-card settle) stay content: \
+         8 of them"
     );
     assert_eq!(
         handler.matches("session.update_chrome(").count(),

@@ -45,7 +45,9 @@ pub struct SlackState {
     pub(super) cancel_tokens: Mutex<HashMap<Uuid, CancellationToken>>,
     /// Collapsible tool groups keyed by their message ts, so the Expand /
     /// Collapse interaction can re-render long after the turn ended.
-    /// Insertion-ordered for pruning; bounded at [`Self::TOOL_GROUP_CAP`] (see `tool_group`).
+    /// Insertion-ordered for pruning; [`Self::TOOL_GROUP_CAP`] bounds the
+    /// SETTLED history retained, never how many turns are in flight (see
+    /// `tool_group`).
     pub(super) tool_groups: Mutex<(Vec<String>, HashMap<String, tool_group::GroupState>)>,
     /// Groups that settled with background work still running (#1797):
     /// channel id → (group message ts, owning session). Keyed per channel

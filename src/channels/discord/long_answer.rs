@@ -132,9 +132,10 @@ pub(crate) fn page_body(pages: &[String], page: usize) -> Option<String> {
 use super::DiscordState;
 
 impl DiscordState {
-    /// How many paged answers stay retrievable. Same lazy-aging contract as
-    /// the tool groups: older entries stop being openable rather than being
-    /// swept by a timer.
+    /// How many paged answers stay retrievable. Same no-timer contract as the
+    /// tool groups (aging happens on insert, never on a sweep), but unlike
+    /// them this IS a hard bound: evicting a live answer is safe because the
+    /// eviction hands the card back so its arrow row can be removed (#1880).
     pub(crate) const LONG_ANSWER_CAP: usize = 12;
 
     /// Retain the pages of a long answer against the message that shows page 0.
