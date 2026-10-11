@@ -10,9 +10,9 @@
 //! per direction. Each button names its own target page, so the same row rides
 //! page 0 and every page after it and a press simply renders the page the
 //! button names — forward or back, no chain to walk.
-//! Each press answers **ephemerally** with the requested page: the pager is a
-//! read affordance, so it must not add more messages to the channel it exists
-//! to keep clean.
+//! Each press **rewrites the card** the pager rides on, so the requested page
+//! lands where the arrows are: the pager is a read affordance, and it must not
+//! add more messages to the channel it exists to keep clean.
 //!
 //! ## Component budget (AC-021)
 //!
@@ -98,13 +98,12 @@ pub(crate) fn pager_row(message_id: u64, page: usize, total: usize) -> CreateAct
 
 /// Body shown when a pager press arrives.
 ///
-/// Every page carries its position as a FOOTER so an ephemeral reply pasted out
-/// of context still says where it came from. The body leads: the reader already
-/// pressed an arrow to get here, so a header would repeat what the buttons just
-/// said and push the answer down. `-#` renders dim and small, which keeps the
-/// footer from competing with the text it belongs to. Out-of-range pages return
-/// `None` so the caller can answer "aged out" instead of showing an empty
-/// bubble.
+/// Every page carries its position as a FOOTER so a page copied out of context
+/// still says where it came from. The body leads: the reader already pressed an
+/// arrow to get here, so a header would repeat what the buttons just said and
+/// push the answer down. `-#` renders dim and small, which keeps the footer from
+/// competing with the text it belongs to. Out-of-range pages return `None` so
+/// the caller can answer "aged out" instead of showing an empty card.
 pub(crate) fn page_body(pages: &[String], page: usize) -> Option<String> {
     let body = pages.get(page)?;
     if pages.len() == 1 {

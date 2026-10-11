@@ -776,11 +776,12 @@ impl EventHandler for Handler {
 
             // Provider picker callback → show models for that provider
             if let Some(rest) = custom_id.strip_prefix(super::long_answer::PAGER_PREFIX) {
-                // FR-009: reveal one page of a long answer WITHOUT adding a
-                // message to the channel — ephemeral, and it carries its own
-                // position so a pasted-out-of-context page still says where it
-                // came from. An aged-out pager answers plainly instead of
-                // silently doing nothing.
+                // FR-009: turn to one page of a long answer WITHOUT adding a
+                // message to the channel. The page is written over the card
+                // that carries the pager, so the arrows and the text they
+                // control stay in one place and pressing `▶` does not bury the
+                // answer under a run of bubbles. An aged-out pager answers
+                // plainly instead of silently doing nothing.
                 use serenity::builder::{
                     CreateInteractionResponse, CreateInteractionResponseMessage,
                 };
@@ -794,24 +795,41 @@ impl EventHandler for Handler {
                 let body = pages.as_deref().and_then(|pages| {
                     page.and_then(|page| super::long_answer::page_body(pages, page))
                 });
-                let content = body.unwrap_or_else(|| {
-                    "That pager aged out. Ask me again and I will repost the answer.".to_string()
-                });
-                // Carry the pager forward: every page is reachable only by
-                // press, so the ephemeral answer re-draws the SAME row for the
-                // page it is showing. `◀` walks back, `▶` walks on, and the
-                // ends come back disabled instead of the row vanishing
-                // (FR-009).
-                let mut msg = CreateInteractionResponseMessage::new()
-                    .content(content)
-                    .ephemeral(true);
-                if let (Some(mid), Some(pages), Some(page)) = (mid, pages.as_ref(), page)
-                    && pages.len() > 1
-                {
-                    let row = super::long_answer::pager_row(mid, page, pages.len());
-                    msg = msg.components(vec![row]);
-                }
-                let resp = CreateInteractionResponse::Message(msg);
+                // FR-009: a page turn is an EDIT of the card that carries the
+                // pager, not a fresh ephemeral bubble. Answering ephemerally
+                // made every press spawn a new message and left the card stuck
+                // on page 0, so the reader had to hunt for the page they just
+                // asked for while the pager they pressed sat unchanged behind
+                // it. `UpdateMessage` rewrites the message the button is
+                // attached to, which is the one holding the row, so the page
+                // changes exactly where the arrows are.
+                //
+                // The row is re-drawn on the edited card for the page now
+                // showing: `◀` walks back, `▶` walks on, and the ends come back
+                // disabled instead of the row vanishing.
+                //
+                // The aged-out case stays ephemeral on purpose: the pages are
+                // gone from the store, and overwriting the card with a notice
+                // would destroy the page the reader can still see.
+                let resp = match body {
+                    Some(content) => {
+                        let mut msg = CreateInteractionResponseMessage::new().content(content);
+                        if let (Some(mid), Some(pages), Some(page)) = (mid, pages.as_ref(), page)
+                            && pages.len() > 1
+                        {
+                            let row = super::long_answer::pager_row(mid, page, pages.len());
+                            msg = msg.components(vec![row]);
+                        }
+                        CreateInteractionResponse::UpdateMessage(msg)
+                    }
+                    None => CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content(
+                                "That pager aged out. Ask me again and I will repost the answer.",
+                            )
+                            .ephemeral(true),
+                    ),
+                };
                 if let Err(e) = comp.create_response(&ctx.http, resp).await {
                     tracing::warn!("Discord: long-answer page response failed: {e}");
                 }
