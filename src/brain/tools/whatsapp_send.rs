@@ -19,9 +19,10 @@ use serde_json::Value;
 use std::sync::Arc;
 use wacore_binary::jid::{Jid, Server};
 use whatsapp_rust::features::{
-    GroupCreateOptions, GroupDescription, GroupParticipantOptions, GroupSubject, JoinGroupResult,
-    MemberAddMode, MembershipApprovalMode, NewsletterMessage, NewsletterMetadata,
-    ParticipantChangeResponse, PictureType, PollVoteCiphertext, PreviousDescription,
+    CommunitySubgroup, CreateCommunityOptions, GroupCreateOptions, GroupDescription, GroupMetadata,
+    GroupParticipantOptions, GroupSubject, JoinGroupResult, MemberAddMode, MembershipApprovalMode,
+    NewsletterMessage, NewsletterMetadata, ParticipantChangeResponse, PictureType,
+    PollVoteCiphertext, PreviousDescription, group_type,
 };
 
 /// Tool for comprehensive WhatsApp control (14 actions).
@@ -222,7 +223,18 @@ pub(crate) async fn resolve_jid(
 /// would point an admin action (kick, promote) at a DM JID.
 #[allow(clippy::result_large_err)]
 pub(crate) fn resolve_group_jid(input: &Value) -> std::result::Result<Jid, ToolResult> {
-    let raw = get_str(input, "group_jid")?.trim();
+    resolve_group_jid_keyed(input, "group_jid")
+}
+
+/// Resolve a group JID stored under `key`.
+///
+/// One implementation, so a caller that names its target with a different
+/// parameter (`subgroup_jid`, for a group inside a community) gets the same
+/// bare-id wrapping and the same server check instead of a second copy that
+/// drifts away from this one.
+#[allow(clippy::result_large_err)]
+fn resolve_group_jid_keyed(input: &Value, key: &str) -> std::result::Result<Jid, ToolResult> {
+    let raw = get_str(input, key)?.trim();
     let jid: Jid = if raw.contains('@') {
         raw.parse()
             .map_err(|e| ToolResult::error(format!("Invalid group JID '{raw}': {e}")))?
@@ -323,6 +335,90 @@ fn describe_newsletter_messages(jid: &Jid, list: &[NewsletterMessage]) -> String
             if m.is_sender { " (you)" } else { "" },
             flat
         ));
+    }
+    out
+}
+
+/// Resolve a linked subgroup's JID from `subgroup_jid`.
+///
+/// A subgroup is an ordinary group, so it goes through the same wrapping and
+/// the same server check as any other group JID. The name differs only because
+/// a community call names two groups at once, and "the community" and "the
+/// group inside it" must not be spelled the same.
+#[allow(clippy::result_large_err)]
+pub(crate) fn resolve_subgroup_jid(input: &Value) -> std::result::Result<Jid, ToolResult> {
+    resolve_group_jid_keyed(input, "subgroup_jid")
+}
+
+/// Render a community's subgroups, one line each.
+///
+/// Two of the entries are not distinguishable by name: the announcement group
+/// and the general chat. The server marks them, so the tag is reported rather
+/// than left for the caller to guess from the subject.
+fn describe_community_subgroups(jid: &Jid, list: &[CommunitySubgroup]) -> String {
+    let mut out = format!("{} subgroup(s) of {jid}:", list.len());
+    for sg in list {
+        let mut tags: Vec<&str> = Vec::new();
+        if sg.is_default_sub_group {
+            tags.push("announcement");
+        }
+        if sg.is_general_chat {
+            tags.push("general chat");
+        }
+        let tag = if tags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", tags.join(", "))
+        };
+        let count = sg
+            .participant_count
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        out.push_str(&format!(
+            "\n  {} '{}' ({count} participant(s)){tag}",
+            sg.id, sg.subject
+        ));
+    }
+    out
+}
+
+/// Render a group's metadata as the community surface reports it.
+///
+/// `group_type` reads the flags the server sets, so a caller asking about a
+/// subgroup learns whether it is the community's announcement group, its
+/// general chat, an ordinary linked group, or a community in its own right,
+/// which no single boolean in the metadata says on its own.
+fn describe_community_group(m: &GroupMetadata) -> String {
+    let admins = m.participants.iter().filter(|p| p.is_admin()).count();
+    let mut out = format!(
+        "{} ('{}') [{:?}]\n  participants: {}\n  admins: {}\n  locked: {}\n  \
+         announcement-only: {}",
+        m.id,
+        m.subject,
+        group_type(m),
+        m.size.unwrap_or(m.participants.len() as u32),
+        admins,
+        m.is_locked,
+        m.is_announcement,
+    );
+    if let Some(desc) = m.description.as_deref().filter(|d| !d.is_empty()) {
+        out.push_str(&format!("\n  description: {desc}"));
+    }
+    out
+}
+
+/// Name the groups the server refused, with the code it gave.
+///
+/// A link request reports per-group outcomes, so a partial success that named
+/// only the count would read as a clean sweep and leave the caller believing
+/// the missing groups are linked.
+fn describe_failed_groups(failed: &[(Jid, u32)]) -> String {
+    if failed.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("\n  refused ({}):", failed.len());
+    for (jid, code) in failed {
+        out.push_str(&format!("\n    {jid}: error {code}"));
     }
     out
 }
@@ -844,7 +940,14 @@ impl Tool for WhatsAppSendTool {
                         "newsletter_get_metadata", "newsletter_get_metadata_by_invite",
                         "newsletter_join", "newsletter_leave",
                         "newsletter_create", "newsletter_update",
-                        "newsletter_revoke_message", "newsletter_get_messages"
+                        "newsletter_revoke_message", "newsletter_get_messages",
+                        "community_create", "community_deactivate",
+                        "community_create_subgroup", "community_link_subgroups",
+                        "community_unlink_subgroups", "community_join_subgroup",
+                        "community_remove_participants", "community_get_participating",
+                        "community_get_subgroups", "community_get_subgroup_participant_counts",
+                        "community_query_linked_group",
+                        "community_get_linked_groups_participants"
                     ],
                     "description": "The WhatsApp action to perform."
                 },
@@ -953,7 +1056,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "group_jid": {
                     "type": "string",
-                    "description": "Target group JID for the group actions (e.g. '120363012345678901@g.us'). A bare group id is accepted and wrapped as a group JID. Required by every action that names an existing group."
+                    "description": "Target group JID for the group and community actions (e.g. '120363012345678901@g.us'). A bare group id is accepted and wrapped as a group JID. For the community_* actions it names the community itself; a group inside it is named with 'subgroup_jid'. Required by every action that names an existing group."
                 },
                 "participants": {
                     "type": "array",
@@ -968,7 +1071,7 @@ impl Tool for WhatsAppSendTool {
                 "group_jids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Group JIDs to fetch profile pictures for (max 1000). Used by get_group_profile_picture."
+                    "description": "Group JIDs. Used by get_group_profile_picture (max 1000) and by community_link_subgroups / community_unlink_subgroups to name the groups to link or unlink."
                 },
                 "preview": {
                     "type": "boolean",
@@ -1100,6 +1203,26 @@ impl Tool for WhatsAppSendTool {
                 "before": {
                     "type": "integer",
                     "description": "For newsletter_get_messages: fetch posts older than this server_id, the pagination cursor from a previous page."
+                },
+                "subgroup_jid": {
+                    "type": "string",
+                    "description": "For community_query_linked_group and community_join_subgroup: the linked group inside the community (e.g. '120363012345678901@g.us'). A bare group id is accepted. The community itself is named with 'group_jid'."
+                },
+                "closed": {
+                    "type": "boolean",
+                    "description": "For community_create: true makes the community closed, so joining it requires approval. Default false."
+                },
+                "allow_non_admin_sub_group_creation": {
+                    "type": "boolean",
+                    "description": "For community_create: true lets members who are not admins create subgroups. Default false."
+                },
+                "create_general_chat": {
+                    "type": "boolean",
+                    "description": "For community_create: true also creates the community's general chat subgroup. Default true."
+                },
+                "remove_orphan_members": {
+                    "type": "boolean",
+                    "description": "For community_unlink_subgroups: true also removes members who belong only to the groups being unlinked. Default false."
                 }
             },
             "required": ["action"]
@@ -2389,6 +2512,256 @@ impl Tool for WhatsAppSendTool {
                     ))),
                 }
             }
+
+            // ── community (parent groups) ────────────────────────────────────
+            // #1485. A community is a group with `is_parent_group` set, so its
+            // JID is an ordinary `@g.us` address and goes through the same
+            // resolver as any other group. One spelling for "the group this
+            // names" means a community can never be read as a chat, and the
+            // resolver's server check applies to every action below.
+            "community_create" => {
+                let name = pget!(get_str(&input, "subject")).to_string();
+                let mut options = CreateCommunityOptions::new(name);
+                if let Some(desc) = input.get("description").and_then(|v| v.as_str()) {
+                    options.description = Some(desc.to_string());
+                }
+                // The lib defaults these three, so an absent one keeps the lib
+                // default instead of a second default invented here.
+                if let Some(closed) = input.get("closed").and_then(|v| v.as_bool()) {
+                    options.closed = closed;
+                }
+                if let Some(allow) = input
+                    .get("allow_non_admin_sub_group_creation")
+                    .and_then(|v| v.as_bool())
+                {
+                    options.allow_non_admin_sub_group_creation = allow;
+                }
+                if let Some(general) = input.get("create_general_chat").and_then(|v| v.as_bool()) {
+                    options.create_general_chat = general;
+                }
+                match client.community().create(options).await {
+                    Ok(created) => Ok(ToolResult::success(format!(
+                        "Community '{}' created: {}.",
+                        created.metadata.subject, created.metadata.id
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to create the community: {e}"
+                    ))),
+                }
+            }
+
+            "community_create_subgroup" => {
+                let parent = pget!(resolve_group_jid(&input));
+                let name = pget!(get_str(&input, "subject")).to_string();
+                let participants = pget!(resolve_participants(&input));
+                match client
+                    .community()
+                    .create_subgroup(name, &participants, parent.clone())
+                    .await
+                {
+                    Ok(created) => Ok(ToolResult::success(format!(
+                        "Subgroup '{}' created and linked to {parent}: {}.",
+                        created.metadata.subject, created.metadata.id
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to create the subgroup: {e}"
+                    ))),
+                }
+            }
+
+            "community_deactivate" => {
+                let jid = pget!(resolve_group_jid(&input));
+                match client.community().deactivate(jid.clone()).await {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Community {jid} deactivated. Its subgroups were unlinked, not deleted."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to deactivate {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "community_remove_participants" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let participants = pget!(resolve_participants(&input));
+                match client
+                    .community()
+                    .remove_participants(jid.clone(), &participants)
+                    .await
+                {
+                    Ok(changes) => Ok(ToolResult::success(format!(
+                        "Removed from {jid} and every linked group: {}",
+                        summarize_participant_changes(&changes)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to remove participants: {e}"
+                    ))),
+                }
+            }
+
+            "community_link_subgroups" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let subgroups = pget!(resolve_group_jids(&input));
+                match client
+                    .community()
+                    .link_subgroups(jid.clone(), &subgroups)
+                    .await
+                {
+                    Ok(result) => Ok(ToolResult::success(format!(
+                        "Linked to {jid}: {} of {} group(s).{}",
+                        result.linked_jids.len(),
+                        subgroups.len(),
+                        describe_failed_groups(&result.failed_groups)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to link subgroups to {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "community_unlink_subgroups" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let subgroups = pget!(resolve_group_jids(&input));
+                let remove_orphan_members = input
+                    .get("remove_orphan_members")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                match client
+                    .community()
+                    .unlink_subgroups(jid.clone(), &subgroups, remove_orphan_members)
+                    .await
+                {
+                    Ok(result) => Ok(ToolResult::success(format!(
+                        "Unlinked from {jid}: {} of {} group(s).{}",
+                        result.unlinked_jids.len(),
+                        subgroups.len(),
+                        describe_failed_groups(&result.failed_groups)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to unlink subgroups from {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "community_join_subgroup" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let subgroup = pget!(resolve_subgroup_jid(&input));
+                match client
+                    .community()
+                    .join_subgroup(jid.clone(), subgroup.clone())
+                    .await
+                {
+                    Ok(meta) => Ok(ToolResult::success(format!(
+                        "Joined {} via {jid}.\n{}",
+                        meta.id,
+                        describe_community_group(&meta)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to join {subgroup} via {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "community_query_linked_group" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let subgroup = pget!(resolve_subgroup_jid(&input));
+                match client
+                    .community()
+                    .query_linked_group(jid.clone(), subgroup.clone())
+                    .await
+                {
+                    Ok(meta) => Ok(ToolResult::success(describe_community_group(&meta))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to read {subgroup} through {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "community_get_subgroups" => {
+                let jid = pget!(resolve_group_jid(&input));
+                match client.community().get_subgroups(&jid).await {
+                    Ok(list) if list.is_empty() => {
+                        Ok(ToolResult::success(format!("{jid} reported no subgroups.")))
+                    }
+                    Ok(list) => Ok(ToolResult::success(describe_community_subgroups(
+                        &jid, &list,
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to list the subgroups of {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "community_get_subgroup_participant_counts" => {
+                let jid = pget!(resolve_group_jid(&input));
+                match client
+                    .community()
+                    .get_subgroup_participant_counts(&jid)
+                    .await
+                {
+                    Ok(counts) if counts.is_empty() => Ok(ToolResult::success(format!(
+                        "{jid} reported no subgroup counts."
+                    ))),
+                    Ok(counts) => {
+                        let mut out = format!("{} subgroup(s) of {jid}:", counts.len());
+                        for (sub, count) in &counts {
+                            out.push_str(&format!("\n  {sub}: {count}"));
+                        }
+                        Ok(ToolResult::success(out))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to read the subgroup counts of {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "community_get_linked_groups_participants" => {
+                let jid = pget!(resolve_group_jid(&input));
+                match client
+                    .community()
+                    .get_linked_groups_participants(jid.clone())
+                    .await
+                {
+                    Ok(list) if list.is_empty() => Ok(ToolResult::success(format!(
+                        "{jid} reported no participants across its linked groups."
+                    ))),
+                    Ok(list) => {
+                        let mut out = format!(
+                            "{} participant(s) across {jid}'s linked groups:",
+                            list.len()
+                        );
+                        for p in &list {
+                            out.push_str(&format!("\n  {}", p.jid));
+                        }
+                        Ok(ToolResult::success(out))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to read the participants of {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "community_get_participating" => match client.community().get_participating().await {
+                Ok(map) if map.is_empty() => Ok(ToolResult::success(
+                    "This account is not in any community.".to_string(),
+                )),
+                Ok(map) => {
+                    let mut entries: Vec<_> = map.into_iter().collect();
+                    entries.sort_by_key(|(jid, _)| jid.to_string());
+                    let mut out = format!("{} community(ies):", entries.len());
+                    for (jid, meta) in entries {
+                        out.push_str(&format!(
+                            "\n  {jid} '{}' ({} participant(s))",
+                            meta.subject,
+                            meta.size.unwrap_or(meta.participants.len() as u32)
+                        ));
+                    }
+                    Ok(ToolResult::success(out))
+                }
+                Err(e) => Ok(ToolResult::error(format!(
+                    "Failed to list the communities this account is in: {e}"
+                ))),
+            },
 
             // ── create_label / assign_label ──────────────────────────────────
             // #1485. Labels are private organisation on the owner's own account:
@@ -3770,7 +4143,12 @@ impl Tool for WhatsAppSendTool {
                  vote, decrypt_vote, aggregate_votes, newsletter_get_metadata, \
                  newsletter_get_metadata_by_invite, newsletter_join, newsletter_leave, \
                  newsletter_create, newsletter_update, newsletter_revoke_message, \
-                 newsletter_get_messages",
+                 newsletter_get_messages, community_create, community_deactivate, \
+                 community_create_subgroup, community_link_subgroups, \
+                 community_unlink_subgroups, community_join_subgroup, \
+                 community_remove_participants, community_get_participating, \
+                 community_get_subgroups, community_get_subgroup_participant_counts, \
+                 community_query_linked_group, community_get_linked_groups_participants",
                 unknown
             ))),
         }

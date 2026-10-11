@@ -1189,6 +1189,7 @@ pub mod whatsapp_blocklist_test;
 pub mod whatsapp_broadcast_test;
 pub mod whatsapp_call_reject_test;
 pub mod whatsapp_chat_actions_test;
+pub mod whatsapp_community_actions_test;
 pub mod whatsapp_contacts_test;
 pub mod whatsapp_ephemeral_test;
 pub mod whatsapp_group_actions_test;
