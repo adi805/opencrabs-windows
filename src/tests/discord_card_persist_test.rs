@@ -18,8 +18,8 @@ use crate::channels::background_work::SubagentCounts;
 use crate::channels::discord::DiscordState;
 use crate::channels::discord::long_answer::page_body;
 use crate::channels::discord::tool_group::{
-    GroupEntry, GroupState, SettledStatus, TOOL_GROUP_KIND, TurnOutcome, WAITING_ICON,
-    render_content,
+    EntrySnapshot, GroupEntry, GroupSnapshot, GroupState, SettledStatus, TOOL_GROUP_KIND,
+    TurnOutcome, WAITING_ICON, render_content,
 };
 use crate::db::Database;
 use crate::db::repository::{DiscordCardRepository, DiscordCardRow};
@@ -319,4 +319,40 @@ async fn without_a_store_the_cards_stay_in_memory() {
     let fresh = DiscordState::new();
     assert!(fresh.tool_group_snapshot(7009).await.is_none());
     assert!(fresh.long_answer_pages(7010).await.is_none());
+}
+
+/// A card whose stored age reaches further back than this process's monotonic
+/// clock must not take the press down with it. `Instant::now()` is time since
+/// boot, so after a reboot a card written minutes earlier carries an age the
+/// clock cannot place, and `now - age` panics on it. A reboot is the very
+/// restart this store exists for, so the resume clamps instead of unwinding.
+///
+/// The age here is far larger than any uptime a host can report: the same
+/// failure mode a reboot produces, reachable without rebooting.
+#[tokio::test]
+async fn an_age_past_the_clock_epoch_clamps_instead_of_panicking() {
+    let snap = GroupSnapshot {
+        entries: vec![EntrySnapshot {
+            name: "tool0".to_string(),
+            context: " (arg0)".to_string(),
+            status: Some(true),
+        }],
+        notes: Vec::new(),
+        expanded: true,
+        started_secs_ago: u64::MAX / 2,
+        activity_secs_ago: u64::MAX / 2,
+        settled: None,
+        live_ctx: None,
+    };
+
+    let group = GroupState::from_snapshot(snap).expect("the card is still renderable");
+    let resumed = group.to_snapshot();
+
+    assert!(
+        resumed.started_secs_ago < 5,
+        "an unplaceable age clamps to the epoch, got {}s",
+        resumed.started_secs_ago
+    );
+    assert!(resumed.expanded, "the rest of the card survives the clamp");
+    assert_eq!(resumed.entries.len(), 1);
 }
