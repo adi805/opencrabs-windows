@@ -1187,6 +1187,7 @@ pub mod voice_text_cleanup_test;
 pub mod whatsapp_ban_visibility_test;
 pub mod whatsapp_blocklist_test;
 pub mod whatsapp_broadcast_test;
+pub mod whatsapp_call_reject_test;
 pub mod whatsapp_ephemeral_test;
 pub mod whatsapp_handler_test;
 pub mod whatsapp_history_dedup_test;
