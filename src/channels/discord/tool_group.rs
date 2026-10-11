@@ -104,6 +104,20 @@ pub(crate) struct SettledSnapshot {
     pub waiting: bool,
 }
 
+/// Place a stored age back on this process's monotonic clock.
+///
+/// `Instant::now()` is time since boot, not since process start, so a card
+/// written before a reboot can carry an age that reaches further back than the
+/// clock's origin. `now - age` panics there, and a press on a card that is
+/// still sitting in the channel must never do that. `checked_sub` returning
+/// `None` means nothing on this clock is that old, so the card is placed at
+/// the origin and reads as just-started. Same reasoning as
+/// `failure_window::cutoff`.
+fn resumed_instant(now: Instant, secs_ago: u64) -> Instant {
+    now.checked_sub(Duration::from_secs(secs_ago))
+        .unwrap_or(now)
+}
+
 impl GroupState {
     /// The durable form of this card (H1).
     pub(crate) fn to_snapshot(&self) -> GroupSnapshot {
@@ -169,8 +183,8 @@ impl GroupState {
             expanded: snap.expanded,
             // Ages, not instants: a restarted process has its own epoch, so the
             // card resumes the clock it was showing instead of restarting it.
-            started_at: now - Duration::from_secs(snap.started_secs_ago),
-            last_activity_at: now - Duration::from_secs(snap.activity_secs_ago),
+            started_at: resumed_instant(now, snap.started_secs_ago),
+            last_activity_at: resumed_instant(now, snap.activity_secs_ago),
             live_ctx: snap.live_ctx,
             settled,
         })
