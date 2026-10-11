@@ -75,6 +75,15 @@ pub struct DiscordState {
     /// stale checklist in the channel. Same table and repository Telegram uses
     /// (#809); wired at startup next to `DiscordState::new()`.
     pub(super) plan_card_store: Mutex<Option<crate::db::repository::PlanCardRepository>>,
+    /// Durable backing for the collapsible tool-group store and the
+    /// long-answer pager store (H1 / M4). Both live in process-local maps
+    /// beside [`Self::plan_cards`], and both stranded their card the same way
+    /// the plan card used to: the card stayed in the channel with a
+    /// working-looking button, and the press answered "This status bubble is
+    /// too old to expand" or "That pager aged out", because the message id was
+    /// no longer in the map. Same repository shape as `plan_card_store`; wired
+    /// at startup next to it.
+    pub(super) card_store: Mutex<Option<crate::db::repository::DiscordCardRepository>>,
     /// Per-session lock serialising plan-card writes, mirroring Telegram's
     /// `plan_card_locks` (#822). Without it two concurrent refreshes both
     /// see no card, both post one, and the second id overwrites the first —
@@ -119,6 +128,7 @@ impl DiscordState {
             tool_groups: Mutex::new((Vec::new(), HashMap::new())),
             plan_cards: Mutex::new(HashMap::new()),
             plan_card_store: Mutex::new(None),
+            card_store: Mutex::new(None),
             plan_card_locks: Mutex::new(HashMap::new()),
             last_sticky_action: std::sync::Mutex::new(HashMap::new()),
         }
@@ -210,6 +220,60 @@ impl DiscordState {
         repo: crate::db::repository::PlanCardRepository,
     ) {
         *self.plan_card_store.lock().await = Some(repo);
+    }
+
+    /// Give the tool-group and long-answer card stores durable backing
+    /// (H1 / M4). Called at startup, mirroring `set_plan_card_store` (#104).
+    pub(crate) async fn set_card_store(&self, repo: crate::db::repository::DiscordCardRepository) {
+        *self.card_store.lock().await = Some(repo);
+    }
+
+    /// Write one card's snapshot to the durable store, if one is wired.
+    ///
+    /// Best effort by design: a persistence failure must never fail the
+    /// render that already reached the channel, so it is logged and dropped.
+    pub(super) async fn persist_card(&self, message_id: u64, kind: &str, state: String) {
+        let guard = self.card_store.lock().await;
+        let Some(repo) = guard.as_ref() else {
+            return;
+        };
+        if let Err(e) = repo
+            .set(crate::db::repository::DiscordCardRow {
+                message_id: message_id as i64,
+                kind: kind.to_string(),
+                state,
+            })
+            .await
+        {
+            tracing::warn!("Discord: failed to persist {kind} card {message_id}: {e}");
+        }
+    }
+
+    /// Read one card's snapshot back, if a store is wired and the card is
+    /// still tracked. `None` covers both "aged out" and "no store", which the
+    /// callers answer the same way.
+    pub(super) async fn load_card(&self, message_id: u64, kind: &str) -> Option<String> {
+        let guard = self.card_store.lock().await;
+        let repo = guard.as_ref()?;
+        match repo.get(message_id as i64, kind).await {
+            Ok(row) => row,
+            Err(e) => {
+                tracing::warn!("Discord: failed to read {kind} card {message_id}: {e}");
+                None
+            }
+        }
+    }
+
+    /// Drop one card's durable row. Called in lockstep with the in-process
+    /// eviction, so the table never tracks a card the map has forgotten.
+    pub(super) async fn forget_card(&self, message_id: u64) {
+        let guard = self.card_store.lock().await;
+        let Some(repo) = guard.as_ref() else {
+            return;
+        };
+        if let Err(e) = repo.delete(message_id as i64).await {
+            tracing::warn!("Discord: failed to drop card {message_id}: {e}");
+        }
     }
 
     /// Claim permission for one sticky-stack action (the plan-card re-stick)

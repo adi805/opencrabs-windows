@@ -160,6 +160,12 @@ pub(crate) const MIGRATION_SQL: &[&str] = &[
     // heal pass is needed (same shape as the project_repo_remote note above).
     // Appended last per the list invariant.
     include_str!("../migrations/20261009000001_pending_requests_channel_message_id.sql"),
+    // H1 / M4: the Discord tool-group and long-answer card stores get the
+    // durable backing the plan card already had, so Expand and the pager
+    // arrows still work after a restart instead of answering "too old".
+    // Idempotent CREATE, so no heal pass; appended last per the list
+    // invariant above.
+    include_str!("../migrations/20261011000001_add_discord_card_state.sql"),
 ];
 
 pub(crate) fn build_migrations() -> Migrations<'static> {
