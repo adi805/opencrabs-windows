@@ -1292,6 +1292,18 @@ async fn handle_message(
                 }
             };
 
+            // Durable copy in the channel-attachment store, as Telegram and WhatsApp keep (#1729).
+            if let Some(path) =
+                crate::channels::persist_channel_attachment("slack", fname, &dl_bytes)
+            {
+                let line = format!("[file: {}]", path.display());
+                if content.is_empty() {
+                    content = line;
+                } else {
+                    content.push_str(&format!("\n\n{line}"));
+                }
+            }
+
             // Audio → STT
             if mime.starts_with("audio/") {
                 if voice_config.stt_enabled {
