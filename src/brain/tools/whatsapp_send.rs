@@ -729,6 +729,7 @@ impl Tool for WhatsAppSendTool {
                     "enum": [
                         "send", "reply", "delete",
                         "pin", "unpin", "forward", "set_profile_name", "set_profile_status",
+                        "set_profile_picture", "remove_profile_picture",
                         "send_photo", "send_document", "send_audio", "send_video", "send_sticker",
                         "send_location", "send_contact",
                         "react", "send_poll",
@@ -776,7 +777,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "media_path": {
                     "type": "string",
-                    "description": "Local file path for media (send_photo, send_document, send_audio, send_video, send_sticker). For status_update: a local image file to post as an image status instead of a text status, in which case 'message' becomes its caption."
+                    "description": "Local file path for media (send_photo, send_document, send_audio, send_video, send_sticker, and the JPEG for set_profile_picture). For status_update: a local image file to post as an image status instead of a text status, in which case 'message' becomes its caption."
                 },
                 "multi_select": {
                     "type": "boolean",
@@ -1370,6 +1371,42 @@ impl Tool for WhatsAppSendTool {
                     ))),
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to set the profile status: {e}"
+                    ))),
+                }
+            }
+
+            // ── set_profile_picture / remove_profile_picture ──────────
+            "set_profile_picture" => {
+                let path = pget!(get_str(&input, "media_path")).to_string();
+                let (bytes, mime, _filename) = pget!(read_local_media(&path, "image/jpeg").await);
+                // WhatsApp carries only a JPEG here: the bytes go out as the
+                // `picture` node payload, and a PNG or a video is rejected on
+                // the wire, so the wrong type is refused before the send.
+                if mime != "image/jpeg" {
+                    return Ok(ToolResult::error(format!(
+                        "set_profile_picture needs a JPEG; '{path}' is {mime}. \
+                         Convert it first (WhatsApp uses 640x640)."
+                    )));
+                }
+                match client.profile().set_profile_picture(bytes).await {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "WhatsApp profile picture set from '{path}'."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set the profile picture: {e}"
+                    ))),
+                }
+            }
+
+            "remove_profile_picture" => {
+                // The IQ names our own account, so there is no argument to get
+                // wrong: the call is the whole arm.
+                match client.profile().remove_profile_picture().await {
+                    Ok(_) => Ok(ToolResult::success(
+                        "WhatsApp profile picture removed.".to_string(),
+                    )),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to remove the profile picture: {e}"
                     ))),
                 }
             }
@@ -3494,7 +3531,8 @@ impl Tool for WhatsAppSendTool {
                  send_document, send_audio, send_video, send_sticker, send_location, \
                  send_contact, react, send_poll, typing, mark_read, block_contact, \
                  unblock_contact, list_blocked, pin, unpin, forward, set_profile_name, \
-                 set_profile_status, status_update, list_newsletters, create_label, \
+                 set_profile_status, set_profile_picture, remove_profile_picture, \
+                 status_update, list_newsletters, create_label, \
                  assign_label, send_buttons, create_group, leave_group, set_group_subject, \
                  set_group_description, add_participants, remove_participants, \
                  promote_participants, demote_participants, get_group_metadata, \
