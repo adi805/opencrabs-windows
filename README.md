@@ -3553,7 +3553,7 @@ OpenCrabs includes 40+ built-in tools. The AI can use these during conversation:
 | `discord_send` | 28 actions: send, reply, react, edit, delete, pin, threads, embeds, roles, kick, ban, timeout, nickname, files, forms, polls, announce, automod rules, audit log |
 | `slack_send` | 17 actions: send, reply, react, edit, delete, pin, blocks, topics, members, send_file |
 | `trello_send` | 22 actions: cards, comments, checklists, labels, members, attachments, board management, search |
-| `whatsapp_send` | 27 actions: send, reply, delete, react, polls, typing, mark_read, photos, documents, audio/voice notes, video, stickers, location, contacts, pin/unpin, forward, block/unblock/list_blocked, profile name and status, status_update, list_newsletters, create_label, assign_label, send_buttons |
+| `whatsapp_send` | 38 actions: send, reply, delete, react, polls, typing, mark_read, photos, documents, audio/voice notes, video, stickers, location, contacts, pin/unpin, forward, block/unblock/list_blocked, profile name and status, status_update, list_newsletters, create_label, assign_label, send_buttons, create_group, leave_group, set_group_subject, set_group_description, add_participants, remove_participants, promote_participants, demote_participants, get_group_metadata, get_invite_link, join_with_invite_code |
 | `channel_search` | Search captured message history across all channels (Telegram, Discord, Slack, WhatsApp) |
 | `telegram_connect` | Connect a Telegram bot from chat — takes a @BotFather token and starts listening |
 | `discord_connect` | Connect a Discord bot from chat — takes a bot token and starts listening |
