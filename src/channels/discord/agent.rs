@@ -820,6 +820,17 @@ impl EventHandler for Handler {
                             let row = super::long_answer::pager_row(mid, page, pages.len());
                             msg = msg.components(vec![row]);
                         }
+                        // FR-009 / auto_embed symmetry: page 0 was posted
+                        // through `writes::send`, which turned it into a card
+                        // when `auto_embed` is on. The page turn must render
+                        // the SAME shape, or the card the reader is looking at
+                        // flips to plain text on the first press while the
+                        // page-0 embed stays pinned above it. This response
+                        // never passes through `writes::edit`, so the choke
+                        // point that keeps a create and its later edits
+                        // symmetric does not see it; applying the same pure
+                        // decision here restores that rule.
+                        let msg = super::embed::auto_embed_response(msg);
                         CreateInteractionResponse::UpdateMessage(msg)
                     }
                     None => CreateInteractionResponse::Message(

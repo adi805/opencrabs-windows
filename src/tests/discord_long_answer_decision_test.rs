@@ -12,7 +12,7 @@
 //! `discord_write_discipline_test` pins AC-024 and `discord_fr004_one_message_test`
 //! pins AC-008.
 //!
-//! Five properties, each of which can silently regress:
+//! Six properties, each of which can silently regress:
 //!
 //! * paging is keyed on the split result (`chunks.len() > 1`), not on a second
 //!   char threshold re-derived from the text, which would drift;
@@ -25,7 +25,13 @@
 //!   decision ahead of the pager, so the exclusion is `!want_thread`, not the
 //!   old `!paged`;
 //! * a page press rewrites the card in place (`UpdateMessage`), so the arrows
-//!   and the text they control never split into two separate messages.
+//!   and the text they control never split into two separate messages;
+//! * that in-place rewrite renders the SAME shape as the page-0 create. Page 0
+//!   goes through `writes::send`, which under `auto_embed` turns it into a
+//!   card, and the press answers with a raw `CreateInteractionResponse` that
+//!   never passes through `writes::edit`. Without the same pure decision
+//!   applied on both sides the card flips to plain text on the first press
+//!   while the page-0 embed stays pinned above it.
 //!
 //! Scope, stated so a later reader does not "fix" it by widening or narrowing:
 //! this pins the routing decision in `handler.rs`. It does not re-test the
@@ -241,4 +247,52 @@ fn a_page_press_edits_the_card_instead_of_posting_an_ephemeral_bubble() {
              arrows are attached to (AC-020)"
         );
     }
+}
+
+/// AC-020, the shape rather than the destination. Rewriting the card in place
+/// is only half the job: the rewrite has to render the same *kind* of message
+/// the create did, or the reader watches the card change form mid-answer.
+///
+/// Page 0 is posted through `writes::send` with `Class::Final`, and `writes.rs`
+/// turns that into a card whenever `channels.discord.auto_embed` is on (it is
+/// on by default). The press answers with a raw `CreateInteractionResponse`,
+/// which never passes through `writes::edit`, so the `auto_embed_edit` choke
+/// point cannot reach it. `embed.rs` states the invariant in its own words:
+/// the embed decision is a pure function of the body, which is what keeps a
+/// create and its later edits symmetric. This press was the one card write that
+/// escaped it, so the fix is to run the same pure decision over the response.
+///
+/// The check is positional on purpose: `auto_embed_response(` merely appearing
+/// somewhere in the branch would not prove it was applied to the message that
+/// goes into `UpdateMessage`, which is the only thing that matters.
+#[test]
+fn a_page_press_renders_the_same_card_shape_as_page_zero() {
+    let branch = flat(&pager_branch());
+
+    let embed = branch.find("auto_embed_response(").expect(
+        "the pager press no longer applies the auto-embed decision, so a \
+             card created as an embed is rewritten as plain text on the first \
+             press and the page-0 card stays pinned above it (AC-020)",
+    );
+    let update = branch
+        .find("CreateInteractionResponse::UpdateMessage(")
+        .expect("the pager press no longer updates the card in place (AC-020)");
+
+    assert!(
+        embed < update,
+        "the auto-embed decision is applied after the response is built, so it \
+         never reaches the message the card is rewritten with (AC-020)"
+    );
+
+    // The create half of the symmetry. If page 0 ever stops going through the
+    // governed send path, this test would be pinning a decision against a
+    // create that no longer embeds, and the pair would be symmetric by
+    // accident rather than by rule.
+    let handler = flat(&handler_src());
+    assert!(
+        handler.contains("writes::send(") && handler.contains("Class::Final)"),
+        "page 0 no longer goes through the governed send path, so the embed \
+         decision the press mirrors is no longer the one the create made \
+         (AC-020)"
+    );
 }
