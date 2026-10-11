@@ -147,6 +147,11 @@ fn a_bare_group_id_becomes_a_group_jid_and_a_missing_one_is_refused() {
         resolve_group_jid(&json!({})).is_err(),
         "a group action that names no group must be refused"
     );
+    assert!(
+        resolve_group_jid(&json!({"group_jid": "15551234567@s.whatsapp.net"})).is_err(),
+        "a phone JID is not a group: an admin action must not accept a person where a group is \
+         asked, which would land as a server-side error instead of a clear refusal"
+    );
 }
 
 #[test]

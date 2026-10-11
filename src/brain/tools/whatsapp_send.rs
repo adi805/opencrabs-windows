@@ -227,6 +227,11 @@ pub(crate) fn resolve_group_jid(input: &Value) -> std::result::Result<Jid, ToolR
     } else {
         Jid::group(raw)
     };
+    if jid.server != Server::Group {
+        return Err(ToolResult::error(format!(
+            "'{raw}' is not a group JID (expected an @g.us address or a bare group id)."
+        )));
+    }
     let jid_str = jid.to_string();
     if !crate::cron::send_scope::may_send("whatsapp", &jid_str) {
         let reason = crate::cron::send_scope::refusal_for("whatsapp", &jid_str);
