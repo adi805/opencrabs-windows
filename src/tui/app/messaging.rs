@@ -1,5 +1,6 @@
 //! Messaging — session CRUD, slash commands, message expansion, streaming.
 
+use super::answer_placement::last_text_precedes_tool_group;
 use super::dialogs::ensure_whispercrabs;
 use super::events::{AppMode, ToolApprovalResponse, TuiEvent};
 use super::onboarding::OnboardingWizard;
@@ -3363,7 +3364,12 @@ impl App {
             response.usage.output_tokens
         );
 
-        if self.intermediate_text_received {
+        // A final answer that follows tool groups must become its own row.
+        // Overwriting an earlier text row would move it above those tools,
+        // where the fold hides it (see `answer_placement`).
+        let answer_follows_tools =
+            !response.content.is_empty() && last_text_precedes_tool_group(&self.messages);
+        if self.intermediate_text_received && !answer_follows_tools {
             // IntermediateText only contained text BEFORE the last tool block.
             // The full response may have trailing text AFTER the last tool.
             // Update the last intermediate assistant message with the full content
