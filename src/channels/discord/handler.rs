@@ -621,10 +621,11 @@ pub(crate) async fn handle_message(
         }
     }
 
-    // Also store directed channel messages for complete history
-    if !is_dm {
-        store_channel_msg(msg.content.clone()).await;
-    }
+    // Also store directed channel messages for complete history. DMs are
+    // stored too (#200): `channel_search` reads only channel_messages, so a
+    // skipped DM turn is invisible to every one of its operations. Telegram
+    // stores the same turn, and the two channels should not disagree here.
+    store_channel_msg(msg.content.clone()).await;
 
     // Check for audio attachments → STT
     let audio_attachment = msg.attachments.iter().find(|a| {
@@ -2161,9 +2162,13 @@ pub(crate) async fn handle_message(
             // Record the bot's reply in channel_messages so the recent() query
             // used for group context on the next guild turn sees both sides of
             // the conversation. Without this, the bot loads only user messages
-            // and responds blind to its own prior replies. Skip for DMs — the
-            // session's messages table already carries full history there.
-            if !is_dm && !text_only.trim().is_empty() {
+            // and responds blind to its own prior replies.
+            //
+            // DMs are recorded too (#200). The session messages table still
+            // carries DM context, but `channel_search` reads only
+            // channel_messages, so skipping the DM here left every one of its
+            // operations blind while Telegram persisted the same reply.
+            if !text_only.trim().is_empty() {
                 let bot_id = discord_state.bot_user_id().await;
                 let bot_sender_id = bot_id
                     .map(|id| id.to_string())
