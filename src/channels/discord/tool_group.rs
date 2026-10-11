@@ -127,6 +127,34 @@ pub(crate) fn settled_icon_verb(
     (icon, verb.to_string())
 }
 
+/// Stamp a settled status onto a group.
+///
+/// Pure and store-free on purpose. The live settle path stamps through
+/// `DiscordState::settle_tool_group`, while the flow ticker's orphan path has to
+/// produce the exact same chrome from a snapshot it already holds, because by
+/// then the group is no longer in the store to settle. Two implementations would
+/// drift, and the orphan card would freeze on a different line than every other
+/// card (#1880).
+pub(crate) fn stamp_settled(
+    group: &mut GroupState,
+    outcome: TurnOutcome,
+    bg: usize,
+    agents: crate::channels::background_work::SubagentCounts,
+    ctx: Option<String>,
+) {
+    let prev_ctx = group.settled.as_ref().and_then(|s| s.ctx.clone());
+    let agent_phrase = (!agents.is_empty())
+        .then(|| crate::channels::background_work::subagent_waiting_phrase(agents));
+    let (icon, verb) = settled_icon_verb(outcome, bg, agent_phrase.as_deref());
+    group.settled = Some(SettledStatus {
+        outcome,
+        elapsed: group.started_at.elapsed(),
+        ctx: ctx.or(prev_ctx),
+        icon,
+        verb,
+    });
+}
+
 /// Terminal outcome of a turn, stamped on the group at settle (FR-005, #1880).
 /// The Discord twin of Slack's `TurnOutcome` and Telegram's `FlowOutcome`.
 ///
@@ -543,18 +571,23 @@ impl DiscordState {
             }
             None => {
                 order.push(message_id);
-                // Evict SETTLED groups first (#1880 ticker parity). Evicting a
-                // live one silently strands the card: the flow ticker's next
-                // snapshot returns None, the ticker leaves without settling,
-                // and the card keeps rendering the live `🕒` chrome with a
-                // frozen clock — on screen indistinguishable from a turn still
-                // working. Only when every retained group is still live does
-                // the oldest go, so the bound itself is never exceeded.
+                // Evict SETTLED groups only (#1880 ticker parity). A live group
+                // is never evicted: dropping one strands its card, because the
+                // flow ticker's next snapshot returns None, the ticker leaves
+                // without settling, and the card keeps rendering the live `🕒`
+                // chrome with a frozen clock, which on screen is
+                // indistinguishable from a turn still working. When every
+                // retained group is still live the map is allowed to run over
+                // the cap instead: that overflow is bounded by how many turns
+                // are in flight at once, never by time, and the next settle
+                // gives eviction something to take.
                 while order.len() > Self::TOOL_GROUP_CAP {
-                    let victim = order
+                    let Some(victim) = order
                         .iter()
                         .position(|id| map.get(id).is_some_and(|g| g.settled.is_some()))
-                        .unwrap_or(0);
+                    else {
+                        break;
+                    };
                     let oldest = order.remove(victim);
                     map.remove(&oldest);
                 }
@@ -622,17 +655,7 @@ impl DiscordState {
         let mut guard = self.tool_groups.lock().await;
         let (_, map) = &mut *guard;
         let group = map.get_mut(&message_id)?;
-        let prev_ctx = group.settled.as_ref().and_then(|s| s.ctx.clone());
-        let agent_phrase = (!agents.is_empty())
-            .then(|| crate::channels::background_work::subagent_waiting_phrase(agents));
-        let (icon, verb) = settled_icon_verb(outcome, bg, agent_phrase.as_deref());
-        group.settled = Some(SettledStatus {
-            outcome,
-            elapsed: group.started_at.elapsed(),
-            ctx: ctx.or(prev_ctx),
-            icon,
-            verb,
-        });
+        stamp_settled(group, outcome, bg, agents, ctx);
         Some(group.clone())
     }
 

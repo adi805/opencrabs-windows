@@ -66,3 +66,47 @@ fn no_static_thinking_placeholder_is_ever_posted() {
         );
     }
 }
+
+/// The shell is the only card a zero-tool turn ever gets, so it has to be a
+/// write the governor is not allowed to drop, and both places that create it
+/// must say so. The direct path is `handler.rs` at turn start; the follow-up
+/// path is `interactions.rs` answering a catalog command or a context menu.
+/// When the two disagree, the one still passing `Class::Create` is the path
+/// that silently ends a turn with no card at all.
+#[test]
+fn both_shell_paths_admit_the_shell_as_a_class_the_governor_cannot_drop() {
+    let direct = include_str!("../channels/discord/handler.rs");
+    let followup = include_str!("../channels/discord/interactions.rs");
+
+    let direct_class = shell_write_class(direct, "render_content(&turn_shell)");
+    let followup_class = shell_write_class(followup, "render_content(&group);");
+    assert_eq!(
+        direct_class, followup_class,
+        "the turn-start shell is created with two different write classes: \
+         direct={direct_class}, follow-up={followup_class}"
+    );
+    assert_eq!(
+        direct_class, "Class::Final",
+        "the shell must be `Class::Final`: a droppable class lets the governor \
+         drop the only card a zero-tool turn gets"
+    );
+}
+
+/// The `WriteClass` a `writes::say` call passes for the shell whose content is
+/// built by `content_needle`. Read off the call site as written, so the two
+/// files are compared as text rather than against a constant both could drift
+/// from together.
+fn shell_write_class(src: &str, content_needle: &str) -> String {
+    let at = src
+        .find(content_needle)
+        .unwrap_or_else(|| panic!("no shell content site matching {content_needle}"));
+    let tail = &src[at..];
+    let class = tail
+        .find("Class::")
+        .unwrap_or_else(|| panic!("no write class after {content_needle}"));
+    tail[class..]
+        .split(|c: char| !(c.is_alphanumeric() || c == ':'))
+        .next()
+        .expect("split always yields a first field")
+        .to_string()
+}

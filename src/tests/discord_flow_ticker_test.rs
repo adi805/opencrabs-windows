@@ -117,3 +117,51 @@ fn ticker_spawns_before_the_turn_dispatch() {
         "spawn_flow_ticker must run before the agent turn starts"
     );
 }
+
+/// A snapshot that comes back empty must settle the card, not walk away from
+/// it. The ticker's bare `break` left the live `🕒` chrome frozen on screen,
+/// which reads exactly like a turn still working (#1880). The arm now hands the
+/// last rendering it read to `settle_orphaned_card`, and that helper has to post
+/// it with the final class: a droppable class would let the repair be
+/// rate-limited away and leave the same frozen clock behind.
+#[test]
+fn a_missing_snapshot_settles_the_card_instead_of_bare_breaking() {
+    let handler = include_str!("../channels/discord/handler.rs");
+    let start = handler
+        .find("let Some(group) = dstate.tool_group_snapshot(mid.get()).await")
+        .expect("the ticker no longer reads the group snapshot");
+    let rest = &handler[start..];
+    let end = rest
+        .find("if group.settled.is_some()")
+        .expect("the settled check that follows the snapshot moved");
+    let arm = &rest[..end];
+    assert!(
+        arm.contains("settle_orphaned_card"),
+        "the missing-snapshot arm no longer settles the card it lost, so a card \
+         whose group left the store keeps its live clock"
+    );
+    assert!(
+        arm.contains("break"),
+        "the missing-snapshot arm must still stop the ticker"
+    );
+
+    let helper_start = handler
+        .find("async fn settle_orphaned_card(")
+        .expect("the orphan settle helper is gone");
+    let helper = &handler[helper_start..];
+    assert!(
+        helper.contains("stamp_settled("),
+        "the orphan helper no longer stamps a settled status, so a lost card \
+         would keep live chrome"
+    );
+    assert!(
+        helper.contains("Class::Final"),
+        "the orphan repair must not be droppable: a rate-limited drop leaves the \
+         frozen clock the helper exists to fix"
+    );
+    assert!(
+        helper.contains("components(Vec::new())"),
+        "with no rendering to post, the helper must at least drop the toggle row \
+         instead of leaving a control that can never work"
+    );
+}

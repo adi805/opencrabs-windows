@@ -109,11 +109,23 @@ async fn toggle_flips_and_updates_preserve_expansion() {
     assert!(state.toggle_tool_group(999).await.is_none());
 }
 
+/// Retention still bounds the map, but it may only take SETTLED groups. A group
+/// that has not settled is a turn still in flight, and evicting one strands its
+/// card: the ticker's next snapshot returns None, the ticker leaves without
+/// settling, and the card keeps the live `🕒` chrome with a frozen clock, which
+/// on screen is indistinguishable from a turn still working (#1880, M1a). The
+/// cap therefore bounds retained *settled* history, not in-flight turns.
 #[tokio::test]
-async fn retention_prunes_oldest_groups() {
+async fn retention_prunes_oldest_settled_groups() {
     let state = DiscordState::new();
     for i in 0..25u64 {
-        state.upsert_tool_group(i, group(2, true, false)).await;
+        let mut g = group(2, true, false);
+        g.settled = Some(SettledStatus::new(
+            TurnOutcome::Finished,
+            Duration::from_secs(1),
+            None,
+        ));
+        state.upsert_tool_group(i, g).await;
     }
     assert!(state.toggle_tool_group(0).await.is_none());
     assert!(state.toggle_tool_group(24).await.is_some());
@@ -242,5 +254,89 @@ async fn resettle_with_no_ctx_keeps_the_stamped_budget() {
             .ctx
             .as_deref(),
         Some("ctx: B")
+    );
+}
+
+/// The cap bounds how much settled history is retained, never how many turns
+/// may be in flight. Evicting a live group is what stranded a card: the flow
+/// ticker's next snapshot returned None, the ticker left without settling, and
+/// the card kept its live `🕒` chrome with a frozen clock. A set of live groups
+/// may therefore run over the cap; every one of them must still be snapshot-able.
+#[tokio::test]
+async fn retention_never_evicts_a_live_group() {
+    let state = DiscordState::new();
+    let ids: Vec<u64> = (0..30u64).map(|i| 5000 + i).collect();
+    for &id in &ids {
+        state.upsert_tool_group(id, group(2, false, false)).await;
+    }
+    for &id in &ids {
+        assert!(
+            state.tool_group_snapshot(id).await.is_some(),
+            "live group {id} was evicted under cap pressure: its ticker would \
+             lose the snapshot and leave a frozen live clock on the card"
+        );
+    }
+}
+
+/// The overflow from live groups must drain as soon as those groups settle, or
+/// the map would only ever grow.
+#[tokio::test]
+async fn retention_drains_the_live_overflow_once_it_settles() {
+    let state = DiscordState::new();
+    let ids: Vec<u64> = (0..30u64).map(|i| 6000 + i).collect();
+    for &id in &ids {
+        state.upsert_tool_group(id, group(2, false, false)).await;
+    }
+    // Settle through the real path: `upsert_tool_group` deliberately preserves
+    // the stored `settled`, so re-upserting a live group cannot settle it and
+    // the drain this test exists to pin would never be reached (#1880).
+    for &id in &ids {
+        state
+            .settle_tool_group(
+                id,
+                TurnOutcome::Finished,
+                0,
+                SubagentCounts::default(),
+                Some("ctx: drain".into()),
+            )
+            .await;
+    }
+    state.upsert_tool_group(9999, group(2, false, false)).await;
+    assert!(
+        state.tool_group_snapshot(6000).await.is_none(),
+        "the oldest settled group must go once evictable groups exist, or the \
+         live overflow never drains"
+    );
+    assert!(
+        state.tool_group_snapshot(9999).await.is_some(),
+        "the group just inserted must be retained"
+    );
+}
+
+/// The ticker's orphan path stamps through the same function the live settle
+/// path uses, so a card whose group left the store freezes on exactly the chrome
+/// every other card settles to. The live `🕒` glyph must be gone and the settled
+/// `⏱️` one present, otherwise the card still reads as a turn in flight (#1880).
+#[test]
+fn stamp_settled_replaces_the_live_clock() {
+    let mut g = group(2, false, false);
+    let live = render_content(&g);
+    assert!(live.contains('🕒'), "fixture must start live: {live}");
+    crate::channels::discord::tool_group::stamp_settled(
+        &mut g,
+        TurnOutcome::TimedOut,
+        0,
+        SubagentCounts::default(),
+        None,
+    );
+    assert!(g.settled.is_some(), "the stamp must mark the group settled");
+    let settled = render_content(&g);
+    assert!(
+        !settled.contains('🕒'),
+        "a settled card must not keep the live clock: {settled}"
+    );
+    assert!(
+        settled.contains("⏱️"),
+        "a settled card must carry the frozen clock: {settled}"
     );
 }

@@ -25,7 +25,9 @@
 //! is deliberately conservative: if fields are added later they must come out
 //! of the same budget, not sit on top of it.
 
-use serenity::builder::{CreateEmbed, CreateMessage, EditMessage};
+use serenity::builder::{
+    CreateEmbed, CreateInteractionResponseMessage, CreateMessage, EditMessage,
+};
 
 /// Max embeds attached to one message.
 pub const MAX_EMBEDS: usize = 10;
@@ -313,6 +315,37 @@ pub fn auto_embed_edit(builder: EditMessage) -> EditMessage {
     builder.content("").add_embed(auto_embed(&body))
 }
 
+/// Move an interaction response's text into an embed card, in place.
+///
+/// The same rule as [`auto_embed_create`] and [`auto_embed_edit`], applied to
+/// the one write path that can reach neither: a page turn answers with
+/// `CreateInteractionResponse::UpdateMessage`, which never passes through
+/// `writes::edit` and so never met [`auto_embed_edit`]. Leaving it out made the
+/// create and edit halves of a long-answer card disagree: page 0 arrived as a
+/// card (it goes through `writes::send`) and the first press rewrote it as
+/// plain text, so the stale embed stayed pinned above the page the reader had
+/// just asked for. Routing the response through the same pure decision keeps
+/// the card the same shape from page 0 through every later page.
+///
+/// Only the two shapes [`auto_embed_edit`] also refuses are left alone: a body
+/// [`should_embed`] rejects, and a builder that already carries an embed. An
+/// interaction response message has no poll field, so there is no poll to guard
+/// against here.
+pub fn auto_embed_response(
+    builder: CreateInteractionResponseMessage,
+) -> CreateInteractionResponseMessage {
+    let Ok(value) = serde_json::to_value(&builder) else {
+        return builder;
+    };
+    let Some(body) = builder_content(&value).map(str::to_owned) else {
+        return builder;
+    };
+    if !should_embed(&body) || already_embedded(&value) {
+        return builder;
+    }
+    builder.content("").add_embed(auto_embed(&body))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,5 +553,54 @@ mod tests {
             "send_embed requires text: pass 'embed_title'/'embed_description' or a non-empty \
              'embeds' array."
         );
+    }
+
+    /// The response half of the same rule. A page turn answers with a raw
+    /// `CreateInteractionResponse::UpdateMessage`, which never passes through
+    /// `writes::edit` and so never met [`auto_embed_edit`]. Page 0 of that same
+    /// card does go through `writes::send` and becomes an embed under
+    /// `auto_embed`. Running the same pure decision over the response is what
+    /// keeps the card one shape from page 0 onward; without it the card flips
+    /// to plain text on the first press while the page-0 embed stays above it.
+    #[test]
+    fn a_response_becomes_a_card_and_keeps_its_row() {
+        use serenity::builder::{CreateActionRow, CreateButton};
+        let rows = vec![CreateActionRow::Buttons(vec![CreateButton::new(
+            "longanswer:1:2",
+        )])];
+        let msg = CreateInteractionResponseMessage::new()
+            .content("page 2")
+            .components(rows);
+        let json = serde_json::to_value(auto_embed_response(msg)).unwrap();
+        let blocks = json["embeds"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1, "{json}");
+        assert_eq!(blocks[0]["description"], serde_json::json!("page 2"));
+        assert_eq!(blocks[0]["color"], serde_json::json!(AUTO_EMBED_COLOR));
+        assert!(
+            json.get("components").is_some(),
+            "the pager row must survive the wrap, or the arrows vanish: {json}"
+        );
+        assert!(
+            json["content"].as_str().unwrap_or_default().is_empty(),
+            "the text must move into the embed, not be duplicated above it: {json}"
+        );
+    }
+
+    /// The refusal that stops a response from being double-decked. A caller
+    /// that already chose its own embed keeps it, exactly as on the create and
+    /// edit paths.
+    #[test]
+    fn a_response_that_already_carries_an_embed_is_left_alone() {
+        let msg = CreateInteractionResponseMessage::new()
+            .content("ignored")
+            .add_embed(CreateEmbed::new().title("mine"));
+        let json = serde_json::to_value(auto_embed_response(msg)).unwrap();
+        let blocks = json["embeds"].as_array().unwrap();
+        assert_eq!(
+            blocks.len(),
+            1,
+            "a second card must not be stacked on one that already has one: {json}"
+        );
+        assert_eq!(blocks[0]["title"], serde_json::json!("mine"));
     }
 }

@@ -820,6 +820,17 @@ impl EventHandler for Handler {
                             let row = super::long_answer::pager_row(mid, page, pages.len());
                             msg = msg.components(vec![row]);
                         }
+                        // FR-009 / auto_embed symmetry: page 0 was posted
+                        // through `writes::send`, which turned it into a card
+                        // when `auto_embed` is on. The page turn must render
+                        // the SAME shape, or the card the reader is looking at
+                        // flips to plain text on the first press while the
+                        // page-0 embed stays pinned above it. This response
+                        // never passes through `writes::edit`, so the choke
+                        // point that keeps a create and its later edits
+                        // symmetric does not see it; applying the same pure
+                        // decision here restores that rule.
+                        let msg = super::embed::auto_embed_response(msg);
                         CreateInteractionResponse::UpdateMessage(msg)
                     }
                     None => CreateInteractionResponse::Message(
@@ -832,6 +843,18 @@ impl EventHandler for Handler {
                 };
                 if let Err(e) = comp.create_response(&ctx.http, resp).await {
                     tracing::warn!("Discord: long-answer page response failed: {e}");
+                }
+                if pages.is_none() {
+                    // The card keeps its page: the notice above is ephemeral
+                    // precisely so the text the reader is looking at survives.
+                    // The arrows are a different promise, and the store can no
+                    // longer keep it, so they come off instead of collecting
+                    // another press (#1880, L3). An out-of-range page is not
+                    // this case: `pages` is still `Some` there and the row
+                    // still works, which is why the test is on the store's
+                    // answer and not on the rendered body.
+                    super::writes::strip_controls(&ctx.http, comp.channel_id, comp.message.id)
+                        .await;
                 }
                 return;
             }
@@ -866,6 +889,11 @@ impl EventHandler for Handler {
                     {
                         tracing::warn!("Discord: tool group aged-out notice failed: {e}");
                     }
+                    // The custom_id is what the row needed in order to answer,
+                    // so this card cannot serve its control any more: take it
+                    // off rather than leave a button whose only outcome is this
+                    // notice (#1880, L3).
+                    writes::strip_controls(&ctx.http, comp.channel_id, comp.message.id).await;
                     return;
                 };
                 match self.discord_state.toggle_tool_group(mid).await {
@@ -923,6 +951,16 @@ impl EventHandler for Handler {
                         {
                             tracing::warn!("Discord: tool group aged-out notice failed: {e}");
                         }
+                        // The group left the store, so the toggle can never
+                        // answer again. The card keeps its last rendering (the
+                        // notice above is ephemeral for exactly that reason);
+                        // only the control comes off (#1880, L3).
+                        writes::strip_controls(
+                            &ctx.http,
+                            comp.channel_id,
+                            serenity::model::id::MessageId::new(mid),
+                        )
+                        .await;
                     }
                 }
                 return;
