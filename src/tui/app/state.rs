@@ -2173,6 +2173,7 @@ impl App {
                                     None,
                                     None,
                                     base_url.as_deref(),
+                                    None,
                                 )
                                 .await;
                                 let _ = sender.send(TuiEvent::OnboardingModelsFetched(models));
@@ -3110,6 +3111,7 @@ impl App {
                             None,
                             None,
                             None,
+                            None,
                         )
                         .await;
                         let _ = sender.send(TuiEvent::OnboardingModelsFetched(models));
@@ -3145,7 +3147,7 @@ impl App {
                     let sender = self.event_sender();
                     tokio::spawn(async move {
                         let models = super::onboarding::fetch_provider_models(
-                            2, None, None, None, None, None,
+                            2, None, None, None, None, None, None,
                         )
                         .await;
                         let _ = sender.send(TuiEvent::OnboardingModelsFetched(models));

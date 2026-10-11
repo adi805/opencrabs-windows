@@ -182,6 +182,16 @@ fn setup_looks_finished() -> bool {
 /// If api_key is provided, includes it (some endpoints filter by access level).
 /// For custom providers, pass base_url to fetch from the endpoint.
 /// Returns empty vec on failure (callers fall back to static list).
+/// The `/models` URL for an OpenCode plan (#2040). Go is the default; `zen`
+/// selects the Zen catalog. Each plan serves its own model list.
+pub(crate) fn opencode_models_url(plan: Option<&str>) -> &'static str {
+    if plan == Some("zen") {
+        "https://opencode.ai/zen/v1/models"
+    } else {
+        "https://opencode.ai/zen/go/v1/models"
+    }
+}
+
 pub async fn fetch_provider_models(
     provider_index: usize,
     api_key: Option<&str>,
@@ -189,6 +199,7 @@ pub async fn fetch_provider_models(
     xiaomi_endpoint_type: Option<&str>,
     moonshot_endpoint_type: Option<&str>,
     base_url: Option<&str>,
+    opencode_endpoint_type: Option<&str>,
 ) -> Vec<String> {
     use crate::tui::onboarding::PROVIDERS;
     let provider_id = PROVIDERS.get(provider_index).map(|p| p.id).unwrap_or("");
@@ -525,8 +536,8 @@ pub async fn fetch_provider_models(
             req.send().await
         }
         "opencode" => {
-            // OpenCode API — /zen/go/v1/models (Go and Zen plans)
-            let mut req = client.get("https://opencode.ai/zen/go/v1/models");
+            // OpenCode API: each plan serves its own catalog (#2040).
+            let mut req = client.get(opencode_models_url(opencode_endpoint_type));
             if let Some(key) = api_key
                 && !key.is_empty()
             {

@@ -634,6 +634,7 @@ pub mod onboarding_voice_seed_test;
 pub mod onboarding_welcome_send_test;
 pub mod onboarding_welcome_test;
 pub mod onboarding_wizard_test;
+pub mod opencode_endpoint_picker_test;
 pub mod orphan_close_tag_strip_test;
 pub mod orphan_think_close_tag_test;
 pub mod owner_resolve_test;

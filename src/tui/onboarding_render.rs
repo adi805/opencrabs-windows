@@ -1372,6 +1372,38 @@ fn render_provider_auth(
             lines.push(Line::from(""));
         }
 
+        // OpenCode plan toggle (Go or Zen) — BEFORE API key (#2040)
+        if wizard.ps.provider_id() == "opencode" {
+            let et_focused = wizard.auth_field == AuthField::OpenCodeEndpointType;
+            let go_marker = if wizard.ps.opencode_endpoint_type == 0 {
+                "[*]"
+            } else {
+                "[ ]"
+            };
+            let zen_marker = if wizard.ps.opencode_endpoint_type == 1 {
+                "[*]"
+            } else {
+                "[ ]"
+            };
+            lines.push(Line::from(Span::styled(
+                "  Plan:",
+                Style::default().fg(if et_focused {
+                    brand_blue()
+                } else {
+                    theme::role(Role::Gray)
+                }),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("    {go_marker} Go    {zen_marker} Zen"),
+                Style::default().fg(if et_focused {
+                    theme::role(Role::AccentSoft)
+                } else {
+                    theme::role(Role::Gray)
+                }),
+            )));
+            lines.push(Line::from(""));
+        }
+
         // Moonshot AI plan toggle (api vs coding) — BEFORE API key
         if wizard.ps.provider_id() == "moonshot" {
             let et_focused = wizard.auth_field == AuthField::MoonshotEndpointType;

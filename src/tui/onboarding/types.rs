@@ -685,6 +685,8 @@ pub enum AuthField {
     ZhipuEndpointType,
     XiaomiEndpointType,
     MoonshotEndpointType,
+    /// OpenCode: Go or Zen plan, before the API key (#2040).
+    OpenCodeEndpointType,
     MoonshotPlan,
 }
 

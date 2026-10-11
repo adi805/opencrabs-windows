@@ -305,6 +305,15 @@ impl App {
                         Some(wizard.ps.base_url.clone())
                     };
 
+                    // OpenCode plan (Zen or Go) picks the /models catalog (#2040)
+                    let opencode_et = (wizard.ps.provider_id() == "opencode").then(|| {
+                        if wizard.ps.opencode_endpoint_type == 1 {
+                            "zen".to_string()
+                        } else {
+                            "go".to_string()
+                        }
+                    });
+
                     // Capture zhipu endpoint type from wizard state (not yet saved to config)
                     let zhipu_et = if wizard.ps.provider_id() == "zai" {
                         Some(if wizard.ps.zhipu_endpoint_type == 1 {
@@ -347,6 +356,7 @@ impl App {
                             xiaomi_et.as_deref(),
                             moonshot_et.as_deref(),
                             base_url.as_deref(),
+                            opencode_et.as_deref(),
                         )
                         .await;
                         let _ = sender.send(TuiEvent::OnboardingModelsFetched(models));

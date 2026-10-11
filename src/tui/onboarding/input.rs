@@ -430,6 +430,15 @@ impl OnboardingWizard {
                     self.ps.api_key_input.push_str(clean);
                     self.ps.api_key_cursor = self.ps.api_key_input.len();
                 }
+                AuthField::OpenCodeEndpointType => {
+                    // User pasted on endpoint type — they meant to paste API key
+                    self.auth_field = AuthField::ApiKey;
+                    if self.ps.has_existing_key_sentinel() {
+                        self.ps.api_key_input.clear();
+                    }
+                    self.ps.api_key_input.push_str(clean);
+                    self.ps.api_key_cursor = self.ps.api_key_input.len();
+                }
                 AuthField::MoonshotEndpointType => {
                     // User pasted on endpoint type — they meant to paste API key
                     self.auth_field = AuthField::ApiKey;
@@ -554,6 +563,9 @@ impl OnboardingWizard {
                         self.ps.config_models = crate::tui::provider_selector::load_default_models(
                             self.ps.provider_id(),
                         );
+                    } else if self.ps.provider_id() == "opencode" {
+                        // OpenCode: Go or Zen plan first, then API key (#2040)
+                        self.auth_field = AuthField::OpenCodeEndpointType;
                     } else if self.ps.provider_id() == "zai" {
                         // z.ai GLM: endpoint type first, then API key
                         self.auth_field = AuthField::ZhipuEndpointType;
@@ -937,6 +949,19 @@ impl OnboardingWizard {
                 }
                 KeyCode::Enter | KeyCode::Tab => {
                     // Endpoint type selected → now enter API key
+                    self.auth_field = AuthField::ApiKey;
+                }
+                KeyCode::BackTab => {
+                    self.auth_field = AuthField::Provider;
+                }
+                _ => {}
+            },
+            AuthField::OpenCodeEndpointType => match event.code {
+                KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k') => {
+                    // Toggle between 0 (Go) and 1 (Zen)
+                    self.ps.opencode_endpoint_type = 1 - self.ps.opencode_endpoint_type;
+                }
+                KeyCode::Enter | KeyCode::Tab => {
                     self.auth_field = AuthField::ApiKey;
                 }
                 KeyCode::BackTab => {

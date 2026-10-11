@@ -32,6 +32,8 @@ pub use types::{
 pub use wizard::OnboardingWizard;
 
 pub(crate) use brain::parse_brain_sections;
+#[cfg(test)]
+pub(crate) use fetch::opencode_models_url;
 pub use fetch::{fetch_provider_models, is_first_time};
 // merge_minimax_baseline is used by tests via `crate::tui::onboarding::fetch::...`;
 // the module is private but the function is `pub(crate)`, accessible only when

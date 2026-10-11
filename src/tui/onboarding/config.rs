@@ -506,6 +506,15 @@ impl OnboardingWizard {
                         "https://api.minimax.io/v1"
                     );
                 }
+                "opencode" => {
+                    // The plan picks the catalog and the chat endpoint together (#2040).
+                    let (plan, base) =
+                        crate::tui::provider_selector::ProviderSelectorState::opencode_endpoint(
+                            self.ps.opencode_endpoint_type,
+                        );
+                    try_write!(write_errors, section, "endpoint_type", plan);
+                    try_write!(write_errors, section, "base_url", base);
+                }
                 "zai" => {
                     let endpoint_type = if self.ps.zhipu_endpoint_type == 1 {
                         "coding"

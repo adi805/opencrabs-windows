@@ -394,6 +394,7 @@ impl OnboardingWizard {
             zhipu_endpoint_type: 0,    // default to API mode
             xiaomi_endpoint_type: 0,   // default to API mode
             moonshot_endpoint_type: 0, // default to API plan
+            opencode_endpoint_type: 0, // default to Go plan (#2040)
             model_filter: String::new(),
             ..Default::default()
         };
@@ -702,6 +703,13 @@ impl OnboardingWizard {
             .is_some_and(|p| p.enabled)
         {
             wizard.ps.selected_provider = resolve("moonshot");
+            if let Some(p) = config.providers.opencode.as_ref() {
+                wizard.ps.opencode_endpoint_type = if p.endpoint_type.as_deref() == Some("zen") {
+                    1
+                } else {
+                    0
+                };
+            }
             if let Some(p) = config.providers.moonshot.as_ref() {
                 wizard.ps.moonshot_endpoint_type = if p.endpoint_type.as_deref() == Some("coding") {
                     1
