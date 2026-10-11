@@ -166,6 +166,50 @@ const FLOW_TICKER_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// Hard stop for orphaned ticks (crashed turn): no immortal tasks.
 const FLOW_TICKER_CAP: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
+/// Settle a card whose group left the store while the card was still live.
+///
+/// Retention only ever evicts a SETTLED group (`DiscordState::upsert_tool_group`)
+/// and the turn-start shell is stored before its message id is published, so
+/// this should not be reachable. It exists because the alternative is a card
+/// that keeps rendering the live `🕒` chrome with a frozen clock, which on
+/// screen is indistinguishable from a turn still working (#1880), and because
+/// making `tool_groups` durable adds removal paths that a later change could
+/// point at a live group. The last rendering the ticker read is re-stamped
+/// through the same function the live settle path uses, so a lost card freezes
+/// on exactly the chrome every other card settles to. With no rendering to work
+/// from there is nothing to post, and the only repair left is to drop the toggle
+/// row so the card stops offering a control that can never work again.
+async fn settle_orphaned_card(
+    http: &Http,
+    channel: ChannelId,
+    mid: serenity::model::id::MessageId,
+    last: Option<super::tool_group::GroupState>,
+) {
+    let Some(mut group) = last else {
+        let strip = EditMessage::new().components(Vec::new());
+        if let Err(e) = writes::edit(http, channel, mid, strip, Class::Final).await {
+            tracing::warn!("Discord: flow ticker orphan control strip failed: {e}");
+        }
+        return;
+    };
+    super::tool_group::stamp_settled(
+        &mut group,
+        super::tool_group::TurnOutcome::TimedOut,
+        0,
+        crate::channels::background_work::SubagentCounts::default(),
+        None,
+    );
+    let edit = EditMessage::new()
+        .content(super::tool_group::render_content(&group))
+        .components(super::tool_group::render_components(&group, mid.get()));
+    if let Err(e) = writes::edit(http, channel, mid, edit, Class::Final).await {
+        tracing::warn!(
+            "Discord: flow ticker orphan settle failed (mid={}): {e}",
+            mid.get()
+        );
+    }
+}
+
 /// Re-render the turn's flow group on an interval (#1843): the Discord twin
 /// of Slack's `spawn_flow_ticker` and Telegram's `spawn_edit_loop`. Without
 /// it the clock freezes between tool events. Waits for the group message to
@@ -180,6 +224,9 @@ pub(super) fn spawn_flow_ticker(
     tokio::spawn(async move {
         use serenity::builder::EditMessage;
         let born = std::time::Instant::now();
+        // Last rendering this ticker read. The missing-snapshot arm settles
+        // from it, because by then the group is no longer in the store.
+        let mut last: Option<super::tool_group::GroupState> = None;
         loop {
             tokio::time::sleep(FLOW_TICKER_INTERVAL).await;
             if born.elapsed() > FLOW_TICKER_CAP {
@@ -225,22 +272,21 @@ pub(super) fn spawn_flow_ticker(
                 continue;
             };
             let Some(group) = dstate.tool_group_snapshot(mid.get()).await else {
-                // Retention only ever takes a SETTLED group (see
-                // `DiscordState::upsert_tool_group`), so a missing snapshot means
-                // this card was already settled and its final line is the one on
-                // screen; there is no live clock left to repair. Strip the toggle
-                // row regardless, so an evicted card does not keep a live-looking
-                // Expand button that can never work again (#1880, L3).
+                // The group left the store under the ticker. Settle the last
+                // rendering we read instead of walking away: a bare `break`
+                // left the card rendering the live `🕒` chrome with a frozen
+                // clock, which on screen reads exactly like a turn still
+                // working (#1880). Retention only ever evicts a SETTLED group,
+                // so the card should already carry its final line; this arm is
+                // the repair for the case where it does not.
                 tracing::warn!(
-                    "Discord: flow ticker lost group {} to retention; stripping controls",
+                    "Discord: flow ticker lost group {} mid-turn; settling the last rendering",
                     mid.get()
                 );
-                let strip = EditMessage::new().components(Vec::new());
-                if let Err(e) = writes::edit(&http, channel, mid, strip, Class::Edit).await {
-                    tracing::warn!("Discord: flow ticker control strip failed: {e}");
-                }
+                settle_orphaned_card(&http, channel, mid, last.take()).await;
                 break;
             };
+            last = Some(group.clone());
             if group.settled.is_some() {
                 break; // settle already posted the final line
             }
@@ -263,8 +309,14 @@ pub(super) fn spawn_flow_ticker(
                     }
                     break;
                 }
-                Some(_) => {}  // still live: keep ticking
-                None => break, // pruned mid-tick
+                Some(_) => {} // still live: keep ticking
+                None => {
+                    // Same orphan one beat later: the group went between this
+                    // tick's edit and the re-snapshot, so settle the rendering
+                    // already in hand instead of leaving live chrome behind.
+                    settle_orphaned_card(&http, channel, mid, Some(group)).await;
+                    break;
+                }
             }
         }
     });
@@ -1651,6 +1703,14 @@ pub(crate) async fn handle_message(
     // preserves this started_at); the settle stamp is the last word. On a
     // post failure the mid stays None and creation falls back to the first
     // tool call, the pre-#1845 behavior.
+    //
+    // `Class::Final`, never `Class::Create`: this shell is the ONLY card a
+    // zero-tool turn ever gets, so it must not be the write the governor is
+    // allowed to drop under budget pressure. A dropped shell leaves
+    // `turn_group_mid` at None and the turn ends with no card at all. The
+    // follow-up path (`interactions.rs`) creates this same shell as
+    // `Class::Final` for the same reason, and the two paths must not disagree
+    // about whether the card is optional.
     let turn_shell = super::tool_group::GroupState {
         last_activity_at: Instant::now(),
         entries: Vec::new(),
@@ -1664,7 +1724,7 @@ pub(crate) async fn handle_message(
         &ctx.http,
         target,
         &super::tool_group::render_content(&turn_shell),
-        Class::Create,
+        Class::Final,
     )
     .await
     {
@@ -1674,7 +1734,12 @@ pub(crate) async fn handle_message(
                 .await;
             *turn_group_mid.lock().await = Some(sent.id);
         }
-        Ok(None) => {}
+        Ok(None) => {
+            // Unreachable while this write is `Class::Final`: only a droppable
+            // class is refused outright. Kept loud rather than silent, because
+            // a shell that never landed is the zero-tool turn with no card.
+            tracing::warn!("Discord: turn-start group shell was refused by the governor");
+        }
         Err(e) => tracing::warn!("Discord: turn-start group shell post failed: {e}"),
     }
 
@@ -1981,11 +2046,19 @@ pub(crate) async fn handle_message(
                                 // opens the first hidden page. Each arrow
                                 // names its own target, so the same row rides
                                 // every later page too (FR-009).
+                                //
+                                // `Class::Final`, not `Class::Edit`: this row
+                                // is the only handle to pages 1..N. Page 0
+                                // itself is posted as `Class::Final`, so a
+                                // droppable attach would let the governor keep
+                                // the text and silently drop the controls,
+                                // leaving the rest of the answer stored but
+                                // unreachable.
                                 let edit = EditMessage::new().components(vec![
                                     super::long_answer::pager_row(mid, 0, chunks.len()),
                                 ]);
                                 if let Err(e) =
-                                    writes::edit(&ctx.http, target, sent.id, edit, Class::Edit)
+                                    writes::edit(&ctx.http, target, sent.id, edit, Class::Final)
                                         .await
                                 {
                                     tracing::warn!("Discord: pager attach failed: {e}");

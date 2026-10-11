@@ -213,6 +213,40 @@ fn the_pager_opens_a_hidden_page_and_carries_the_next_row_forward() {
     );
 }
 
+/// A pager row the governor is allowed to drop is a pager that never arrives.
+/// The row is the only handle to pages 1..N. Page 0 is admitted as
+/// `Class::Final`, so a `Class::Edit` attach could be refused while the text it
+/// belongs to lands, leaving every later page stored but unreachable with no
+/// second chance to attach the controls. The attach must therefore be a class
+/// the governor never drops. The tests above only pin that a row is BUILT, so
+/// none of them can see this.
+#[test]
+fn the_pager_attach_is_not_a_droppable_class() {
+    let flat_handler = flat(&handler_src());
+    let row = flat_handler
+        .find("pager_row(mid,0,chunks.len())")
+        .expect("the page-0 pager row moved: this test pins the attach class");
+    let after = &flat_handler[row..];
+    let attach = after
+        .find("writes::edit(")
+        .expect("the pager attach no longer edits the page-0 message");
+    let tail = &after[attach..];
+    let end = tail
+        .find(')')
+        .expect("the pager attach call has no argument list");
+    assert!(
+        tail[..end].contains("Class::Final"),
+        "the page-0 pager attach must be admitted as `Class::Final`: a \
+         droppable class can be refused, and this row is the only handle to \
+         pages 1..N (AC-020)"
+    );
+    assert!(
+        !tail[..end].contains("Class::Edit") && !tail[..end].contains("Class::Create"),
+        "a droppable class on the pager attach lets the governor drop the \
+         controls while the text they belong to lands (AC-020)"
+    );
+}
+
 /// AC-020, the shape the reader actually sees. A press must **rewrite the card
 /// that carries the arrows**, not post a fresh ephemeral bubble: answering
 /// ephemerally left the card frozen on page 0 while the requested page landed
