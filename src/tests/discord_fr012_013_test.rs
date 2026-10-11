@@ -343,6 +343,16 @@ fn a_new_rule_puts_the_fields_discord_requires_on_the_wire() {
 #[test]
 fn every_new_verb_is_advertised_and_dispatched() {
     let src = flatten(read("src/brain/tools/discord_send.rs"));
+    // The enum and the dispatch match are two different lists. The flattener
+    // drops the comma rustfmt leaves before a closing delimiter, so the last
+    // enum member reads `"audit_log"]` and not `"audit_log",`: scope the
+    // membership check to the enum list, because matching the bare verb would
+    // also be satisfied by the dispatch arm and prove nothing.
+    let enum_list = src
+        .split("\"enum\":[")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .expect("the action schema must carry an enum list");
     for verb in [
         "announce",
         "automod_list",
@@ -356,7 +366,7 @@ fn every_new_verb_is_advertised_and_dispatched() {
             "{verb} has no dispatch arm"
         );
         assert!(
-            src.contains(&format!("\"{verb}\",")),
+            enum_list.contains(&format!("\"{verb}\"")),
             "{verb} is missing from the schema enum"
         );
     }

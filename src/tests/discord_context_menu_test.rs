@@ -212,7 +212,7 @@ fn an_unreadable_target_is_refused_in_place_and_never_panicked() {
     assert!(folded.contains("CommandType::ChatInput=>Some(super::commands::invocation(command))"));
     // A type we never registered is refused rather than guessed at.
     assert!(
-        folded.contains("_=>None,"),
+        folded.contains("_=>None}"),
         "an unknown kind has no request"
     );
     // `None` is answered ephemeral, in place: a refused interaction beats the

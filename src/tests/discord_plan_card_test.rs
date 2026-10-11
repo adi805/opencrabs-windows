@@ -176,13 +176,13 @@ fn the_card_is_owner_gated_and_routed_from_the_component_dispatch() {
     );
     assert!(
         src.contains(
-            "crate::utils::plan_mode::try_approve(session_id,crate::tui::plan::ApprovalSource::User,).await"
+            "crate::utils::plan_mode::try_approve(session_id,crate::tui::plan::ApprovalSource::User).await"
         ),
         "Approve must use the same validator Telegram uses"
     );
     assert!(
         src.contains(
-            "super::plan_card::remove_plan_card(&ctx.http,channel_id,&self.discord_state,session_id,).await"
+            "super::plan_card::remove_plan_card(&ctx.http,channel_id,&self.discord_state,session_id).await"
         ),
         "Discard must take the card down with the plan"
     );
