@@ -305,9 +305,9 @@ impl DashboardData {
             fetch_cache_stats(pool, since),
         )?;
 
-        // Override total_cost with sum of recalculated model costs.
-        // The DB cost column is stale (old pricing or $0.00 for unknown models).
-        // fetch_model_entries recalculates using current TOML pricing, so we trust that.
+        // Header total is the sum of the model rows, so it agrees with the
+        // By Model card. Those rows sum the ledger's per-call cost, so this is
+        // the real figure, not a second cache-blind estimate.
         summary.total_cost = models.iter().map(|m| m.cost).sum();
 
         Ok(Self {
@@ -615,20 +615,26 @@ async fn fetch_model_entries(pool: &Pool, since: Option<i64>) -> Result<Vec<Mode
                END AS normalized_model, \
                m3 AS raw_model, \
                COALESCE(SUM(token_count), 0), \
-               COUNT(*) \
+               COUNT(*), \
+               COALESCE(SUM(cost), 0.0) \
              FROM spaced \
              GROUP BY normalized_model, m3 \
              ORDER BY SUM(token_count) DESC"
         );
         let mut stmt = conn.prepare(&query)?;
-        let rows: Vec<(String, String, i64, i64)> = if let Some(s) = since {
-            stmt.query_map(params![s], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))
-            })?.collect::<std::result::Result<Vec<_>, _>>()?
+        let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<(String, String, i64, i64, f64)> {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, f64>(4)?,
+            ))
+        };
+        let rows: Vec<(String, String, i64, i64, f64)> = if let Some(s) = since {
+            stmt.query_map(params![s], map_row)?.collect::<std::result::Result<Vec<_>, _>>()?
         } else {
-            stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))
-            })?.collect::<std::result::Result<Vec<_>, _>>()?
+            stmt.query_map([], map_row)?.collect::<std::result::Result<Vec<_>, _>>()?
         };
         Ok::<_, rusqlite::Error>(rows)
     })
@@ -639,14 +645,14 @@ async fn fetch_model_entries(pool: &Pool, since: Option<i64>) -> Result<Vec<Mode
     // Group by base model (normalize away quantization suffixes), keyed on the
     // punctuation-insensitive identity so one model reported with two spellings
     // is one row rather than two smaller ones (#929).
-    let mut groups: std::collections::HashMap<String, Vec<(String, i64, i64)>> =
+    let mut groups: std::collections::HashMap<String, Vec<(String, i64, i64, f64)>> =
         std::collections::HashMap::new();
     // The key is unreadable by design, so each group also remembers the spelling
     // to display: whichever variant carries the most tokens, i.e. the form this
     // model is actually known by rather than the typo that split it.
     let mut display_names: std::collections::HashMap<String, (String, i64)> =
         std::collections::HashMap::new();
-    for (normalized, raw, tokens, calls) in raw {
+    for (normalized, raw, tokens, calls, cost) in raw {
         let base = normalize_model_for_grouping(&normalized);
         let key = canonical_model_key(&base);
         display_names
@@ -657,7 +663,10 @@ async fn fetch_model_entries(pool: &Pool, since: Option<i64>) -> Result<Vec<Mode
                 }
             })
             .or_insert_with(|| (base.clone(), tokens));
-        groups.entry(key).or_default().push((raw, tokens, calls));
+        groups
+            .entry(key)
+            .or_default()
+            .push((raw, tokens, calls, cost));
     }
 
     // Build ModelEntry tree, sorted by total tokens descending
@@ -672,21 +681,31 @@ async fn fetch_model_entries(pool: &Pool, since: Option<i64>) -> Result<Vec<Mode
                 .unwrap_or(key);
             let mut total_tokens: i64 = 0;
             let mut total_calls: i64 = 0;
+            let mut total_cost: f64 = 0.0;
             let mut has_estimate = false;
             let mut child_rows: Vec<ModelVariant> = Vec::new();
 
             variants.sort_by_key(|b| std::cmp::Reverse(b.1)); // sort by tokens desc
-            for (full_name, tokens, calls) in variants {
-                let cost = pricing
-                    .as_ref()
-                    .map(|p| p.estimate_cost(&full_name, tokens))
-                    .unwrap_or(0.0);
-                // #1717: "~" now means the conservative-default estimate from
-                // cost_origin, not the old cost == 0.0 sinkhole: a genuinely
-                // free model is Priced and renders $0.00 unmarked.
-                let estimated = pricing.as_ref().is_some_and(|p| {
-                    p.cost_origin(&full_name) == crate::usage::pricing::CostOrigin::Estimated
-                });
+            for (full_name, tokens, calls, ledger_cost) in variants {
+                // The ledger holds what each call really cost, cache reads
+                // included (#1707), so it is the source of truth. The table
+                // estimate is 80/20 input/output and ignores cache, so it only
+                // fills rows the ledger recorded at zero.
+                let (cost, estimated) = if ledger_cost > 0.0 {
+                    (ledger_cost, false)
+                } else {
+                    let estimate = pricing
+                        .as_ref()
+                        .map(|p| p.estimate_cost(&full_name, tokens))
+                        .unwrap_or(0.0);
+                    // #1717: "~" means the conservative-default estimate from
+                    // cost_origin, not the old cost == 0.0 sinkhole: a genuinely
+                    // free model is Priced and renders $0.00 unmarked.
+                    let origin_estimated = pricing.as_ref().is_some_and(|p| {
+                        p.cost_origin(&full_name) == crate::usage::pricing::CostOrigin::Estimated
+                    });
+                    (estimate, origin_estimated)
+                };
                 if estimated {
                     has_estimate = true;
                 }
@@ -698,21 +717,15 @@ async fn fetch_model_entries(pool: &Pool, since: Option<i64>) -> Result<Vec<Mode
                 });
                 total_tokens += tokens;
                 total_calls += calls;
+                total_cost += cost;
             }
-
-            // Recalculate base cost from totals using normalized base model name
-            let base_cost = pricing
-                .as_ref()
-                .map(|p| p.estimate_cost(&base, total_tokens))
-                .unwrap_or(0.0);
-            let base_estimated = has_estimate;
 
             ModelEntry {
                 model: base,
                 tokens: total_tokens,
-                cost: base_cost,
+                cost: total_cost,
                 calls: total_calls,
-                estimated: base_estimated,
+                estimated: has_estimate,
                 variants: child_rows,
             }
         })
