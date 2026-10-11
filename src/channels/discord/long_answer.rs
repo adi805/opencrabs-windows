@@ -42,6 +42,35 @@ pub(super) struct StoredPages {
     pub pages: Vec<String>,
 }
 
+/// The durable form of a retained answer (H1): the pages, and the channel the
+/// card carrying them lives in.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PagesSnapshot {
+    channel_id: u64,
+    pages: Vec<String>,
+}
+
+impl StoredPages {
+    fn to_snapshot(&self) -> PagesSnapshot {
+        PagesSnapshot {
+            channel_id: self.channel.get(),
+            pages: self.pages.clone(),
+        }
+    }
+
+    fn from_snapshot(snap: PagesSnapshot) -> Self {
+        Self {
+            channel: ChannelId::new(snap.channel_id),
+            pages: snap.pages,
+        }
+    }
+}
+
+/// The `kind` a pager's row carries in `discord_card_state` (H1). The same
+/// table serves every Discord card that has to survive a restart; this column
+/// is what keeps a pager from being read back as a tool group.
+pub(crate) const LONG_ANSWER_KIND: &str = "long_answer";
+
 /// Insertion-ordered store of paged answers: the ids of the messages carrying
 /// page 0, in insertion order, plus each answer keyed by that id.
 /// Named rather than inlined so the [`DiscordState`] field stays readable;
@@ -152,12 +181,35 @@ impl DiscordState {
         channel: ChannelId,
         pages: Vec<String>,
     ) -> Vec<(u64, ChannelId)> {
+        let (stored, evicted) = self.retain_long_answer(message_id, channel, pages).await;
+        // Write through so a press that arrives after a restart is served the
+        // page it asked for instead of "that pager aged out" (H1).
+        self.persist_pages(message_id, &stored).await;
+        // Lockstep with the in-memory eviction: an answer the cap forgot must
+        // not come back through the durable store and leave arrows over a card
+        // nothing is tracking any more.
+        for (id, _) in &evicted {
+            self.forget_card(*id).await;
+        }
+        evicted
+    }
+
+    /// The in-process half of [`Self::store_long_answer`]: retain the pages and
+    /// report what the cap pushed out. Split out so the durable write happens
+    /// with the map lock already released.
+    async fn retain_long_answer(
+        &self,
+        message_id: u64,
+        channel: ChannelId,
+        pages: Vec<String>,
+    ) -> (StoredPages, Vec<(u64, ChannelId)>) {
         let mut guard = self.long_answers.lock().await;
         let (order, map) = &mut *guard;
         if !map.contains_key(&message_id) {
             order.push(message_id);
         }
-        map.insert(message_id, StoredPages { channel, pages });
+        let stored = StoredPages { channel, pages };
+        map.insert(message_id, stored.clone());
         let mut evicted = Vec::new();
         while order.len() > Self::LONG_ANSWER_CAP {
             let oldest = order.remove(0);
@@ -165,17 +217,48 @@ impl DiscordState {
                 evicted.push((oldest, gone.channel));
             }
         }
-        evicted
+        (stored, evicted)
     }
 
-    /// Pages of a retained long answer, or `None` once it has aged out.
+    /// Pages of a retained long answer, or `None` once it has aged out of both
+    /// the in-process store and the durable table.
     pub(crate) async fn long_answer_pages(&self, message_id: u64) -> Option<Vec<String>> {
-        self.long_answers
-            .lock()
-            .await
-            .1
-            .get(&message_id)
-            .map(|stored| stored.pages.clone())
+        {
+            let guard = self.long_answers.lock().await;
+            if let Some(stored) = guard.1.get(&message_id) {
+                return Some(stored.pages.clone());
+            }
+        }
+        // Miss: the answer aged out, or this process just started with an empty
+        // store. Try the durable table before answering "aged out", so a pager
+        // that predates a restart still turns its page (H1). Deliberately a
+        // read: the press re-renders the card it is attached to and never
+        // re-admits an entry the cap has already accounted for.
+        self.load_pages(message_id).await.map(|stored| stored.pages)
+    }
+
+    /// Write a pager's pages through to the durable store (H1). Best effort:
+    /// the card is already posted, so a store failure is logged and dropped.
+    async fn persist_pages(&self, message_id: u64, stored: &StoredPages) {
+        let Ok(json) = serde_json::to_string(&stored.to_snapshot()) else {
+            tracing::warn!("Discord: could not serialise pager {message_id}");
+            return;
+        };
+        self.persist_card(message_id, LONG_ANSWER_KIND, json).await;
+    }
+
+    /// Read a pager's durable pages back (H1). `None` when no store is wired,
+    /// the pager is not tracked, or the stored form is unreadable: all three
+    /// answer the caller the same way.
+    async fn load_pages(&self, message_id: u64) -> Option<StoredPages> {
+        let json = self.load_card(message_id, LONG_ANSWER_KIND).await?;
+        match serde_json::from_str::<PagesSnapshot>(&json) {
+            Ok(snap) => Some(StoredPages::from_snapshot(snap)),
+            Err(e) => {
+                tracing::warn!("Discord: unreadable pager {message_id}: {e}");
+                None
+            }
+        }
     }
 }
 
