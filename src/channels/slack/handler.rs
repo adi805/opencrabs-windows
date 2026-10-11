@@ -645,6 +645,9 @@ fn spawn_flow_ticker(
 ) {
     tokio::spawn(async move {
         let born = std::time::Instant::now();
+        // The last rendering this ticker read, kept so a group that leaves the
+        // store under us can still be settled instead of abandoned (#1880).
+        let mut last: Option<super::tool_group::GroupState> = None;
         loop {
             tokio::time::sleep(FLOW_TICKER_INTERVAL).await;
             if born.elapsed() > FLOW_TICKER_CAP {
@@ -656,8 +659,20 @@ fn spawn_flow_ticker(
                 continue;
             };
             let Some(group) = slack_state.tool_group_snapshot(ts.as_ref()).await else {
-                break; // pruned by retention mid-turn
+                // The group left the store under the ticker. Settle the last
+                // rendering we read instead of walking away: a bare `break`
+                // left the card rendering the live `🕒` chrome with a frozen
+                // clock, which on screen reads exactly like a turn still
+                // working (#1880). Retention only ever evicts a SETTLED group,
+                // so the card should already carry its final line; this arm is
+                // the repair for the case where it does not.
+                tracing::warn!(
+                    "Slack: flow ticker lost group {ts} mid-turn; settling the last rendering"
+                );
+                settle_orphaned_card(&client, &slack_state, &ts, last.take()).await;
+                break;
             };
+            last = Some(group.clone());
             if group.settled_terminal() {
                 break; // terminal settle already posted the final line
             }
@@ -687,11 +702,60 @@ fn spawn_flow_ticker(
                     }
                     break;
                 }
-                Some(_) => {}  // still live: keep ticking
-                None => break, // pruned mid-tick
+                Some(_) => {} // still live: keep ticking
+                None => {
+                    // Same orphan one beat later: the group went between this
+                    // tick's update and the re-snapshot, so settle the rendering
+                    // already in hand instead of leaving live chrome behind.
+                    settle_orphaned_card(&client, &slack_state, &ts, Some(group)).await;
+                    break;
+                }
             }
         }
     });
+}
+
+/// Settle a card whose group left the store under the flow ticker (#1880).
+///
+/// Retention only ever evicts a SETTLED group (`SlackState::upsert_tool_group`)
+/// and the turn-start shell is stored before its message ts is published, so
+/// this should not be reachable. It exists because the alternative is a card
+/// that keeps rendering the live `🕒` chrome with a frozen clock, which on
+/// screen is indistinguishable from a turn still working.
+///
+/// The last rendering the ticker read is re-stamped through the same
+/// `GroupState::settle` the live settle path uses, so a lost card freezes on
+/// exactly the chrome every other card settles to. The write goes through
+/// `GatedWrites::update` (`Surface::Final`), never `update_chrome`: a
+/// droppable class would let the repair be rate-limited away and leave the
+/// frozen clock this helper exists to fix. With no rendering to work from there
+/// is nothing the ticker can repair, because Slack's `chat.update` needs
+/// content and the ticker never read any.
+async fn settle_orphaned_card(
+    client: &SlackHyperClient,
+    slack_state: &Arc<SlackState>,
+    ts: &SlackTs,
+    last: Option<super::tool_group::GroupState>,
+) {
+    let Some(mut group) = last else {
+        tracing::warn!("Slack: flow ticker lost group {ts} before reading it: nothing to settle");
+        return;
+    };
+    group.settle(super::tool_group::TurnOutcome::TimedOut, None, None);
+    let content = super::tool_group::render(&group, ts);
+    let token = SlackApiToken::new(SlackApiTokenValue::from(
+        slack_state
+            .bot_token
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_default(),
+    ));
+    let session = client.open_session(&token);
+    let upd = SlackApiChatUpdateRequest::new(group.channel.clone(), content, ts.clone());
+    if let Err(e) = session.update(&upd).await {
+        tracing::warn!("Slack: flow ticker orphan settle failed (ts={ts}): {e}");
+    }
 }
 
 async fn sync_step_group<'a>(

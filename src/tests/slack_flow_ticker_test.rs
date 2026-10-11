@@ -102,3 +102,53 @@ fn ticker_throttle_is_rate_limit_safe() {
         "flow ticker must keep its 30 min safety cap (#1807)"
     );
 }
+
+/// A snapshot that comes back empty must settle the card, not walk away from
+/// it. The ticker's bare `break` left the live `🕒` chrome frozen on screen,
+/// which reads exactly like a turn still working (#1880). The arm now hands the
+/// last rendering it read to `settle_orphaned_card`, and that helper has to post
+/// it with the final class: a droppable class would let the repair be
+/// rate-limited away and leave the same frozen clock behind.
+#[test]
+fn a_missing_snapshot_settles_the_card_instead_of_bare_breaking() {
+    let handler = include_str!("../channels/slack/handler.rs");
+    let start = handler
+        .find("let Some(group) = slack_state.tool_group_snapshot(ts.as_ref()).await")
+        .expect("the ticker no longer reads the group snapshot");
+    let rest = &handler[start..];
+    let end = rest
+        .find("if group.settled_terminal()")
+        .expect("the settled check that follows the snapshot moved");
+    let arm = &rest[..end];
+    assert!(
+        arm.contains("settle_orphaned_card"),
+        "the missing-snapshot arm no longer settles the card it lost, so a card \
+         whose group left the store keeps its live clock"
+    );
+    assert!(
+        arm.contains("break"),
+        "the missing-snapshot arm must still stop the ticker"
+    );
+
+    let helper_start = handler
+        .find("async fn settle_orphaned_card(")
+        .expect("the orphan settle helper is gone");
+    // Bound the helper to its own body: the ticker above it calls `update` too,
+    // so an unbounded slice would satisfy the class assertion by accident.
+    let helper = &handler[helper_start..];
+    let helper_end = helper[1..]
+        .find("\nasync fn ")
+        .map(|i| i + 1)
+        .unwrap_or(helper.len());
+    let helper = &helper[..helper_end];
+    assert!(
+        helper.contains("group.settle("),
+        "the orphan helper no longer settles the group, so a lost card would \
+         keep live chrome"
+    );
+    assert!(
+        helper.contains("session.update(&upd)"),
+        "the orphan repair must not be droppable: a rate-limited drop leaves the \
+         frozen clock the helper exists to fix"
+    );
+}

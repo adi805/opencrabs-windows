@@ -59,7 +59,8 @@ pub struct DiscordState {
     pub(super) long_answers: Mutex<long_answer::LongAnswerStore>,
     /// Collapsible tool groups keyed by message id, so the Expand/Collapse
     /// interaction can re-render after the turn ended. Insertion-ordered
-    /// for pruning; bounded at [`Self::TOOL_GROUP_CAP`] (see `tool_group`).
+    /// for pruning; [`Self::TOOL_GROUP_CAP`] bounds the SETTLED history
+    /// retained, never how many turns are in flight (see `tool_group`).
     pub(super) tool_groups: Mutex<(Vec<u64>, HashMap<u64, tool_group::GroupState>)>,
     /// Plan cards: session_id → (channel_id, message_id, signature).
     ///

@@ -264,15 +264,75 @@ fn settle_verb_folds_agents_and_tasks_together() {
 }
 
 #[tokio::test]
-async fn retention_prunes_oldest_groups() {
+async fn retention_prunes_oldest_settled_groups() {
     let state = SlackState::new();
     for i in 0..25 {
+        let ts = format!("{i}.0");
         state
-            .upsert_tool_group(format!("{i}.0"), group(2, true, false))
+            .upsert_tool_group(ts.clone(), group(2, true, false))
+            .await;
+        state
+            .settle_tool_group(&ts, TurnOutcome::Finished, None, None)
             .await;
     }
-    // Cap is 20: the first five aged out, the newest survive.
+    // Cap is 20: the first five settled groups aged out, the newest survive.
     assert!(state.toggle_tool_group("0.0").await.is_none());
     assert!(state.toggle_tool_group("4.0").await.is_none());
     assert!(state.toggle_tool_group("24.0").await.is_some());
+}
+
+/// The cap bounds how much settled history is retained, never how many turns
+/// may be in flight. Evicting a live group is what stranded a card: the flow
+/// ticker's next snapshot returned None, the ticker left without settling, and
+/// the card kept its live `🕒` chrome with a frozen clock. A set of live groups
+/// may therefore run over the cap; every one of them must stay snapshot-able.
+#[tokio::test]
+async fn retention_never_evicts_a_live_group() {
+    let state = SlackState::new();
+    let tss: Vec<String> = (0..30).map(|i| format!("{i}.0")).collect();
+    for ts in &tss {
+        state
+            .upsert_tool_group(ts.clone(), group(2, false, false))
+            .await;
+    }
+    for ts in &tss {
+        assert!(
+            state.tool_group_snapshot(ts).await.is_some(),
+            "live group {ts} was evicted under cap pressure: its ticker would \
+             lose the snapshot and leave a frozen live clock on the card"
+        );
+    }
+}
+
+/// The overflow from live groups must drain as soon as those groups settle, or
+/// the map would only ever grow.
+#[tokio::test]
+async fn retention_drains_the_live_overflow_once_it_settles() {
+    let state = SlackState::new();
+    let tss: Vec<String> = (0..30).map(|i| format!("{i}.0")).collect();
+    for ts in &tss {
+        state
+            .upsert_tool_group(ts.clone(), group(2, false, false))
+            .await;
+    }
+    // Settle through the real path: `upsert_tool_group` deliberately preserves
+    // the stored `settled`, so re-upserting a live group cannot settle it and
+    // the drain this test exists to pin would never be reached (#1880).
+    for ts in &tss {
+        state
+            .settle_tool_group(ts, TurnOutcome::Finished, None, Some("ctx: drain".into()))
+            .await;
+    }
+    state
+        .upsert_tool_group("9999.0".into(), group(2, false, false))
+        .await;
+    assert!(
+        state.tool_group_snapshot("0.0").await.is_none(),
+        "the oldest settled group must go once evictable groups exist, or the \
+         live overflow never drains"
+    );
+    assert!(
+        state.tool_group_snapshot("9999.0").await.is_some(),
+        "the group just inserted must be retained"
+    );
 }
