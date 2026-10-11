@@ -25,11 +25,11 @@ use crate::brain::tools::discord_send::{
     check_announce_length, crosspostable, parse_audit_action, parse_keywords,
     pick_announce_webhook, render_audit_entry, render_rule, trigger_label, truncate_for_display,
 };
+use crate::tests::source_shape::{flatten, read};
 use serenity::builder::EditAutoModRule;
 use serenity::model::channel::ChannelType;
 use serenity::model::guild::audit_log::{Action as AuditAction, AutoModAction};
 use serenity::model::guild::automod::{Action as AutomodAction, Trigger};
-use std::path::Path;
 use std::time::Duration;
 
 // ── FR-012: which webhook, and which channel may be crossposted ──────────────
@@ -340,23 +340,9 @@ fn a_new_rule_puts_the_fields_discord_requires_on_the_wire() {
 
 // ── the wiring, pinned against the source ────────────────────────────────────
 
-fn tool_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/brain/tools/discord_send.rs");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-/// Strip every whitespace character, so a call split across lines still reads as
-/// one needle. Same trick as `discord_write_discipline_test`.
-fn flattened() -> String {
-    tool_source()
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect()
-}
-
 #[test]
 fn every_new_verb_is_advertised_and_dispatched() {
-    let src = flattened();
+    let src = flatten(read("src/brain/tools/discord_send.rs"));
     for verb in [
         "announce",
         "automod_list",
@@ -378,7 +364,7 @@ fn every_new_verb_is_advertised_and_dispatched() {
 
 #[test]
 fn only_the_three_mutating_automod_arms_are_guarded() {
-    let src = flattened();
+    let src = flatten(read("src/brain/tools/discord_send.rs"));
     // The reads are deliberately unguarded, so an exact count is the pin: three
     // mutations, and a fourth guard would mean a read grew one.
     assert_eq!(
@@ -407,14 +393,15 @@ fn only_the_three_mutating_automod_arms_are_guarded() {
 #[test]
 fn the_scan_reads_the_file_it_governs() {
     // A pin over an empty or misresolved read would pass silently.
-    let src = flattened();
+    let src = flatten(read("src/brain/tools/discord_send.rs"));
     assert!(src.len() > 40_000, "read only {} bytes", src.len());
     assert!(src.contains("structDiscordSendTool"));
 }
 
 #[test]
 fn the_tool_source_is_where_the_test_expects() {
-    let root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(root).join("src/brain/tools/discord_send.rs");
-    assert!(path.is_file(), "missing {}", path.display());
+    // `read` panics with the resolved path when the file is missing, so a
+    // misresolved read fails loudly instead of pinning an empty string.
+    let src = read("src/brain/tools/discord_send.rs");
+    assert!(!src.is_empty(), "the governed source must be non-empty");
 }

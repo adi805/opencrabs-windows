@@ -10,12 +10,7 @@
 //! These tests re-derive the numbers from the tool schemas at test time, so a
 //! new action fails the suite instead of quietly aging the docs.
 
-use std::path::Path;
-
-fn read(rel: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {rel}: {e}"))
-}
+use crate::tests::source_shape::read;
 
 /// Count the entries of the `"enum": [...]` action list in a tool's schema.
 ///

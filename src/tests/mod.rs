@@ -482,6 +482,7 @@ pub mod session_surface_test;
 pub mod shared_session_internal_gate_test;
 pub mod shared_session_memory_gate_test;
 pub mod shutdown_recovery_row_test;
+pub mod source_shape;
 pub mod spawn_retry_test;
 pub mod ssrf_redirect_guard_test;
 #[cfg(feature = "telegram")]

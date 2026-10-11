@@ -19,7 +19,7 @@
 
 use crate::db::Database;
 use crate::db::repository::ToolExecutionRepository;
-use std::path::Path;
+use crate::tests::source_shape::{flatten, read_in};
 use uuid::Uuid;
 
 async fn make_db() -> Database {
@@ -129,21 +129,17 @@ const SETTLE_NEEDLE: &str = "effect_ledger::settle_effect(";
 /// registry's own definitions or its approval/`halts_turn` lookups.
 const EXECUTE_NEEDLE: &str = "tool_registry.execute(&tool_name";
 
-/// One service source file with all whitespace removed, so a call split across
-/// lines still reads as one string.
-fn flat(name: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(SERVICE_DIR)
-        .join(name);
-    let src =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    src.chars().filter(|c| !c.is_whitespace()).collect()
+/// One service source file, flattened for needle matching. Delegates to the
+/// shared helper so this file cannot drift from the other source-shape tests
+/// (#197).
+fn flat_source(name: &str) -> String {
+    flatten(&read_in(SERVICE_DIR, name))
 }
 
 #[test]
 fn every_tool_execution_site_opens_an_effect_first() {
     for name in [LOOP_FILE, PARALLEL_FILE] {
-        let src = flat(name);
+        let src = flat_source(name);
         let execs = src.matches(EXECUTE_NEEDLE).count();
         let opens = src.matches(OPEN_NEEDLE).count();
         assert!(
@@ -161,7 +157,7 @@ fn every_tool_execution_site_opens_an_effect_first() {
 #[test]
 fn every_execution_site_can_settle_the_effect_it_opened() {
     for name in [LOOP_FILE, PARALLEL_FILE] {
-        let src = flat(name);
+        let src = flat_source(name);
         let execs = src.matches(EXECUTE_NEEDLE).count();
         let settles = src.matches(SETTLE_NEEDLE).count();
         assert!(

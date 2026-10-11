@@ -16,19 +16,10 @@
 //!
 //! Fixtures are synthetic and carry no user identifiers.
 
-use std::path::Path;
+use crate::tests::source_shape::{flatten, read};
 use std::time::Duration;
 
 use crate::channels::discord::DiscordState;
-
-/// Flattened source: all whitespace removed, so a signature or a call split
-/// across lines still matches a single-line needle.
-fn flattened(relative: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
-    let src =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    src.chars().filter(|c| !c.is_whitespace()).collect()
-}
 
 /// The budget admits one claim per interval, then refuses until it elapses.
 /// Pinned against the real state object: a second re-stick moments after the
@@ -80,7 +71,7 @@ fn the_interval_matches_telegrams() {
 /// settle spend the budget.
 #[test]
 fn the_tail_deletes_then_refreshes_behind_the_tracked_card_gate() {
-    let src = flattened("src/channels/discord/plan_card.rs");
+    let src = flatten(read("src/channels/discord/plan_card.rs"));
 
     let gate = "ifstate.plan_card(session_id).await.is_some()&&state.claim_sticky_action(channel.get(),DiscordState::STICKY_STACK_MIN_INTERVAL){remove_plan_card(http,channel,state,session_id).await;}";
     assert!(
