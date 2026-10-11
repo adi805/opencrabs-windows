@@ -25,12 +25,28 @@ use std::collections::HashMap;
 
 use serenity::builder::{CreateActionRow, CreateButton};
 use serenity::model::application::ButtonStyle;
+use serenity::model::id::ChannelId;
+
+/// One retained answer: its pages, and the channel the card carrying them
+/// lives in.
+///
+/// The channel is kept with the pages because eviction has to reach the card it
+/// is forgetting. The card stays on screen after the store drops it, so an
+/// eviction that cannot find it leaves a live-looking arrow row over an answer
+/// nothing can serve any more (#1880, M4). The answer doing the evicting can sit
+/// in a different channel from the one it pushes out, so the channel cannot be
+/// borrowed from the caller.
+#[derive(Debug, Clone)]
+pub(super) struct StoredPages {
+    pub channel: ChannelId,
+    pub pages: Vec<String>,
+}
 
 /// Insertion-ordered store of paged answers: the ids of the messages carrying
-/// page 0, in insertion order, plus each answer's pages keyed by that id.
+/// page 0, in insertion order, plus each answer keyed by that id.
 /// Named rather than inlined so the [`DiscordState`] field stays readable;
 /// bounded by [`DiscordState::LONG_ANSWER_CAP`].
-pub(super) type LongAnswerStore = (Vec<u64>, HashMap<u64, Vec<String>>);
+pub(super) type LongAnswerStore = (Vec<u64>, HashMap<u64, StoredPages>);
 
 /// `custom_id` prefix for a pager press: `longanswer:<message_id>:<page>`.
 pub(crate) const PAGER_PREFIX: &str = "longanswer:";
@@ -122,22 +138,43 @@ impl DiscordState {
     pub(crate) const LONG_ANSWER_CAP: usize = 12;
 
     /// Retain the pages of a long answer against the message that shows page 0.
-    pub(crate) async fn store_long_answer(&self, message_id: u64, pages: Vec<String>) {
+    ///
+    /// Returns the cards eviction pushed out, each with the channel it lives in,
+    /// so the caller can take the arrow row off the card it can no longer serve.
+    /// Handing them back rather than dropping them is the whole point of the
+    /// return value: the card stays on screen after the store forgets it, so an
+    /// eviction that stays silent leaves live-looking arrows over a dead answer
+    /// and the reader keeps pressing (#1880, M4).
+    pub(crate) async fn store_long_answer(
+        &self,
+        message_id: u64,
+        channel: ChannelId,
+        pages: Vec<String>,
+    ) -> Vec<(u64, ChannelId)> {
         let mut guard = self.long_answers.lock().await;
         let (order, map) = &mut *guard;
         if !map.contains_key(&message_id) {
             order.push(message_id);
         }
-        map.insert(message_id, pages);
+        map.insert(message_id, StoredPages { channel, pages });
+        let mut evicted = Vec::new();
         while order.len() > Self::LONG_ANSWER_CAP {
             let oldest = order.remove(0);
-            map.remove(&oldest);
+            if let Some(gone) = map.remove(&oldest) {
+                evicted.push((oldest, gone.channel));
+            }
         }
+        evicted
     }
 
     /// Pages of a retained long answer, or `None` once it has aged out.
     pub(crate) async fn long_answer_pages(&self, message_id: u64) -> Option<Vec<String>> {
-        self.long_answers.lock().await.1.get(&message_id).cloned()
+        self.long_answers
+            .lock()
+            .await
+            .1
+            .get(&message_id)
+            .map(|stored| stored.pages.clone())
     }
 }
 

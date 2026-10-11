@@ -2034,47 +2034,73 @@ pub(crate) async fn handle_message(
                 );
                 let want_thread =
                     long_enough && !is_dm && !channel_is_thread(&ctx.http, target).await;
-                let paged =
-                    if !want_thread && chunks.len() > 1 {
-                        let builder = CreateMessage::new().content(&chunks[0]);
-                        match writes::send(&ctx.http, target, builder, Class::Final).await {
-                            Ok(Some(sent)) => {
-                                let mid = sent.id.get();
-                                discord_state.store_long_answer(mid, chunks.clone()).await;
-                                // Page 0 is in-channel, so the row is drawn
-                                // FOR page 0: `◀` is disabled there and `▶`
-                                // opens the first hidden page. Each arrow
-                                // names its own target, so the same row rides
-                                // every later page too (FR-009).
-                                //
-                                // `Class::Final`, not `Class::Edit`: this row
-                                // is the only handle to pages 1..N. Page 0
-                                // itself is posted as `Class::Final`, so a
-                                // droppable attach would let the governor keep
-                                // the text and silently drop the controls,
-                                // leaving the rest of the answer stored but
-                                // unreachable.
-                                let edit = EditMessage::new().components(vec![
-                                    super::long_answer::pager_row(mid, 0, chunks.len()),
-                                ]);
-                                if let Err(e) =
-                                    writes::edit(&ctx.http, target, sent.id, edit, Class::Final)
-                                        .await
+                let paged = if !want_thread && chunks.len() > 1 {
+                    let builder = CreateMessage::new().content(&chunks[0]);
+                    match writes::send(&ctx.http, target, builder, Class::Final).await {
+                        Ok(Some(sent)) => {
+                            let mid = sent.id.get();
+                            let evicted = discord_state
+                                .store_long_answer(mid, target, chunks.clone())
+                                .await;
+                            // Eviction is the one moment the store can still
+                            // name the card it is forgetting, so the arrow
+                            // row goes out with it: the card stays on screen
+                            // either way, and a row left behind offers a
+                            // page nothing can serve any more (#1880, M4).
+                            // The channel comes from the store because the
+                            // evicted card need not be in this one.
+                            for (gone, gone_channel) in evicted {
+                                let strip = EditMessage::new().components(Vec::new());
+                                if let Err(e) = writes::edit(
+                                    &ctx.http,
+                                    gone_channel,
+                                    serenity::model::id::MessageId::new(gone),
+                                    strip,
+                                    Class::Final,
+                                )
+                                .await
                                 {
-                                    tracing::warn!("Discord: pager attach failed: {e}");
+                                    tracing::warn!(
+                                        "Discord: pager strip for evicted card {gone} failed: {e}"
+                                    );
                                 }
                             }
-                            Ok(None) => {
-                                tracing::warn!("Discord: long answer page 0 was dropped");
-                            }
-                            Err(e) => {
-                                tracing::error!("Discord: long answer page 0 failed: {e}");
+                            // Page 0 is in-channel, so the row is drawn
+                            // FOR page 0: `◀` is disabled there and `▶`
+                            // opens the first hidden page. Each arrow
+                            // names its own target, so the same row rides
+                            // every later page too (FR-009).
+                            //
+                            // `Class::Final`, not `Class::Edit`: this row
+                            // is the only handle to pages 1..N. Page 0
+                            // itself is posted as `Class::Final`, so a
+                            // droppable attach would let the governor keep
+                            // the text and silently drop the controls,
+                            // leaving the rest of the answer stored but
+                            // unreachable.
+                            let edit =
+                                EditMessage::new().components(vec![super::long_answer::pager_row(
+                                    mid,
+                                    0,
+                                    chunks.len(),
+                                )]);
+                            if let Err(e) =
+                                writes::edit(&ctx.http, target, sent.id, edit, Class::Final).await
+                            {
+                                tracing::warn!("Discord: pager attach failed: {e}");
                             }
                         }
-                        true
-                    } else {
-                        false
-                    };
+                        Ok(None) => {
+                            tracing::warn!("Discord: long answer page 0 was dropped");
+                        }
+                        Err(e) => {
+                            tracing::error!("Discord: long answer page 0 failed: {e}");
+                        }
+                    }
+                    true
+                } else {
+                    false
+                };
                 // Auto-thread (opt-in): long answers post a short teaser in
                 // the channel and the full body in a thread anchored to the
                 // turn's bubble (or the user's message). The channel stays

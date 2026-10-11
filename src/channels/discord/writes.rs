@@ -156,6 +156,27 @@ pub(crate) async fn edit(
     res.map(Some)
 }
 
+/// Take the controls off a card that can no longer serve them.
+///
+/// An aged-out press answers ephemerally, and that part is deliberate: the
+/// card's text is still the page (or the status line) the reader is looking at,
+/// and overwriting it with a notice would destroy it. The row underneath is a
+/// different matter. Left in place it keeps offering an action that can never
+/// succeed, so the reader presses again and collects another notice (#1880, L3).
+///
+/// The edit carries no content, which is what keeps the card intact: a message
+/// edit only touches the fields it names, and the auto-embed conversion in this
+/// module leaves a content-less builder alone (`builder_content` finds no body,
+/// so the card is never rewritten into an empty embed). `Class::Final` because
+/// this write IS the repair: a droppable class would let the governor throw away
+/// the one write that removes the dead control.
+pub(crate) async fn strip_controls(http: &Http, channel: ChannelId, message_id: MessageId) {
+    let strip = EditMessage::new().components(Vec::new());
+    if let Err(e) = edit(http, channel, message_id, strip, Class::Final).await {
+        tracing::debug!("Discord: dead-control strip for {message_id} failed: {e}");
+    }
+}
+
 /// Governed [`Webhook::execute`] (PRD FR-012).
 ///
 /// An announcement leaves through a webhook rather than the bot's own channel

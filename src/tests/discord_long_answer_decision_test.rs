@@ -93,13 +93,22 @@ fn a_long_answer_routes_into_the_pager_not_a_wall() {
 /// The button is useless unless the pages it indexes were kept first. A
 /// reorder that attaches the row before storing would ship a pager pointing at
 /// pages that do not exist.
+///
+/// The store also takes the channel the card lives in, because eviction has to
+/// be able to reach the card it forgets: the card stays on screen after the
+/// store drops it, and a card whose arrows cannot be taken off keeps offering a
+/// page nothing can serve (#1880, M4).
 #[test]
 fn the_pages_are_stored_before_the_pager_row_is_attached() {
     let flat_src = flat(&handler_src());
 
     let store = flat_src
-        .find("store_long_answer(mid,chunks.clone())")
-        .expect("page 0 must be stored so the pager has something to serve (AC-020)");
+        .find("store_long_answer(mid,target,chunks.clone())")
+        .expect(
+            "page 0 must be stored, with the channel its card lives in, so the \
+             pager has something to serve and eviction can reach the card \
+             (AC-020, #1880 M4)",
+        );
     let attach = flat_src
         .find("pager_row(mid,0,chunks.len())")
         .expect("the pager row must be built from the stored message id (AC-020)");
@@ -197,8 +206,14 @@ fn pager_branch() -> String {
 /// press must re-draw the same row for whatever page it is showing, or every
 /// page after the first press is stored but unreachable. The tests above only
 /// pin that *a* row exists, so they cannot see this.
+///
+/// There is no chain to walk: the shipped pager is two arrows re-drawn in
+/// place, and each button names its own target page, so one press lands on the
+/// page it asked for whichever direction it went. This test used to be named
+/// after a "next row" hand-off that no longer exists, which sent readers
+/// looking for a builder that was removed (#1880, L1).
 #[test]
-fn the_pager_opens_a_hidden_page_and_carries_the_next_row_forward() {
+fn the_pager_starts_on_page_zero_and_redraws_the_row_in_place() {
     let flat_handler = flat(&handler_src());
     assert!(
         flat_handler.contains("pager_row(mid,0,chunks.len())"),
