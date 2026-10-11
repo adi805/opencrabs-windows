@@ -116,6 +116,30 @@ pub struct LangConfig {
     pub ext_re: String,
     #[serde(default)]
     pub backtick_code_re: String,
+    /// First-person WORK-intent phrases (`gue tulis `, `gue rangkum `, …) that
+    /// are phantom only when the SAME line carries a work object.
+    ///
+    /// Deliberately NOT part of `intent_phrases`. That list is matched with a
+    /// bare `contains` on a zero-tool turn, so adding these verbs there would
+    /// also fire on `"Gue rangkum hasilnya."` — an ordinary sentence about work
+    /// already in context — and swap it for the guard note. Requiring an object
+    /// is what separates narration of work from commentary about it (audit F1
+    /// of v0.5.10; see `work_object_re` / `work_object_tools`).
+    #[serde(default)]
+    pub work_intent_phrases: Vec<String>,
+    /// A work OBJECT: something the model could only name by having looked at
+    /// it. Deliberately NOT `ext_re` / `path_re`: both demand a trailing
+    /// delimiter (space, backtick, paren, comma, colon, semicolon) or
+    /// end-of-text, and a sentence ending ON the object ("… ke AUDIT.md.")
+    /// leaves a full stop there instead, so both miss exactly the case this arm
+    /// exists for.
+    #[serde(default)]
+    pub work_object_re: String,
+    /// Commands and tool names that also count as a work object for the phrases
+    /// above. Kept short and unmistakable: `plan` / `bash` / `ls` are ordinary
+    /// words and prove nothing on their own.
+    #[serde(default)]
+    pub work_object_tools: Vec<String>,
     /// Assertions that a visual/media result was produced or delivered
     /// ("there it is", "generated it", "the edited image", ...). Paired with
     /// `media_context_words` to catch image-generation hallucination in any

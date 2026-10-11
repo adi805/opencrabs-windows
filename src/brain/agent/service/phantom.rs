@@ -82,6 +82,15 @@ pub fn has_phantom_tool_intent_no_tools(text: &str) -> bool {
         if matches_participle_object(window) {
             return true;
         }
+        // First-person work narration that carries a work OBJECT — "Gue tulis
+        // ringkasan ke AUDIT.md.", "Gue jalankan cargo test di src/tests/."
+        // The object requirement is the whole safety mechanism: these verbs are
+        // deliberately absent from `intent_phrases`, whose bare `contains` would
+        // also fire on commentary like "Gue rangkum hasilnya." and swap a
+        // legitimate sentence for the guard note (audit F1 of v0.5.10).
+        if matches_work_intent_with_object(window) {
+            return true;
+        }
         if too_short_for_phrases {
             continue;
         }
@@ -97,6 +106,62 @@ pub fn has_phantom_tool_intent_no_tools(text: &str) -> bool {
         }
     }
     false
+}
+
+/// First-person WORK-intent narration that carries a work object on the same
+/// line: "Gue tulis ringkasan ke AUDIT.md.", "Gue jalankan cargo test di
+/// src/tests/.".
+///
+/// The object requirement is the entire point. `intent_phrases` is matched with
+/// a bare `contains`, so listing `gue rangkum ` there would also fire on
+/// "Gue rangkum hasilnya." — an ordinary sentence about work already in context
+/// — and swap it for the guard note on a zero-tool turn. Requiring a path, an
+/// extension, a backticked symbol, or a named tool keeps commentary out while
+/// catching narration that shipped as an answer (audit F1 of v0.5.10).
+///
+/// Deliberately does NOT close the residual gap that opened the audit: the
+/// incident sentence "Gue jawab dari diff-nya langsung, bukan dari ingatan."
+/// carries no work object, so it stays uncaught. Catching it would mean
+/// catching "Gue setuju." as well — a wider phrase list is not the answer.
+pub(crate) fn matches_work_intent_with_object(text: &str) -> bool {
+    let cleaned = strip_inline_directives(text);
+    phantom_lang::all_langs().iter().any(|lang| {
+        if lang.work_intent_phrases.is_empty() {
+            return false;
+        }
+        cleaned.lines().any(|line| {
+            let trimmed = line.trim_start_matches(|c: char| {
+                c.is_whitespace() || matches!(c, '-' | '*' | '•' | '>')
+            });
+            if trimmed.is_empty() {
+                return false;
+            }
+            let lower = trimmed.to_lowercase();
+            lang.work_intent_phrases
+                .iter()
+                .any(|phrase| lower.starts_with(phrase.as_str()))
+                && line_carries_work_object(trimmed, &lower, lang)
+        })
+    })
+}
+
+/// Does this line name something the model could only have got by doing the
+/// work — a path, a file extension, a backticked symbol, or a known command or
+/// tool?
+fn line_carries_work_object(line: &str, lower: &str, lang: &phantom_lang::LangConfig) -> bool {
+    let names_a_file = if lang.work_object_re.is_empty() {
+        false
+    } else {
+        Regex::new(&lang.work_object_re)
+            .map(|re| re.is_match(line))
+            .unwrap_or(false)
+    };
+    if names_a_file {
+        return true;
+    }
+    lang.work_object_tools
+        .iter()
+        .any(|tool| lower.contains(tool.as_str()))
 }
 
 /// The turn's closing prose, mirroring [`prose_lead_in`] from the other end.

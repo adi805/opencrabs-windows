@@ -225,6 +225,64 @@ ext_re = "(?:^|[\\s`(])[\\w\\-]+\\.(?:rs|py|ts|tsx|js|jsx|go|sh|toml|yaml|yml|js
 
 backtick_code_re = "`[a-zA-Z_]\\w+`"
 
+# Work-intent narration carrying a work OBJECT (#F1 of the v0.5.10 audit).
+#
+# "Gue jawab dari diff-nya langsung, bukan dari ingatan." reached the channel
+# from a zero-tool turn: `gue jawab` was in no list, `generic_intent_re` wants
+# "saya akan / aku akan / mari kita / biar saya", and `line_start_re` — which
+# DOES match it — is consumed only by the two loop detectors
+# (`count_intent_line_starts`, `max_repeated_intent_line`), never by the
+# turn-end gate. The pattern that could see the sentence was wired to the
+# wrong detector.
+#
+# These verbs go here rather than in `intent_phrases` because that list is a
+# bare `contains`: `"Gue rangkum hasilnya."` carries no object and must stay
+# silent, so the object requirement below is the whole safety mechanism.
+work_intent_phrases = [
+    "gue tulis ",
+    "gue susun ",
+    "gue siapkan ",
+    "gue rangkum ",
+    "gue lacak ",
+    "gue telusuri ",
+    "gue jawab ",
+    "gue paparkan ",
+    "gue rakit ",
+    "gue kumpulkan ",
+]
+
+# A path, a file extension, or a backticked symbol. Not reusing `path_re` /
+# `ext_re`: both require a trailing delimiter, so a sentence ending on the
+# object ("... ke AUDIT.md.") slips past both.
+work_object_re = "(?i)(?:[\\w\\-./]+\\.(?:rs|py|ts|tsx|js|jsx|go|sh|toml|yaml|yml|json|md|sql|html|css)\\b|[\\w\\-]+/[\\w\\-/]+|`[a-zA-Z_]\\w+`)"
+
+# Named commands and tools that also count as the object. Unmistakable on
+# purpose: a bare `plan` / `bash` / `ls` is an ordinary word.
+work_object_tools = [
+    "cargo",
+    "clippy",
+    "rustfmt",
+    "git ",
+    "gh ",
+    "grep",
+    "bash",
+    "npm",
+    "pnpm",
+    "yarn",
+    "docker",
+    "podman",
+    "systemctl",
+    "curl",
+    "ssh ",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "hashline_edit",
+    "cron_manage",
+    "spawn_agent",
+    "tool_search",
+    "web_search",
+]
 
 # Halusinasi pembuatan gambar (#747)
 media_delivery_phrases = [
