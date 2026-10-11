@@ -18,7 +18,7 @@ use std::sync::Arc;
 use wacore_binary::jid::Jid;
 use whatsapp_rust::features::{
     GroupCreateOptions, GroupDescription, GroupParticipantOptions, GroupSubject, JoinGroupResult,
-    ParticipantChangeResponse, PreviousDescription,
+    MemberAddMode, MembershipApprovalMode, ParticipantChangeResponse, PreviousDescription,
 };
 
 /// Tool for comprehensive WhatsApp control (14 actions).
@@ -57,6 +57,21 @@ pub(crate) fn get_str<'a>(input: &'a Value, key: &str) -> std::result::Result<&'
 /// Extract an optional f64 param.
 pub(crate) fn get_f64(input: &Value, key: &str) -> Option<f64> {
     input.get(key).and_then(|v| v.as_f64())
+}
+
+/// Extract a required boolean param.
+///
+/// The group policy setters take the value they are setting, so an absent one
+/// is an error rather than a default: silently flipping a group setting the
+/// caller never named is a change with no undo on the wire.
+#[allow(clippy::result_large_err)]
+pub(crate) fn get_bool(input: &Value, key: &str) -> std::result::Result<bool, ToolResult> {
+    match input.get(key).and_then(|v| v.as_bool()) {
+        Some(b) => Ok(b),
+        None => Err(ToolResult::error(format!(
+            "Missing required boolean parameter '{key}'."
+        ))),
+    }
 }
 
 /// Macro to early-return Ok(err_result) when a param helper returns Err.
@@ -474,7 +489,11 @@ impl Tool for WhatsAppSendTool {
                         "create_group", "leave_group", "set_group_subject",
                         "set_group_description", "add_participants", "remove_participants",
                         "promote_participants", "demote_participants", "get_group_metadata",
-                        "get_invite_link", "join_with_invite_code"
+                        "get_invite_link", "join_with_invite_code",
+                        "set_announce", "set_locked", "set_ephemeral",
+                        "set_membership_approval", "set_member_add_mode",
+                        "set_limit_sharing", "set_group_history",
+                        "set_no_frequently_forwarded", "set_allow_admin_reports"
                     ],
                     "description": "The WhatsApp action to perform."
                 },
@@ -605,6 +624,44 @@ impl Tool for WhatsAppSendTool {
                 "reset_invite": {
                     "type": "boolean",
                     "description": "For get_invite_link: true revokes the current link and returns a fresh one. Default false (the existing link)."
+                },
+                "announce": {
+                    "type": "boolean",
+                    "description": "For set_announce: true makes the group announcement-only (only admins may send), false opens it to every member."
+                },
+                "locked": {
+                    "type": "boolean",
+                    "description": "For set_locked: true restricts group-info edits to admins, false lets every member edit."
+                },
+                "expiration": {
+                    "type": "integer",
+                    "description": "For set_ephemeral: disappearing-message timer in seconds (86400 = 24h, 604800 = 7d, 7776000 = 90d). 0 disables the timer."
+                },
+                "membership_approval": {
+                    "type": "string",
+                    "enum": ["off", "on"],
+                    "description": "For set_membership_approval: 'on' requires an admin to approve each join request, 'off' lets anyone with the link in."
+                },
+                "member_add_mode": {
+                    "type": "string",
+                    "enum": ["admin_add", "all_member_add"],
+                    "description": "For set_member_add_mode: 'admin_add' lets only admins add members, 'all_member_add' lets any member add them."
+                },
+                "limit_sharing": {
+                    "type": "boolean",
+                    "description": "For set_limit_sharing: true restricts how group content may be forwarded or saved."
+                },
+                "group_history": {
+                    "type": "boolean",
+                    "description": "For set_group_history: true shares recent history with members as they join."
+                },
+                "no_frequently_forwarded": {
+                    "type": "boolean",
+                    "description": "For set_no_frequently_forwarded: true stops members from forwarding messages already marked as frequently forwarded."
+                },
+                "allow_admin_reports": {
+                    "type": "boolean",
+                    "description": "For set_allow_admin_reports: true lets members report messages to the group admins."
                 }
             },
             "required": ["action"]
@@ -2137,6 +2194,198 @@ impl Tool for WhatsAppSendTool {
                 }
             }
 
+            // ── groups: policy and admin ─────────────────────────────────────
+            // The settings an admin toggles. Each arm takes the value it is
+            // setting, required rather than defaulted: a group policy that flips
+            // because a parameter was omitted is a silent change nobody asked
+            // for, and there is no undo on the wire.
+            "set_announce" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let announce = pget!(get_bool(&input, "announce"));
+                let described = if announce {
+                    "announcement-only: only admins may send"
+                } else {
+                    "open: every member may send"
+                };
+                match client.groups().set_announce(jid.clone(), announce).await {
+                    Ok(()) => Ok(ToolResult::success(format!("{jid} is now {described}."))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set announcement mode: {e}"
+                    ))),
+                }
+            }
+
+            "set_locked" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let locked = pget!(get_bool(&input, "locked"));
+                let described = if locked {
+                    "locked: only admins may edit group info"
+                } else {
+                    "unlocked: every member may edit group info"
+                };
+                match client.groups().set_locked(jid.clone(), locked).await {
+                    Ok(()) => Ok(ToolResult::success(format!("{jid} is now {described}."))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to set locked: {e}"))),
+                }
+            }
+
+            "set_ephemeral" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let expiration = match input.get("expiration").and_then(|v| v.as_u64()) {
+                    Some(v) if v <= u32::MAX as u64 => v as u32,
+                    Some(v) => {
+                        return Ok(ToolResult::error(format!(
+                            "'expiration' value {v} is out of range; the maximum is {}.",
+                            u32::MAX
+                        )));
+                    }
+                    None => {
+                        return Ok(ToolResult::error(
+                            "Missing required parameter 'expiration' (seconds; 0 disables \
+                             disappearing messages)."
+                                .to_string(),
+                        ));
+                    }
+                };
+                let described = if expiration == 0 {
+                    "disabled".to_string()
+                } else {
+                    format!("{expiration}s")
+                };
+                match client.groups().set_ephemeral(jid.clone(), expiration).await {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Disappearing messages for {jid}: {described}."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set the disappearing-message timer: {e}"
+                    ))),
+                }
+            }
+
+            "set_membership_approval" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let mode = match pget!(get_str(&input, "membership_approval")) {
+                    "off" => MembershipApprovalMode::Off,
+                    "on" => MembershipApprovalMode::On,
+                    other => {
+                        return Ok(ToolResult::error(format!(
+                            "Invalid 'membership_approval' value '{other}'. Expected 'off' or \
+                             'on'."
+                        )));
+                    }
+                };
+                let described = if matches!(mode, MembershipApprovalMode::On) {
+                    "required: an admin must approve each join request"
+                } else {
+                    "not required: anyone with the link may join"
+                };
+                match client
+                    .groups()
+                    .set_membership_approval(jid.clone(), mode)
+                    .await
+                {
+                    Ok(()) => Ok(ToolResult::success(format!("{jid}: {described}."))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set membership approval: {e}"
+                    ))),
+                }
+            }
+
+            "set_member_add_mode" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let mode = match pget!(get_str(&input, "member_add_mode")) {
+                    "admin_add" => MemberAddMode::AdminAdd,
+                    "all_member_add" => MemberAddMode::AllMemberAdd,
+                    other => {
+                        return Ok(ToolResult::error(format!(
+                            "Invalid 'member_add_mode' value '{other}'. Expected 'admin_add' or \
+                             'all_member_add'."
+                        )));
+                    }
+                };
+                let described = if matches!(mode, MemberAddMode::AllMemberAdd) {
+                    "any member may add"
+                } else {
+                    "admins only"
+                };
+                match client.groups().set_member_add_mode(jid.clone(), mode).await {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Who may add members to {jid}: {described}."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set the member-add mode: {e}"
+                    ))),
+                }
+            }
+
+            "set_limit_sharing" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let enabled = pget!(get_bool(&input, "limit_sharing"));
+                match client.groups().set_limit_sharing(&jid, enabled).await {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Sharing restrictions for {jid}: {}.",
+                        if enabled { "enabled" } else { "disabled" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set limit-sharing: {e}"
+                    ))),
+                }
+            }
+
+            "set_group_history" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let enabled = pget!(get_bool(&input, "group_history"));
+                match client
+                    .groups()
+                    .set_group_history(jid.clone(), enabled)
+                    .await
+                {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "History sharing for {jid}: {}.",
+                        if enabled { "enabled" } else { "disabled" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set group history: {e}"
+                    ))),
+                }
+            }
+
+            "set_no_frequently_forwarded" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let restrict = pget!(get_bool(&input, "no_frequently_forwarded"));
+                match client
+                    .groups()
+                    .set_no_frequently_forwarded(jid.clone(), restrict)
+                    .await
+                {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Forwarding of frequently-forwarded messages in {jid}: {}.",
+                        if restrict { "blocked" } else { "allowed" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set the frequently-forwarded restriction: {e}"
+                    ))),
+                }
+            }
+
+            "set_allow_admin_reports" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let allow = pget!(get_bool(&input, "allow_admin_reports"));
+                match client
+                    .groups()
+                    .set_allow_admin_reports(jid.clone(), allow)
+                    .await
+                {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Member reports to admins in {jid}: {}.",
+                        if allow { "allowed" } else { "blocked" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set admin reports: {e}"
+                    ))),
+                }
+            }
+
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{}'. Valid actions: send, reply, delete, send_photo, \
                  send_document, send_audio, send_video, send_sticker, send_location, \
@@ -2146,7 +2395,10 @@ impl Tool for WhatsAppSendTool {
                  assign_label, send_buttons, create_group, leave_group, set_group_subject, \
                  set_group_description, add_participants, remove_participants, \
                  promote_participants, demote_participants, get_group_metadata, \
-                 get_invite_link, join_with_invite_code",
+                 get_invite_link, join_with_invite_code, set_announce, set_locked, \
+                 set_ephemeral, set_membership_approval, set_member_add_mode, \
+                 set_limit_sharing, set_group_history, set_no_frequently_forwarded, \
+                 set_allow_admin_reports",
                 unknown
             ))),
         }

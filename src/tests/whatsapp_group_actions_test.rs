@@ -7,7 +7,7 @@
 //! admin action.
 
 use crate::brain::tools::whatsapp_send::{
-    resolve_group_jid, resolve_participants, summarize_participant_changes,
+    get_bool, resolve_group_jid, resolve_participants, summarize_participant_changes,
 };
 use serde_json::json;
 use wacore_binary::jid::Server;
@@ -27,6 +27,50 @@ const ACTIONS: &[(&str, &str)] = &[
     ("get_group_metadata", "get_metadata"),
     ("get_invite_link", "get_invite_link"),
     ("join_with_invite_code", "join_with_invite_code"),
+    ("set_announce", "set_announce"),
+    ("set_locked", "set_locked"),
+    ("set_ephemeral", "set_ephemeral"),
+    ("set_membership_approval", "set_membership_approval"),
+    ("set_member_add_mode", "set_member_add_mode"),
+    ("set_limit_sharing", "set_limit_sharing"),
+    ("set_group_history", "set_group_history"),
+    ("set_no_frequently_forwarded", "set_no_frequently_forwarded"),
+    ("set_allow_admin_reports", "set_allow_admin_reports"),
+];
+
+/// The policy and admin actions, each with the `Groups` method it must call and
+/// the parameter that carries the value it is setting.
+///
+/// These arms differ from the lifecycle ones in one way that matters: they take
+/// the value from the caller instead of picking one, because a group policy that
+/// flips on an omitted parameter is a change nobody asked for and there is no
+/// undo on the wire. That is what the third element pins.
+const POLICY_ACTIONS: &[(&str, &str, &str)] = &[
+    ("set_announce", "set_announce", "announce"),
+    ("set_locked", "set_locked", "locked"),
+    ("set_ephemeral", "set_ephemeral", "expiration"),
+    (
+        "set_membership_approval",
+        "set_membership_approval",
+        "membership_approval",
+    ),
+    (
+        "set_member_add_mode",
+        "set_member_add_mode",
+        "member_add_mode",
+    ),
+    ("set_limit_sharing", "set_limit_sharing", "limit_sharing"),
+    ("set_group_history", "set_group_history", "group_history"),
+    (
+        "set_no_frequently_forwarded",
+        "set_no_frequently_forwarded",
+        "no_frequently_forwarded",
+    ),
+    (
+        "set_allow_admin_reports",
+        "set_allow_admin_reports",
+        "allow_admin_reports",
+    ),
 ];
 
 /// The source with all whitespace removed, so an assertion does not depend on
@@ -140,4 +184,47 @@ fn participants_accept_numbers_and_jids_and_refuse_junk() {
 #[test]
 fn an_empty_change_set_reports_zero_of_zero() {
     assert_eq!(summarize_participant_changes(&[]), "0/0 succeeded");
+}
+
+#[test]
+fn every_policy_action_reads_its_value_from_the_caller() {
+    let compact = compact();
+    for (action, method, param) in POLICY_ACTIONS {
+        assert!(
+            compact.contains(&format!("\"{action}\"=>")),
+            "action '{action}' has no match arm: it would fall into the unknown-action error"
+        );
+        assert!(
+            compact.contains(&format!("groups().{method}(")),
+            "'{action}' does not call `client.groups().{method}`"
+        );
+        let reads_param = compact.contains(&format!("get_bool(&input,\"{param}\")"))
+            || compact.contains(&format!("get_str(&input,\"{param}\")"))
+            || compact.contains(&format!("input.get(\"{param}\")"));
+        assert!(
+            reads_param,
+            "'{action}' never reads '{param}': a policy setter must take its value from the \
+             caller rather than pick one"
+        );
+    }
+}
+
+#[test]
+fn a_policy_flag_is_required_rather_than_defaulted() {
+    assert_eq!(
+        get_bool(&json!({"locked": true}), "locked").ok(),
+        Some(true)
+    );
+    assert_eq!(
+        get_bool(&json!({"locked": false}), "locked").ok(),
+        Some(false)
+    );
+    assert!(
+        get_bool(&json!({}), "locked").is_err(),
+        "an absent flag must be refused: defaulting it flips a group setting silently"
+    );
+    assert!(
+        get_bool(&json!({"locked": "yes"}), "locked").is_err(),
+        "a non-boolean must be refused rather than coerced"
+    );
 }
