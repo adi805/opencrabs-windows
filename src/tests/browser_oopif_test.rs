@@ -3,6 +3,8 @@
 //! one port embedding a child on another; find must surface the child's
 //! button under a namespaced index, click must route through it).
 
+#![cfg(feature = "browser")]
+
 use crate::brain::tools::browser::manager::{
     collect_cross_origin, origin_of, split_frame_selector,
 };
