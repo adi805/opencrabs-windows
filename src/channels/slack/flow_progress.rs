@@ -8,6 +8,7 @@
 use super::SlackState;
 use super::governor::GatedWrites;
 use super::handler::sync_step_group;
+use super::options_host::{drain_note_tasks, post_halted_answer};
 use super::tool_group::{GroupEntry, GroupState};
 use crate::brain::agent::ProgressEvent;
 use slack_morphism::prelude::*;
@@ -19,6 +20,8 @@ pub(crate) struct FlowProgress {
     pub(crate) cb: crate::brain::agent::ProgressCallback,
     pub(crate) steps: Arc<Mutex<Vec<GroupEntry>>>,
     pub(crate) intermediate_handles: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    /// Answers posted before the buttons (see `options_host`).
+    pub(crate) posted: Arc<Mutex<Vec<String>>>,
 }
 
 /// Build the progress callback for one turn.
@@ -38,6 +41,7 @@ pub(crate) fn build_flow_progress(
     // answer posts (handle_message #943 ordering).
     let intermediate_handles: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
+    let posted: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
     let cb: crate::brain::agent::ProgressCallback = {
         let tools = steps.clone();
@@ -47,6 +51,7 @@ pub(crate) fn build_flow_progress(
         let slack_state_grp = slack_state.clone();
         let thread = thread_ts.clone();
         let handles = intermediate_handles.clone();
+        let posted = posted.clone();
 
         Arc::new(move |session_id, event| {
             let tools = tools.clone();
@@ -204,7 +209,24 @@ pub(crate) fn build_flow_progress(
                 ProgressEvent::SuggestedOptions(options) => {
                     let raw_options: Vec<String> =
                         options.into_iter().map(|item| item.label).collect();
+                    let handles = handles.clone();
+                    let posted = posted.clone();
+                    let thread = thread.clone();
                     tokio::spawn(async move {
+                        // The answer the surface halted on posts before the
+                        // buttons, out of the group (#2029).
+                        drain_note_tasks(&handles).await;
+                        let session = client.open_session(&token);
+                        post_halted_answer(
+                            &session,
+                            &slack_state_grp,
+                            channel,
+                            thread,
+                            &group_ts,
+                            &tools,
+                            &posted,
+                        )
+                        .await;
                         super::suggest_options::render_suggestions(
                             &slack_state_grp,
                             session_id,
@@ -222,5 +244,6 @@ pub(crate) fn build_flow_progress(
         cb,
         steps,
         intermediate_handles,
+        posted,
     }
 }

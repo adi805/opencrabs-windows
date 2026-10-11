@@ -24,6 +24,7 @@ mod followups;
 pub(crate) mod formatting_prompt;
 pub(crate) mod governor;
 pub(crate) mod handler;
+pub(crate) mod options_host;
 pub(crate) mod reactions;
 pub(crate) mod resume;
 pub(crate) mod resume_turn;

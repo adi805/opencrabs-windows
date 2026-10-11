@@ -6,6 +6,7 @@
 //! back into the same thread, and the group settles with its footer.
 
 use super::SlackState;
+use super::final_body::strip_folded_notes;
 use super::flow_progress::build_flow_progress;
 use super::handler::{
     make_approval_callback, post_final_text, settle_step_group, spawn_flow_ticker, sync_step_group,
@@ -101,6 +102,12 @@ pub(crate) async fn run_resume_flow_turn(
             let (answer, _img) = crate::utils::extract_img_markers(&answer);
             let (answer, _vid) = crate::utils::extract_vid_markers(&answer);
             let answer = redact_secrets(&answer);
+            // The answer a halted turn posted before its buttons is not
+            // posted again from the sign-off (#2029).
+            let answer = {
+                let held = flow.posted.lock().await;
+                strip_folded_notes(&answer, &super::options_host::held_paragraphs(&held))
+            };
             if !answer.trim().is_empty() {
                 for chunk in super::handler::split_message(&answer, 3000) {
                     if chunk.trim().is_empty() {

@@ -881,6 +881,7 @@ pub mod skill_slash_dispatch_test;
 pub mod skills_dialog_test;
 pub mod skills_test;
 pub mod slack_narration_fold_test;
+pub mod slack_options_host_test;
 pub mod slack_reactions_test;
 pub mod slack_send_content_type_test;
 pub mod slack_tool_group_test;

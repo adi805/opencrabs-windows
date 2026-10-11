@@ -1872,6 +1872,10 @@ async fn handle_message(
     // nothing is posted at all (#951).
     let steps: Arc<Mutex<Vec<super::tool_group::GroupEntry>>> = Arc::new(Mutex::new(Vec::new()));
     let steps_final = steps.clone();
+    // Answers posted before the buttons when a turn halts on suggest_options
+    // (#2029). The final body strips them so a repeated sign-off stays single.
+    let posted_answers: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let posted_final = posted_answers.clone();
 
     // ts of the turn's step-group message, shared by the progress callbacks
     // and the delivery tail: the settle pass (#1797) stamps the group only
@@ -1893,6 +1897,7 @@ async fn handle_message(
         let client_cb = client.clone();
         let thread_ts_cb = thread_ts.clone();
         let tool_group_ts_outer = tool_group_ts.clone();
+        let posted_cb = posted_answers.clone();
 
         let slack_state_outer = state.slack_state.clone();
 
@@ -2093,12 +2098,32 @@ async fn handle_message(
                 // Optional follow-up suggestions (#599): post tap-to-send
                 // buttons under the response; a tap injects a new turn.
                 ProgressEvent::SuggestedOptions(options) => {
-                    let state = slack_state_grp.clone();
                     let raw_options: Vec<String> =
                         options.into_iter().map(|item| item.label).collect();
+                    let handles = intermediate_handles_cb.clone();
+                    let posted = posted_cb.clone();
+                    let group_ts = tool_group_ts_cb.clone();
                     tokio::spawn(async move {
-                        super::suggest_options::render_suggestions(&state, session_id, raw_options)
-                            .await;
+                        // The answer the surface halted on posts before the
+                        // buttons, out of the group (#2029).
+                        super::options_host::drain_note_tasks(&handles).await;
+                        let session = client.open_session(&token);
+                        super::options_host::post_halted_answer(
+                            &session,
+                            &slack_state_grp,
+                            channel,
+                            thread_ts_inner,
+                            &group_ts,
+                            &tools,
+                            &posted,
+                        )
+                        .await;
+                        super::suggest_options::render_suggestions(
+                            &slack_state_grp,
+                            session_id,
+                            raw_options,
+                        )
+                        .await;
                     });
                 }
                 _ => {}
@@ -2156,8 +2181,11 @@ async fn handle_message(
             // this the whole turn's commentary ships ahead of the answer.
             // Structural: only strings the group actually folded are removed.
             let text_only = {
-                let folded = super::final_body::folded_paragraphs(super::tool_group::notes_text(
-                    &steps_final.lock().await,
+                let mut folded = super::final_body::folded_paragraphs(
+                    super::tool_group::notes_text(&steps_final.lock().await),
+                );
+                folded.extend(super::options_host::held_paragraphs(
+                    &posted_final.lock().await,
                 ));
                 super::final_body::strip_folded_notes(&text_only, &folded)
             };
@@ -2583,6 +2611,7 @@ async fn run_followup_turn(
         cb: progress_cb,
         steps,
         intermediate_handles,
+        posted,
     } = build_flow_progress(
         client.clone(),
         state.slack_state.clone(),
@@ -2633,6 +2662,12 @@ async fn run_followup_turn(
             let (text_only, _vid_paths) = crate::utils::extract_vid_markers(&text_only);
             let text_only = crate::utils::sanitize::strip_llm_artifacts(&text_only);
             let text_only = redact_secrets(&text_only);
+            // The answer a halted turn posted before its suggestions is not
+            // repeated from the sign-off (#2029).
+            let text_only = super::final_body::strip_folded_notes(
+                &text_only,
+                &super::options_host::held_paragraphs(&posted.lock().await),
+            );
 
             let ctx_max = state.agent.context_limit_for_session(session_id);
             let footer = crate::utils::format_ctx_footer(
