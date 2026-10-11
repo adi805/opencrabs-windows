@@ -1038,6 +1038,16 @@ async fn cmd_chat_inner(
             db.pool().clone(),
         ))
         .await;
+    // Durable card state (H1, #193): the tool-group bubble and the pager stay
+    // on screen across a restart, so their controls have to keep working
+    // instead of answering "too old to expand" on a card that is still sitting
+    // in the channel.
+    #[cfg(feature = "discord")]
+    discord_state
+        .set_card_store(crate::db::repository::DiscordCardRepository::new(
+            db.pool().clone(),
+        ))
+        .await;
 
     // Register Discord connect tool (agent-callable bot setup)
     #[cfg(feature = "discord")]

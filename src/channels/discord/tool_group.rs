@@ -58,6 +58,150 @@ pub(crate) struct GroupState {
     pub live_ctx: Option<String>,
 }
 
+/// The durable form of a group (H1).
+///
+/// `Instant` is process-relative and cannot be serialised, so the two clock
+/// fields travel as ages in seconds and are rebuilt against the new process's
+/// own epoch on load. Nothing else in the card is derived from wall time, so
+/// the render a restarted process produces matches the one the dead process
+/// left on screen.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct GroupSnapshot {
+    pub entries: Vec<EntrySnapshot>,
+    pub notes: Vec<String>,
+    pub expanded: bool,
+    /// Whole seconds since `started_at`, measured at the moment of the write.
+    pub started_secs_ago: u64,
+    /// Whole seconds since `last_activity_at`, measured at the write.
+    pub activity_secs_ago: u64,
+    pub settled: Option<SettledSnapshot>,
+    pub live_ctx: Option<String>,
+}
+
+/// One tool row, in the shape that survives a restart.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct EntrySnapshot {
+    pub name: String,
+    pub context: String,
+    pub status: Option<bool>,
+}
+
+/// The frozen post-delivery chrome, in the shape that survives a restart.
+///
+/// `icon` is deliberately NOT stored. It is a function of the outcome and of
+/// whether the turn settled with background work still alive, and both of
+/// those travel already (`outcome`, `waiting`), so a stored copy would be a
+/// second source of truth that the next icon change desyncs silently.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct SettledSnapshot {
+    pub outcome: String,
+    pub elapsed_secs: u64,
+    pub ctx: Option<String>,
+    pub verb: String,
+    /// True when settle stamped the `⏳ Waiting for …` pair because detached
+    /// work was still alive (#1144/#1183). The verb itself is stored verbatim,
+    /// since it names the counts.
+    pub waiting: bool,
+}
+
+/// Place a stored age back on this process's monotonic clock.
+///
+/// `Instant::now()` is time since boot, not since process start, so a card
+/// written before a reboot can carry an age that reaches further back than the
+/// clock's origin. `now - age` panics there, and a press on a card that is
+/// still sitting in the channel must never do that. An age older than this
+/// process's clock can plausibly be is treated as unplaceable and the card is
+/// placed at `now`, so it reads as just-started. Same reasoning as
+/// `failure_window::cutoff`, which leaves the same call to its caller.
+///
+/// `checked_sub` alone does not settle that question: CI accepted a duration
+/// beyond any host uptime and reported the card as `i64::MAX` seconds old, so
+/// the bound is applied before the subtraction rather than inferred from it.
+fn resumed_instant(now: Instant, secs_ago: u64) -> Instant {
+    // Longer than any host's uptime, so an age past it cannot be placed on a
+    // clock that counts from boot.
+    const MAX_PLACEABLE_SECS: u64 = 100 * 365 * 24 * 60 * 60;
+
+    if secs_ago > MAX_PLACEABLE_SECS {
+        return now;
+    }
+    now.checked_sub(Duration::from_secs(secs_ago))
+        .unwrap_or(now)
+}
+
+impl GroupState {
+    /// The durable form of this card (H1).
+    pub(crate) fn to_snapshot(&self) -> GroupSnapshot {
+        let now = Instant::now();
+        GroupSnapshot {
+            entries: self
+                .entries
+                .iter()
+                .map(|e| EntrySnapshot {
+                    name: e.name.clone(),
+                    context: e.context.clone(),
+                    status: e.status,
+                })
+                .collect(),
+            notes: self.notes.clone(),
+            expanded: self.expanded,
+            started_secs_ago: now.duration_since(self.started_at).as_secs(),
+            activity_secs_ago: now.duration_since(self.last_activity_at).as_secs(),
+            settled: self.settled.as_ref().map(|s| SettledSnapshot {
+                outcome: s.outcome.as_wire().to_string(),
+                elapsed_secs: s.elapsed.as_secs(),
+                ctx: s.ctx.clone(),
+                verb: s.verb.clone(),
+                waiting: s.icon == WAITING_ICON,
+            }),
+            live_ctx: self.live_ctx.clone(),
+        }
+    }
+
+    /// Rebuild a card from its snapshot. `None` when the snapshot carries an
+    /// outcome this build cannot name: an unrenderable card must answer "too
+    /// old" rather than invent a status for the one card the user is watching.
+    pub(crate) fn from_snapshot(snap: GroupSnapshot) -> Option<Self> {
+        let settled = match snap.settled {
+            Some(s) => {
+                let outcome = TurnOutcome::from_wire(&s.outcome)?;
+                Some(SettledStatus {
+                    outcome,
+                    elapsed: Duration::from_secs(s.elapsed_secs),
+                    ctx: s.ctx,
+                    icon: if s.waiting {
+                        WAITING_ICON
+                    } else {
+                        outcome.icon_verb().0
+                    },
+                    verb: s.verb,
+                })
+            }
+            None => None,
+        };
+        let now = Instant::now();
+        Some(Self {
+            entries: snap
+                .entries
+                .into_iter()
+                .map(|e| GroupEntry {
+                    name: e.name,
+                    context: e.context,
+                    status: e.status,
+                })
+                .collect(),
+            notes: snap.notes,
+            expanded: snap.expanded,
+            // Ages, not instants: a restarted process has its own epoch, so the
+            // card resumes the clock it was showing instead of restarting it.
+            started_at: resumed_instant(now, snap.started_secs_ago),
+            last_activity_at: resumed_instant(now, snap.activity_secs_ago),
+            live_ctx: snap.live_ctx,
+            settled,
+        })
+    }
+}
+
 /// Frozen post-delivery chrome (#1841): the Discord twin of Slack's
 /// `SettledStatus`. The clock stops at settle and the ctx budget line moves
 /// into the flow group, so the chrome owns it (the answer-message footer
@@ -121,7 +265,7 @@ pub(crate) fn settled_icon_verb(
         if let Some(phrase) = agent_phrase {
             parts.push(phrase.to_string());
         }
-        return ("⏳", format!("Waiting for {}", parts.join(" + ")));
+        return (WAITING_ICON, format!("Waiting for {}", parts.join(" + ")));
     }
     let (icon, verb) = outcome.icon_verb();
     (icon, verb.to_string())
@@ -167,6 +311,11 @@ pub(crate) enum TurnOutcome {
     Failed,
     TimedOut,
     Cancelled,
+    /// The group left the store before the turn settled, so the repair path
+    /// has no cause to report. Deliberately NOT `TimedOut`: on the store-miss
+    /// branch the turn may still be running, and a timeout verdict there tells
+    /// the reader the turn died when it did not (#196).
+    Orphaned,
 }
 
 impl TurnOutcome {
@@ -178,9 +327,50 @@ impl TurnOutcome {
             Self::Failed => ("❌", "Failed"),
             Self::TimedOut => ("⏱", "Timed out"),
             Self::Cancelled => ("❌", "Cancelled"),
+            Self::Orphaned => ("⚠", "Orphaned"),
+        }
+    }
+
+    /// Wire name for the durable snapshot. Kept apart from `icon_verb`
+    /// because this string is written to the database and read back by a later
+    /// build: it is a compatibility surface, not a display detail, so renaming
+    /// it is a migration and not a copy edit.
+    pub(crate) fn as_wire(self) -> &'static str {
+        match self {
+            Self::Finished => "finished",
+            Self::Failed => "failed",
+            Self::TimedOut => "timed_out",
+            Self::Cancelled => "cancelled",
+            Self::Orphaned => "orphaned",
+        }
+    }
+
+    /// Inverse of [`Self::as_wire`]. `None` for a name this build does not
+    /// know: a card written by a newer build cannot be rendered honestly, and
+    /// defaulting it to `Finished` would put a false success check on the one
+    /// card the user is watching.
+    pub(crate) fn from_wire(name: &str) -> Option<Self> {
+        match name {
+            "finished" => Some(Self::Finished),
+            "failed" => Some(Self::Failed),
+            "timed_out" => Some(Self::TimedOut),
+            "cancelled" => Some(Self::Cancelled),
+            "orphaned" => Some(Self::Orphaned),
+            _ => None,
         }
     }
 }
+
+/// The icon settle stamps when the turn finished with detached work still
+/// alive (#1144/#1183). Named because two places have to agree on it: the
+/// stamp, and the snapshot that has to say on the way back whether the stored
+/// pair was the waiting one.
+pub(crate) const WAITING_ICON: &str = "⏳";
+
+/// The `kind` this module's cards carry in `discord_card_state` (H1). One
+/// table serves every Discord card that has to survive a restart, and this
+/// column is what keeps a tool group from being read back as a pager.
+pub(crate) const TOOL_GROUP_KIND: &str = "tool_group";
 
 /// Keep at most this many narration lines in the bubble (newest win).
 pub(crate) const NOTE_CAP: usize = 6;
@@ -554,11 +744,30 @@ impl DiscordState {
     /// choice on updates (a completing tool must not snap an expanded group
     /// shut) and the stored narration notes (only `append_note`/`drop_note_if`
     /// mutate those). Returns the stored state so callers render what is kept.
-    pub(crate) async fn upsert_tool_group(
+    pub(crate) async fn upsert_tool_group(&self, message_id: u64, group: GroupState) -> GroupState {
+        let (group, evicted) = self.upsert_group_in_memory(message_id, group).await;
+        // Write through so a restart can still answer this card's Expand press
+        // instead of "too old to expand" (H1). Best effort: the render already
+        // reached the channel, so a store failure is logged and dropped.
+        self.persist_group(message_id, &group).await;
+        // Lockstep with the in-memory eviction: the table must never track a
+        // card the map has deliberately forgotten.
+        for id in evicted {
+            self.forget_card(id).await;
+        }
+        group
+    }
+
+    /// The in-process half of [`Self::upsert_tool_group`]: insert or update the
+    /// group in the retained map, and report the ids the cap took. Split out so
+    /// the durable write happens with the map lock already released.
+    async fn upsert_group_in_memory(
         &self,
         message_id: u64,
         mut group: GroupState,
-    ) -> GroupState {
+    ) -> (GroupState, Vec<u64>) {
+        // Ids the cap takes, so their durable rows go with them.
+        let mut evicted: Vec<u64> = Vec::new();
         let mut guard = self.tool_groups.lock().await;
         let (order, map) = &mut *guard;
         match map.get(&message_id) {
@@ -590,20 +799,54 @@ impl DiscordState {
                     };
                     let oldest = order.remove(victim);
                     map.remove(&oldest);
+                    evicted.push(oldest);
                 }
             }
         }
         map.insert(message_id, group.clone());
-        group
+        (group, evicted)
     }
 
-    /// Flip a group's expanded state; None when it aged out of retention.
+    /// Flip a group's expanded state; None when the card is neither retained nor
+    /// durable (aged out of both, or no store wired).
     pub(crate) async fn toggle_tool_group(&self, message_id: u64) -> Option<GroupState> {
-        let mut guard = self.tool_groups.lock().await;
-        let (_, map) = &mut *guard;
-        let group = map.get_mut(&message_id)?;
-        group.expanded = !group.expanded;
-        Some(group.clone())
+        // Fast path: the card is still in the retained map.
+        let hit = {
+            let mut guard = self.tool_groups.lock().await;
+            let (_, map) = &mut *guard;
+            map.get_mut(&message_id).map(|group| {
+                group.expanded = !group.expanded;
+                group.clone()
+            })
+        };
+        let flipped = match hit {
+            Some(group) => group,
+            None => {
+                // Miss: the card aged out of retention, or this process just
+                // started and the map is empty. Rebuild it from the durable
+                // store, or the press answers "too old to expand" on a card
+                // that is still sitting in the channel (H1).
+                let mut group =
+                    GroupState::from_snapshot(self.load_group_snapshot(message_id).await?)?;
+                group.expanded = !group.expanded;
+                // Re-admit it so the toggle that follows this press, and the
+                // flow ticker, find it in memory. Pushed last, so it is the
+                // newest entry and the cap takes it last; a re-admitted card is
+                // always settled, so the next insert of a new card reclaims the
+                // slot.
+                let mut guard = self.tool_groups.lock().await;
+                let (order, map) = &mut *guard;
+                if !map.contains_key(&message_id) {
+                    order.push(message_id);
+                }
+                map.insert(message_id, group.clone());
+                group
+            }
+        };
+        // A press is the user's own action, so it is written through: the next
+        // restart has to read back the choice this press just made.
+        self.persist_group(message_id, &flipped).await;
+        Some(flipped)
     }
 
     /// Append one narration line to the stored group, keeping only the
@@ -652,11 +895,18 @@ impl DiscordState {
         agents: crate::channels::background_work::SubagentCounts,
         ctx: Option<String>,
     ) -> Option<GroupState> {
-        let mut guard = self.tool_groups.lock().await;
-        let (_, map) = &mut *guard;
-        let group = map.get_mut(&message_id)?;
-        stamp_settled(group, outcome, bg, agents, ctx);
-        Some(group.clone())
+        let settled = {
+            let mut guard = self.tool_groups.lock().await;
+            let (_, map) = &mut *guard;
+            let group = map.get_mut(&message_id)?;
+            stamp_settled(group, outcome, bg, agents, ctx);
+            group.clone()
+        };
+        // The settled line is the card's last word, so it is the one that most
+        // needs to survive a restart: written through with the map lock already
+        // released.
+        self.persist_group(message_id, &settled).await;
+        Some(settled)
     }
 
     /// Alive background-task and sub-agent counts for a session at settle
@@ -679,9 +929,46 @@ impl DiscordState {
     /// the flow ticker snapshots under the lock, renders outside it, and
     /// re-snapshots after its edit so the settled line keeps the last word.
     pub(crate) async fn tool_group_snapshot(&self, message_id: u64) -> Option<GroupState> {
-        let guard = self.tool_groups.lock().await;
-        let (_, map) = &*guard;
-        map.get(&message_id).cloned()
+        {
+            let guard = self.tool_groups.lock().await;
+            let (_, map) = &*guard;
+            if let Some(hit) = map.get(&message_id) {
+                return Some(hit.clone());
+            }
+        }
+        // Miss: the group aged out of retention, or this process just started
+        // with an empty map. Try the durable store before answering None, so a
+        // card that outlived a restart renders its stored state instead of being
+        // read as an orphan (H1). Deliberately a read: re-admitting here would
+        // let the flow ticker resurrect a card the cap just dropped, while
+        // `toggle_tool_group` re-admits the one card a user actually pressed.
+        let snap = self.load_group_snapshot(message_id).await?;
+        GroupState::from_snapshot(snap)
+    }
+
+    /// Write a card's snapshot through to the durable store (H1). Best effort:
+    /// the render has already reached the channel, so a store failure is logged
+    /// and dropped rather than failing the caller.
+    async fn persist_group(&self, message_id: u64, group: &GroupState) {
+        let Ok(json) = serde_json::to_string(&group.to_snapshot()) else {
+            tracing::warn!("Discord: could not serialise tool-group card {message_id}");
+            return;
+        };
+        self.persist_card(message_id, TOOL_GROUP_KIND, json).await;
+    }
+
+    /// Read a card's durable snapshot back (H1). `None` when no store is wired,
+    /// when the card is not tracked, or when the stored form is unreadable: all
+    /// three answer the caller the same way.
+    async fn load_group_snapshot(&self, message_id: u64) -> Option<GroupSnapshot> {
+        let json = self.load_card(message_id, TOOL_GROUP_KIND).await?;
+        match serde_json::from_str(&json) {
+            Ok(snap) => Some(snap),
+            Err(e) => {
+                tracing::warn!("Discord: unreadable tool-group card {message_id}: {e}");
+                None
+            }
+        }
     }
 
     /// Remove the LAST narration line matching `pred` — the final-response
