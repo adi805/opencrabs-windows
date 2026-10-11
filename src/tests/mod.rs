@@ -631,6 +631,7 @@ pub mod onboarding_visible_window_test;
 pub mod onboarding_voice_key_edit_test;
 pub mod onboarding_voice_preserve_test;
 pub mod onboarding_voice_seed_test;
+pub mod onboarding_welcome_send_test;
 pub mod onboarding_welcome_test;
 pub mod onboarding_wizard_test;
 pub mod orphan_close_tag_strip_test;

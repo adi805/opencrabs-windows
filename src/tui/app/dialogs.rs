@@ -14,6 +14,19 @@ impl App {
     /// Leave the app from inside the wizard. Whatever was typed is saved
     /// first, like a cancel; an unfinished first run reopens on next launch
     /// because completion is only recorded on `Complete`.
+    /// Send the hidden welcome prompt once the wizard has saved its config.
+    /// Runs for every completion, quick or advanced, first run or `/onboard`.
+    /// A failed save sends nothing, so the agent never greets an unconfigured
+    /// install (#2022).
+    pub(crate) async fn send_onboarding_welcome(&mut self, saved: bool) {
+        if !saved {
+            return;
+        }
+        if let Err(e) = self.send_message(WELCOME_MESSAGE.to_string()).await {
+            tracing::warn!(error = %e, "failed to send welcome message");
+        }
+    }
+
     fn quit_from_onboarding(&mut self) {
         if let Some(ref wizard) = self.onboarding
             && let Err(e) = wizard.apply_config()
@@ -224,9 +237,11 @@ impl App {
                 }
                 WizardAction::Complete => {
                     // Apply wizard config before transitioning
+                    let mut saved = false;
                     if let Some(ref wizard) = self.onboarding {
                         match wizard.apply_config() {
                             Ok(()) => {
+                                saved = true;
                                 let (provider_name, model_name) = if wizard.ps.is_custom() {
                                     (
                                         format!("Custom ({})", wizard.ps.custom_name),
@@ -266,23 +281,13 @@ impl App {
                             }
                         }
                     }
-                    let is_first_time = self
-                        .onboarding
-                        .as_ref()
-                        .map(|w| w.is_first_time)
-                        .unwrap_or(false);
                     self.onboarding = None;
                     self.sync_session_to_provider().await;
                     self.switch_mode(AppMode::Chat).await?;
 
-                    // First-time onboard — send hidden system prompt to the agent
-                    // so it can check its environment and surprise the user.
-                    // The `[SYSTEM:` prefix hides it from user display.
-                    if is_first_time
-                        && let Err(e) = self.send_message(WELCOME_MESSAGE.to_string()).await
-                    {
-                        tracing::warn!(error = %e, "failed to send welcome message");
-                    }
+                    // Hidden system prompt so the agent can check its environment
+                    // and greet the user. The `[SYSTEM:` prefix hides it from display.
+                    self.send_onboarding_welcome(saved).await;
                 }
                 WizardAction::FetchModels => {
                     let provider_idx = wizard.ps.selected_provider;
@@ -705,9 +710,11 @@ impl App {
                     }
 
                     // Complete onboarding — go straight to chat
+                    let mut saved = false;
                     if let Some(ref wizard) = self.onboarding {
                         match wizard.apply_config() {
                             Ok(()) => {
+                                saved = true;
                                 let (provider_name, model_name) = if wizard.ps.is_custom() {
                                     (
                                         format!("Custom ({})", wizard.ps.custom_name),
@@ -742,22 +749,13 @@ impl App {
                             }
                         }
                     }
-                    let is_first_time = self
-                        .onboarding
-                        .as_ref()
-                        .map(|w| w.is_first_time)
-                        .unwrap_or(false);
                     self.onboarding = None;
                     self.sync_session_to_provider().await;
                     self.switch_mode(AppMode::Chat).await?;
 
-                    // First-time onboard — send hidden system prompt to the agent
-                    // so it can check its environment and surprise the user.
-                    if is_first_time
-                        && let Err(e) = self.send_message(WELCOME_MESSAGE.to_string()).await
-                    {
-                        tracing::warn!(error = %e, "failed to send welcome message");
-                    }
+                    // Hidden system prompt so the agent can check its environment
+                    // and greet the user. Sent on every saved completion (#2022).
+                    self.send_onboarding_welcome(saved).await;
 
                     // Fire brain generation in the background
                     if let Some((prompt, workspace)) = brain_context {
