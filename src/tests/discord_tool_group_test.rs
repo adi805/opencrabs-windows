@@ -109,11 +109,23 @@ async fn toggle_flips_and_updates_preserve_expansion() {
     assert!(state.toggle_tool_group(999).await.is_none());
 }
 
+/// Retention still bounds the map, but it may only take SETTLED groups. A group
+/// that has not settled is a turn still in flight, and evicting one strands its
+/// card: the ticker's next snapshot returns None, the ticker leaves without
+/// settling, and the card keeps the live `🕒` chrome with a frozen clock, which
+/// on screen is indistinguishable from a turn still working (#1880, M1a). The
+/// cap therefore bounds retained *settled* history, not in-flight turns.
 #[tokio::test]
-async fn retention_prunes_oldest_groups() {
+async fn retention_prunes_oldest_settled_groups() {
     let state = DiscordState::new();
     for i in 0..25u64 {
-        state.upsert_tool_group(i, group(2, true, false)).await;
+        let mut g = group(2, true, false);
+        g.settled = Some(SettledStatus::new(
+            TurnOutcome::Finished,
+            Duration::from_secs(1),
+            None,
+        ));
+        state.upsert_tool_group(i, g).await;
     }
     assert!(state.toggle_tool_group(0).await.is_none());
     assert!(state.toggle_tool_group(24).await.is_some());
@@ -275,14 +287,19 @@ async fn retention_drains_the_live_overflow_once_it_settles() {
     for &id in &ids {
         state.upsert_tool_group(id, group(2, false, false)).await;
     }
+    // Settle through the real path: `upsert_tool_group` deliberately preserves
+    // the stored `settled`, so re-upserting a live group cannot settle it and
+    // the drain this test exists to pin would never be reached (#1880).
     for &id in &ids {
-        let mut g = group(2, true, false);
-        g.settled = Some(SettledStatus::new(
-            TurnOutcome::Finished,
-            Duration::from_secs(3),
-            None,
-        ));
-        state.upsert_tool_group(id, g).await;
+        state
+            .settle_tool_group(
+                id,
+                TurnOutcome::Finished,
+                0,
+                SubagentCounts::default(),
+                Some("ctx: drain".into()),
+            )
+            .await;
     }
     state.upsert_tool_group(9999, group(2, false, false)).await;
     assert!(

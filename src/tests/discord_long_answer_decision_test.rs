@@ -51,8 +51,17 @@ fn handler_src() -> String {
 
 /// The same source with all whitespace removed, so a call split across lines
 /// still matches a needle written on one line.
+/// Flatten source for needle matching.
+///
+/// Whitespace first, then the trailing comma rustfmt inserts before the closing
+/// paren of a call it wrapped: `f(a,)` and `f(a)` are the same call, but only
+/// the second matches a needle written the way the call reads on one line.
+/// Without this the same call matches or not depending on whether rustfmt
+/// happened to wrap it, which is the reflow that makes a source-pinning test
+/// lie (#1880).
 fn flat(src: &str) -> String {
-    src.chars().filter(|c| !c.is_whitespace()).collect()
+    let stripped: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+    stripped.replace(",)", ")")
 }
 
 /// AC-020: a long answer routes into the pager rather than into a run of
