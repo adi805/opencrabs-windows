@@ -244,3 +244,54 @@ async fn resettle_with_no_ctx_keeps_the_stamped_budget() {
         Some("ctx: B")
     );
 }
+
+/// The cap bounds how much settled history is retained, never how many turns
+/// may be in flight. Evicting a live group is what stranded a card: the flow
+/// ticker's next snapshot returned None, the ticker left without settling, and
+/// the card kept its live `🕒` chrome with a frozen clock. A set of live groups
+/// may therefore run over the cap; every one of them must still be snapshot-able.
+#[tokio::test]
+async fn retention_never_evicts_a_live_group() {
+    let state = DiscordState::new();
+    let ids: Vec<u64> = (0..30u64).map(|i| 5000 + i).collect();
+    for &id in &ids {
+        state.upsert_tool_group(id, group(2, false, false)).await;
+    }
+    for &id in &ids {
+        assert!(
+            state.tool_group_snapshot(id).await.is_some(),
+            "live group {id} was evicted under cap pressure: its ticker would \
+             lose the snapshot and leave a frozen live clock on the card"
+        );
+    }
+}
+
+/// The overflow from live groups must drain as soon as those groups settle, or
+/// the map would only ever grow.
+#[tokio::test]
+async fn retention_drains_the_live_overflow_once_it_settles() {
+    let state = DiscordState::new();
+    let ids: Vec<u64> = (0..30u64).map(|i| 6000 + i).collect();
+    for &id in &ids {
+        state.upsert_tool_group(id, group(2, false, false)).await;
+    }
+    for &id in &ids {
+        let mut g = group(2, true, false);
+        g.settled = Some(SettledStatus::new(
+            TurnOutcome::Finished,
+            Duration::from_secs(3),
+            None,
+        ));
+        state.upsert_tool_group(id, g).await;
+    }
+    state.upsert_tool_group(9999, group(2, false, false)).await;
+    assert!(
+        state.tool_group_snapshot(6000).await.is_none(),
+        "the oldest settled group must go once evictable groups exist, or the \
+         live overflow never drains"
+    );
+    assert!(
+        state.tool_group_snapshot(9999).await.is_some(),
+        "the group just inserted must be retained"
+    );
+}

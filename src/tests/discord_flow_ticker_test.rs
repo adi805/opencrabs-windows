@@ -117,3 +117,30 @@ fn ticker_spawns_before_the_turn_dispatch() {
         "spawn_flow_ticker must run before the agent turn starts"
     );
 }
+
+/// A snapshot that comes back empty must not leave a live-looking control
+/// behind. The group is only gone because it settled and was evicted, so the
+/// card already carries its final line; the ticker's job on that path is to stop
+/// and to strip the toggle row, so no dead Expand button is left on a card that
+/// nothing can redraw any more (#1880, L3).
+#[test]
+fn a_missing_snapshot_strips_the_controls_instead_of_bare_breaking() {
+    let handler = include_str!("../channels/discord/handler.rs");
+    let start = handler
+        .find("tool_group_snapshot(mid.get()).await")
+        .expect("the ticker no longer reads the group snapshot");
+    let rest = &handler[start..];
+    let end = rest
+        .find("if group.settled.is_some()")
+        .expect("the settled check that follows the snapshot moved");
+    let arm = &rest[..end];
+    assert!(
+        arm.contains("components(Vec::new())"),
+        "the missing-snapshot arm no longer strips the toggle row, so an \
+         evicted card keeps a live-looking button that can never work"
+    );
+    assert!(
+        arm.contains("break"),
+        "the missing-snapshot arm must still stop the ticker"
+    );
+}

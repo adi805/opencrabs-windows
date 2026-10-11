@@ -225,7 +225,21 @@ pub(super) fn spawn_flow_ticker(
                 continue;
             };
             let Some(group) = dstate.tool_group_snapshot(mid.get()).await else {
-                break; // pruned by retention mid-turn
+                // Retention only ever takes a SETTLED group (see
+                // `DiscordState::upsert_tool_group`), so a missing snapshot means
+                // this card was already settled and its final line is the one on
+                // screen; there is no live clock left to repair. Strip the toggle
+                // row regardless, so an evicted card does not keep a live-looking
+                // Expand button that can never work again (#1880, L3).
+                tracing::warn!(
+                    "Discord: flow ticker lost group {} to retention; stripping controls",
+                    mid.get()
+                );
+                let strip = EditMessage::new().components(Vec::new());
+                if let Err(e) = writes::edit(&http, channel, mid, strip, Class::Edit).await {
+                    tracing::warn!("Discord: flow ticker control strip failed: {e}");
+                }
+                break;
             };
             if group.settled.is_some() {
                 break; // settle already posted the final line
