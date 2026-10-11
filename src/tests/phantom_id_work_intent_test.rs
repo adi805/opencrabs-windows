@@ -61,6 +61,16 @@ const THIRD_PERSON_MENTIONS: [&str; 3] = [
     "Tadi dia bilang gue tulis ringkasan ke AUDIT.md.",
 ];
 
+/// Ordinary command words that name no object. Excluded from `work_object_tools`
+/// for the same reason the verbs are kept out of `intent_phrases`: the verb plus
+/// a word like `bash` is still commentary, and flagging it would trade a phantom
+/// for a swallowed answer.
+const ORDINARY_COMMAND_WORDS: [&str; 3] = [
+    "Gue rangkum opsi bash-nya.",
+    "Gue tulis catatan grep-nya.",
+    "Gue susun urutan bash dulu.",
+];
+
 #[test]
 fn every_watched_verb_is_declared_exactly_once() {
     for verb in WATCHED_VERBS {
@@ -112,6 +122,16 @@ fn a_work_intent_line_naming_a_backticked_symbol_is_phantom() {
 #[test]
 fn commentary_without_a_work_object_is_not_phantom() {
     for text in COMMENTARY_WITHOUT_OBJECT {
+        assert!(!matches_work_intent_with_object(text), "{text:?}");
+    }
+}
+
+#[test]
+fn ordinary_command_words_are_not_a_work_object() {
+    // The tool list is kept to unmistakable names on purpose. `bash` and `grep`
+    // are ordinary words in dev chat, so a line that merely mentions one is
+    // commentary, and the verb plus that word must stay silent.
+    for text in ORDINARY_COMMAND_WORDS {
         assert!(!matches_work_intent_with_object(text), "{text:?}");
     }
 }

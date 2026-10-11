@@ -136,8 +136,10 @@ pub struct LangConfig {
     #[serde(default)]
     pub work_object_re: String,
     /// Commands and tool names that also count as a work object for the phrases
-    /// above. Kept short and unmistakable: `plan` / `bash` / `ls` are ordinary
-    /// words and prove nothing on their own.
+    /// above. Kept short and unmistakable: `plan` / `bash` / `grep` / `ls` are
+    /// ordinary words, so a line like "Gue rangkum opsi bash-nya." is
+    /// commentary rather than narration, and listing them would trade a phantom
+    /// for a swallowed answer.
     #[serde(default)]
     pub work_object_tools: Vec<String>,
     /// Assertions that a visual/media result was produced or delivered

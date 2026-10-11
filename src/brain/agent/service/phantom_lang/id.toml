@@ -264,8 +264,6 @@ work_object_tools = [
     "rustfmt",
     "git ",
     "gh ",
-    "grep",
-    "bash",
     "npm",
     "pnpm",
     "yarn",
