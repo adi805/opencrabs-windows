@@ -196,7 +196,13 @@ async fn decline_incoming_call(client: &Client, alert: OwnerAlert, call: &Incomi
         action = ?call.action,
         "WhatsApp: inbound call event"
     );
-    if let CallAction::Offer { call_id, call_creator, is_video, .. } = &call.action {
+    if let CallAction::Offer {
+        call_id,
+        call_creator,
+        is_video,
+        ..
+    } = &call.action
+    {
         // `reason="busy"`, never a bare reject: a reasonless reject reads as the
         // callee declining and tears the call down on every device (see
         // `busy_reject_node`). Busy keeps the owner's other devices ringing.
