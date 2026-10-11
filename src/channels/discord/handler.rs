@@ -194,7 +194,7 @@ async fn settle_orphaned_card(
     };
     super::tool_group::stamp_settled(
         &mut group,
-        super::tool_group::TurnOutcome::TimedOut,
+        super::tool_group::TurnOutcome::Orphaned,
         0,
         crate::channels::background_work::SubagentCounts::default(),
         None,

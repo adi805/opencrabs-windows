@@ -152,3 +152,47 @@ fn a_missing_snapshot_settles_the_card_instead_of_bare_breaking() {
          frozen clock the helper exists to fix"
     );
 }
+
+/// #196: the store-miss repair has no cause to report. On that branch the group
+/// left the store while the turn may still be running, so the card must not
+/// print a timeout verdict — that tells the reader the turn died when it did
+/// not. The verdict is stamped through `GroupState::settle`, which is the same
+/// path the live settle uses, so this pins the rendered line and not the call.
+#[test]
+fn an_orphaned_settle_does_not_claim_a_timeout() {
+    let mut group = live_group();
+    group.settle(TurnOutcome::Orphaned, None, None);
+    let status = group
+        .settled
+        .as_ref()
+        .expect("an orphan settle must stamp a status, or the clock keeps rolling");
+    assert_ne!(
+        status.verb, "Timed out",
+        "the store-miss path has no timeout to report: the turn may still be running (#196)"
+    );
+    assert_eq!(status.verb, "Orphaned");
+}
+
+/// The helper itself must never stamp a timeout, whatever its caller passes.
+/// Both call sites are the same situation — the group left the store under the
+/// ticker — so neither can know a cause.
+#[test]
+fn the_orphan_helper_stamps_a_verdict_that_is_not_a_timeout() {
+    let handler = include_str!("../channels/slack/handler.rs");
+    let helper_start = handler
+        .find("async fn settle_orphaned_card(")
+        .expect("the orphan settle helper is gone");
+    let helper = &handler[helper_start..];
+    let helper_end = helper
+        .find("\n}\n")
+        .expect("the helper's closing brace moved");
+    let helper = &helper[..helper_end];
+    assert!(
+        !helper.contains("TurnOutcome::TimedOut"),
+        "the store-miss repair must not claim a timeout: the turn may still be running (#196)"
+    );
+    assert!(
+        helper.contains("TurnOutcome::Orphaned"),
+        "the store-miss repair must stamp the cause-free verdict (#196)"
+    );
+}

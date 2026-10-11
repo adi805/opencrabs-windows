@@ -137,6 +137,11 @@ pub(crate) enum TurnOutcome {
     Failed,
     TimedOut,
     Cancelled,
+    /// The group left the store before the turn settled, so the repair path
+    /// has no cause to report. Deliberately NOT `TimedOut`: on the store-miss
+    /// branch the turn may still be running, and a timeout verdict there tells
+    /// the reader the turn died when it did not (#196).
+    Orphaned,
 }
 
 impl TurnOutcome {
@@ -146,6 +151,7 @@ impl TurnOutcome {
             Self::Failed => ("❌", "Failed"),
             Self::TimedOut => ("⏱", "Timed out"),
             Self::Cancelled => ("❌", "Cancelled"),
+            Self::Orphaned => ("⚠", "Orphaned"),
         }
     }
 }

@@ -738,10 +738,14 @@ async fn settle_orphaned_card(
     last: Option<super::tool_group::GroupState>,
 ) {
     let Some(mut group) = last else {
+        // No rendering to settle from: Slack's `chat.update` needs content and
+        // this ticker never read any. Unlike Discord there is no control row to
+        // strip either, so there is nothing honest to post — record the loss and
+        // leave the card as it stands (#196).
         tracing::warn!("Slack: flow ticker lost group {ts} before reading it: nothing to settle");
         return;
     };
-    group.settle(super::tool_group::TurnOutcome::TimedOut, None, None);
+    group.settle(super::tool_group::TurnOutcome::Orphaned, None, None);
     let content = super::tool_group::render(&group, ts);
     let token = SlackApiToken::new(SlackApiTokenValue::from(
         slack_state
