@@ -493,7 +493,10 @@ impl Tool for WhatsAppSendTool {
                         "set_announce", "set_locked", "set_ephemeral",
                         "set_membership_approval", "set_member_add_mode",
                         "set_limit_sharing", "set_group_history",
-                        "set_no_frequently_forwarded", "set_allow_admin_reports"
+                        "set_no_frequently_forwarded", "set_allow_admin_reports",
+                        "get_membership_requests", "approve_membership_requests",
+                        "reject_membership_requests", "cancel_membership_requests",
+                        "get_participating", "is_admin"
                     ],
                     "description": "The WhatsApp action to perform."
                 },
@@ -607,7 +610,7 @@ impl Tool for WhatsAppSendTool {
                 "participants": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Phone numbers (E.164, leading '+' optional) or JIDs. Used by create_group, add_participants, remove_participants, promote_participants and demote_participants."
+                    "description": "Phone numbers (E.164, leading '+' optional) or JIDs. Used by create_group, add_participants, remove_participants, promote_participants, demote_participants, approve_membership_requests, reject_membership_requests, cancel_membership_requests and is_admin."
                 },
                 "subject": {
                     "type": "string",
@@ -2386,6 +2389,166 @@ impl Tool for WhatsAppSendTool {
                 }
             }
 
+            "get_membership_requests" => {
+                let jid = pget!(resolve_group_jid(&input));
+                match client.groups().get_membership_requests(jid.clone()).await {
+                    Ok(requests) if requests.is_empty() => Ok(ToolResult::success(format!(
+                        "{jid}: no pending membership requests."
+                    ))),
+                    Ok(requests) => {
+                        let mut out = format!("{jid}: {} pending request(s).", requests.len());
+                        for r in &requests {
+                            out.push_str(&format!("\n  {}", r.jid));
+                            if let Some(t) = r.request_time {
+                                out.push_str(&format!(" (requested at {t})"));
+                            }
+                        }
+                        Ok(ToolResult::success(out))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to list membership requests: {e}"
+                    ))),
+                }
+            }
+
+            "approve_membership_requests" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let participants = pget!(resolve_participants(&input));
+                match client
+                    .groups()
+                    .approve_membership_requests(jid.clone(), &participants)
+                    .await
+                {
+                    Ok(changes) => Ok(ToolResult::success(format!(
+                        "Approved membership requests for {jid}: {}",
+                        summarize_participant_changes(&changes)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to approve membership requests: {e}"
+                    ))),
+                }
+            }
+
+            "reject_membership_requests" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let participants = pget!(resolve_participants(&input));
+                match client
+                    .groups()
+                    .reject_membership_requests(jid.clone(), &participants)
+                    .await
+                {
+                    Ok(changes) => Ok(ToolResult::success(format!(
+                        "Rejected membership requests for {jid}: {}",
+                        summarize_participant_changes(&changes)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to reject membership requests: {e}"
+                    ))),
+                }
+            }
+
+            "cancel_membership_requests" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let participants = pget!(resolve_participants(&input));
+                match client
+                    .groups()
+                    .cancel_membership_requests(jid.clone(), &participants)
+                    .await
+                {
+                    Ok(changes) => Ok(ToolResult::success(format!(
+                        "Cancelled membership requests for {jid}: {}",
+                        summarize_participant_changes(&changes)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to cancel membership requests: {e}"
+                    ))),
+                }
+            }
+
+            "get_participating" => match client.groups().get_participating().await {
+                Ok(groups) if groups.is_empty() => Ok(ToolResult::success(
+                    "Not participating in any group.".to_string(),
+                )),
+                Ok(groups) => {
+                    let mut entries: Vec<_> = groups.into_iter().collect();
+                    entries.sort_by(|a, b| a.1.subject.cmp(&b.1.subject));
+                    let mut out = format!("Participating in {} group(s):", entries.len());
+                    for (jid, meta) in entries {
+                        let admins = meta.participants.iter().filter(|p| p.is_admin()).count();
+                        out.push_str(&format!(
+                            "\n  {} ('{}'): {} participants, {} admin(s)",
+                            jid,
+                            meta.subject,
+                            meta.participants.len(),
+                            admins
+                        ));
+                    }
+                    Ok(ToolResult::success(out))
+                }
+                Err(e) => Ok(ToolResult::error(format!(
+                    "Failed to list participating groups: {e}"
+                ))),
+            },
+
+            "is_admin" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let wanted = match input.get("participants").and_then(|v| v.as_array()) {
+                    Some(list) if !list.is_empty() => Some(pget!(resolve_participants(&input))),
+                    _ => None,
+                };
+                match client.groups().get_metadata(&jid).await {
+                    Ok(m) => {
+                        let mut out = format!("Admins in {jid} ('{}'):", m.subject);
+                        let mut listed = 0usize;
+                        for p in &m.participants {
+                            if !p.is_admin() {
+                                continue;
+                            }
+                            let is_wanted = match &wanted {
+                                Some(list) => list.iter().any(|w| {
+                                    *w == p.jid
+                                        || p.phone_number.as_ref() == Some(w)
+                                        || p.lid.as_ref() == Some(w)
+                                }),
+                                None => true,
+                            };
+                            if !is_wanted {
+                                continue;
+                            }
+                            out.push_str(&format!(
+                                "\n  {}{}",
+                                p.jid,
+                                if p.is_super_admin() {
+                                    " (super admin)"
+                                } else {
+                                    ""
+                                }
+                            ));
+                            listed += 1;
+                        }
+                        if listed == 0 {
+                            out = match &wanted {
+                                Some(list) => {
+                                    let names: Vec<String> =
+                                        list.iter().map(|j| j.to_string()).collect();
+                                    format!(
+                                        "None of {} is an admin in {jid} ('{}').",
+                                        names.join(", "),
+                                        m.subject
+                                    )
+                                }
+                                None => {
+                                    format!("{jid} ('{}') lists no admin participants.", m.subject)
+                                }
+                            };
+                        }
+                        Ok(ToolResult::success(out))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to check admin status in {jid}: {e}"
+                    ))),
+                }
+            }
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{}'. Valid actions: send, reply, delete, send_photo, \
                  send_document, send_audio, send_video, send_sticker, send_location, \
@@ -2398,7 +2561,9 @@ impl Tool for WhatsAppSendTool {
                  get_invite_link, join_with_invite_code, set_announce, set_locked, \
                  set_ephemeral, set_membership_approval, set_member_add_mode, \
                  set_limit_sharing, set_group_history, set_no_frequently_forwarded, \
-                 set_allow_admin_reports",
+                 set_allow_admin_reports, get_membership_requests, \
+                 approve_membership_requests, reject_membership_requests, \
+                 cancel_membership_requests, get_participating, is_admin",
                 unknown
             ))),
         }

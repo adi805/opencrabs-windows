@@ -36,6 +36,12 @@ const ACTIONS: &[(&str, &str)] = &[
     ("set_group_history", "set_group_history"),
     ("set_no_frequently_forwarded", "set_no_frequently_forwarded"),
     ("set_allow_admin_reports", "set_allow_admin_reports"),
+    ("get_membership_requests", "get_membership_requests"),
+    ("approve_membership_requests", "approve_membership_requests"),
+    ("reject_membership_requests", "reject_membership_requests"),
+    ("cancel_membership_requests", "cancel_membership_requests"),
+    ("get_participating", "get_participating"),
+    ("is_admin", "get_metadata"),
 ];
 
 /// The policy and admin actions, each with the `Groups` method it must call and
@@ -226,5 +232,40 @@ fn a_policy_flag_is_required_rather_than_defaulted() {
     assert!(
         get_bool(&json!({"locked": "yes"}), "locked").is_err(),
         "a non-boolean must be refused rather than coerced"
+    );
+}
+
+/// The membership actions each address one group and move the people the caller
+/// named, except `get_participating`, which asks the server for the account's own
+/// groups. Both halves are pinned: naming a group on a call that takes none, or
+/// hand-rolling the participant parse instead of using the shared helper, would
+/// still compile and then misbehave on the wire.
+#[test]
+fn membership_actions_target_the_right_thing() {
+    let compact = compact();
+    assert!(
+        compact.contains("groups().get_participating()"),
+        "get_participating must ask the server for the account's groups, not name one"
+    );
+    for action in [
+        "approve_membership_requests",
+        "reject_membership_requests",
+        "cancel_membership_requests",
+    ] {
+        assert!(
+            compact.contains(&format!("groups().{action}(jid.clone(),&participants)")),
+            "'{action}' must send the participants the caller named, resolved by the shared \
+             helper"
+        );
+    }
+}
+
+#[test]
+fn is_admin_names_its_group_and_does_not_require_a_participant_list() {
+    let compact = compact();
+    assert!(
+        compact.contains("\"is_admin\"=>{letjid=pget!(resolve_group_jid(&input));"),
+        "is_admin must resolve the group it is asked about: a group admin query has no default \
+         target, and the participant list is optional (omitting it lists every admin)"
     );
 }
