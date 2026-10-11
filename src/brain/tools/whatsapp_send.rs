@@ -16,6 +16,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 use wacore_binary::jid::Jid;
+use whatsapp_rust::features::{
+    GroupCreateOptions, GroupDescription, GroupParticipantOptions, GroupSubject, JoinGroupResult,
+    ParticipantChangeResponse, PreviousDescription,
+};
 
 /// Tool for comprehensive WhatsApp control (14 actions).
 pub struct WhatsAppSendTool {
@@ -189,6 +193,90 @@ pub(crate) async fn resolve_jid(
         }
         Ok((jid, jid_str))
     }
+}
+
+/// Resolve the target group JID from the `group_jid` parameter.
+///
+/// Group JIDs are `<id>@g.us`. A bare id (no `@`) is accepted and wrapped with
+/// `Jid::group`, because the invite and batch surfaces hand group ids out in
+/// that form. Unlike `resolve_jid` there is no owner fallback here: a group
+/// operation that names no group has no sensible default, and falling back
+/// would point an admin action (kick, promote) at a DM JID.
+#[allow(clippy::result_large_err)]
+pub(crate) fn resolve_group_jid(input: &Value) -> std::result::Result<Jid, ToolResult> {
+    let raw = get_str(input, "group_jid")?.trim();
+    let jid: Jid = if raw.contains('@') {
+        raw.parse()
+            .map_err(|e| ToolResult::error(format!("Invalid group JID '{raw}': {e}")))?
+    } else {
+        Jid::group(raw)
+    };
+    let jid_str = jid.to_string();
+    if !crate::cron::send_scope::may_send("whatsapp", &jid_str) {
+        let reason = crate::cron::send_scope::refusal_for("whatsapp", &jid_str);
+        tracing::warn!("whatsapp_send: {reason}");
+        return Err(ToolResult::error(reason));
+    }
+    Ok(jid)
+}
+
+/// Parse the `participants` array into JIDs.
+///
+/// Each entry is either a full JID or a bare phone number, which is wrapped as
+/// `<number>@s.whatsapp.net`. A `:device` suffix is dropped: it names a
+/// companion device, not a different person.
+#[allow(clippy::result_large_err)]
+pub(crate) fn resolve_participants(input: &Value) -> std::result::Result<Vec<Jid>, ToolResult> {
+    let Some(raw_list) = input.get("participants").and_then(|v| v.as_array()) else {
+        return Err(ToolResult::error(
+            "Missing required parameter 'participants' (an array of phone numbers or JIDs)."
+                .to_string(),
+        ));
+    };
+    if raw_list.is_empty() {
+        return Err(ToolResult::error(
+            "'participants' must name at least one person.".to_string(),
+        ));
+    }
+    let mut jids = Vec::with_capacity(raw_list.len());
+    for entry in raw_list {
+        let raw = entry.as_str().unwrap_or("").trim().trim_start_matches('+');
+        if raw.is_empty() {
+            return Err(ToolResult::error(
+                "'participants' contains an empty entry.".to_string(),
+            ));
+        }
+        let jid_str = if raw.contains('@') {
+            raw.to_string()
+        } else {
+            let user = raw.split(':').next().unwrap_or(raw);
+            format!("{user}@s.whatsapp.net")
+        };
+        let jid: Jid = jid_str
+            .parse()
+            .map_err(|e| ToolResult::error(format!("Invalid participant '{raw}': {e}")))?;
+        jids.push(jid);
+    }
+    Ok(jids)
+}
+
+/// One line per participant change, naming the ones the server refused.
+///
+/// `add_participants` and friends answer per participant, and a partial result
+/// is the common case: a number that is not on WhatsApp, a member the caller
+/// may not promote. Reporting a bare "done" would hide which entries did not
+/// land, so the refused ones are listed with the server's error code.
+pub(crate) fn summarize_participant_changes(changes: &[ParticipantChangeResponse]) -> String {
+    let ok = changes.iter().filter(|c| c.is_ok()).count();
+    let mut out = format!("{ok}/{} succeeded", changes.len());
+    for change in changes.iter().filter(|c| !c.is_ok()) {
+        out.push_str(&format!(
+            "\n  {}: {}",
+            change.jid,
+            change.error.as_deref().unwrap_or("no error code")
+        ));
+    }
+    out
 }
 
 /// Prefix outgoing text with the channel attribution header. Shared by the
@@ -382,7 +470,11 @@ impl Tool for WhatsAppSendTool {
                         "block_contact", "unblock_contact", "list_blocked",
                         "send_buttons",
                         "status_update", "list_newsletters",
-                        "create_label", "assign_label"
+                        "create_label", "assign_label",
+                        "create_group", "leave_group", "set_group_subject",
+                        "set_group_description", "add_participants", "remove_participants",
+                        "promote_participants", "demote_participants", "get_group_metadata",
+                        "get_invite_link", "join_with_invite_code"
                     ],
                     "description": "The WhatsApp action to perform."
                 },
@@ -488,6 +580,31 @@ impl Tool for WhatsAppSendTool {
                 "ephemeral": {
                     "type": "integer",
                     "description": "For send: disappearing-message TTL in seconds (86400 = 24h, 604800 = 7d, 7776000 = 90d max). 0 means the message does not expire, overriding the channel default. Omit to use the channel default."
+                },
+                "group_jid": {
+                    "type": "string",
+                    "description": "Target group JID for the group actions (e.g. '120363012345678901@g.us'). A bare group id is accepted and wrapped as a group JID. Required by every action that names an existing group."
+                },
+                "participants": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Phone numbers (E.164, leading '+' optional) or JIDs. Used by create_group, add_participants, remove_participants, promote_participants and demote_participants."
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "New group subject for create_group and set_group_subject."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "New group description for set_group_description. An empty string deletes the description."
+                },
+                "invite_code": {
+                    "type": "string",
+                    "description": "Invite code (the part after 'chat.whatsapp.com/') for join_with_invite_code."
+                },
+                "reset_invite": {
+                    "type": "boolean",
+                    "description": "For get_invite_link: true revokes the current link and returns a fresh one. Default false (the existing link)."
                 }
             },
             "required": ["action"]
@@ -1788,13 +1905,248 @@ impl Tool for WhatsAppSendTool {
                 ))),
             },
 
+            // ── groups: lifecycle core ───────────────────────────────────────
+            // Every group action goes through `client.groups()`. Admin actions
+            // name their group explicitly (see `resolve_group_jid`): there is
+            // no owner fallback, because guessing a target for a kick or a
+            // promote is exactly the kind of mistake with no undo.
+            "create_group" => {
+                let subject = match GroupSubject::new(pget!(get_str(&input, "subject"))) {
+                    Ok(s) => s,
+                    Err(e) => return Ok(ToolResult::error(format!("Invalid subject: {e}"))),
+                };
+                let participants = pget!(resolve_participants(&input));
+                let mut options = GroupCreateOptions::new(subject.into_string());
+                options.participants = participants
+                    .into_iter()
+                    .map(GroupParticipantOptions::new)
+                    .collect();
+                if let Some(desc) = input.get("description").and_then(|v| v.as_str()) {
+                    match GroupDescription::new(desc) {
+                        Ok(d) => options.description = Some(d),
+                        Err(e) => {
+                            return Ok(ToolResult::error(format!("Invalid description: {e}")));
+                        }
+                    }
+                }
+                match client.groups().create_group(options).await {
+                    Ok(created) => Ok(ToolResult::success(format!(
+                        "Group '{}' created: {} ({} participant(s)).",
+                        created.metadata.subject,
+                        created.metadata.id,
+                        created.metadata.participants.len()
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to create the group: {e}"
+                    ))),
+                }
+            }
+
+            "leave_group" => {
+                let jid = pget!(resolve_group_jid(&input));
+                match client.groups().leave(jid.clone()).await {
+                    Ok(()) => Ok(ToolResult::success(format!("Left group {jid}."))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to leave {jid}: {e}"))),
+                }
+            }
+
+            "set_group_subject" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let subject = match GroupSubject::new(pget!(get_str(&input, "subject"))) {
+                    Ok(s) => s,
+                    Err(e) => return Ok(ToolResult::error(format!("Invalid subject: {e}"))),
+                };
+                match client.groups().set_subject(jid.clone(), subject).await {
+                    Ok(()) => Ok(ToolResult::success(format!("Subject of {jid} updated."))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to set the subject: {e}"))),
+                }
+            }
+
+            "set_group_description" => {
+                let jid = pget!(resolve_group_jid(&input));
+                // An empty string DELETES the description, which is a distinct
+                // operation from leaving it alone. The parameter is therefore
+                // required here: an absent one is an error, not a silent no-op.
+                let raw = match input.get("description").and_then(|v| v.as_str()) {
+                    Some(s) => s,
+                    None => {
+                        return Ok(ToolResult::error(
+                            "Missing required parameter 'description'. Pass an empty string to \
+                             delete the group description."
+                                .to_string(),
+                        ));
+                    }
+                };
+                let description = if raw.is_empty() {
+                    None
+                } else {
+                    match GroupDescription::new(raw) {
+                        Ok(d) => Some(d),
+                        Err(e) => {
+                            return Ok(ToolResult::error(format!("Invalid description: {e}")));
+                        }
+                    }
+                };
+                // `Resolve` costs one round trip but is the only variant that
+                // is correct without holding fresh metadata.
+                match client
+                    .groups()
+                    .set_description(jid.clone(), description, PreviousDescription::Resolve)
+                    .await
+                {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Description of {jid} updated."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set the description: {e}"
+                    ))),
+                }
+            }
+
+            "add_participants" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let participants = pget!(resolve_participants(&input));
+                match client
+                    .groups()
+                    .add_participants(jid.clone(), &participants)
+                    .await
+                {
+                    Ok(changes) => Ok(ToolResult::success(format!(
+                        "Add to {jid}: {}",
+                        summarize_participant_changes(&changes)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to add participants: {e}"
+                    ))),
+                }
+            }
+
+            "remove_participants" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let participants = pget!(resolve_participants(&input));
+                match client
+                    .groups()
+                    .remove_participants(jid.clone(), &participants)
+                    .await
+                {
+                    Ok(changes) => Ok(ToolResult::success(format!(
+                        "Remove from {jid}: {}",
+                        summarize_participant_changes(&changes)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to remove participants: {e}"
+                    ))),
+                }
+            }
+
+            "promote_participants" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let participants = pget!(resolve_participants(&input));
+                match client
+                    .groups()
+                    .promote_participants(jid.clone(), &participants)
+                    .await
+                {
+                    Ok(changes) => Ok(ToolResult::success(format!(
+                        "Promote in {jid}: {}",
+                        summarize_participant_changes(&changes)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to promote participants: {e}"
+                    ))),
+                }
+            }
+
+            "demote_participants" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let participants = pget!(resolve_participants(&input));
+                match client
+                    .groups()
+                    .demote_participants(jid.clone(), &participants)
+                    .await
+                {
+                    Ok(changes) => Ok(ToolResult::success(format!(
+                        "Demote in {jid}: {}",
+                        summarize_participant_changes(&changes)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to demote participants: {e}"
+                    ))),
+                }
+            }
+
+            "get_group_metadata" => {
+                let jid = pget!(resolve_group_jid(&input));
+                match client.groups().get_metadata(&jid).await {
+                    Ok(m) => {
+                        let admins = m.participants.iter().filter(|p| p.is_admin()).count();
+                        let mut out = format!(
+                            "Group {} ('{}')\n  participants: {}\n  admins: {}\n  locked: {}\n  \
+                             announcement-only: {}\n  membership approval: {}",
+                            m.id,
+                            m.subject,
+                            m.size.unwrap_or(m.participants.len() as u32),
+                            admins,
+                            m.is_locked,
+                            m.is_announcement,
+                            m.membership_approval,
+                        );
+                        if let Some(desc) = m.description.as_deref().filter(|d| !d.is_empty()) {
+                            out.push_str(&format!("\n  description: {desc}"));
+                        }
+                        Ok(ToolResult::success(out))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!("Failed to read {jid}: {e}"))),
+                }
+            }
+
+            "get_invite_link" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let reset = input
+                    .get("reset_invite")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                match client.groups().get_invite_link(jid.clone(), reset).await {
+                    Ok(link) => Ok(ToolResult::success(format!(
+                        "Invite link for {jid}{}: {link}",
+                        if reset {
+                            " (the previous link was revoked)"
+                        } else {
+                            ""
+                        }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to get the invite link: {e}"
+                    ))),
+                }
+            }
+
+            "join_with_invite_code" => {
+                let code = pget!(get_str(&input, "invite_code")).to_string();
+                match client.groups().join_with_invite_code(&code).await {
+                    Ok(JoinGroupResult::Joined(jid)) => Ok(ToolResult::success(format!(
+                        "Joined group {jid} via invite code."
+                    ))),
+                    Ok(JoinGroupResult::PendingApproval(jid)) => Ok(ToolResult::success(format!(
+                        "Request to join {jid} sent; an admin must approve it before you are a \
+                         member."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to join with that code: {e}"
+                    ))),
+                }
+            }
+
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{}'. Valid actions: send, reply, delete, send_photo, \
                  send_document, send_audio, send_video, send_sticker, send_location, \
                  send_contact, react, send_poll, typing, mark_read, block_contact, \
                  unblock_contact, list_blocked, pin, unpin, forward, set_profile_name, \
                  set_profile_status, status_update, list_newsletters, create_label, \
-                 assign_label, send_buttons",
+                 assign_label, send_buttons, create_group, leave_group, set_group_subject, \
+                 set_group_description, add_participants, remove_participants, \
+                 promote_participants, demote_participants, get_group_metadata, \
+                 get_invite_link, join_with_invite_code",
                 unknown
             ))),
         }
