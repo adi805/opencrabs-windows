@@ -18,8 +18,12 @@ use tokio::task::JoinHandle;
 use wacore_binary::jid::Jid;
 use whatsapp_rust::client::Client;
 
+use uuid::Uuid;
+
 use super::WhatsAppState;
-use super::flow_render::{Phase, Step, fold, render};
+use super::flow_render::{Phase, Step, fold, render, take_trailing_answer};
+use super::followups::send_suggestions;
+use super::rate_limit::GateOutcome;
 use crate::brain::agent::{ProgressCallback, ProgressEvent};
 
 /// How often the running block re-renders, so the clock moves.
@@ -32,10 +36,20 @@ pub(crate) struct FlowConfig {
     pub state: Arc<WhatsAppState>,
     pub rate_limit: crate::config::WaRateLimitConfig,
     pub is_owner: bool,
+    /// Whether suggestions may use native buttons (`interactive_buttons`).
+    pub interactive_buttons: bool,
+    /// Answers posted before the suggestions, so the caller can keep its
+    /// final body from repeating them (#2030).
+    pub posted: Arc<tokio::sync::Mutex<Vec<String>>>,
 }
 
 enum FlowMsg {
     Progress(ProgressEvent),
+    /// The turn halted on `suggest_options` with these choices.
+    Options {
+        session_id: Uuid,
+        options: Vec<String>,
+    },
     Settle(Phase),
 }
 
@@ -48,8 +62,17 @@ impl FlowSender {
     /// Progress callback for `send_push_turn`.
     pub(crate) fn progress_callback(&self) -> ProgressCallback {
         let tx = self.tx.clone();
-        Arc::new(move |_session_id, event| {
-            if let Err(e) = tx.send(FlowMsg::Progress(event)) {
+        Arc::new(move |session_id, event| {
+            let msg = match event {
+                ProgressEvent::SuggestedOptions(options) if !options.is_empty() => {
+                    FlowMsg::Options {
+                        session_id,
+                        options: options.into_iter().map(|item| item.label).collect(),
+                    }
+                }
+                event => FlowMsg::Progress(event),
+            };
+            if let Err(e) = tx.send(msg) {
                 tracing::warn!(
                     target: "whatsapp",
                     error = %e,
@@ -85,6 +108,9 @@ pub(crate) fn spawn(config: FlowConfig) -> (FlowSender, JoinHandle<()>) {
                 msg = rx.recv() => match msg {
                     Some(FlowMsg::Progress(event)) => {
                         block.apply(&event);
+                    }
+                    Some(FlowMsg::Options { session_id, options }) => {
+                        block.halt_on_options(session_id, options).await;
                     }
                     Some(FlowMsg::Settle(phase)) => {
                         block.flush(phase).await;
@@ -138,6 +164,59 @@ impl Block {
 
     fn apply(&mut self, event: &ProgressEvent) {
         fold(&mut self.steps, event);
+    }
+
+    /// The turn halted on `suggest_options`. The answer it halted on leaves
+    /// the block and posts as a message, then the choices follow it (#2030).
+    async fn halt_on_options(&mut self, session_id: Uuid, options: Vec<String>) {
+        if let Some(answer) = take_trailing_answer(&mut self.steps) {
+            self.flush(Phase::Running).await;
+            if self.gate_answer(&answer).await {
+                let message = waproto::whatsapp::Message {
+                    conversation: Some(answer.clone()),
+                    ..Default::default()
+                };
+                if let Err(e) = self
+                    .config
+                    .client
+                    .send_message(self.config.jid.clone(), message)
+                    .await
+                {
+                    tracing::error!(
+                        target: "whatsapp",
+                        error = %e,
+                        "failed to post the answer held before the suggestions"
+                    );
+                }
+            }
+            self.config.posted.lock().await.push(answer);
+        }
+        send_suggestions(
+            self.config.client.clone(),
+            self.config.jid.clone(),
+            self.config.state.clone(),
+            session_id,
+            options,
+            self.config.interactive_buttons,
+        )
+        .await;
+    }
+
+    /// The answer is real output, so it queues under the daily cap rather
+    /// than dropping (#1407). Returns true when it may be sent now.
+    async fn gate_answer(&self, answer: &str) -> bool {
+        let outcome = self
+            .config
+            .state
+            .rate_limiter
+            .gate(
+                &self.config.rate_limit,
+                &self.config.jid.to_string(),
+                answer,
+                self.config.is_owner,
+            )
+            .await;
+        matches!(outcome, GateOutcome::SendNow)
     }
 
     async fn flush(&mut self, phase: Phase) {

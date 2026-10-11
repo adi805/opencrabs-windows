@@ -1714,79 +1714,15 @@ pub(crate) async fn handle_message(
                 let interactive = interactive_cb;
                 let raw_options: Vec<String> = options.into_iter().map(|item| item.label).collect();
                 tokio::spawn(async move {
-                    let numbered: String = raw_options
-                        .iter()
-                        .enumerate()
-                        .map(|(i, o)| format!("{}. {}", i + 1, o))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let body = format!(
-                        "\u{1f4a1} Suggested next:\n\n{numbered}\n\nReply with a number, or type your own."
-                    );
-                    let buttons: Vec<super::interactive::Button> = raw_options
-                        .iter()
-                        .enumerate()
-                        .map(|(i, o)| {
-                            super::interactive::Button::new(
-                                format!("wa_suggest_{}", i + 1),
-                                o.clone(),
-                            )
-                        })
-                        .collect();
-                    use super::interactive::SuggestionSurface;
-                    // Over the button cap, a poll is the only one-tap surface
-                    // WhatsApp offers. A vote is matched back by label, so the
-                    // pending set has to be stashed before the send either way.
-                    let surface =
-                        super::interactive::suggestion_surface(raw_options.len(), interactive);
-                    wa.set_pending_followups(session_id, raw_options.clone())
-                        .await;
-
-                    if surface == SuggestionSurface::Poll {
-                        match client
-                            .polls()
-                            .create(
-                                jid.clone(),
-                                "\u{1f4a1} Suggested next: tap one, or reply with the number.",
-                                &raw_options,
-                                1,
-                            )
-                            .await
-                        {
-                            Ok((result, _secret)) => {
-                                // Votes name options by hash, so the poll's own
-                                // option list is the only way to read one back.
-                                wa.polls.remember(result.message_id, raw_options).await;
-                                return;
-                            }
-                            Err(e) => {
-                                // Not fatal: the numbered list below still
-                                // selects by number, so the turn degrades to
-                                // the text path rather than losing the
-                                // suggestions entirely.
-                                tracing::warn!(
-                                    error = %e,
-                                    "WhatsApp: suggestion poll failed, falling back to the numbered list"
-                                );
-                            }
-                        }
-                    }
-
-                    let msg = if surface == SuggestionSurface::Card {
-                        super::interactive::build(
-                            &body,
-                            Some("Tap an option, or reply with the number."),
-                            &buttons,
-                        )
-                    } else {
-                        waproto::whatsapp::Message {
-                            conversation: Some(body),
-                            ..Default::default()
-                        }
-                    };
-                    if let Err(e) = client.send_message(jid, msg).await {
-                        tracing::warn!(error = %e, "failed to send WhatsApp message");
-                    }
+                    super::followups::send_suggestions(
+                        client,
+                        jid,
+                        wa,
+                        session_id,
+                        raw_options,
+                        interactive,
+                    )
+                    .await;
                 });
             }
             _ => {}

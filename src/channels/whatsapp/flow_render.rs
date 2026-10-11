@@ -94,6 +94,52 @@ pub(crate) fn fold(steps: &mut Vec<Step>, event: &ProgressEvent) -> bool {
     }
 }
 
+/// The tool whose `SuggestedOptions` surface halts the turn.
+pub(crate) const OPTIONS_TOOL: &str = "suggest_options";
+
+/// Remove the answer a surface halted on from the block, and return it.
+///
+/// The answer is the run of narration directly before the options tool step.
+/// Any other tool step in between means that narration belonged to an earlier
+/// step, so it stays in the block (#2030).
+pub(crate) fn take_trailing_answer(steps: &mut Vec<Step>) -> Option<String> {
+    let end = steps
+        .iter()
+        .rposition(|s| matches!(s, Step::Tool { name, .. } if name == OPTIONS_TOOL))
+        .unwrap_or(steps.len());
+    let start = steps[..end]
+        .iter()
+        .rposition(|s| !matches!(s, Step::Note(_)))
+        .map_or(0, |i| i + 1);
+    let notes: Vec<String> = steps[start..end]
+        .iter()
+        .filter_map(|s| match s {
+            Step::Note(text) => Some(text.clone()),
+            Step::Tool { .. } => None,
+        })
+        .collect();
+    if notes.is_empty() {
+        return None;
+    }
+    steps.drain(start..end);
+    Some(notes.join("\n\n"))
+}
+
+/// Drop the paragraphs of `content` that were already posted as the held
+/// answer, so a sign-off that repeats it does not post it twice (#2030).
+pub(crate) fn drop_held(content: &str, held: &[String]) -> String {
+    let held: Vec<String> = held
+        .iter()
+        .flat_map(|h| h.split("\n\n").map(|p| p.trim().to_string()))
+        .filter(|p| !p.is_empty())
+        .collect();
+    content
+        .split("\n\n")
+        .filter(|p| !held.iter().any(|h| h == p.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 /// Render the block as one WhatsApp text body.
 pub(crate) fn render(steps: &[Step], phase: Phase, elapsed: Duration) -> String {
     let tools = steps

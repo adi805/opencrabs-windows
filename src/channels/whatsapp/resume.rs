@@ -75,12 +75,15 @@ pub(crate) fn build_enqueue_callback(
                     return;
                 };
                 let rl_owner = wa_cfg.is_owner(jid_str.split('@').next().unwrap_or(&jid_str));
+                let posted = Arc::new(tokio::sync::Mutex::new(Vec::new()));
                 let (flow, flow_task) = flow_message::spawn(FlowConfig {
                     client: client.clone(),
                     jid: jid.clone(),
                     state: state.clone(),
                     rate_limit: wa_cfg.rate_limit.clone(),
                     is_owner: rl_owner,
+                    interactive_buttons: wa_cfg.interactive_buttons,
+                    posted: posted.clone(),
                 });
                 let outcome = run_flow_turn(
                     agent,
@@ -100,6 +103,10 @@ pub(crate) fn build_enqueue_callback(
                 let Ok(content) = outcome else {
                     return;
                 };
+                // The answer a halted turn already posted before its
+                // suggestions is not repeated from the sign-off (#2030).
+                let held = posted.lock().await.clone();
+                let content = super::flow_render::drop_held(&content, &held);
                 if content.trim().is_empty() {
                     return;
                 }
