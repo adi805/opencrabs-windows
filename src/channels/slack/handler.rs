@@ -1112,10 +1112,9 @@ async fn handle_message(
         }
     }
 
-    // Also store directed channel messages for complete history
-    if !is_dm {
-        store_channel_msg(text.clone()).await;
-    }
+    // Store the user's message for complete history, in channels and DMs alike,
+    // so channel_search can see both sides of a DM (#2034).
+    store_channel_msg(text.clone()).await;
 
     // Strip <@BOT_ID> from text when responding to a mention
     let text = if !is_dm && *respond_to == RespondTo::Mention {
