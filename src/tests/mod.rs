@@ -1126,6 +1126,7 @@ pub mod whatsapp_blocklist_test;
 pub mod whatsapp_broadcast_test;
 pub mod whatsapp_composing_parity_test;
 pub mod whatsapp_ephemeral_test;
+pub mod whatsapp_flow_render_test;
 pub mod whatsapp_handler_test;
 pub mod whatsapp_history_dedup_test;
 pub mod whatsapp_history_test;

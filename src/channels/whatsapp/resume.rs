@@ -3,11 +3,19 @@
 //! Mirrors Telegram's `build_enqueue_callback`: when a detached long command
 //! finishes, resume the originating session and send the result to its chat.
 //! The session→JID map is populated per turn in the handler (`register_session_jid`).
+//!
+//! The resumed turn shows a live tool block (#2023), the same shape a typed
+//! message gets on the live path. The block opens before the agent runs so
+//! its clock covers the thinking, and the answer lands after it settles.
 
 use super::WhatsAppState;
+use super::flow_message::{self, FlowConfig};
+use super::flow_render::Phase;
+use crate::brain::agent::AgentService;
 use crate::brain::agent::service::MessageEnqueueCallback;
 use crate::channels::bg_resume::{self, AgentHolder};
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub(crate) fn build_enqueue_callback(
     state: Arc<WhatsAppState>,
@@ -50,21 +58,9 @@ pub(crate) fn build_enqueue_callback(
                     tracing::warn!("[bg-resume] whatsapp: agent gone; dropping resume");
                     return;
                 };
-                let Some(content) = bg_resume::run_resume_turn(
-                    agent,
-                    session_id,
-                    msg.context_text,
-                    "whatsapp",
-                    &jid_str,
-                )
-                .await
-                else {
-                    return;
-                };
-                // Bounded wait rather than a drop (#1242). Worse here than on
-                // the surfaces that check first: the turn above has already run,
-                // so returning threw away a completed answer AND the provider
-                // call that produced it.
+                // Transport before the turn: the live block posts through the
+                // client, so the bounded wait (#1242) runs first, as on Slack
+                // and Discord.
                 let Some(client) = crate::channels::transport_ready::await_transport(
                     "whatsapp",
                     session_id,
@@ -78,11 +74,39 @@ pub(crate) fn build_enqueue_callback(
                     tracing::warn!("[bg-resume] whatsapp: bad jid '{jid_str}'; dropping delivery");
                     return;
                 };
+                let rl_owner = wa_cfg.is_owner(jid_str.split('@').next().unwrap_or(&jid_str));
+                let (flow, flow_task) = flow_message::spawn(FlowConfig {
+                    client: client.clone(),
+                    jid: jid.clone(),
+                    state: state.clone(),
+                    rate_limit: wa_cfg.rate_limit.clone(),
+                    is_owner: rl_owner,
+                });
+                let outcome = run_flow_turn(
+                    agent,
+                    session_id,
+                    msg.context_text,
+                    &jid_str,
+                    flow.progress_callback(),
+                )
+                .await;
+                flow.settle(match outcome {
+                    Ok(_) => Phase::Finished,
+                    Err(_) => Phase::Failed,
+                });
+                if let Err(e) = flow_task.await {
+                    tracing::warn!("[bg-resume] whatsapp: live tool block task failed: {e}");
+                }
+                let Ok(content) = outcome else {
+                    return;
+                };
+                if content.trim().is_empty() {
+                    return;
+                }
                 // #1407: bg-resume results are agent-output sends: gate them
                 // through the shared limiter. Over-budget sends park in the
                 // FIFO queue (the drainer flushes and persists them as the
                 // rolling 24h window slides); owner-bound resumes bypass.
-                let rl_owner = wa_cfg.is_owner(jid_str.split('@').next().unwrap_or(&jid_str));
                 match state
                     .rate_limiter
                     .gate(&wa_cfg.rate_limit, &jid_str, &content, rl_owner)
@@ -110,6 +134,40 @@ pub(crate) fn build_enqueue_callback(
             typing.abort();
         });
     })
+}
+
+/// Run the background-completion turn for `session_id` with the live block's
+/// progress callback attached. Returns the answer text, or the error text so
+/// the block can settle as failed.
+async fn run_flow_turn(
+    agent: Arc<AgentService>,
+    session_id: Uuid,
+    context_text: String,
+    target: &str,
+    progress: crate::brain::agent::ProgressCallback,
+) -> Result<String, String> {
+    match agent
+        .send_push_turn(
+            session_id,
+            context_text,
+            None,
+            None,
+            None,
+            Some(progress),
+            "whatsapp",
+            Some(target),
+            None,
+        )
+        .await
+    {
+        Ok(resp) => Ok(resp.content),
+        Err(e) => {
+            tracing::warn!(
+                "[bg-resume] whatsapp: resume turn failed for session {session_id}: {e}"
+            );
+            Err(e.to_string())
+        }
+    }
 }
 
 /// One composing ping for the resume ticker: no-ops quietly when the

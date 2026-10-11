@@ -12,7 +12,6 @@
 
 use crate::brain::agent::AgentService;
 use std::sync::{Arc, Mutex, Weak};
-use uuid::Uuid;
 
 /// Weak handle to the agent, filled after the service is built (it cannot be
 /// captured at service-construction time — the service is mid-build). Every
@@ -38,46 +37,6 @@ pub(crate) fn upgrade(holder: &AgentHolder) -> Option<Arc<AgentService>> {
         .lock()
         .ok()
         .and_then(|g| g.as_ref().and_then(Weak::upgrade))
-}
-
-/// Run the background-completion turn for `session_id`, feeding `context_text`
-/// as the prompt on `channel`/`target`. Returns the response content, or `None`
-/// when the turn errored or produced nothing to deliver. Delivery to the
-/// channel's SDK is the caller's job (it differs per surface).
-///
-/// Tracked with origin `system` (#12): a completion turn killed mid-tool must
-/// be visible to boot recovery, which re-delivers the push instead of
-/// replaying the LLM turn.
-pub(crate) async fn run_resume_turn(
-    agent: Arc<AgentService>,
-    session_id: Uuid,
-    context_text: String,
-    channel: &str,
-    target: &str,
-) -> Option<String> {
-    match agent
-        .send_push_turn(
-            session_id,
-            context_text,
-            None,
-            None,
-            None,
-            None,
-            channel,
-            Some(target),
-            None,
-        )
-        .await
-    {
-        Ok(resp) if !resp.content.trim().is_empty() => Some(resp.content),
-        Ok(_) => None,
-        Err(e) => {
-            tracing::warn!(
-                "[bg-resume] {channel}: resume turn failed for session {session_id}: {e}"
-            );
-            None
-        }
-    }
 }
 
 /// How long a channel SDK handle may take to become ready after spawn before
