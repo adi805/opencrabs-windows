@@ -1054,6 +1054,7 @@ impl Tool for WhatsAppSendTool {
                         "pin_message", "unpin_message", "keep_message",
                         "retransmit_message",
                         "mark_as_played", "acknowledge_group",
+                        "fetch_message_history",
                         "typing", "mark_read",
                         "delete_message_for_me", "delete_chat", "mark_chat_as_read",
                         "set_user_status_mute", "send_app_state_action",
@@ -1116,7 +1117,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "message_id": {
                     "type": "string",
-                    "description": "WhatsApp message ID for reply, delete, edit, react, mark_read, forward, star_message, unstar_message"
+                    "description": "WhatsApp message ID for reply, delete, edit, react, mark_read, forward, star_message, unstar_message; for fetch_message_history it is the OLDEST message the caller already has, which the primary device pages backwards from; for retransmit_message it is the id to reuse."
                 },
                 "stanza_id": {
                     "type": "string",
@@ -1400,9 +1401,13 @@ impl Tool for WhatsAppSendTool {
                     "type": "string",
                     "description": "Target newsletter (channel) for the newsletter_* actions, e.g. '1234@newsletter'. A bare channel id is accepted."
                 },
+                "timestamp_ms": {
+                    "type": "integer",
+                    "description": "For fetch_message_history only: the oldest known message's timestamp in milliseconds, which the primary device uses to bound the page. Default 0."
+                },
                 "count": {
                     "type": "integer",
-                    "description": "For newsletter_get_messages: how many posts to fetch, newest first. Default 20, capped at 100."
+                    "description": "For newsletter_get_messages: how many posts to fetch, newest first. Default 20, capped at 100. For fetch_message_history: how many earlier messages to ask the primary device for. Default 50, capped at 100."
                 },
                 "before": {
                     "type": "integer",
@@ -2040,6 +2045,50 @@ impl Tool for WhatsAppSendTool {
                     ))),
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to acknowledge group {jid_str}: {e}"
+                    ))),
+                }
+            }
+
+            // ── fetch_message_history ────────────────────────────────────────
+            // Asks the PRIMARY DEVICE for messages older than the one named.
+            // This is a request, not a read: the answer comes back over the
+            // receive path later, so the reply says so rather than implying the
+            // history is already in hand.
+            "fetch_message_history" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let from_me = input
+                    .get("from_me")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let ts_ms = input
+                    .get("timestamp_ms")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let count = input
+                    .get("count")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(50)
+                    .clamp(1, 100) as i32;
+                match client
+                    .fetch_message_history(&jid, &msg_id, from_me, ts_ms, count)
+                    .await
+                {
+                    Ok(request_id) => Ok(ToolResult::success(format!(
+                        "Requested {count} messages older than {msg_id} in {jid_str} \
+                         (request {request_id}). This is a request to the primary device; \
+                         the history arrives asynchronously and is not in hand yet."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to request history for {jid_str}: {e}"
                     ))),
                 }
             }
