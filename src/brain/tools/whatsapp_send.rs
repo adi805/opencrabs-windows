@@ -1056,6 +1056,7 @@ impl Tool for WhatsAppSendTool {
                         "mark_as_played", "acknowledge_group",
                         "fetch_message_history",
                         "refresh_media_conn",
+                        "fetch_sticker_pack",
                         "typing", "mark_read",
                         "delete_message_for_me", "delete_chat", "mark_chat_as_read",
                         "set_user_status_mute", "send_app_state_action",
@@ -1140,6 +1141,14 @@ impl Tool for WhatsAppSendTool {
                     "type": "string",
                     "enum": ["24h", "7d", "30d"],
                     "description": "For pin_message only: how long the message stays pinned. Defaults to 7d."
+                },
+                "pack_id": {
+                    "type": "string",
+                    "description": "For fetch_sticker_pack only: the pack's id, as it appears in a sticker-pack link or message."
+                },
+                "locale": {
+                    "type": "string",
+                    "description": "For fetch_sticker_pack only: which localized pack metadata to ask for, e.g. 'en_US'. Defaults to en_US."
                 },
                 "force": {
                     "type": "boolean",
@@ -2148,6 +2157,34 @@ impl Tool for WhatsAppSendTool {
                     }
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to refresh the media connection: {e}"
+                    ))),
+                }
+            }
+
+            // ── fetch_sticker_pack ───────────────────────────────────────────
+            // Reads a pack's metadata from the server. The bot could send a
+            // sticker it already had but could not look one up by id, so a pack
+            // named by a user was unanswerable.
+            "fetch_sticker_pack" => {
+                let pack_id = pget!(get_str(&input, "pack_id")).to_string();
+                let locale = input
+                    .get("locale")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("en_US")
+                    .to_string();
+                match client.fetch_sticker_pack(&pack_id, &locale).await {
+                    Ok(pack) => {
+                        let name = pack.name.as_deref().unwrap_or("(unnamed)");
+                        let publisher = pack.publisher.as_deref().unwrap_or("(unknown)");
+                        let id = pack.sticker_pack_id.as_deref().unwrap_or(&pack_id);
+                        Ok(ToolResult::success(format!(
+                            "Sticker pack {id}: {name} by {publisher}\n                             - stickers: {}\n- animated: {}",
+                            pack.stickers.len(),
+                            if pack.animated != 0 { "yes" } else { "no" }
+                        )))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to fetch sticker pack '{pack_id}': {e}"
                     ))),
                 }
             }
