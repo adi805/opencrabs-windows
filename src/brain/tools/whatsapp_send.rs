@@ -1554,6 +1554,18 @@ impl Tool for WhatsAppSendTool {
                     "type": "integer",
                     "description": "For create_event: event end time in milliseconds since the epoch."
                 },
+                "join_link": {
+                    "type": "string",
+                    "description": "For create_event: a link members use to join the event, e.g. a video-call URL. Omit when the event has no link."
+                },
+                "is_scheduled_call": {
+                    "type": "boolean",
+                    "description": "For create_event: true marks the event as a scheduled call rather than a plain event. Omit for a plain event."
+                },
+                "extra_guests_allowed": {
+                    "type": "boolean",
+                    "description": "For create_event: true lets a responder bring guests beyond themselves; respond_event then reports how many via 'extra_guest_count'. Omit to disallow."
+                },
                 "debug_op": {
                     "type": "string",
                     "enum": ["stats", "wait_for_node", "wait_for_sent_node", "acquire_raw_node", "release_raw_node", "set_resend_rate_limit", "set_skip_history_sync", "set_wanted_pre_key_count", "set_retry_admission", "identity", "identity_tags", "memory_report", "resource_report", "skip_history_sync_enabled", "wanted_pre_key_count", "mex_query", "mex_mutate", "mex_reachout_timelock", "is_connected", "is_logged_in", "wait_for_connected"],
