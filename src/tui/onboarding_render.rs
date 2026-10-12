@@ -475,6 +475,17 @@ fn footer_key_spans(wizard: &OnboardingWizard) -> Vec<Span<'static>> {
                 "Next Field  ",
                 Style::default().fg(theme::role(Role::AccentSoft)),
             ));
+            // Shift+Tab goes back a field; it was reachable but never shown (#2043).
+            footer.push(Span::styled(
+                "[Shift+Tab] ",
+                Style::default()
+                    .fg(brand_blue())
+                    .add_modifier(Modifier::BOLD),
+            ));
+            footer.push(Span::styled(
+                "Back  ",
+                Style::default().fg(theme::role(Role::AccentSoft)),
+            ));
         }
         footer.push(Span::styled(
             "[Enter] ",

@@ -97,6 +97,7 @@ fn section_order_is_fixed() {
             HelpSection::Channel,
             HelpSection::Skill,
             HelpSection::Custom,
+            HelpSection::Keys,
         ]
     );
 }

@@ -624,6 +624,7 @@ pub mod onboarding_keys_test;
 pub mod onboarding_layout_test;
 pub mod onboarding_navigation_test;
 pub mod onboarding_no_silent_commit_test;
+pub mod onboarding_shift_tab_hint_test;
 pub mod onboarding_step_save_test;
 pub mod onboarding_tts_api_test;
 pub mod onboarding_types_test;
