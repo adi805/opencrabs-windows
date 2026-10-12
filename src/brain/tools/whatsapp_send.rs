@@ -927,7 +927,7 @@ impl Tool for WhatsAppSendTool {
                         "set_profile_picture", "remove_profile_picture",
                         "send_photo", "send_document", "send_audio", "send_video", "send_sticker",
                         "send_location", "send_contact",
-                        "react", "send_poll",
+                        "react", "send_poll", "edit",
                         "typing", "mark_read",
                         "block_contact", "unblock_contact", "list_blocked",
                         "send_buttons",
@@ -976,7 +976,11 @@ impl Tool for WhatsAppSendTool {
                 },
                 "message_id": {
                     "type": "string",
-                    "description": "WhatsApp message ID for reply, delete, react, mark_read, forward, star_message, unstar_message"
+                    "description": "WhatsApp message ID for reply, delete, edit, react, mark_read, forward, star_message, unstar_message"
+                },
+                "stanza_id": {
+                    "type": "string",
+                    "description": "For edit only: pin the outer stanza id to an existing message id so clients re-render that slot. Best-effort and server dependent, and the edit then skips id-keyed local state. Omit for a fresh stanza id, which is the safe default."
                 },
                 "from_me": {
                     "type": "boolean",
@@ -2119,6 +2123,50 @@ impl Tool for WhatsAppSendTool {
                         }
                     }
                     Err(e) => Ok(ToolResult::error(format!("Failed to send reaction: {}", e))),
+                }
+            }
+
+            // ── edit ────────────────────────────────────────────────────────────────
+            "edit" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                gate_send!(self, jid_str, "the edit");
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let new_text = pget!(get_str(&input, "text")).to_string();
+                let wa_msg = waproto::whatsapp::Message {
+                    conversation: Some(new_text),
+                    ..Default::default()
+                };
+                // The lib owns the edit envelope. Pinning the outer stanza id is
+                // best-effort and skips id-keyed state binding, so it is opt-in
+                // rather than the default.
+                let sent = match input.get("stanza_id").and_then(|v| v.as_str()) {
+                    Some(sid) => {
+                        client
+                            .edit_message_with_options(
+                                jid,
+                                msg_id.clone(),
+                                wa_msg,
+                                whatsapp_rust::send::EditOptions::default()
+                                    .with_stanza_id(sid.to_string()),
+                            )
+                            .await
+                    }
+                    None => client.edit_message(jid, msg_id.clone(), wa_msg).await,
+                };
+                match sent {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Message {} edited for {}.",
+                        msg_id, jid_str
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to edit message: {}", e))),
                 }
             }
 
