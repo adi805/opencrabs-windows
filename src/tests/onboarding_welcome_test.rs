@@ -113,3 +113,15 @@ fn quick_start_prompt_leaves_soul_alone_unless_asked() {
 fn quick_start_prompt_has_no_em_dash() {
     assert!(!WELCOME_QUICK_START_MESSAGE.contains('\u{2014}'));
 }
+
+#[test]
+fn quick_start_prompt_names_the_default_model_and_offers_the_options() {
+    let p = WELCOME_QUICK_START_MESSAGE;
+    assert!(p.contains("OpenCrabs provider"));
+    assert!(p.contains("deepseek-v4.1-flash"));
+    assert!(p.contains("fallback provider"));
+    assert!(p.contains("speech to text"));
+    assert!(p.contains("vision"));
+    assert!(p.contains("image generation"));
+    assert!(!p.contains("skipped the profile questions"));
+}
