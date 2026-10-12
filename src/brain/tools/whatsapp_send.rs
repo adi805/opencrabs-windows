@@ -19,10 +19,10 @@ use serde_json::Value;
 use std::sync::Arc;
 use wacore_binary::jid::{Jid, Server};
 use whatsapp_rust::features::{
-    CommunitySubgroup, CreateCommunityOptions, GroupCreateOptions, GroupDescription, GroupMetadata,
-    GroupParticipantOptions, GroupSubject, JoinGroupResult, MemberAddMode, MembershipApprovalMode,
-    NewsletterMessage, NewsletterMetadata, ParticipantChangeResponse, PictureType,
-    PollVoteCiphertext, PreviousDescription, group_type,
+    CommunitySubgroup, CreateCommunityOptions, EventCreationParams, EventResponseType,
+    GroupCreateOptions, GroupDescription, GroupMetadata, GroupParticipantOptions, GroupSubject,
+    JoinGroupResult, MemberAddMode, MembershipApprovalMode, NewsletterMessage, NewsletterMetadata,
+    ParticipantChangeResponse, PictureType, PollVoteCiphertext, PreviousDescription, group_type,
 };
 
 /// Tool for comprehensive WhatsApp control (14 actions).
@@ -947,7 +947,8 @@ impl Tool for WhatsAppSendTool {
                         "community_remove_participants", "community_get_participating",
                         "community_get_subgroups", "community_get_subgroup_participant_counts",
                         "community_query_linked_group",
-                        "community_get_linked_groups_participants"
+                        "community_get_linked_groups_participants",
+                        "create_event", "respond_event", "post_comment"
                     ],
                     "description": "The WhatsApp action to perform."
                 },
@@ -1203,6 +1204,43 @@ impl Tool for WhatsAppSendTool {
                 "before": {
                     "type": "integer",
                     "description": "For newsletter_get_messages: fetch posts older than this server_id, the pagination cursor from a previous page."
+                },
+                "event_msg_id": {
+                    "type": "string",
+                    "description": "For respond_event: the id of the event message being answered, as returned by create_event."
+                },
+                "event_creator_jid": {
+                    "type": "string",
+                    "description": "For respond_event: the JID of the account that created the event. The RSVP key is derived from it."
+                },
+                "event_secret": {
+                    "type": "string",
+                    "description": "For respond_event: the event's message secret, base64-encoded, as returned by create_event."
+                },
+                "event_response": {
+                    "type": "string",
+                    "enum": ["going", "not_going", "maybe"],
+                    "description": "For respond_event: the RSVP answer."
+                },
+                "extra_guest_count": {
+                    "type": "integer",
+                    "description": "For respond_event: how many extra guests the responder is bringing."
+                },
+                "parent_msg_id": {
+                    "type": "string",
+                    "description": "For post_comment: the id of the channel post being commented on."
+                },
+                "parent_participant": {
+                    "type": "string",
+                    "description": "For post_comment: the JID of the account that wrote the post. Receivers key the comment decryption on it."
+                },
+                "start_time": {
+                    "type": "integer",
+                    "description": "For create_event: event start time in milliseconds since the epoch."
+                },
+                "end_time": {
+                    "type": "integer",
+                    "description": "For create_event: event end time in milliseconds since the epoch."
                 },
                 "subgroup_jid": {
                     "type": "string",
@@ -4124,6 +4162,134 @@ impl Tool for WhatsAppSendTool {
                 Ok(ToolResult::success(lines.join("\n")))
             }
 
+            // ── create_event ─────────────────────────────────────────────────
+            // #1485. An event carries a per-message secret, exactly like a
+            // poll: responders derive their RSVP key from it, so the creator
+            // has to keep it or the answers can never be read back. It is
+            // reported rather than swallowed for that reason.
+            "create_event" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let name = pget!(get_str(&input, "message")).to_string();
+                let params = EventCreationParams {
+                    name: name.clone(),
+                    description: input
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    start_time: input.get("start_time").and_then(|v| v.as_i64()),
+                    end_time: input.get("end_time").and_then(|v| v.as_i64()),
+                    join_link: input
+                        .get("join_link")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    is_scheduled_call: input.get("is_scheduled_call").and_then(|v| v.as_bool()),
+                    extra_guests_allowed: input
+                        .get("extra_guests_allowed")
+                        .and_then(|v| v.as_bool()),
+                    ..Default::default()
+                };
+                let jid_str = jid.to_string();
+                gate_send!(self, jid_str, "the event");
+                match client.events().create(jid.clone(), params).await {
+                    Ok((result, secret)) => {
+                        use base64::Engine as _;
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(&secret);
+                        Ok(ToolResult::success(format!(
+                            "Created event '{name}' in {jid_str}.\nEvent message id: {}\n\
+                             Event secret (base64, needed to decrypt the RSVPs): {encoded}",
+                            result.message_id
+                        )))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to create the event: {e}"
+                    ))),
+                }
+            }
+
+            // ── respond_event ────────────────────────────────────────────────
+            // #1485. The RSVP is encrypted with the event's own secret, so it
+            // cannot be sent without one: 'event_secret' is the base64 string
+            // 'create_event' returned when the event was made.
+            "respond_event" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let event_msg_id = pget!(get_str(&input, "event_msg_id")).to_string();
+                let creator_jid: Jid = match pget!(get_str(&input, "event_creator_jid")).parse() {
+                    Ok(j) => j,
+                    Err(e) => {
+                        return Ok(ToolResult::error(format!(
+                            "'event_creator_jid' is not a JID: {e}"
+                        )));
+                    }
+                };
+                let secret = pget!(decode_b64(&input, "event_secret"));
+                let response = match pget!(get_str(&input, "event_response")) {
+                    "going" => EventResponseType::GOING,
+                    "not_going" => EventResponseType::NOT_GOING,
+                    "maybe" => EventResponseType::MAYBE,
+                    other => {
+                        return Ok(ToolResult::error(format!(
+                            "Invalid 'event_response' value '{other}'. Expected 'going', \
+                             'not_going', or 'maybe'."
+                        )));
+                    }
+                };
+                let guests = input
+                    .get("extra_guest_count")
+                    .and_then(|v| v.as_i64())
+                    .map(|n| n as i32);
+                let jid_str = jid.to_string();
+                gate_send!(self, jid_str, "the RSVP");
+                match client
+                    .events()
+                    .respond(
+                        jid.clone(),
+                        &event_msg_id,
+                        &creator_jid,
+                        &secret,
+                        response,
+                        guests,
+                    )
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "RSVP sent to {jid_str} for event {event_msg_id}."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to send the RSVP: {e}"))),
+                }
+            }
+
+            // ── post_comment ─────────────────────────────────────────────────
+            // #1485. A channel comment is encrypted with the parent post's
+            // secret under the 'Enc Comment' use-case, so it needs the parent
+            // key: the post id, and the post author so receivers can key the
+            // decryption.
+            "post_comment" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let parent_id = pget!(get_str(&input, "parent_msg_id")).to_string();
+                let author = input.get("parent_participant").and_then(|v| v.as_str());
+                let text = pget!(get_str(&input, "message")).to_string();
+                let jid_str = jid.to_string();
+                let parent_key = waproto::whatsapp::MessageKey {
+                    remote_jid: Some(jid_str.clone()),
+                    from_me: Some(false),
+                    id: Some(parent_id.clone()),
+                    participant: author.map(str::to_string),
+                };
+                gate_send!(self, jid_str, "the comment");
+                match client
+                    .comments()
+                    .send_text(jid.clone(), parent_key, &text)
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Comment posted to {jid_str} under post {parent_id}."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to post the comment: {e}"
+                    ))),
+                }
+            }
+
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{}'. Valid actions: send, reply, delete, send_photo, \
                  send_document, send_audio, send_video, send_sticker, send_location, \
@@ -4152,7 +4318,7 @@ impl Tool for WhatsAppSendTool {
                  community_unlink_subgroups, community_join_subgroup, \
                  community_remove_participants, community_get_participating, \
                  community_get_subgroups, community_get_subgroup_participant_counts, \
-                 community_query_linked_group, community_get_linked_groups_participants",
+                 community_query_linked_group, community_get_linked_groups_participants, create_event, respond_event, post_comment",
                 unknown
             ))),
         }

@@ -1192,6 +1192,7 @@ pub mod whatsapp_chat_actions_test;
 pub mod whatsapp_community_actions_test;
 pub mod whatsapp_contacts_test;
 pub mod whatsapp_ephemeral_test;
+pub mod whatsapp_events_actions_test;
 pub mod whatsapp_group_actions_test;
 pub mod whatsapp_handler_test;
 pub mod whatsapp_history_dedup_test;
