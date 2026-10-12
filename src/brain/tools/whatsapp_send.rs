@@ -1916,7 +1916,7 @@ impl Tool for WhatsAppSendTool {
                     remote_jid: Some(jid_str.clone()),
                     from_me: Some(from_me),
                     id: Some(msg_id.clone()),
-                    participant: participant.clone(),
+                    participant: participant.as_ref().map(|j| j.to_string()),
                 };
                 let pinning = action == "pin_message";
                 let result = if pinning {
@@ -1964,7 +1964,7 @@ impl Tool for WhatsAppSendTool {
                     remote_jid: Some(jid_str.clone()),
                     from_me: Some(from_me),
                     id: Some(msg_id.clone()),
-                    participant: participant.clone(),
+                    participant: participant.as_ref().map(|j| j.to_string()),
                 };
                 gate_send!(self, jid_str, "the keep-in-chat request");
                 match client.keep_message(&jid, key, keep).await {
@@ -6837,7 +6837,7 @@ state_user_status_mute.",
                         None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
                     }
                 }
-                "is_connected" => match self.whatsapp_state.is_connected().await {
+                "is_connected" => match self.whatsapp_state.client_is_connected().await {
                     Some(connected) => Ok(ToolResult::success(format!(
                         "Transport is {}.",
                         if connected {

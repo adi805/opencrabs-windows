@@ -297,7 +297,7 @@ impl WhatsAppState {
     /// can hold the socket open and still not have completed the login
     /// handshake. Reading one as the other reports a broken session as
     /// healthy, which is the failure this pair exists to separate.
-    pub async fn is_connected(&self) -> Option<bool> {
+    pub async fn client_is_connected(&self) -> Option<bool> {
         Some(self.client().await?.is_connected())
     }
 
@@ -308,7 +308,7 @@ impl WhatsAppState {
 
     /// Wait until the session is fully ready, or until the timeout expires.
     ///
-    /// Stricter than [`Self::is_connected`] on purpose: the library's readiness
+    /// Stricter than [`Self::client_is_connected`] on purpose: the library's readiness
     /// wait means connected AND logged in AND critical sync done. Work started
     /// against a merely-connected session gets an IQ that cannot be answered
     /// yet, so the caller wants this one, not the flag.
