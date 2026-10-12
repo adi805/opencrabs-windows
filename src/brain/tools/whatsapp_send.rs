@@ -19,10 +19,12 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 use wacore_binary::jid::{Jid, Server};
+use whatsapp_rust::Freshness;
 use whatsapp_rust::features::{
-    CommunitySubgroup, CreateCommunityOptions, EventCreationParams, EventResponseType,
-    GroupCreateOptions, GroupDescription, GroupMetadata, GroupParticipantOptions, GroupSubject,
-    JoinGroupResult, MemberAddMode, MembershipApprovalMode, NewsletterMessage, NewsletterMetadata,
+    BatchGroupResult, CommunitySubgroup, CreateCommunityOptions, EventCreationParams,
+    EventResponseType, GroupCreateOptions, GroupDescription, GroupMetadata,
+    GroupParticipantOptions, GroupSubject, JoinGroupResult, MemberAddMode, MemberLinkMode,
+    MemberShareHistoryMode, MembershipApprovalMode, NewsletterMessage, NewsletterMetadata,
     ParticipantChangeResponse, PictureType, PollVoteCiphertext, PreviousDescription, group_type,
 };
 
@@ -1018,6 +1020,11 @@ impl Tool for WhatsAppSendTool {
                         "set_group_description", "add_participants", "remove_participants",
                         "promote_participants", "demote_participants", "get_group_metadata",
                         "get_invite_link", "join_with_invite_code",
+                        "group_invite_info", "group_super_admins", "group_refresh_info",
+                        "group_batch_info", "group_remove_participants_linked",
+                        "group_set_member_link_mode", "group_set_member_share_history_mode",
+                        "group_update_member_label", "group_revoke_request_code",
+                        "group_join_with_invite_v4",
                         "set_announce", "set_locked", "set_ephemeral",
                         "set_membership_approval", "set_member_add_mode",
                         "set_limit_sharing", "set_group_history",
@@ -1338,6 +1345,26 @@ impl Tool for WhatsAppSendTool {
                 "before": {
                     "type": "integer",
                     "description": "For newsletter_get_messages: fetch posts older than this server_id, the pagination cursor from a previous page."
+                },
+                "freshness": {
+                    "type": "string",
+                    "description": "For group_refresh_info: 'cache' (default) reuses a cached snapshot and consults the server only on a miss; 'refresh' always consults the server and publishes what it returns."
+                },
+                "link_mode": {
+                    "type": "string",
+                    "description": "For group_set_member_link_mode: 'admin' (only admins may share the group link) or 'all' (every member may)."
+                },
+                "share_history_mode": {
+                    "type": "string",
+                    "description": "For group_set_member_share_history_mode: 'admin' (only admins may share message history with new members) or 'all' (every member may)."
+                },
+                "member_label": {
+                    "type": "string",
+                    "description": "For group_update_member_label: the label text to set on this group."
+                },
+                "admin_jid": {
+                    "type": "string",
+                    "description": "For group_join_with_invite_v4: the JID of the admin who issued the V4 invite. Required, because the server verifies the invite against that admin."
                 },
                 "server_id": {
                     "type": "integer",
@@ -3833,6 +3860,265 @@ mark_chat_as_read, user_status_mute.",
                 }
             }
 
+            // ── groups: reads and membership ─────────────────────────────────
+            // #1485 follow-up. The group surface had the admin toggles but not
+            // the reads that decide which ones to use, nor the membership paths
+            // that go through a linked community. Every arm resolves through
+            // `resolve_group_jid` (or `resolve_group_jids` for the batch), so
+            // the send-scope gate and the `@g.us` check are the same ones the
+            // existing group arms carry.
+            "group_invite_info" => {
+                let code = pget!(get_str(&input, "invite_code")).to_string();
+                match client.groups().get_invite_info(&code).await {
+                    Ok(m) => Ok(ToolResult::success(format!(
+                        "Invite '{code}' points at {} ('{}') with {} participant(s); reading an \
+                         invite does not join it.\n  locked: {}\n  announcement-only: {}",
+                        m.id,
+                        m.subject,
+                        m.size.unwrap_or(m.participants.len() as u32),
+                        m.is_locked,
+                        m.is_announcement
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to read that invite: {e}"
+                    ))),
+                }
+            }
+
+            "group_super_admins" => {
+                let jid = pget!(resolve_group_jid(&input));
+                match client.groups().get_metadata(&jid).await {
+                    Ok(m) => {
+                        let supers: Vec<String> = m
+                            .participants
+                            .iter()
+                            .filter(|p| p.is_super_admin())
+                            .map(|p| p.jid.to_string())
+                            .collect();
+                        if supers.is_empty() {
+                            Ok(ToolResult::success(format!(
+                                "{jid} lists no super-admin participant ({} participant(s) seen). \
+                                 Ordinary admins are reported by get_group_metadata.",
+                                m.participants.len()
+                            )))
+                        } else {
+                            Ok(ToolResult::success(format!(
+                                "{} super admin(s) in {jid}:\n{}",
+                                supers.len(),
+                                supers
+                                    .iter()
+                                    .map(|s| format!("- {s}"))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            )))
+                        }
+                    }
+                    Err(e) => Ok(ToolResult::error(format!("Failed to read {jid}: {e}"))),
+                }
+            }
+
+            "group_refresh_info" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let freshness = match input.get("freshness").and_then(|v| v.as_str()) {
+                    None | Some("cache") => Freshness::CachePreferred,
+                    Some("refresh") => Freshness::Refresh,
+                    Some(other) => {
+                        return Ok(ToolResult::error(format!(
+                            "Unknown freshness '{other}'; use 'cache' (default) or 'refresh'."
+                        )));
+                    }
+                };
+                // The payload is a cache type the tool cannot name, so this
+                // reports the resolution and not a field dump: what the caller
+                // needs to know is which snapshot the cache now holds.
+                let label = format!("{freshness:?}");
+                match client
+                    .groups()
+                    .query_info_with_freshness(&jid, freshness)
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Group info for {jid} resolved with freshness {label}; the cached snapshot \
+                         now holds what the server returned."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to refresh info for {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "group_batch_info" => {
+                let jids = pget!(resolve_group_jids(&input));
+                let count = jids.len();
+                match client.groups().batch_get_info(jids).await {
+                    Ok(results) => {
+                        let mut out = format!("Batch info for {count} group(s):");
+                        for r in &results {
+                            match r {
+                                BatchGroupResult::Full(m) => out.push_str(&format!(
+                                    "\n- {} ('{}'): {} participant(s)",
+                                    m.id,
+                                    m.subject,
+                                    m.size.unwrap_or(m.participants.len() as u32)
+                                )),
+                                BatchGroupResult::Truncated { id, size } => {
+                                    out.push_str(&format!(
+                                        "\n- {id}: truncated by the server (size {})",
+                                        match size {
+                                            Some(s) => s.to_string(),
+                                            None => "unknown".to_string(),
+                                        }
+                                    ));
+                                }
+                                BatchGroupResult::Forbidden(id) => {
+                                    out.push_str(&format!("\n- {id}: forbidden"));
+                                }
+                                BatchGroupResult::NotFound(id) => {
+                                    out.push_str(&format!("\n- {id}: not found"));
+                                }
+                            }
+                        }
+                        Ok(ToolResult::success(out))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to batch-read {count} group(s): {e}"
+                    ))),
+                }
+            }
+
+            "group_remove_participants_linked" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let participants = pget!(resolve_participants(&input));
+                match client
+                    .groups()
+                    .remove_participants_including_linked_groups(jid.clone(), &participants)
+                    .await
+                {
+                    Ok(changes) => Ok(ToolResult::success(format!(
+                        "Removed from {jid} and every linked subgroup: {}",
+                        summarize_participant_changes(&changes)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to remove participants: {e}"
+                    ))),
+                }
+            }
+
+            "group_set_member_link_mode" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let mode = match pget!(get_str(&input, "link_mode")) {
+                    "admin" => MemberLinkMode::AdminLink,
+                    "all" => MemberLinkMode::AllMemberLink,
+                    other => {
+                        return Ok(ToolResult::error(format!(
+                            "Unknown link_mode '{other}'; use 'admin' or 'all'."
+                        )));
+                    }
+                };
+                match client.groups().set_member_link_mode(&jid, mode).await {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Member link mode for {jid} updated."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set the member link mode: {e}"
+                    ))),
+                }
+            }
+
+            "group_set_member_share_history_mode" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let mode = match pget!(get_str(&input, "share_history_mode")) {
+                    "admin" => MemberShareHistoryMode::AdminShare,
+                    "all" => MemberShareHistoryMode::AllMemberShare,
+                    other => {
+                        return Ok(ToolResult::error(format!(
+                            "Unknown share_history_mode '{other}'; use 'admin' or 'all'."
+                        )));
+                    }
+                };
+                match client
+                    .groups()
+                    .set_member_share_history_mode(&jid, mode)
+                    .await
+                {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "History-share mode for {jid} updated."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set the history-share mode: {e}"
+                    ))),
+                }
+            }
+
+            "group_update_member_label" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let label = pget!(get_str(&input, "member_label")).to_string();
+                match client
+                    .groups()
+                    .update_member_label(jid.clone(), label)
+                    .await
+                {
+                    Ok(()) => Ok(ToolResult::success(format!("Member label for {jid} set."))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set the member label: {e}"
+                    ))),
+                }
+            }
+
+            "group_revoke_request_code" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let participants = pget!(resolve_participants(&input));
+                match client
+                    .groups()
+                    .revoke_request_code(jid.clone(), &participants)
+                    .await
+                {
+                    Ok(changes) => Ok(ToolResult::success(format!(
+                        "Revoked request codes in {jid}: {}",
+                        summarize_participant_changes(&changes)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to revoke the request codes: {e}"
+                    ))),
+                }
+            }
+
+            "group_join_with_invite_v4" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let code = pget!(get_str(&input, "invite_code")).to_string();
+                let admin_raw = pget!(get_str(&input, "admin_jid")).to_string();
+                // Parsed here rather than passed as a string: the library takes
+                // `impl Into<Jid>`, and a raw string is not one of those.
+                let admin_jid: Jid = match admin_raw.parse() {
+                    Ok(j) => j,
+                    Err(e) => {
+                        return Ok(ToolResult::error(format!(
+                            "Invalid admin_jid '{admin_raw}': {e}"
+                        )));
+                    }
+                };
+                let expiration = input
+                    .get("expiration")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                match client
+                    .groups()
+                    .join_with_invite_v4(jid.clone(), &code, expiration, admin_jid)
+                    .await
+                {
+                    Ok(JoinGroupResult::Joined(j)) => Ok(ToolResult::success(format!(
+                        "Joined group {j} via the V4 invite."
+                    ))),
+                    Ok(JoinGroupResult::PendingApproval(j)) => Ok(ToolResult::success(format!(
+                        "Request to join {j} sent via the V4 invite; an admin must approve it \
+                         before you are a member."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to use that V4 invite: {e}"
+                    ))),
+                }
+            }
+
             // ── groups: policy and admin ─────────────────────────────────────
             // The settings an admin toggles. Each arm takes the value it is
             // setting, required rather than defaulted: a group policy that flips
@@ -5179,7 +5465,7 @@ mark_chat_as_read, user_status_mute.",
                  assign_label, send_buttons, create_group, leave_group, set_group_subject, \
                  set_group_description, add_participants, remove_participants, \
                  promote_participants, demote_participants, get_group_metadata, \
-                 get_invite_link, join_with_invite_code, set_announce, set_locked, \
+                 get_invite_link, join_with_invite_code, group_invite_info, group_super_admins, group_refresh_info, group_batch_info, group_remove_participants_linked, group_set_member_link_mode, group_set_member_share_history_mode, group_update_member_label, group_revoke_request_code, group_join_with_invite_v4, set_announce, set_locked, \
                  set_ephemeral, set_membership_approval, set_member_add_mode, \
                  set_limit_sharing, set_group_history, set_no_frequently_forwarded, \
                  set_allow_admin_reports, get_membership_requests, \
