@@ -1530,8 +1530,8 @@ impl Tool for WhatsAppSendTool {
                 },
                 "debug_op": {
                     "type": "string",
-                    "enum": ["stats", "wait_for_node", "wait_for_sent_node", "acquire_raw_node", "release_raw_node", "set_resend_rate_limit", "set_skip_history_sync", "set_wanted_pre_key_count", "set_retry_admission", "identity", "identity_tags", "memory_report", "resource_report", "skip_history_sync_enabled", "wanted_pre_key_count", "mex_query", "mex_mutate", "mex_reachout_timelock"],
-                    "description": "For wa_introspect: which runtime call to make against the live session. Read-only ops: stats, wait_for_node, wait_for_sent_node, identity, identity_tags, memory_report, resource_report, skip_history_sync_enabled, wanted_pre_key_count, mex_query, mex_mutate, mex_reachout_timelock. The rest change the running client."
+                    "enum": ["stats", "wait_for_node", "wait_for_sent_node", "acquire_raw_node", "release_raw_node", "set_resend_rate_limit", "set_skip_history_sync", "set_wanted_pre_key_count", "set_retry_admission", "identity", "identity_tags", "memory_report", "resource_report", "skip_history_sync_enabled", "wanted_pre_key_count", "mex_query", "mex_mutate", "mex_reachout_timelock", "is_connected", "is_logged_in", "wait_for_connected"],
+                    "description": "For wa_introspect: which runtime call to make against the live session. Read-only ops: stats, wait_for_node, wait_for_sent_node, identity, identity_tags, memory_report, resource_report, skip_history_sync_enabled, wanted_pre_key_count, is_connected, is_logged_in, wait_for_connected, mex_query, mex_mutate, mex_reachout_timelock. The rest change the running client."
                 },
                 "mex_request": {
                     "type": "object",
@@ -6553,12 +6553,55 @@ state_user_status_mute.",
                         None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
                     }
                 }
+                "is_connected" => match self.whatsapp_state.is_connected().await {
+                    Some(connected) => Ok(ToolResult::success(format!(
+                        "Transport is {}.",
+                        if connected {
+                            "connected"
+                        } else {
+                            "not connected"
+                        }
+                    ))),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                "is_logged_in" => match self.whatsapp_state.is_logged_in().await {
+                    Some(logged_in) => Ok(ToolResult::success(format!(
+                        "This device is {}.",
+                        if logged_in {
+                            "logged in"
+                        } else {
+                            "connected but NOT logged in, so an IQ cannot be answered yet"
+                        }
+                    ))),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                "wait_for_connected" => {
+                    let timeout = std::time::Duration::from_millis(
+                        input
+                            .get("timeout_ms")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(WAIT_TIMEOUT.as_millis() as u64)
+                            .clamp(100, 60_000),
+                    );
+                    match self.whatsapp_state.wait_for_connected(timeout).await {
+                        Some(Ok(())) => Ok(ToolResult::success(
+                            "Session is fully ready (connected, logged in, critical sync done)."
+                                .to_string(),
+                        )),
+                        Some(Err(e)) => Ok(ToolResult::error(format!(
+                            "Session did not become fully ready within {}ms: {e}",
+                            timeout.as_millis()
+                        ))),
+                        None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                    }
+                }
                 other => Ok(ToolResult::error(format!(
                     "Unknown 'debug_op' value '{other}'. Expected one of: stats, wait_for_node, \
                      wait_for_sent_node, acquire_raw_node, release_raw_node, \
                      set_resend_rate_limit, set_skip_history_sync, set_wanted_pre_key_count, \
                      set_retry_admission, identity, identity_tags, memory_report, \
                      resource_report, skip_history_sync_enabled, wanted_pre_key_count, \
+                     is_connected, is_logged_in, wait_for_connected, \
                      mex_query, mex_mutate, mex_reachout_timelock."
                 ))),
             },
