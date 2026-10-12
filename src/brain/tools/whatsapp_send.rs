@@ -23,9 +23,10 @@ use whatsapp_rust::Freshness;
 use whatsapp_rust::features::{
     BatchGroupResult, CommunitySubgroup, CreateCommunityOptions, EventCreationParams,
     EventResponseType, GroupCreateOptions, GroupDescription, GroupMetadata,
-    GroupParticipantOptions, GroupSubject, JoinGroupResult, MemberAddMode, MemberLinkMode,
-    MemberShareHistoryMode, MembershipApprovalMode, NewsletterMessage, NewsletterMetadata,
-    ParticipantChangeResponse, PictureType, PollVoteCiphertext, PreviousDescription, group_type,
+    GroupParticipantOptions, GroupSubject, JoinGroupResult, MediaRetryResult, MediaReuploadRequest,
+    MemberAddMode, MemberLinkMode, MemberShareHistoryMode, MembershipApprovalMode,
+    NewsletterMessage, NewsletterMetadata, ParticipantChangeResponse, PictureType,
+    PollVoteCiphertext, PresenceStatus, PreviousDescription, group_type,
 };
 
 /// Reported by `wa_introspect` when a runtime call needs a live session and
@@ -1038,6 +1039,7 @@ impl Tool for WhatsAppSendTool {
                         "star_message", "unstar_message", "clear_chat", "save_contact",
                         "set_available", "set_unavailable", "subscribe_presence",
                         "unsubscribe_presence",
+                        "presence_set", "media_reupload_many",
                         "create_quiz", "vote", "decrypt_vote", "aggregate_votes",
                         "newsletter_get_metadata", "newsletter_get_metadata_by_invite",
                         "newsletter_join", "newsletter_leave",
@@ -1345,6 +1347,15 @@ impl Tool for WhatsAppSendTool {
                 "before": {
                     "type": "integer",
                     "description": "For newsletter_get_messages: fetch posts older than this server_id, the pagination cursor from a previous page."
+                },
+                "presence": {
+                    "type": "string",
+                    "description": "For presence_set: 'available' (online) or 'unavailable' (offline). The library's status enum is non-exhaustive, so a new wire value reaches this action rather than needing a new one."
+                },
+                "media_requests": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "For media_reupload_many: an array of objects, each with 'msg_id', 'chat_jid' and 'media_key' (the 32 raw key bytes, base64), plus optional 'is_from_me' (default false) and 'participant' (for group messages). One entry per expired message to ask the server to re-upload."
                 },
                 "freshness": {
                     "type": "string",
@@ -3860,6 +3871,136 @@ mark_chat_as_read, user_status_mute.",
                 }
             }
 
+            "presence_set" => {
+                let status = pget!(get_str(&input, "presence"));
+                let parsed = match status {
+                    "available" => PresenceStatus::Available,
+                    "unavailable" => PresenceStatus::Unavailable,
+                    other => {
+                        return Ok(ToolResult::error(format!(
+                            "Unknown presence '{other}'; use 'available' or 'unavailable'."
+                        )));
+                    }
+                };
+                match client.presence().set(parsed).await {
+                    Ok(()) => Ok(ToolResult::success(format!("Presence set to {status}."))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to set presence: {e}"))),
+                }
+            }
+
+            "media_reupload_many" => {
+                let Some(items) = input.get("media_requests").and_then(|v| v.as_array()) else {
+                    return Ok(ToolResult::error(
+                        "media_reupload_many needs 'media_requests': an array of objects, each \
+                         with 'msg_id', 'chat_jid' and 'media_key' (base64), plus optional \
+                         'is_from_me' and 'participant'."
+                            .to_string(),
+                    ));
+                };
+                if items.is_empty() {
+                    return Ok(ToolResult::error(
+                        "'media_requests' must name at least one request.".to_string(),
+                    ));
+                }
+                // Owned first: every field of the request struct is a borrow,
+                // so the storage has to outlive the slice built from it.
+                let mut owned: Vec<(String, Jid, Vec<u8>, bool, Option<Jid>)> =
+                    Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    let msg_id = match item.get("msg_id").and_then(|v| v.as_str()) {
+                        Some(s) if !s.is_empty() => s.to_string(),
+                        _ => {
+                            return Ok(ToolResult::error(format!(
+                                "media_requests[{i}] needs a non-empty 'msg_id'."
+                            )));
+                        }
+                    };
+                    let chat_raw = match item.get("chat_jid").and_then(|v| v.as_str()) {
+                        Some(s) if !s.is_empty() => s,
+                        _ => {
+                            return Ok(ToolResult::error(format!(
+                                "media_requests[{i}] needs a non-empty 'chat_jid'."
+                            )));
+                        }
+                    };
+                    let chat_jid: Jid = match chat_raw.parse() {
+                        Ok(j) => j,
+                        Err(e) => {
+                            return Ok(ToolResult::error(format!(
+                                "media_requests[{i}] has an invalid 'chat_jid' '{chat_raw}': {e}"
+                            )));
+                        }
+                    };
+                    let media_key = match item.get("media_key").and_then(|v| v.as_str()) {
+                        Some(s) => {
+                            use base64::Engine as _;
+                            match base64::engine::general_purpose::STANDARD.decode(s) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    return Ok(ToolResult::error(format!(
+                                        "media_requests[{i}] has a 'media_key' that is not valid \
+                                         base64: {e}"
+                                    )));
+                                }
+                            }
+                        }
+                        None => {
+                            return Ok(ToolResult::error(format!(
+                                "media_requests[{i}] needs 'media_key' (the 32 raw key bytes, \
+                                 base64-encoded)."
+                            )));
+                        }
+                    };
+                    let is_from_me = item
+                        .get("is_from_me")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let participant = match item.get("participant").and_then(|v| v.as_str()) {
+                        Some(s) if !s.is_empty() => match s.parse::<Jid>() {
+                            Ok(j) => Some(j),
+                            Err(e) => {
+                                return Ok(ToolResult::error(format!(
+                                    "media_requests[{i}] has an invalid 'participant' '{s}': {e}"
+                                )));
+                            }
+                        },
+                        _ => None,
+                    };
+                    owned.push((msg_id, chat_jid, media_key, is_from_me, participant));
+                }
+                let reqs: Vec<MediaReuploadRequest<'_>> = owned
+                    .iter()
+                    .map(|(msg_id, chat_jid, media_key, is_from_me, participant)| {
+                        MediaReuploadRequest {
+                            msg_id: msg_id.as_str(),
+                            chat_jid,
+                            media_key: media_key.as_slice(),
+                            is_from_me: *is_from_me,
+                            participant: participant.as_ref(),
+                        }
+                    })
+                    .collect();
+                let results = client.media_reupload().request_many(&reqs).await;
+                let mut out = format!("Re-upload requested for {} item(s):", results.len());
+                let mut recovered = 0usize;
+                for (i, r) in results.iter().enumerate() {
+                    let id = &owned[i].0;
+                    match r {
+                        Ok(MediaRetryResult::Success { direct_path }) => {
+                            recovered += 1;
+                            out.push_str(&format!("\n- {id}: fresh direct path {direct_path}"));
+                        }
+                        Ok(other) => out.push_str(&format!(
+                            "\n- {id}: the server declined ({other:?}); the blob is gone rather \
+                             than merely stale"
+                        )),
+                        Err(e) => out.push_str(&format!("\n- {id}: {e}")),
+                    }
+                }
+                out.push_str(&format!("\n{recovered} of {} recovered.", results.len()));
+                Ok(ToolResult::success(out))
+            }
+
             // ── groups: reads and membership ─────────────────────────────────
             // #1485 follow-up. The group surface had the admin toggles but not
             // the reads that decide which ones to use, nor the membership paths
@@ -5474,7 +5615,7 @@ mark_chat_as_read, user_status_mute.",
                  get_profile_picture, get_group_profile_picture, is_on_whatsapp, \
                  get_user_info, archive_chat, unarchive_chat, mute_chat, unmute_chat, \
                  star_message, unstar_message, clear_chat, save_contact, set_available, \
-                 set_unavailable, subscribe_presence, unsubscribe_presence, create_quiz, \
+                 set_unavailable, subscribe_presence, unsubscribe_presence, presence_set, media_reupload_many, create_quiz, \
                  vote, decrypt_vote, aggregate_votes, newsletter_get_metadata, \
                  newsletter_get_metadata_by_invite, newsletter_join, newsletter_leave, \
                  newsletter_create, newsletter_update, newsletter_revoke_message, newsletter_react, newsletter_set_follower_mute, newsletter_set_admin_mute, newsletter_subscribe_live_updates, newsletter_edit_message, \
