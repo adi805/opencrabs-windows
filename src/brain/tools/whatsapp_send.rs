@@ -986,6 +986,10 @@ impl Tool for WhatsAppSendTool {
                     "type": "boolean",
                     "description": "Whether the target message was sent by us (for react/mark_read/star_message/unstar_message). Default false."
                 },
+                "participant": {
+                    "type": "string",
+                    "description": "For react only: the JID of the original sender of a group or status message being reacted to. Required for a group reaction to be attributed; omit for a direct message."
+                },
                 "media_path": {
                     "type": "string",
                     "description": "Local file path for media (send_photo, send_document, send_audio, send_video, send_sticker, and the JPEG for set_profile_picture). For status_update: a local image file to post as an image status instead of a text status, in which case 'message' becomes its caption."
@@ -2086,29 +2090,22 @@ impl Tool for WhatsAppSendTool {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let message_key = waproto::whatsapp::MessageKey {
+                let mut message_key = waproto::whatsapp::MessageKey {
                     remote_jid: Some(jid.to_string()),
                     from_me: Some(from_me),
                     id: Some(msg_id.clone()),
                     ..Default::default()
                 };
+                // #1482-style: the lib owns the reaction envelope. Groups and
+                // status messages need the original sender on the key or the
+                // receipt cannot be attributed, and a community announcement
+                // group needs the target's message secret, which the hand-rolled
+                // proto could not supply at all.
+                if let Some(p) = input.get("participant").and_then(|v| v.as_str()) {
+                    message_key.participant = Some(p.to_string());
+                }
 
-                let reaction = waproto::whatsapp::message::ReactionMessage {
-                    key: message_key.into(),
-                    text: if emoji.is_empty() {
-                        None
-                    } else {
-                        Some(emoji.clone())
-                    },
-                    sender_timestamp_ms: Some(chrono::Utc::now().timestamp_millis()),
-                    ..Default::default()
-                };
-
-                let reaction_msg = waproto::whatsapp::Message {
-                    reaction_message: reaction.into(),
-                    ..Default::default()
-                };
-                match client.send_message(jid, reaction_msg).await {
+                match client.send_reaction(jid, message_key, &emoji).await {
                     Ok(_) => {
                         if emoji.is_empty() {
                             Ok(ToolResult::success(format!(
