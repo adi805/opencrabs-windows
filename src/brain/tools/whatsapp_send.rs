@@ -929,6 +929,8 @@ impl Tool for WhatsAppSendTool {
                         "send_location", "send_contact",
                         "react", "send_poll", "edit",
                         "typing", "mark_read",
+                        "delete_message_for_me", "delete_chat", "mark_chat_as_read",
+                        "set_user_status_mute", "send_app_state_action",
                         "block_contact", "unblock_contact", "list_blocked",
                         "send_buttons",
                         "status_update", "list_newsletters",
@@ -1115,6 +1117,22 @@ impl Tool for WhatsAppSendTool {
                 "delete_media": {
                     "type": "boolean",
                     "description": "For clear_chat: also remove downloaded media. Default false."
+                },
+                "read": {
+                    "type": "boolean",
+                    "description": "For mark_chat_as_read: true (the default) syncs the chat as read across linked devices, false marks it unread."
+                },
+                "muted": {
+                    "type": "boolean",
+                    "description": "For set_user_status_mute: true (the default) hides that contact's status updates, false shows them again."
+                },
+                "from_me": {
+                    "type": "boolean",
+                    "description": "For delete_message_for_me: true when the message is your own, false (the default) when it is someone else's. Pair with 'participant' for a group message from another member."
+                },
+                "app_state": {
+                    "type": "string",
+                    "description": "For send_app_state_action: which chat-level app-state mutation to fire. One of mute_indefinite, mute_until, unmute, pin, unpin, archive, unarchive, clear_chat, mark_chat_as_read, user_status_mute."
                 },
                 "full_name": {
                     "type": "string",
@@ -2288,6 +2306,220 @@ impl Tool for WhatsAppSendTool {
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to mark message as read: {}",
                         e
+                    ))),
+                }
+            }
+
+            // ── chat-level app-state mutations (#wa-round2) ──────────────────
+            // These sync state across linked devices rather than sending a
+            // message, so they carry no send budget.
+            "delete_message_for_me" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let participant = pget!(resolve_optional_participant(&input));
+                let from_me = match input.get("from_me") {
+                    Some(_) => pget!(get_bool(&input, "from_me")),
+                    None => false,
+                };
+                let delete_media = match input.get("delete_media") {
+                    Some(_) => pget!(get_bool(&input, "delete_media")),
+                    None => false,
+                };
+
+                match client
+                    .chat_actions()
+                    .delete_message_for_me(
+                        &jid,
+                        participant.as_ref(),
+                        &msg_id,
+                        from_me,
+                        delete_media,
+                        None,
+                    )
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Message {} deleted for us in {}.",
+                        msg_id, jid_str
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to delete message for us: {}",
+                        e
+                    ))),
+                }
+            }
+
+            "delete_chat" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let delete_media = match input.get("delete_media") {
+                    Some(_) => pget!(get_bool(&input, "delete_media")),
+                    None => false,
+                };
+
+                match client
+                    .chat_actions()
+                    .delete_chat(&jid, delete_media, None)
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!("Chat {} deleted.", jid_str))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to delete chat: {}", e))),
+                }
+            }
+
+            "mark_chat_as_read" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let read = match input.get("read") {
+                    Some(_) => pget!(get_bool(&input, "read")),
+                    None => true,
+                };
+
+                match client
+                    .chat_actions()
+                    .mark_chat_as_read(&jid, read, None)
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Chat {} marked as {}.",
+                        jid_str,
+                        if read { "read" } else { "unread" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to mark chat as read: {}",
+                        e
+                    ))),
+                }
+            }
+
+            "set_user_status_mute" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let muted = match input.get("muted") {
+                    Some(_) => pget!(get_bool(&input, "muted")),
+                    None => true,
+                };
+
+                match client
+                    .chat_actions()
+                    .set_user_status_mute(&jid, muted)
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Status updates from {} {}.",
+                        jid_str,
+                        if muted { "muted" } else { "unmuted" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set user status mute: {}",
+                        e
+                    ))),
+                }
+            }
+
+            // One action to fire any chat-level app-state mutation by name.
+            // The proto value is built by the library wrapper for each op, so
+            // callers never hand-assemble a SyncActionValue.
+            "send_app_state_action" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let op = pget!(get_str(&input, "app_state")).to_string();
+                let actions = client.chat_actions();
+                let res = match op.as_str() {
+                    "mute_indefinite" => actions.mute_chat(&jid).await,
+                    "mute_until" => {
+                        let until = input
+                            .get("mute_until_ms")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        actions.mute_chat_until(&jid, until).await
+                    }
+                    "unmute" => actions.unmute_chat(&jid).await,
+                    "pin" => actions.pin_chat(&jid).await,
+                    "unpin" => actions.unpin_chat(&jid).await,
+                    "archive" => actions.archive_chat(&jid, None).await,
+                    "unarchive" => actions.unarchive_chat(&jid, None).await,
+                    "clear_chat" => {
+                        let delete_starred = match input.get("delete_starred") {
+                            Some(_) => pget!(get_bool(&input, "delete_starred")),
+                            None => false,
+                        };
+                        let delete_media = match input.get("delete_media") {
+                            Some(_) => pget!(get_bool(&input, "delete_media")),
+                            None => false,
+                        };
+                        actions
+                            .clear_chat(&jid, delete_starred, delete_media, None)
+                            .await
+                    }
+                    "mark_chat_as_read" => {
+                        let read = match input.get("read") {
+                            Some(_) => pget!(get_bool(&input, "read")),
+                            None => true,
+                        };
+                        actions.mark_chat_as_read(&jid, read, None).await
+                    }
+                    "user_status_mute" => {
+                        let muted = match input.get("muted") {
+                            Some(_) => pget!(get_bool(&input, "muted")),
+                            None => true,
+                        };
+                        actions.set_user_status_mute(&jid, muted).await
+                    }
+                    other => {
+                        return Ok(ToolResult::error(format!(
+                            "Unknown app_state '{}'. Use one of: mute_indefinite, \
+mute_until, unmute, pin, unpin, archive, unarchive, clear_chat, \
+mark_chat_as_read, user_status_mute.",
+                            other
+                        )));
+                    }
+                };
+
+                match res {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "app_state '{}' applied to {}.",
+                        op, jid_str
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "app_state '{}' failed: {}",
+                        op, e
                     ))),
                 }
             }
@@ -4570,7 +4802,7 @@ impl Tool for WhatsAppSendTool {
                  community_unlink_subgroups, community_join_subgroup, \
                  community_remove_participants, community_get_participating, \
                  community_get_subgroups, community_get_subgroup_participant_counts, \
-                 community_query_linked_group, community_get_linked_groups_participants, create_event, respond_event, post_comment, wa_introspect",
+                 community_query_linked_group, community_get_linked_groups_participants, create_event, respond_event, post_comment, wa_introspect, delete_message_for_me, delete_chat, mark_chat_as_read, set_user_status_mute, send_app_state_action",
                 unknown
             ))),
         }
