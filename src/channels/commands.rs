@@ -1812,6 +1812,23 @@ fn models_text(display_name: &str, current_model: &str) -> String {
 }
 
 /// Fetch models for a specific provider (called from callback handler).
+/// The Current model and the list for a CLI provider's `/models` menu (#2041).
+///
+/// The list is the live discovered one, the same the TUI shows. Current is the
+/// provider's configured default, falling back to the canonical default, and is
+/// never the first list entry. A saved `models` array is not an input here: it
+/// is a frozen snapshot that would hide new releases.
+pub(crate) fn cli_menu_choice(
+    discovered: Vec<String>,
+    canonical_default: &str,
+    configured_default: Option<String>,
+) -> (String, Vec<String>) {
+    (
+        configured_default.unwrap_or_else(|| canonical_default.to_string()),
+        discovered,
+    )
+}
+
 pub async fn models_for_provider(provider_name: &str) -> ModelsResponse {
     let config = match crate::config::Config::load() {
         Ok(c) => c,
@@ -1852,16 +1869,14 @@ pub async fn models_for_provider(provider_name: &str) -> ModelsResponse {
             crate::utils::providers::cli_supported_models(provider_name)
                 .unwrap_or_else(|| (Vec::new(), ""));
 
-        let current_model = config_models
-            .first()
-            .cloned()
-            .unwrap_or_else(|| canonical_default.to_string());
-
-        let models = if !config_models.is_empty() {
-            config_models
-        } else {
-            canonical_models
-        };
+        // Current is the provider's configured default, never the first list
+        // entry (#2041). The list is the live discovered one the TUI shows; a
+        // saved `models` array is a frozen snapshot and would hide new releases.
+        let configured_default =
+            crate::utils::providers::config_for(&config.providers, provider_name)
+                .and_then(|c| c.default_model.clone());
+        let (current_model, models) =
+            cli_menu_choice(canonical_models, canonical_default, configured_default);
 
         // Positions are what long-name buttons encode, so record them.
         crate::channels::model_menu::remember(provider_name, &models);
