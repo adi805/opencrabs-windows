@@ -149,7 +149,7 @@ fn the_tool_action_is_discoverable_and_reachable() {
         assert!(
             compact.contains(&format!("\"{op}\"=>"))
                 || compact.contains(&format!("\"{op}\"|"))
-                || compact.contains(&format!("|{op}\"")),
+                || compact.contains(&format!("|\"{op}\"")),
             "debug_op '{op}' is named in the schema with no branch to run it"
         );
     }
