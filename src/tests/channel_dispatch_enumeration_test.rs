@@ -264,20 +264,3 @@ fn every_declared_action_has_a_dispatch_arm() {
         );
     }
 }
-
-#[test]
-fn every_declared_action_has_a_dispatch_arm() {
-    for (name, src) in TOOLS {
-        let arms: BTreeSet<String> = dispatch_arms(src).into_iter().collect();
-        let mut missing: Vec<String> = declared_actions(src)
-            .into_iter()
-            .filter(|a| !arms.contains(a))
-            .collect();
-        missing.sort();
-        missing.dedup();
-        assert!(
-            missing.is_empty(),
-            "{name}: declared in the action list but with no arm to run it: {missing:?}"
-        );
-    }
-}
