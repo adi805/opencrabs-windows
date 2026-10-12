@@ -1120,6 +1120,10 @@ impl Tool for WhatsAppSendTool {
                     "type": "string",
                     "description": "For edit only: pin the outer stanza id to an existing message id so clients re-render that slot. Best-effort and server dependent, and the edit then skips id-keyed local state. Omit for a fresh stanza id, which is the safe default."
                 },
+                "message_secret": {
+                    "type": "string",
+                    "description": "For edit only: base64 message secret from the original send. Required to edit a message in a community announcement group, where the edit is encrypted; the arm then uses edit_message_encrypted instead of the plaintext path. Omit for ordinary chats."
+                },
                 "from_me": {
                     "type": "boolean",
                     "description": "Whether the target message was sent by us (for react/mark_read/star_message/unstar_message). Default false."
@@ -2493,19 +2497,33 @@ impl Tool for WhatsAppSendTool {
                 // The lib owns the edit envelope. Pinning the outer stanza id is
                 // best-effort and skips id-keyed state binding, so it is opt-in
                 // rather than the default.
-                let sent = match input.get("stanza_id").and_then(|v| v.as_str()) {
-                    Some(sid) => {
-                        client
-                            .edit_message_with_options(
-                                jid,
-                                msg_id.clone(),
-                                wa_msg,
-                                whatsapp_rust::send::EditOptions::default()
-                                    .with_stanza_id(sid.to_string()),
-                            )
-                            .await
+                // A community announcement group encrypts the edit, so it needs
+                // the target's message secret, which the caller already has from
+                // the original send. Absent the param the plaintext path below is
+                // unchanged, so no existing caller changes behaviour.
+                let secret = match input.get("message_secret").and_then(|v| v.as_str()) {
+                    Some(_) => Some(pget!(decode_b64(&input, "message_secret"))),
+                    None => None,
+                };
+                let sent = if let Some(secret) = secret.as_ref() {
+                    client
+                        .edit_message_encrypted(jid, msg_id.clone(), secret, wa_msg)
+                        .await
+                } else {
+                    match input.get("stanza_id").and_then(|v| v.as_str()) {
+                        Some(sid) => {
+                            client
+                                .edit_message_with_options(
+                                    jid,
+                                    msg_id.clone(),
+                                    wa_msg,
+                                    whatsapp_rust::send::EditOptions::default()
+                                        .with_stanza_id(sid.to_string()),
+                                )
+                                .await
+                        }
+                        None => client.edit_message(jid, msg_id.clone(), wa_msg).await,
                     }
-                    None => client.edit_message(jid, msg_id.clone(), wa_msg).await,
                 };
                 match sent {
                     Ok(_) => Ok(ToolResult::success(format!(
