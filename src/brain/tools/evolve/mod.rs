@@ -5,7 +5,7 @@
 //! appropriate upgrade strategy:
 //!
 //! - **Pre-built binary**: Downloads from GitHub releases, health-checks, swaps.
-//! - **cargo install**: Runs `cargo install opencrabs --force`.
+//! - **cargo install**: Runs `cargo install <package> --force`.
 //! - **Source build**: Suggests rebuilding from the source tree instead.
 //!
 //! Before swapping binaries, it health-checks the new binary. If the swap
