@@ -5020,12 +5020,13 @@ impl AgentService {
                 // fact-based branch here reads a shape that report prose does
                 // not have.
                 //
-                // Post-success only. On a zero-tool turn `phantom_eligible` is
-                // already true, so scanning would add cost without adding
-                // coverage; the exemption is what needs policing. The haystack
-                // is built only once the cheap extraction finds a candidate,
-                // which keeps it off the iterations that assert nothing.
-                let unbacked_facts = if tool_calls_completed_this_turn > 0 {
+                // Runs on zero-tool turns too (#2038). A zero-tool turn that
+                // states facts absent from the conversation is fabricated by
+                // construction, and the structured-report exemption must not
+                // hide it. The haystack is built only once the cheap extraction
+                // finds a candidate, which keeps it off the iterations that
+                // assert nothing.
+                let unbacked_facts = {
                     let asserted = super::phantom::asserted_facts(&iteration_text);
                     if asserted.is_empty() {
                         Vec::new()
@@ -5033,8 +5034,6 @@ impl AgentService {
                         let evidence = Self::conversation_evidence(&context, &turn_tool_output);
                         super::phantom::unbacked_facts(&asserted, &evidence)
                     }
-                } else {
-                    Vec::new()
                 };
                 let phantom_eligible = !is_cli_provider
                     && (tool_calls_completed_this_turn == 0
