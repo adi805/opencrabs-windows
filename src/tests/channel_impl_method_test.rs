@@ -86,11 +86,7 @@ fn impl_methods(src: &str) -> Vec<(String, String)> {
                 && let Some(i) = toks.iter().position(|x| *x == "fn")
                 && let Some(raw) = toks.get(i + 1)
             {
-                let name: String = raw
-                    .split(|c: char| c == '(' || c == '<' || c == ':')
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
+                let name: String = raw.split(['(', '<', ':']).next().unwrap_or("").to_string();
                 if !name.is_empty() {
                     out.push((ty.clone(), name));
                 }
