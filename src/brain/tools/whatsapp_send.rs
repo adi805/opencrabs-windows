@@ -29,6 +29,7 @@ use whatsapp_rust::features::{
     NewsletterMessage, NewsletterMetadata, ParticipantChangeResponse, PictureType,
     PollVoteCiphertext, PresenceStatus, PreviousDescription, group_type,
 };
+use whatsapp_rust::lid_pn_cache::LearningSource;
 use whatsapp_rust::privacy_settings::{
     DisallowedListAction, DisallowedListUpdate, DisallowedListUserEntry, PrivacyCategory,
     PrivacyValue,
@@ -1081,7 +1082,7 @@ impl Tool for WhatsAppSendTool {
                         "set_available", "set_unavailable", "subscribe_presence",
                         "unsubscribe_presence",
                         "presence_set", "media_reupload_many",
-                        "wa_privacy",
+                        "wa_privacy", "wa_tokens",
                         "create_quiz", "vote", "decrypt_vote", "aggregate_votes",
                         "newsletter_get_metadata", "newsletter_get_metadata_by_invite",
                         "newsletter_join", "newsletter_leave",
@@ -1392,7 +1393,11 @@ impl Tool for WhatsAppSendTool {
                 },
                 "sub_op": {
                     "type": "string",
-                    "description": "For wa_privacy: which account setting to touch. Reads: fetch_privacy_settings, get_business_profile, fetch_props. Writes (all need \"confirm\": true): set_privacy_setting, set_privacy_disallowed_list, set_default_disappearing_mode, set_chat_disappearing_timer, set_client_profile, set_device_props, set_passive."
+                    "description": "For wa_privacy: which account setting to touch. Reads: fetch_privacy_settings, get_business_profile, fetch_props. Writes (all need \"confirm\": true): set_privacy_setting, set_privacy_disallowed_list, set_default_disappearing_mode, set_chat_disappearing_timer, set_client_profile, set_device_props, set_passive. For wa_tokens: tctoken_issue, tctoken_list, tctoken_get, tctoken_prune, lid_pn_get, lid_pn_migrated, lid_pn_add, rotate_signed_pre_key."
+                },
+                "lid": {
+                    "type": "string",
+                    "description": "For wa_tokens sub_op lid_pn_add: the LID user part to map, e.g. '100000012345678'. Paired with 'phone' to record one LID<->phone mapping in the local cache."
                 },
                 "confirm": {
                     "type": "boolean",
@@ -4441,6 +4446,178 @@ mark_chat_as_read, user_status_mute.",
                 }
             }
 
+            // ── wa_tokens (privacy tokens, LID mapping, key rotation) ────────
+            // #1485 follow-up. Three related but separate stores, kept behind
+            // one action with a required sub-op for the same reason wa_privacy
+            // is: they are all maintenance on state the runtime owns, not
+            // messages, so they should be findable and auditable together.
+            "wa_tokens" => {
+                let op = pget!(get_str(&input, "sub_op")).to_string();
+                match op.as_str() {
+                    "tctoken_issue" => {
+                        let jids = pget!(resolve_participants(&input));
+                        match client.tc_token().issue_tokens(&jids).await {
+                            Ok(tokens) => {
+                                let mut out =
+                                    format!("{} trusted-contact token(s) issued:", tokens.len());
+                                for t in &tokens {
+                                    out.push_str(&format!(
+                                        "\n- {}: {} byte(s), ts {}",
+                                        t.jid,
+                                        t.token.len(),
+                                        t.timestamp
+                                    ));
+                                }
+                                if tokens.is_empty() {
+                                    out.push_str(
+                                        "\n- none: the server returned no tokens for those \
+                                         contacts.",
+                                    );
+                                }
+                                Ok(ToolResult::success(out))
+                            }
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to issue trusted-contact tokens: {e}"
+                            ))),
+                        }
+                    }
+
+                    "tctoken_list" => match client.tc_token().get_all_jids().await {
+                        Ok(jids) if jids.is_empty() => Ok(ToolResult::success(
+                            "No trusted-contact tokens are stored.".to_string(),
+                        )),
+                        Ok(jids) => Ok(ToolResult::success(format!(
+                            "{} contact(s) hold a stored trusted-contact token:\n{}",
+                            jids.len(),
+                            jids.iter()
+                                .map(|j| format!("- {j}"))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        ))),
+                        Err(e) => Ok(ToolResult::error(format!(
+                            "Failed to list stored tokens: {e}"
+                        ))),
+                    },
+
+                    "tctoken_get" => {
+                        let phone = pget!(get_str(&input, "phone")).to_string();
+                        match client.tc_token().get(&phone).await {
+                            Ok(None) => Ok(ToolResult::success(format!(
+                                "No stored trusted-contact token for {phone}."
+                            ))),
+                            Ok(Some(e)) => Ok(ToolResult::success(format!(
+                                "Token for {phone}: {} byte(s), received at {}s since epoch, \
+                                 last issued to them at {}.",
+                                e.token.len(),
+                                e.token_timestamp,
+                                match e.sender_timestamp {
+                                    Some(t) => t.to_string(),
+                                    None => "never".to_string(),
+                                }
+                            ))),
+                            Err(err) => Ok(ToolResult::error(format!(
+                                "Failed to read the token for {phone}: {err}"
+                            ))),
+                        }
+                    }
+
+                    "tctoken_prune" => match client.tc_token().prune_expired().await {
+                        Ok(n) => Ok(ToolResult::success(format!(
+                            "Pruned {n} expired trusted-contact token(s)."
+                        ))),
+                        Err(e) => Ok(ToolResult::error(format!("Failed to prune tokens: {e}"))),
+                    },
+
+                    "lid_pn_get" => {
+                        let phone = pget!(get_str(&input, "phone")).to_string();
+                        let Some(jid) = broadcast::target_jid(&phone) else {
+                            return Ok(ToolResult::error(format!(
+                                "'{phone}' is not a usable phone number."
+                            )));
+                        };
+                        match client.get_lid_pn_entry(&jid).await {
+                            Ok(None) => Ok(ToolResult::success(format!(
+                                "No LID mapping is cached for {jid}."
+                            ))),
+                            Ok(Some(e)) => Ok(ToolResult::success(format!(
+                                "LID mapping for {jid}:\n  lid: {}\n  phone: {}\n  learned: {}s \
+                                 since epoch\n  source: {:?}",
+                                e.lid, e.phone_number, e.created_at, e.learning_source
+                            ))),
+                            Err(err) => Ok(ToolResult::error(format!(
+                                "Failed to read the LID mapping for {jid}: {err}"
+                            ))),
+                        }
+                    }
+
+                    "lid_pn_migrated" => Ok(ToolResult::success(format!(
+                        "LID one-on-one migration is {} for this account.",
+                        if client.is_lid_migrated().await {
+                            "enabled"
+                        } else {
+                            "not enabled"
+                        }
+                    ))),
+
+                    "lid_pn_add" => {
+                        let lid = pget!(get_str(&input, "lid")).to_string();
+                        let phone = pget!(get_str(&input, "phone")).to_string();
+                        // Recorded as `Other`: this mapping was handed to us by
+                        // a caller, not learned from a usync response or a peer
+                        // message, and mislabelling the source would corrupt any
+                        // later audit that trusts it.
+                        match client
+                            .add_lid_pn_mapping(&lid, &phone, LearningSource::Other)
+                            .await
+                        {
+                            Ok(()) => Ok(ToolResult::success(format!(
+                                "Recorded LID mapping {lid} <-> {phone} (source: caller-provided)."
+                            ))),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to record the LID mapping: {e}"
+                            ))),
+                        }
+                    }
+
+                    "rotate_signed_pre_key" => {
+                        // NOT routine. This is a manual override of the
+                        // automatic rotation cadence, it changes the key the
+                        // server hands out for this device, and a mistake here
+                        // affects whether inbound messages decrypt. Confirmed
+                        // rather than rate-limited, because the risk is
+                        // correctness, not volume.
+                        if !input
+                            .get("confirm")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
+                            return Ok(ToolResult::error(
+                                "rotate_signed_pre_key rotates this device's signed pre-key now, \
+                                 out of band from the automatic cadence. It is not a routine \
+                                 call: it changes the key the server advertises for this device. \
+                                 Pass \"confirm\": true to proceed."
+                                    .to_string(),
+                            ));
+                        }
+                        match client.rotate_signed_pre_key().await {
+                            Ok(()) => Ok(ToolResult::success(
+                                "Signed pre-key rotated; the server now advertises the new id."
+                                    .to_string(),
+                            )),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to rotate the signed pre-key: {e}"
+                            ))),
+                        }
+                    }
+
+                    other => Ok(ToolResult::error(format!(
+                        "Unknown wa_tokens sub_op '{other}'. Expected one of: tctoken_issue, \
+                         tctoken_list, tctoken_get, tctoken_prune, lid_pn_get, lid_pn_migrated, \
+                         lid_pn_add, rotate_signed_pre_key."
+                    ))),
+                }
+            }
+
             // ── groups: reads and membership ─────────────────────────────────
             // #1485 follow-up. The group surface had the admin toggles but not
             // the reads that decide which ones to use, nor the membership paths
@@ -6055,7 +6232,7 @@ mark_chat_as_read, user_status_mute.",
                  get_profile_picture, get_group_profile_picture, is_on_whatsapp, \
                  get_user_info, archive_chat, unarchive_chat, mute_chat, unmute_chat, \
                  star_message, unstar_message, clear_chat, save_contact, set_available, \
-                 set_unavailable, subscribe_presence, unsubscribe_presence, presence_set, media_reupload_many, wa_privacy, create_quiz, \
+                 set_unavailable, subscribe_presence, unsubscribe_presence, presence_set, media_reupload_many, wa_privacy, wa_tokens, create_quiz, \
                  vote, decrypt_vote, aggregate_votes, newsletter_get_metadata, \
                  newsletter_get_metadata_by_invite, newsletter_join, newsletter_leave, \
                  newsletter_create, newsletter_update, newsletter_revoke_message, newsletter_react, newsletter_set_follower_mute, newsletter_set_admin_mute, newsletter_subscribe_live_updates, newsletter_edit_message, \
