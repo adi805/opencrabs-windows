@@ -26,6 +26,14 @@ const ACTIONS: &[(&str, &str)] = &[
     ("unstar_message", "chat_actions().unstar_message("),
     ("clear_chat", "chat_actions().clear_chat("),
     ("save_contact", "chat_actions().save_contact("),
+    (
+        "delete_message_for_me",
+        "chat_actions().delete_message_for_me(",
+    ),
+    ("delete_chat", "chat_actions().delete_chat("),
+    ("mark_chat_as_read", "chat_actions().mark_chat_as_read("),
+    // This one dispatches many ops, so the receiver is what is pinned.
+    ("send_app_state_action", "client.chat_actions()"),
 ];
 
 /// The text with all whitespace removed, so an assertion does not depend on
@@ -125,6 +133,10 @@ fn chat_actions_target_a_chat_while_save_contact_targets_a_person() {
         "star_message",
         "unstar_message",
         "clear_chat",
+        "delete_message_for_me",
+        "delete_chat",
+        "mark_chat_as_read",
+        "send_app_state_action",
     ] {
         assert!(
             arm_body(action).contains("resolve_chat_jid("),
@@ -178,4 +190,20 @@ async fn resolve_chat_jid_prefers_the_group_when_one_is_named() {
         .expect("a bare group id must resolve");
     assert_eq!(jid.server, Server::Group);
     assert_eq!(jid_str, "120363012345678901@g.us");
+}
+
+/// A status mute names a PERSON, not a chat: it silences that contact's status
+/// updates. Routing it through `resolve_chat_jid` would let a `group_jid` stand
+/// in for the person being muted, so it keeps the user resolver.
+#[test]
+fn user_status_mute_targets_a_person_not_a_chat() {
+    let body = arm_body("set_user_status_mute");
+    assert!(
+        body.contains("resolve_jid("),
+        "set_user_status_mute must resolve a person through resolve_jid"
+    );
+    assert!(
+        !body.contains("resolve_chat_jid("),
+        "set_user_status_mute must not accept a `group_jid` as the person to mute"
+    );
 }

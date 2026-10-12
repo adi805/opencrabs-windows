@@ -3069,7 +3069,7 @@ impl Tool for WhatsAppSendTool {
             // message, so they carry no send budget.
             "delete_message_for_me" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -3113,7 +3113,7 @@ impl Tool for WhatsAppSendTool {
 
             "delete_chat" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -3138,7 +3138,7 @@ impl Tool for WhatsAppSendTool {
 
             "mark_chat_as_read" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -3205,7 +3205,7 @@ impl Tool for WhatsAppSendTool {
             // callers never hand-assemble a SyncActionValue.
             "send_app_state_action" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
