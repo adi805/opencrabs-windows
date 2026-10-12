@@ -19,11 +19,20 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 use wacore_binary::jid::{Jid, Server};
+use whatsapp_rust::ClientProfile;
+use whatsapp_rust::Freshness;
 use whatsapp_rust::features::{
-    CommunitySubgroup, CreateCommunityOptions, EventCreationParams, EventResponseType,
-    GroupCreateOptions, GroupDescription, GroupMetadata, GroupParticipantOptions, GroupSubject,
-    JoinGroupResult, MemberAddMode, MembershipApprovalMode, NewsletterMessage, NewsletterMetadata,
-    ParticipantChangeResponse, PictureType, PollVoteCiphertext, PreviousDescription, group_type,
+    BatchGroupResult, CommunitySubgroup, CreateCommunityOptions, EventCreationParams,
+    EventResponseType, GroupCreateOptions, GroupDescription, GroupMetadata,
+    GroupParticipantOptions, GroupSubject, JoinGroupResult, MediaRetryResult, MediaReuploadRequest,
+    MemberAddMode, MemberLinkMode, MemberShareHistoryMode, MembershipApprovalMode,
+    NewsletterMessage, NewsletterMetadata, ParticipantChangeResponse, PictureType,
+    PollVoteCiphertext, PresenceStatus, PreviousDescription, group_type,
+};
+use whatsapp_rust::lid_pn_cache::LearningSource;
+use whatsapp_rust::privacy_settings::{
+    DisallowedListAction, DisallowedListUpdate, DisallowedListUserEntry, PrivacyCategory,
+    PrivacyValue,
 };
 
 /// Reported by `wa_introspect` when a runtime call needs a live session and
@@ -890,6 +899,119 @@ async fn upload_media(
         .map_err(|e| ToolResult::error(format!("Media upload failed: {}", e)))
 }
 
+/// Probe a video's duration in whole seconds with `ffprobe`.
+///
+/// Returns `None` when ffprobe is missing, fails, or reports something that is
+/// not a finite non-negative number. A status video carries the duration as a
+/// display hint only, so a failed probe degrades the label instead of failing
+/// the send.
+async fn probe_video_duration_secs(path: &str) -> Option<u32> {
+    let out = tokio::process::Command::new("ffprobe")
+        .kill_on_drop(true)
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+        ])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let secs = text.trim().parse::<f64>().ok()?;
+    if !secs.is_finite() || secs < 0.0 {
+        return None;
+    }
+    Some(secs.round() as u32)
+}
+
+/// Build the JPEG thumbnail a video status must carry.
+///
+/// WhatsApp wants a JPEG frame next to a video status, not the video itself,
+/// so this extracts the first frame with `ffmpeg` and re-encodes it down to the
+/// status thumbnail size. Returns `None` when ffmpeg is unavailable or the
+/// frame cannot be decoded.
+async fn make_video_thumbnail(path: &str) -> Option<Vec<u8>> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let frame = std::env::temp_dir().join(format!(
+        "wa-status-frame-{}-{}.jpg",
+        std::process::id(),
+        nanos
+    ));
+    let frame_str = frame.to_string_lossy().into_owned();
+    let status = tokio::process::Command::new("ffmpeg")
+        .kill_on_drop(true)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            path,
+            "-frames:v",
+            "1",
+            "-q:v",
+            "3",
+            &frame_str,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await;
+    if !matches!(status, Ok(s) if s.success()) {
+        let _ = tokio::fs::remove_file(&frame).await;
+        return None;
+    }
+    let bytes = tokio::fs::read(&frame).await.ok();
+    let _ = tokio::fs::remove_file(&frame).await;
+    make_jpeg_thumbnail(&bytes?)
+}
+
+/// Parse a `privacy_category` argument.
+///
+/// The wire spellings are the user-facing ones (`groupadd`, `readreceipts`,
+/// `calladd`), so the caller names what WhatsApp names rather than a Rust
+/// variant. An unknown value is refused with the list instead of silently
+/// becoming `Other(..)`, which the library would pass straight to the server.
+fn parse_privacy_category(raw: &str) -> Option<PrivacyCategory> {
+    Some(match raw {
+        "last" => PrivacyCategory::Last,
+        "online" => PrivacyCategory::Online,
+        "profile" => PrivacyCategory::Profile,
+        "status" => PrivacyCategory::Status,
+        "groupadd" => PrivacyCategory::GroupAdd,
+        "readreceipts" => PrivacyCategory::ReadReceipts,
+        "calladd" => PrivacyCategory::CallAdd,
+        "messages" => PrivacyCategory::Messages,
+        "defense" => PrivacyCategory::DefenseMode,
+        _ => return None,
+    })
+}
+
+/// Parse a `privacy_value` argument. See [`parse_privacy_category`].
+fn parse_privacy_value(raw: &str) -> Option<PrivacyValue> {
+    Some(match raw {
+        "all" => PrivacyValue::All,
+        "contacts" => PrivacyValue::Contacts,
+        "none" => PrivacyValue::None,
+        "contact_blacklist" => PrivacyValue::ContactBlacklist,
+        "match_last_seen" => PrivacyValue::MatchLastSeen,
+        "known" => PrivacyValue::Known,
+        "off" => PrivacyValue::Off,
+        "on_standard" => PrivacyValue::OnStandard,
+        _ => return None,
+    })
+}
+
 /// Build a vCard string from name and phone number.
 pub(crate) fn build_vcard(name: &str, phone: &str) -> String {
     format!(
@@ -927,16 +1049,25 @@ impl Tool for WhatsAppSendTool {
                         "set_profile_picture", "remove_profile_picture",
                         "send_photo", "send_document", "send_audio", "send_video", "send_sticker",
                         "send_location", "send_contact",
-                        "react", "send_poll",
+                        "react", "send_poll", "edit",
                         "typing", "mark_read",
+                        "delete_message_for_me", "delete_chat", "mark_chat_as_read",
+                        "set_user_status_mute", "send_app_state_action",
                         "block_contact", "unblock_contact", "list_blocked",
                         "send_buttons",
-                        "status_update", "list_newsletters",
+                        "status_update", "status_revoke", "list_newsletters",
                         "create_label", "assign_label",
+                        "delete_label", "is_blocked",
+                        "get_profile_picture_with_timeout",
                         "create_group", "leave_group", "set_group_subject",
                         "set_group_description", "add_participants", "remove_participants",
                         "promote_participants", "demote_participants", "get_group_metadata",
                         "get_invite_link", "join_with_invite_code",
+                        "group_invite_info", "group_super_admins", "group_refresh_info",
+                        "group_batch_info", "group_remove_participants_linked",
+                        "group_set_member_link_mode", "group_set_member_share_history_mode",
+                        "group_update_member_label", "group_revoke_request_code",
+                        "group_join_with_admin_invite",
                         "set_announce", "set_locked", "set_ephemeral",
                         "set_membership_approval", "set_member_add_mode",
                         "set_limit_sharing", "set_group_history",
@@ -950,11 +1081,16 @@ impl Tool for WhatsAppSendTool {
                         "star_message", "unstar_message", "clear_chat", "save_contact",
                         "set_available", "set_unavailable", "subscribe_presence",
                         "unsubscribe_presence",
+                        "presence_set", "media_reupload_many",
+                        "wa_privacy", "wa_tokens",
                         "create_quiz", "vote", "decrypt_vote", "aggregate_votes",
                         "newsletter_get_metadata", "newsletter_get_metadata_by_invite",
                         "newsletter_join", "newsletter_leave",
                         "newsletter_create", "newsletter_update",
                         "newsletter_revoke_message", "newsletter_get_messages",
+                        "newsletter_react", "newsletter_set_follower_mute",
+                        "newsletter_set_admin_mute", "newsletter_subscribe_live_updates",
+                        "newsletter_edit_message",
                         "community_create", "community_deactivate",
                         "community_create_subgroup", "community_link_subgroups",
                         "community_unlink_subgroups", "community_join_subgroup",
@@ -976,11 +1112,19 @@ impl Tool for WhatsAppSendTool {
                 },
                 "message_id": {
                     "type": "string",
-                    "description": "WhatsApp message ID for reply, delete, react, mark_read, forward, star_message, unstar_message"
+                    "description": "WhatsApp message ID for reply, delete, edit, react, mark_read, forward, star_message, unstar_message"
+                },
+                "stanza_id": {
+                    "type": "string",
+                    "description": "For edit only: pin the outer stanza id to an existing message id so clients re-render that slot. Best-effort and server dependent, and the edit then skips id-keyed local state. Omit for a fresh stanza id, which is the safe default."
                 },
                 "from_me": {
                     "type": "boolean",
                     "description": "Whether the target message was sent by us (for react/mark_read/star_message/unstar_message). Default false."
+                },
+                "participant": {
+                    "type": "string",
+                    "description": "For react only: the JID of the original sender of a group or status message being reacted to. Required for a group reaction to be attributed; omit for a direct message."
                 },
                 "media_path": {
                     "type": "string",
@@ -1006,11 +1150,19 @@ impl Tool for WhatsAppSendTool {
                 "targets": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "For status_update: phone numbers to post the status to. Every one must appear in channels.whatsapp.broadcast.allowed_targets or NOTHING is sent. Omit to use the whole allowlist."
+                    "description": "For status_update / status_revoke: phone numbers to post the status to. Every one must appear in channels.whatsapp.broadcast.allowed_targets or NOTHING is sent. Omit to use the whole allowlist."
+                },
+                "status_id": {
+                    "type": "string",
+                    "description": "For status_revoke: the message id that status_update reported when the status was posted. A status cannot be listed back from the protocol, so this id is the only handle on it."
+                },
+                "duration_seconds": {
+                    "type": "integer",
+                    "description": "For status_update with a video file: the clip length in seconds. Omit to probe it with ffprobe; falls back to 0 when the probe fails."
                 },
                 "label_id": {
                     "type": "string",
-                    "description": "For create_label (omit to make a new label; supplying an existing id renames/recolors it) and assign_label (required)"
+                    "description": "For create_label (omit to make a new label; supplying an existing id renames/recolors it), assign_label (required), and delete_label (required)"
                 },
                 "label_color": {
                     "type": "integer",
@@ -1107,6 +1259,26 @@ impl Tool for WhatsAppSendTool {
                 "delete_media": {
                     "type": "boolean",
                     "description": "For clear_chat: also remove downloaded media. Default false."
+                },
+                "read": {
+                    "type": "boolean",
+                    "description": "For mark_chat_as_read: true (the default) syncs the chat as read across linked devices, false marks it unread."
+                },
+                "muted": {
+                    "type": "boolean",
+                    "description": "For set_user_status_mute: true (the default) hides that contact's status updates, false shows them again. For newsletter_set_follower_mute / newsletter_set_admin_mute: true silences that class of channel notification, false restores it (defaults to true)."
+                },
+                "from_me": {
+                    "type": "boolean",
+                    "description": "For delete_message_for_me: true when the message is your own, false (the default) when it is someone else's. Pair with 'participant' for a group message from another member."
+                },
+                "app_state": {
+                    "type": "string",
+                    "description": "For send_app_state_action: which chat-level app-state mutation to fire. One of state_mute_indefinite, state_mute_until, state_unmute, state_pin, state_unpin, state_archive, state_unarchive, state_clear, state_mark_as_read, state_user_status_mute."
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "For get_profile_picture_with_timeout: request timeout in milliseconds. Omit to use the library default."
                 },
                 "full_name": {
                     "type": "string",
@@ -1219,6 +1391,84 @@ impl Tool for WhatsAppSendTool {
                     "type": "integer",
                     "description": "For newsletter_get_messages: fetch posts older than this server_id, the pagination cursor from a previous page."
                 },
+                "sub_op": {
+                    "type": "string",
+                    "description": "For wa_privacy: which account setting to touch. Reads: fetch_privacy_settings, get_business_profile, fetch_props. Writes (all need \"confirm\": true): set_privacy_setting, set_privacy_disallowed_list, set_default_disappearing_mode, set_chat_disappearing_timer, set_client_profile, set_device_props, set_passive. For wa_tokens: tctoken_issue, tctoken_list, tctoken_get, tctoken_prune, lid_pn_get, lid_pn_migrated, lid_pn_add, rotate_signed_pre_key."
+                },
+                "lid": {
+                    "type": "string",
+                    "description": "For wa_tokens sub_op lid_pn_add: the LID user part to map, e.g. '100000012345678'. Paired with 'phone' to record one LID<->phone mapping in the local cache."
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "For the wa_privacy WRITE sub-ops: must be true or nothing is changed. Account-level settings change what this account reveals to everyone and have no undo, so they are gated harder than sending a message, which is only rate-limited."
+                },
+                "privacy_category": {
+                    "type": "string",
+                    "description": "For set_privacy_setting / set_privacy_disallowed_list: one of last, online, profile, status, groupadd, readreceipts, calladd, messages, defense."
+                },
+                "privacy_value": {
+                    "type": "string",
+                    "description": "For set_privacy_setting: one of all, contacts, none, contact_blacklist, match_last_seen, known, off, on_standard. Checked against the category before the call, because not every value is legal for every category."
+                },
+                "dhash": {
+                    "type": "string",
+                    "description": "For set_privacy_disallowed_list: the current disallowed-list hash for conflict detection, taken from a previous fetch_privacy_settings response."
+                },
+                "disallowed_users": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "For set_privacy_disallowed_list: an array of {jid, action} where action is 'add' or 'remove'. Only last, profile, status and groupadd support a disallowed list."
+                },
+                "timer_seconds": {
+                    "type": "integer",
+                    "description": "For set_default_disappearing_mode (the account default) and set_chat_disappearing_timer (one 1:1 chat): the duration in seconds. 0 disables."
+                },
+                "client_profile": {
+                    "type": "object",
+                    "description": "For set_client_profile: {device, os_version, manufacturer, locale_language, locale_country} overrides on top of the web defaults. In-memory and pairing-time only: after this account is paired it has no wire effect, so it is reported as stored rather than as applied."
+                },
+                "device_props": {
+                    "type": "object",
+                    "description": "For set_device_props: {os, require_full_sync} overrides. Pairing-time only, like client_profile."
+                },
+                "passive": {
+                    "type": "boolean",
+                    "description": "For set_passive: true keeps the connection passive, so the server holds queued messages instead of pushing them on connect."
+                },
+                "presence": {
+                    "type": "string",
+                    "description": "For presence_set: 'available' (online) or 'unavailable' (offline). The library's status enum is non-exhaustive, so a new wire value reaches this action rather than needing a new one."
+                },
+                "media_requests": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "For media_reupload_many: an array of objects, each with 'msg_id', 'chat_jid' and 'media_key' (the 32 raw key bytes, base64), plus optional 'is_from_me' (default false) and 'participant' (for group messages). One entry per expired message to ask the server to re-upload."
+                },
+                "freshness": {
+                    "type": "string",
+                    "description": "For group_refresh_info: 'cache' (default) reuses a cached snapshot and consults the server only on a miss; 'refresh' always consults the server and publishes what it returns."
+                },
+                "link_mode": {
+                    "type": "string",
+                    "description": "For group_set_member_link_mode: 'admin' (only admins may share the group link) or 'all' (every member may)."
+                },
+                "share_history_mode": {
+                    "type": "string",
+                    "description": "For group_set_member_share_history_mode: 'admin' (only admins may share message history with new members) or 'all' (every member may)."
+                },
+                "member_label": {
+                    "type": "string",
+                    "description": "For group_update_member_label: the label text to set on this group."
+                },
+                "admin_jid": {
+                    "type": "string",
+                    "description": "For group_join_with_admin_invite: the JID of the admin who issued the V4 invite. Required, because the server verifies the invite against that admin."
+                },
+                "server_id": {
+                    "type": "integer",
+                    "description": "For newsletter_react: the server-assigned id of the post to react to, as reported by newsletter_get_messages. This is NOT the message id that edit/revoke key on."
+                },
                 "event_msg_id": {
                     "type": "string",
                     "description": "For respond_event: the id of the event message being answered, as returned by create_event."
@@ -1258,8 +1508,12 @@ impl Tool for WhatsAppSendTool {
                 },
                 "debug_op": {
                     "type": "string",
-                    "enum": ["stats", "wait_for_node", "wait_for_sent_node", "acquire_raw_node", "release_raw_node", "set_resend_rate_limit", "set_skip_history_sync", "set_wanted_pre_key_count", "set_retry_admission"],
-                    "description": "For wa_introspect: which runtime call to make against the live session. Read-only ops are 'stats', 'wait_for_node' and 'wait_for_sent_node'; the rest change the running client."
+                    "enum": ["stats", "wait_for_node", "wait_for_sent_node", "acquire_raw_node", "release_raw_node", "set_resend_rate_limit", "set_skip_history_sync", "set_wanted_pre_key_count", "set_retry_admission", "identity", "identity_tags", "memory_report", "resource_report", "skip_history_sync_enabled", "wanted_pre_key_count", "mex_query", "mex_mutate", "mex_reachout_timelock"],
+                    "description": "For wa_introspect: which runtime call to make against the live session. Read-only ops: stats, wait_for_node, wait_for_sent_node, identity, identity_tags, memory_report, resource_report, skip_history_sync_enabled, wanted_pre_key_count, mex_query, mex_mutate, mex_reachout_timelock. The rest change the running client."
+                },
+                "mex_request": {
+                    "type": "object",
+                    "description": "For wa_introspect mex_query / mex_mutate: {name, doc_id, variables}. Both name and doc_id are required - the persisted query is identified by the pair, and a wrong id fails at the server with nothing to point at. variables defaults to {}."
                 },
                 "node_tag": {
                     "type": "string",
@@ -2082,29 +2336,22 @@ impl Tool for WhatsAppSendTool {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let message_key = waproto::whatsapp::MessageKey {
+                let mut message_key = waproto::whatsapp::MessageKey {
                     remote_jid: Some(jid.to_string()),
                     from_me: Some(from_me),
                     id: Some(msg_id.clone()),
                     ..Default::default()
                 };
+                // #1482-style: the lib owns the reaction envelope. Groups and
+                // status messages need the original sender on the key or the
+                // receipt cannot be attributed, and a community announcement
+                // group needs the target's message secret, which the hand-rolled
+                // proto could not supply at all.
+                if let Some(p) = input.get("participant").and_then(|v| v.as_str()) {
+                    message_key.participant = Some(p.to_string());
+                }
 
-                let reaction = waproto::whatsapp::message::ReactionMessage {
-                    key: message_key.into(),
-                    text: if emoji.is_empty() {
-                        None
-                    } else {
-                        Some(emoji.clone())
-                    },
-                    sender_timestamp_ms: Some(chrono::Utc::now().timestamp_millis()),
-                    ..Default::default()
-                };
-
-                let reaction_msg = waproto::whatsapp::Message {
-                    reaction_message: reaction.into(),
-                    ..Default::default()
-                };
-                match client.send_message(jid, reaction_msg).await {
+                match client.send_reaction(jid, message_key, &emoji).await {
                     Ok(_) => {
                         if emoji.is_empty() {
                             Ok(ToolResult::success(format!(
@@ -2119,6 +2366,50 @@ impl Tool for WhatsAppSendTool {
                         }
                     }
                     Err(e) => Ok(ToolResult::error(format!("Failed to send reaction: {}", e))),
+                }
+            }
+
+            // ── edit ────────────────────────────────────────────────────────────────
+            "edit" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                gate_send!(self, jid_str, "the edit");
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let new_text = pget!(get_str(&input, "text")).to_string();
+                let wa_msg = waproto::whatsapp::Message {
+                    conversation: Some(new_text),
+                    ..Default::default()
+                };
+                // The lib owns the edit envelope. Pinning the outer stanza id is
+                // best-effort and skips id-keyed state binding, so it is opt-in
+                // rather than the default.
+                let sent = match input.get("stanza_id").and_then(|v| v.as_str()) {
+                    Some(sid) => {
+                        client
+                            .edit_message_with_options(
+                                jid,
+                                msg_id.clone(),
+                                wa_msg,
+                                whatsapp_rust::send::EditOptions::default()
+                                    .with_stanza_id(sid.to_string()),
+                            )
+                            .await
+                    }
+                    None => client.edit_message(jid, msg_id.clone(), wa_msg).await,
+                };
+                match sent {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Message {} edited for {}.",
+                        msg_id, jid_str
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to edit message: {}", e))),
                 }
             }
 
@@ -2243,6 +2534,221 @@ impl Tool for WhatsAppSendTool {
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to mark message as read: {}",
                         e
+                    ))),
+                }
+            }
+
+            // ── chat-level app-state mutations (#wa-round2) ──────────────────
+            // These sync state across linked devices rather than sending a
+            // message, so they carry no send budget.
+            "delete_message_for_me" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let participant = pget!(resolve_optional_participant(&input));
+                let from_me = match input.get("from_me") {
+                    Some(_) => pget!(get_bool(&input, "from_me")),
+                    None => false,
+                };
+                let delete_media = match input.get("delete_media") {
+                    Some(_) => pget!(get_bool(&input, "delete_media")),
+                    None => false,
+                };
+
+                match client
+                    .chat_actions()
+                    .delete_message_for_me(
+                        &jid,
+                        participant.as_ref(),
+                        &msg_id,
+                        from_me,
+                        delete_media,
+                        None,
+                    )
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Message {} deleted for us in {}.",
+                        msg_id, jid_str
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to delete message for us: {}",
+                        e
+                    ))),
+                }
+            }
+
+            "delete_chat" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let delete_media = match input.get("delete_media") {
+                    Some(_) => pget!(get_bool(&input, "delete_media")),
+                    None => false,
+                };
+
+                match client
+                    .chat_actions()
+                    .delete_chat(&jid, delete_media, None)
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!("Chat {} deleted.", jid_str))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to delete chat: {}", e))),
+                }
+            }
+
+            "mark_chat_as_read" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let read = match input.get("read") {
+                    Some(_) => pget!(get_bool(&input, "read")),
+                    None => true,
+                };
+
+                match client
+                    .chat_actions()
+                    .mark_chat_as_read(&jid, read, None)
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Chat {} marked as {}.",
+                        jid_str,
+                        if read { "read" } else { "unread" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to mark chat as read: {}",
+                        e
+                    ))),
+                }
+            }
+
+            "set_user_status_mute" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let muted = match input.get("muted") {
+                    Some(_) => pget!(get_bool(&input, "muted")),
+                    None => true,
+                };
+
+                match client
+                    .chat_actions()
+                    .set_user_status_mute(&jid, muted)
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Status updates from {} {}.",
+                        jid_str,
+                        if muted { "muted" } else { "unmuted" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set user status mute: {}",
+                        e
+                    ))),
+                }
+            }
+
+            // One action to fire any chat-level app-state mutation by name.
+            // The proto value is built by the library wrapper for each op, so
+            // callers never hand-assemble a SyncActionValue.
+            "send_app_state_action" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let op = pget!(get_str(&input, "app_state")).to_string();
+                let actions = client.chat_actions();
+                let res = match op.as_str() {
+                    "state_mute_indefinite" => actions.mute_chat(&jid).await,
+                    "state_mute_until" => {
+                        let until = input
+                            .get("mute_until_ms")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        actions.mute_chat_until(&jid, until).await
+                    }
+                    "state_unmute" => actions.unmute_chat(&jid).await,
+                    "state_pin" => actions.pin_chat(&jid).await,
+                    "state_unpin" => actions.unpin_chat(&jid).await,
+                    "state_archive" => actions.archive_chat(&jid, None).await,
+                    "state_unarchive" => actions.unarchive_chat(&jid, None).await,
+                    "state_clear" => {
+                        let delete_starred = match input.get("delete_starred") {
+                            Some(_) => pget!(get_bool(&input, "delete_starred")),
+                            None => false,
+                        };
+                        let delete_media = match input.get("delete_media") {
+                            Some(_) => pget!(get_bool(&input, "delete_media")),
+                            None => false,
+                        };
+                        actions
+                            .clear_chat(&jid, delete_starred, delete_media, None)
+                            .await
+                    }
+                    "state_mark_as_read" => {
+                        let read = match input.get("read") {
+                            Some(_) => pget!(get_bool(&input, "read")),
+                            None => true,
+                        };
+                        actions.mark_chat_as_read(&jid, read, None).await
+                    }
+                    "state_user_status_mute" => {
+                        let muted = match input.get("muted") {
+                            Some(_) => pget!(get_bool(&input, "muted")),
+                            None => true,
+                        };
+                        actions.set_user_status_mute(&jid, muted).await
+                    }
+                    other => {
+                        return Ok(ToolResult::error(format!(
+                            "Unknown app_state '{}'. Use one of: \
+state_mute_indefinite, state_mute_until, state_unmute, state_pin, state_unpin, \
+state_archive, state_unarchive, state_clear, state_mark_as_read, \
+state_user_status_mute.",
+                            other
+                        )));
+                    }
+                };
+
+                match res {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "app_state '{}' applied to {}.",
+                        op, jid_str
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "app_state '{}' failed: {}",
+                        op, e
                     ))),
                 }
             }
@@ -2406,32 +2912,72 @@ impl Tool for WhatsAppSendTool {
                     }
                 }
                 let opts = whatsapp_rust::features::StatusSendOptions::default();
-                let posted = match media_path {
+                // A posted status cannot be listed back from the protocol, so
+                // the id returned here is the ONLY handle a caller ever gets on
+                // it: `status_revoke` has nothing to name without it. Report it
+                // on every branch.
+                let posted: std::result::Result<String, String> = match media_path {
                     Some(path) => {
                         let (bytes, mime, _filename) =
                             pget!(read_local_media(&path, "image/jpeg").await);
-                        if !mime.starts_with("image/") {
+                        if mime.starts_with("video/") {
+                            let thumbnail = match make_video_thumbnail(&path).await {
+                                Some(t) => t,
+                                None => {
+                                    return Ok(ToolResult::error(format!(
+                                        "'{path}' could not be decoded as a video frame; nothing \
+                                         was sent. Is ffmpeg installed?"
+                                    )));
+                                }
+                            };
+                            let duration =
+                                match input.get("duration_seconds").and_then(|v| v.as_u64()) {
+                                    Some(secs) => secs.min(u32::MAX as u64) as u32,
+                                    None => probe_video_duration_secs(&path).await.unwrap_or(0),
+                                };
+                            let upload = pget!(
+                                upload_media(&client, bytes, wacore::download::MediaType::Video)
+                                    .await
+                            );
+                            client
+                                .status()
+                                .send_video(
+                                    upload,
+                                    thumbnail,
+                                    duration,
+                                    text.as_deref(),
+                                    &jids,
+                                    opts,
+                                )
+                                .await
+                                .map(|r| format!("video status from {path} (id {})", r.message_id))
+                                .map_err(|e| e.to_string())
+                        } else if mime.starts_with("image/") {
+                            let thumbnail = match make_jpeg_thumbnail(&bytes) {
+                                Some(t) => t,
+                                None => {
+                                    return Ok(ToolResult::error(format!(
+                                        "'{path}' could not be decoded as an image; nothing was \
+                                         sent."
+                                    )));
+                                }
+                            };
+                            let upload = pget!(
+                                upload_media(&client, bytes, wacore::download::MediaType::Image)
+                                    .await
+                            );
+                            client
+                                .status()
+                                .send_image(upload, thumbnail, text.as_deref(), &jids, opts)
+                                .await
+                                .map(|r| format!("image status from {path} (id {})", r.message_id))
+                                .map_err(|e| e.to_string())
+                        } else {
                             return Ok(ToolResult::error(format!(
-                                "'{path}' is {mime}; a status carries text or an image, and \
-                                 nothing was sent."
+                                "'{path}' is {mime}; a status carries text, an image, or a video, \
+                                 and nothing was sent."
                             )));
                         }
-                        let thumbnail = match make_jpeg_thumbnail(&bytes) {
-                            Some(t) => t,
-                            None => {
-                                return Ok(ToolResult::error(format!(
-                                    "'{path}' could not be decoded as an image; nothing was sent."
-                                )));
-                            }
-                        };
-                        let upload = pget!(
-                            upload_media(&client, bytes, wacore::download::MediaType::Image).await
-                        );
-                        client
-                            .status()
-                            .send_image(upload, thumbnail, text.as_deref(), &jids, opts)
-                            .await
-                            .map(|_| format!("image status from {path}"))
                     }
                     None => {
                         let body = text.as_deref().unwrap_or_default();
@@ -2445,19 +2991,102 @@ impl Tool for WhatsAppSendTool {
                                 opts,
                             )
                             .await
-                            .map(|_| "text status".to_string())
+                            .map(|r| format!("text status (id {})", r.message_id))
+                            .map_err(|e| e.to_string())
                     }
                 };
                 match posted {
                     Ok(kind) => Ok(ToolResult::success(format!(
                         "Status update ({kind}) posted to {} allowlisted recipient(s), paced at \
-                         {}s (at least {}s of wall clock).",
+                         {}s (at least {}s of wall clock). Pass the id to 'status_revoke' to take \
+                         it back.",
                         jids.len(),
                         pace.as_secs(),
                         broadcast::burst_floor(jids.len(), pace).as_secs()
                     ))),
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to post the status update: {e}"
+                    ))),
+                }
+            }
+
+            // ── status_revoke ────────────────────────────────────────────────
+            // #1485 follow-up. A status cannot be listed back from the
+            // protocol, so taking one down means naming the id that
+            // `status_update` reported at post time. The same rails apply as
+            // posting: only allowlisted recipients, paced, because the revoke
+            // is encrypted to the same devices the post went to.
+            "status_revoke" => {
+                let status_id = pget!(get_str(&input, "status_id")).to_string();
+                let (allowlist, pace) = {
+                    let wa = &self.config_rx.borrow().channels.whatsapp;
+                    (
+                        wa.broadcast.allowed_targets.clone(),
+                        broadcast::delay(wa.broadcast.min_delay_seconds),
+                    )
+                };
+                let targets: Vec<String> = match input.get("targets").and_then(|v| v.as_array()) {
+                    Some(arr) => arr
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect(),
+                    None => allowlist.clone(),
+                };
+                if targets.is_empty() {
+                    return Ok(ToolResult::error(
+                        "No status recipients. Set channels.whatsapp.broadcast.allowed_targets \
+                         in config.toml, or pass 'targets'. An empty allowlist allows nobody on \
+                         purpose."
+                            .to_string(),
+                    ));
+                }
+                let (allowed, refused) = broadcast::partition(&targets, &allowlist);
+                if !refused.is_empty() {
+                    return Ok(ToolResult::error(format!(
+                        "{} target(s) are not on channels.whatsapp.broadcast.allowed_targets and \
+                         NOTHING was revoked: {}. Broadcast is opt-in per number; add them to the \
+                         config first.",
+                        refused.len(),
+                        refused
+                            .iter()
+                            .map(|t| t.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )));
+                }
+                let mut jids = Vec::with_capacity(allowed.len());
+                for target in &allowed {
+                    match broadcast::target_jid(target) {
+                        Some(jid) => jids.push(jid),
+                        None => {
+                            return Ok(ToolResult::error(format!(
+                                "'{target}' is not a usable phone number; nothing was revoked."
+                            )));
+                        }
+                    }
+                }
+                for (i, jid) in jids.iter().enumerate() {
+                    let jid_str = jid.to_string();
+                    gate_send!(self, jid_str, "the status revoke");
+                    if i > 0 {
+                        tokio::time::sleep(pace).await;
+                    }
+                }
+                let opts = whatsapp_rust::features::StatusSendOptions::default();
+                // `as_str()` keeps `status_id` usable for the report below:
+                // passing the String by value would move it and the success
+                // line would fail to compile.
+                match client
+                    .status()
+                    .revoke(status_id.as_str(), &jids, opts)
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Status '{status_id}' revoked for {} allowlisted recipient(s).",
+                        jids.len()
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to revoke the status update: {e}"
                     ))),
                 }
             }
@@ -2602,6 +3231,107 @@ impl Tool for WhatsAppSendTool {
                     ))),
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to delete {msg_id} from {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "newsletter_react" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                let server_id = match input.get("server_id").and_then(|v| v.as_u64()) {
+                    Some(id) => id,
+                    None => {
+                        return Ok(ToolResult::error(
+                            "newsletter_react needs 'server_id': the server-assigned id of the \
+                             post, which newsletter_get_messages reports for every post."
+                                .to_string(),
+                        ));
+                    }
+                };
+                let emoji = input
+                    .get("emoji")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                match client
+                    .newsletter()
+                    .send_reaction(&jid, server_id, &emoji)
+                    .await
+                {
+                    Ok(()) if emoji.is_empty() => Ok(ToolResult::success(format!(
+                        "Removed the reaction on post {server_id} in {jid}."
+                    ))),
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Reacted '{emoji}' to post {server_id} in {jid}."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to react to post {server_id} in {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "newsletter_set_follower_mute" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                let muted = input.get("muted").and_then(|v| v.as_bool()).unwrap_or(true);
+                match client.newsletter().set_follower_mute(&jid, muted).await {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Follower-activity notifications for {jid} are now {}.",
+                        if muted { "muted" } else { "on" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to change follower-activity notifications for {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "newsletter_set_admin_mute" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                let muted = input.get("muted").and_then(|v| v.as_bool()).unwrap_or(true);
+                match client.newsletter().set_admin_mute(&jid, muted).await {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Admin-activity notifications for {jid} are now {}.",
+                        if muted { "muted" } else { "on" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to change admin-activity notifications for {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "newsletter_subscribe_live_updates" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                match client
+                    .newsletter()
+                    .subscribe_live_updates(jid.clone())
+                    .await
+                {
+                    Ok(seconds) => Ok(ToolResult::success(format!(
+                        "Subscribed to live updates from {jid} for {seconds}s; the server pushes \
+                         newsletter notification stanzas until the subscription lapses."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to subscribe to live updates from {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "newsletter_edit_message" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let body = pget!(get_str(&input, "message")).to_string();
+                let new_content = waproto::whatsapp::Message {
+                    conversation: Some(body),
+                    ..Default::default()
+                };
+                match client
+                    .newsletter()
+                    .edit_message(&jid, msg_id.clone(), new_content)
+                    .await
+                {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Edited post {msg_id} in {jid}."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to edit post {msg_id} in {jid}: {e}"
                     ))),
                 }
             }
@@ -3234,6 +3964,924 @@ impl Tool for WhatsAppSendTool {
                 }
             }
 
+            "presence_set" => {
+                let status = pget!(get_str(&input, "presence"));
+                let parsed = match status {
+                    "available" => PresenceStatus::Available,
+                    "unavailable" => PresenceStatus::Unavailable,
+                    other => {
+                        return Ok(ToolResult::error(format!(
+                            "Unknown presence '{other}'; use 'available' or 'unavailable'."
+                        )));
+                    }
+                };
+                match client.presence().set(parsed).await {
+                    Ok(()) => Ok(ToolResult::success(format!("Presence set to {status}."))),
+                    Err(e) => Ok(ToolResult::error(format!("Failed to set presence: {e}"))),
+                }
+            }
+
+            "media_reupload_many" => {
+                let Some(items) = input.get("media_requests").and_then(|v| v.as_array()) else {
+                    return Ok(ToolResult::error(
+                        "media_reupload_many needs 'media_requests': an array of objects, each \
+                         with 'msg_id', 'chat_jid' and 'media_key' (base64), plus optional \
+                         'is_from_me' and 'participant'."
+                            .to_string(),
+                    ));
+                };
+                if items.is_empty() {
+                    return Ok(ToolResult::error(
+                        "'media_requests' must name at least one request.".to_string(),
+                    ));
+                }
+                // Owned first: every field of the request struct is a borrow,
+                // so the storage has to outlive the slice built from it.
+                let mut owned: Vec<(String, Jid, Vec<u8>, bool, Option<Jid>)> =
+                    Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    let msg_id = match item.get("msg_id").and_then(|v| v.as_str()) {
+                        Some(s) if !s.is_empty() => s.to_string(),
+                        _ => {
+                            return Ok(ToolResult::error(format!(
+                                "media_requests[{i}] needs a non-empty 'msg_id'."
+                            )));
+                        }
+                    };
+                    let chat_raw = match item.get("chat_jid").and_then(|v| v.as_str()) {
+                        Some(s) if !s.is_empty() => s,
+                        _ => {
+                            return Ok(ToolResult::error(format!(
+                                "media_requests[{i}] needs a non-empty 'chat_jid'."
+                            )));
+                        }
+                    };
+                    let chat_jid: Jid = match chat_raw.parse() {
+                        Ok(j) => j,
+                        Err(e) => {
+                            return Ok(ToolResult::error(format!(
+                                "media_requests[{i}] has an invalid 'chat_jid' '{chat_raw}': {e}"
+                            )));
+                        }
+                    };
+                    let media_key = match item.get("media_key").and_then(|v| v.as_str()) {
+                        Some(s) => {
+                            use base64::Engine as _;
+                            match base64::engine::general_purpose::STANDARD.decode(s) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    return Ok(ToolResult::error(format!(
+                                        "media_requests[{i}] has a 'media_key' that is not valid \
+                                         base64: {e}"
+                                    )));
+                                }
+                            }
+                        }
+                        None => {
+                            return Ok(ToolResult::error(format!(
+                                "media_requests[{i}] needs 'media_key' (the 32 raw key bytes, \
+                                 base64-encoded)."
+                            )));
+                        }
+                    };
+                    let is_from_me = item
+                        .get("is_from_me")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let participant = match item.get("participant").and_then(|v| v.as_str()) {
+                        Some(s) if !s.is_empty() => match s.parse::<Jid>() {
+                            Ok(j) => Some(j),
+                            Err(e) => {
+                                return Ok(ToolResult::error(format!(
+                                    "media_requests[{i}] has an invalid 'participant' '{s}': {e}"
+                                )));
+                            }
+                        },
+                        _ => None,
+                    };
+                    owned.push((msg_id, chat_jid, media_key, is_from_me, participant));
+                }
+                let reqs: Vec<MediaReuploadRequest<'_>> = owned
+                    .iter()
+                    .map(|(msg_id, chat_jid, media_key, is_from_me, participant)| {
+                        MediaReuploadRequest {
+                            msg_id: msg_id.as_str(),
+                            chat_jid,
+                            media_key: media_key.as_slice(),
+                            is_from_me: *is_from_me,
+                            participant: participant.as_ref(),
+                        }
+                    })
+                    .collect();
+                let results = client.media_reupload().request_many(&reqs).await;
+                let mut out = format!("Re-upload requested for {} item(s):", results.len());
+                let mut recovered = 0usize;
+                for (i, r) in results.iter().enumerate() {
+                    let id = &owned[i].0;
+                    match r {
+                        Ok(MediaRetryResult::Success { direct_path }) => {
+                            recovered += 1;
+                            out.push_str(&format!("\n- {id}: fresh direct path {direct_path}"));
+                        }
+                        Ok(other) => out.push_str(&format!(
+                            "\n- {id}: the server declined ({other:?}); the blob is gone rather \
+                             than merely stale"
+                        )),
+                        Err(e) => out.push_str(&format!("\n- {id}: {e}")),
+                    }
+                }
+                out.push_str(&format!("\n{recovered} of {} recovered.", results.len()));
+                Ok(ToolResult::success(out))
+            }
+
+            // ── wa_privacy (account-level settings) ──────────────────────────
+            // #1485 follow-up. Everything here changes what THIS ACCOUNT
+            // reveals, or how it presents itself to the server, rather than
+            // what one chat sees. There is no undo on the wire: a message can
+            // be deleted, a privacy change cannot be taken back once the
+            // server has told every contact's client about it. That is why
+            // these writes demand an explicit `confirm` on top of any rate
+            // limit, and why they are grouped under one action with a
+            // required sub-op: the whole write surface is auditable in one
+            // place instead of scattered across ten near-identical actions.
+            "wa_privacy" => {
+                const WRITE_OPS: &[&str] = &[
+                    "set_privacy_setting",
+                    "set_privacy_disallowed_list",
+                    "set_default_disappearing_mode",
+                    "set_chat_disappearing_timer",
+                    "set_client_profile",
+                    "set_device_props",
+                    "set_passive",
+                ];
+                let op = pget!(get_str(&input, "sub_op")).to_string();
+                let confirmed = input
+                    .get("confirm")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if WRITE_OPS.contains(&op.as_str()) && !confirmed {
+                    return Ok(ToolResult::error(format!(
+                        "wa_privacy '{op}' is an account-level write and needs \"confirm\": true. \
+                         It changes what this account reveals to everyone, the server propagates \
+                         it to other clients, and there is no undo (unlike deleting a message). \
+                         Nothing was changed."
+                    )));
+                }
+                match op.as_str() {
+                    "fetch_privacy_settings" => match client.fetch_privacy_settings().await {
+                        Ok(r) => {
+                            let mut out = format!("{} privacy setting(s):", r.settings.len());
+                            for s in &r.settings {
+                                out.push_str(&format!("\n- {:?}: {:?}", s.category, s.value));
+                            }
+                            Ok(ToolResult::success(out))
+                        }
+                        Err(e) => Ok(ToolResult::error(format!(
+                            "Failed to fetch privacy settings: {e}"
+                        ))),
+                    },
+
+                    "set_privacy_setting" => {
+                        let cat_raw = pget!(get_str(&input, "privacy_category")).to_string();
+                        let val_raw = pget!(get_str(&input, "privacy_value")).to_string();
+                        let Some(category) = parse_privacy_category(&cat_raw) else {
+                            return Ok(ToolResult::error(format!(
+                                "Unknown privacy_category '{cat_raw}'. Expected one of: last, \
+                                 online, profile, status, groupadd, readreceipts, calladd, \
+                                 messages, defense."
+                            )));
+                        };
+                        let Some(value) = parse_privacy_value(&val_raw) else {
+                            return Ok(ToolResult::error(format!(
+                                "Unknown privacy_value '{val_raw}'. Expected one of: all, \
+                                 contacts, none, contact_blacklist, match_last_seen, known, off, \
+                                 on_standard."
+                            )));
+                        };
+                        // Checked locally: the server rejects an illegal pair
+                        // with a bare failure, and a caller cannot tell a bad
+                        // combination from a network problem.
+                        if !category.is_valid_value(&value) {
+                            return Ok(ToolResult::error(format!(
+                                "'{val_raw}' is not a legal value for '{cat_raw}'. Nothing was \
+                                 changed."
+                            )));
+                        }
+                        match client.set_privacy_setting(category, value).await {
+                            Ok(r) => Ok(ToolResult::success(format!(
+                                "Privacy '{cat_raw}' set to '{val_raw}'{}.",
+                                match r.dhash.as_deref() {
+                                    Some(d) => format!(" (dhash {d})"),
+                                    None => String::new(),
+                                }
+                            ))),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to set privacy '{cat_raw}': {e}"
+                            ))),
+                        }
+                    }
+
+                    "set_privacy_disallowed_list" => {
+                        let cat_raw = pget!(get_str(&input, "privacy_category")).to_string();
+                        let Some(category) = parse_privacy_category(&cat_raw) else {
+                            return Ok(ToolResult::error(format!(
+                                "Unknown privacy_category '{cat_raw}'."
+                            )));
+                        };
+                        let dhash = pget!(get_str(&input, "dhash")).to_string();
+                        let Some(entries) =
+                            input.get("disallowed_users").and_then(|v| v.as_array())
+                        else {
+                            return Ok(ToolResult::error(
+                                "set_privacy_disallowed_list needs 'disallowed_users': an array \
+                                 of {jid, action} where action is 'add' or 'remove'."
+                                    .to_string(),
+                            ));
+                        };
+                        let mut users = Vec::with_capacity(entries.len());
+                        for (i, entry) in entries.iter().enumerate() {
+                            let jid_raw = match entry.get("jid").and_then(|v| v.as_str()) {
+                                Some(s) if !s.is_empty() => s,
+                                _ => {
+                                    return Ok(ToolResult::error(format!(
+                                        "disallowed_users[{i}] needs a non-empty 'jid'."
+                                    )));
+                                }
+                            };
+                            let jid: Jid = match jid_raw.parse() {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    return Ok(ToolResult::error(format!(
+                                        "disallowed_users[{i}] has an invalid 'jid' \
+                                         '{jid_raw}': {e}"
+                                    )));
+                                }
+                            };
+                            let action = match entry
+                                .get("action")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("add")
+                            {
+                                "add" => DisallowedListAction::Add,
+                                "remove" => DisallowedListAction::Remove,
+                                other => {
+                                    return Ok(ToolResult::error(format!(
+                                        "disallowed_users[{i}] has an unknown action '{other}'; \
+                                         use 'add' or 'remove'."
+                                    )));
+                                }
+                            };
+                            users.push(DisallowedListUserEntry {
+                                action,
+                                jid,
+                                pn_jid: None,
+                            });
+                        }
+                        let update = DisallowedListUpdate { dhash, users };
+                        match client.set_privacy_disallowed_list(category, update).await {
+                            Ok(r) => Ok(ToolResult::success(format!(
+                                "Disallowed list for '{cat_raw}' updated for {} entr(ies){}.",
+                                entries.len(),
+                                match r.dhash.as_deref() {
+                                    Some(d) => format!("; new dhash {d}"),
+                                    None => String::new(),
+                                }
+                            ))),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to update the disallowed list for '{cat_raw}': {e}"
+                            ))),
+                        }
+                    }
+
+                    "set_default_disappearing_mode" => {
+                        let secs = match input.get("timer_seconds").and_then(|v| v.as_u64()) {
+                            Some(s) => s.min(u32::MAX as u64) as u32,
+                            None => {
+                                return Ok(ToolResult::error(
+                                    "set_default_disappearing_mode needs 'timer_seconds' (0 \
+                                     disables)."
+                                        .to_string(),
+                                ));
+                            }
+                        };
+                        match client.set_default_disappearing_mode(secs).await {
+                            Ok(()) => Ok(ToolResult::success(format!(
+                                "Account default disappearing timer set to {secs}s{}.",
+                                if secs == 0 { " (disabled)" } else { "" }
+                            ))),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to set the default disappearing timer: {e}"
+                            ))),
+                        }
+                    }
+
+                    "set_chat_disappearing_timer" => {
+                        // 1:1 only, and it delivers a protocol message, so it
+                        // is charged to the send budget like any other send.
+                        let (jid, jid_str) = pget!(
+                            resolve_jid(
+                                &input,
+                                &self.whatsapp_state,
+                                &self.config_rx,
+                                context.session_id
+                            )
+                            .await
+                        );
+                        gate_send!(self, jid_str, "the disappearing-timer change");
+                        let secs = match input.get("timer_seconds").and_then(|v| v.as_u64()) {
+                            Some(s) => s.min(u32::MAX as u64) as u32,
+                            None => {
+                                return Ok(ToolResult::error(
+                                    "set_chat_disappearing_timer needs 'timer_seconds' (0 \
+                                     disables)."
+                                        .to_string(),
+                                ));
+                            }
+                        };
+                        match client.set_chat_disappearing_timer(jid, secs).await {
+                            Ok(r) => Ok(ToolResult::success(format!(
+                                "Disappearing timer for {jid_str} set to {secs}s (id {}).",
+                                r.message_id
+                            ))),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to set the disappearing timer for {jid_str}: {e}"
+                            ))),
+                        }
+                    }
+
+                    "get_business_profile" => {
+                        let phone = pget!(get_str(&input, "phone")).to_string();
+                        let Some(jid) = broadcast::target_jid(&phone) else {
+                            return Ok(ToolResult::error(format!(
+                                "'{phone}' is not a usable phone number."
+                            )));
+                        };
+                        match client.get_business_profile(&jid).await {
+                            Ok(None) => Ok(ToolResult::success(format!(
+                                "{jid} has no business profile (not a WhatsApp Business account)."
+                            ))),
+                            Ok(Some(bp)) => {
+                                let mut out = format!("Business profile for {jid}:");
+                                if !bp.description.is_empty() {
+                                    out.push_str(&format!("\n  description: {}", bp.description));
+                                }
+                                if let Some(email) = bp.email.as_deref() {
+                                    out.push_str(&format!("\n  email: {email}"));
+                                }
+                                if !bp.website.is_empty() {
+                                    out.push_str(&format!(
+                                        "\n  website: {}",
+                                        bp.website.join(", ")
+                                    ));
+                                }
+                                if let Some(addr) = bp.address.as_deref() {
+                                    out.push_str(&format!("\n  address: {addr}"));
+                                }
+                                out.push_str(&format!("\n  categories: {}", bp.categories.len()));
+                                Ok(ToolResult::success(out))
+                            }
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to read the business profile for {jid}: {e}"
+                            ))),
+                        }
+                    }
+
+                    "set_client_profile" => {
+                        let Some(obj) = input.get("client_profile") else {
+                            return Ok(ToolResult::error(
+                                "set_client_profile needs 'client_profile': an object with any of \
+                                 device, os_version, manufacturer, locale_language, \
+                                 locale_country."
+                                    .to_string(),
+                            ));
+                        };
+                        let mut profile = ClientProfile::web();
+                        let mut changed: Vec<String> = Vec::new();
+                        for (key, slot) in [
+                            ("device", &mut profile.device),
+                            ("os_version", &mut profile.os_version),
+                            ("manufacturer", &mut profile.manufacturer),
+                            ("locale_language", &mut profile.locale_language),
+                            ("locale_country", &mut profile.locale_country),
+                        ] {
+                            if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
+                                *slot = v.to_string();
+                                changed.push(format!("{key}={v}"));
+                            }
+                        }
+                        if changed.is_empty() {
+                            return Ok(ToolResult::error(
+                                "client_profile named none of device, os_version, manufacturer, \
+                                 locale_language, locale_country; nothing was changed."
+                                    .to_string(),
+                            ));
+                        }
+                        client.set_client_profile(profile).await;
+                        Ok(ToolResult::success(format!(
+                            "Stored client profile ({}). This is pairing-time and in-memory: it \
+                             shapes the next connection's ClientPayload, and on an already \
+                             paired account it has no wire effect.",
+                            changed.join(", ")
+                        )))
+                    }
+
+                    "fetch_props" => match client.fetch_props().await {
+                        Ok(()) => Ok(ToolResult::success(
+                            "Server properties fetched and the local cache refreshed.".to_string(),
+                        )),
+                        Err(e) => Ok(ToolResult::error(format!(
+                            "Failed to fetch server properties: {e}"
+                        ))),
+                    },
+
+                    "set_device_props" => {
+                        let Some(obj) = input.get("device_props") else {
+                            return Ok(ToolResult::error(
+                                "set_device_props needs 'device_props': an object with 'os' \
+                                 and/or 'require_full_sync'."
+                                    .to_string(),
+                            ));
+                        };
+                        let mut over = wacore::store::DevicePropsOverride::new();
+                        let mut changed: Vec<String> = Vec::new();
+                        if let Some(os) = obj.get("os").and_then(|v| v.as_str()) {
+                            over.os = Some(os.to_string());
+                            changed.push(format!("os={os}"));
+                        }
+                        if let Some(b) = obj.get("require_full_sync").and_then(|v| v.as_bool()) {
+                            over.require_full_sync = Some(b);
+                            changed.push(format!("require_full_sync={b}"));
+                        }
+                        if changed.is_empty() {
+                            return Ok(ToolResult::error(
+                                "device_props named neither 'os' nor 'require_full_sync'; nothing \
+                                 was changed."
+                                    .to_string(),
+                            ));
+                        }
+                        client.set_device_props(over).await;
+                        Ok(ToolResult::success(format!(
+                            "Stored device props ({}). Pairing-time only: applied on the next \
+                             pairing, no wire effect on an already paired account.",
+                            changed.join(", ")
+                        )))
+                    }
+
+                    "set_passive" => {
+                        let passive = pget!(get_bool(&input, "passive"));
+                        match client.set_passive(passive).await {
+                            Ok(()) => Ok(ToolResult::success(format!(
+                                "Passive mode is now {passive}: the server {} push queued \
+                                 messages on connect.",
+                                if passive { "will hold" } else { "will" }
+                            ))),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to set passive mode: {e}"
+                            ))),
+                        }
+                    }
+
+                    other => Ok(ToolResult::error(format!(
+                        "Unknown wa_privacy sub_op '{other}'. Reads: fetch_privacy_settings, \
+                         get_business_profile, fetch_props. Writes: set_privacy_setting, \
+                         set_privacy_disallowed_list, set_default_disappearing_mode, \
+                         set_chat_disappearing_timer, set_client_profile, set_device_props, \
+                         set_passive."
+                    ))),
+                }
+            }
+
+            // ── wa_tokens (privacy tokens, LID mapping, key rotation) ────────
+            // #1485 follow-up. Three related but separate stores, kept behind
+            // one action with a required sub-op for the same reason wa_privacy
+            // is: they are all maintenance on state the runtime owns, not
+            // messages, so they should be findable and auditable together.
+            "wa_tokens" => {
+                let op = pget!(get_str(&input, "sub_op")).to_string();
+                match op.as_str() {
+                    "tctoken_issue" => {
+                        let jids = pget!(resolve_participants(&input));
+                        match client.tc_token().issue_tokens(&jids).await {
+                            Ok(tokens) => {
+                                let mut out =
+                                    format!("{} trusted-contact token(s) issued:", tokens.len());
+                                for t in &tokens {
+                                    out.push_str(&format!(
+                                        "\n- {}: {} byte(s), ts {}",
+                                        t.jid,
+                                        t.token.len(),
+                                        t.timestamp
+                                    ));
+                                }
+                                if tokens.is_empty() {
+                                    out.push_str(
+                                        "\n- none: the server returned no tokens for those \
+                                         contacts.",
+                                    );
+                                }
+                                Ok(ToolResult::success(out))
+                            }
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to issue trusted-contact tokens: {e}"
+                            ))),
+                        }
+                    }
+
+                    "tctoken_list" => match client.tc_token().get_all_jids().await {
+                        Ok(jids) if jids.is_empty() => Ok(ToolResult::success(
+                            "No trusted-contact tokens are stored.".to_string(),
+                        )),
+                        Ok(jids) => Ok(ToolResult::success(format!(
+                            "{} contact(s) hold a stored trusted-contact token:\n{}",
+                            jids.len(),
+                            jids.iter()
+                                .map(|j| format!("- {j}"))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        ))),
+                        Err(e) => Ok(ToolResult::error(format!(
+                            "Failed to list stored tokens: {e}"
+                        ))),
+                    },
+
+                    "tctoken_get" => {
+                        let phone = pget!(get_str(&input, "phone")).to_string();
+                        match client.tc_token().get(&phone).await {
+                            Ok(None) => Ok(ToolResult::success(format!(
+                                "No stored trusted-contact token for {phone}."
+                            ))),
+                            Ok(Some(e)) => Ok(ToolResult::success(format!(
+                                "Token for {phone}: {} byte(s), received at {}s since epoch, \
+                                 last issued to them at {}.",
+                                e.token.len(),
+                                e.token_timestamp,
+                                match e.sender_timestamp {
+                                    Some(t) => t.to_string(),
+                                    None => "never".to_string(),
+                                }
+                            ))),
+                            Err(err) => Ok(ToolResult::error(format!(
+                                "Failed to read the token for {phone}: {err}"
+                            ))),
+                        }
+                    }
+
+                    "tctoken_prune" => match client.tc_token().prune_expired().await {
+                        Ok(n) => Ok(ToolResult::success(format!(
+                            "Pruned {n} expired trusted-contact token(s)."
+                        ))),
+                        Err(e) => Ok(ToolResult::error(format!("Failed to prune tokens: {e}"))),
+                    },
+
+                    "lid_pn_get" => {
+                        let phone = pget!(get_str(&input, "phone")).to_string();
+                        let Some(jid) = broadcast::target_jid(&phone) else {
+                            return Ok(ToolResult::error(format!(
+                                "'{phone}' is not a usable phone number."
+                            )));
+                        };
+                        match client.get_lid_pn_entry(&jid).await {
+                            Ok(None) => Ok(ToolResult::success(format!(
+                                "No LID mapping is cached for {jid}."
+                            ))),
+                            Ok(Some(e)) => Ok(ToolResult::success(format!(
+                                "LID mapping for {jid}:\n  lid: {}\n  phone: {}\n  learned: {}s \
+                                 since epoch\n  source: {:?}",
+                                e.lid, e.phone_number, e.created_at, e.learning_source
+                            ))),
+                            Err(err) => Ok(ToolResult::error(format!(
+                                "Failed to read the LID mapping for {jid}: {err}"
+                            ))),
+                        }
+                    }
+
+                    "lid_pn_migrated" => Ok(ToolResult::success(format!(
+                        "LID one-on-one migration is {} for this account.",
+                        if client.is_lid_migrated().await {
+                            "enabled"
+                        } else {
+                            "not enabled"
+                        }
+                    ))),
+
+                    "lid_pn_add" => {
+                        let lid = pget!(get_str(&input, "lid")).to_string();
+                        let phone = pget!(get_str(&input, "phone")).to_string();
+                        // Recorded as `Other`: this mapping was handed to us by
+                        // a caller, not learned from a usync response or a peer
+                        // message, and mislabelling the source would corrupt any
+                        // later audit that trusts it.
+                        match client
+                            .add_lid_pn_mapping(&lid, &phone, LearningSource::Other)
+                            .await
+                        {
+                            Ok(()) => Ok(ToolResult::success(format!(
+                                "Recorded LID mapping {lid} <-> {phone} (source: caller-provided)."
+                            ))),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to record the LID mapping: {e}"
+                            ))),
+                        }
+                    }
+
+                    "rotate_signed_pre_key" => {
+                        // NOT routine. This is a manual override of the
+                        // automatic rotation cadence, it changes the key the
+                        // server hands out for this device, and a mistake here
+                        // affects whether inbound messages decrypt. Confirmed
+                        // rather than rate-limited, because the risk is
+                        // correctness, not volume.
+                        if !input
+                            .get("confirm")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
+                            return Ok(ToolResult::error(
+                                "rotate_signed_pre_key rotates this device's signed pre-key now, \
+                                 out of band from the automatic cadence. It is not a routine \
+                                 call: it changes the key the server advertises for this device. \
+                                 Pass \"confirm\": true to proceed."
+                                    .to_string(),
+                            ));
+                        }
+                        match client.rotate_signed_pre_key().await {
+                            Ok(()) => Ok(ToolResult::success(
+                                "Signed pre-key rotated; the server now advertises the new id."
+                                    .to_string(),
+                            )),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to rotate the signed pre-key: {e}"
+                            ))),
+                        }
+                    }
+
+                    other => Ok(ToolResult::error(format!(
+                        "Unknown wa_tokens sub_op '{other}'. Expected one of: tctoken_issue, \
+                         tctoken_list, tctoken_get, tctoken_prune, lid_pn_get, lid_pn_migrated, \
+                         lid_pn_add, rotate_signed_pre_key."
+                    ))),
+                }
+            }
+
+            // ── groups: reads and membership ─────────────────────────────────
+            // #1485 follow-up. The group surface had the admin toggles but not
+            // the reads that decide which ones to use, nor the membership paths
+            // that go through a linked community. Every arm resolves through
+            // `resolve_group_jid` (or `resolve_group_jids` for the batch), so
+            // the send-scope gate and the `@g.us` check are the same ones the
+            // existing group arms carry.
+            "group_invite_info" => {
+                let code = pget!(get_str(&input, "invite_code")).to_string();
+                match client.groups().get_invite_info(&code).await {
+                    Ok(m) => Ok(ToolResult::success(format!(
+                        "Invite '{code}' points at {} ('{}') with {} participant(s); reading an \
+                         invite does not join it.\n  locked: {}\n  announcement-only: {}",
+                        m.id,
+                        m.subject,
+                        m.size.unwrap_or(m.participants.len() as u32),
+                        m.is_locked,
+                        m.is_announcement
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to read that invite: {e}"
+                    ))),
+                }
+            }
+
+            "group_super_admins" => {
+                let jid = pget!(resolve_group_jid(&input));
+                match client.groups().get_metadata(&jid).await {
+                    Ok(m) => {
+                        let supers: Vec<String> = m
+                            .participants
+                            .iter()
+                            .filter(|p| p.is_super_admin())
+                            .map(|p| p.jid.to_string())
+                            .collect();
+                        if supers.is_empty() {
+                            Ok(ToolResult::success(format!(
+                                "{jid} lists no super-admin participant ({} participant(s) seen). \
+                                 Ordinary admins are reported by get_group_metadata.",
+                                m.participants.len()
+                            )))
+                        } else {
+                            Ok(ToolResult::success(format!(
+                                "{} super admin(s) in {jid}:\n{}",
+                                supers.len(),
+                                supers
+                                    .iter()
+                                    .map(|s| format!("- {s}"))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            )))
+                        }
+                    }
+                    Err(e) => Ok(ToolResult::error(format!("Failed to read {jid}: {e}"))),
+                }
+            }
+
+            "group_refresh_info" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let freshness = match input.get("freshness").and_then(|v| v.as_str()) {
+                    None | Some("cache") => Freshness::CachePreferred,
+                    Some("refresh") => Freshness::Refresh,
+                    Some(other) => {
+                        return Ok(ToolResult::error(format!(
+                            "Unknown freshness '{other}'; use 'cache' (default) or 'refresh'."
+                        )));
+                    }
+                };
+                // The payload is a cache type the tool cannot name, so this
+                // reports the resolution and not a field dump: what the caller
+                // needs to know is which snapshot the cache now holds.
+                let label = format!("{freshness:?}");
+                match client
+                    .groups()
+                    .query_info_with_freshness(&jid, freshness)
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Group info for {jid} resolved with freshness {label}; the cached snapshot \
+                         now holds what the server returned."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to refresh info for {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "group_batch_info" => {
+                let jids = pget!(resolve_group_jids(&input));
+                let count = jids.len();
+                match client.groups().batch_get_info(jids).await {
+                    Ok(results) => {
+                        let mut out = format!("Batch info for {count} group(s):");
+                        for r in &results {
+                            match r {
+                                BatchGroupResult::Full(m) => out.push_str(&format!(
+                                    "\n- {} ('{}'): {} participant(s)",
+                                    m.id,
+                                    m.subject,
+                                    m.size.unwrap_or(m.participants.len() as u32)
+                                )),
+                                BatchGroupResult::Truncated { id, size } => {
+                                    out.push_str(&format!(
+                                        "\n- {id}: truncated by the server (size {})",
+                                        match size {
+                                            Some(s) => s.to_string(),
+                                            None => "unknown".to_string(),
+                                        }
+                                    ));
+                                }
+                                BatchGroupResult::Forbidden(id) => {
+                                    out.push_str(&format!("\n- {id}: forbidden"));
+                                }
+                                BatchGroupResult::NotFound(id) => {
+                                    out.push_str(&format!("\n- {id}: not found"));
+                                }
+                            }
+                        }
+                        Ok(ToolResult::success(out))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to batch-read {count} group(s): {e}"
+                    ))),
+                }
+            }
+
+            "group_remove_participants_linked" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let participants = pget!(resolve_participants(&input));
+                match client
+                    .groups()
+                    .remove_participants_including_linked_groups(jid.clone(), &participants)
+                    .await
+                {
+                    Ok(changes) => Ok(ToolResult::success(format!(
+                        "Removed from {jid} and every linked subgroup: {}",
+                        summarize_participant_changes(&changes)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to remove participants: {e}"
+                    ))),
+                }
+            }
+
+            "group_set_member_link_mode" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let mode = match pget!(get_str(&input, "link_mode")) {
+                    "admin" => MemberLinkMode::AdminLink,
+                    "all" => MemberLinkMode::AllMemberLink,
+                    other => {
+                        return Ok(ToolResult::error(format!(
+                            "Unknown link_mode '{other}'; use 'admin' or 'all'."
+                        )));
+                    }
+                };
+                match client.groups().set_member_link_mode(&jid, mode).await {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Member link mode for {jid} updated."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set the member link mode: {e}"
+                    ))),
+                }
+            }
+
+            "group_set_member_share_history_mode" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let mode = match pget!(get_str(&input, "share_history_mode")) {
+                    "admin" => MemberShareHistoryMode::AdminShare,
+                    "all" => MemberShareHistoryMode::AllMemberShare,
+                    other => {
+                        return Ok(ToolResult::error(format!(
+                            "Unknown share_history_mode '{other}'; use 'admin' or 'all'."
+                        )));
+                    }
+                };
+                match client
+                    .groups()
+                    .set_member_share_history_mode(&jid, mode)
+                    .await
+                {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "History-share mode for {jid} updated."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set the history-share mode: {e}"
+                    ))),
+                }
+            }
+
+            "group_update_member_label" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let label = pget!(get_str(&input, "member_label")).to_string();
+                match client
+                    .groups()
+                    .update_member_label(jid.clone(), label)
+                    .await
+                {
+                    Ok(()) => Ok(ToolResult::success(format!("Member label for {jid} set."))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to set the member label: {e}"
+                    ))),
+                }
+            }
+
+            "group_revoke_request_code" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let participants = pget!(resolve_participants(&input));
+                match client
+                    .groups()
+                    .revoke_request_code(jid.clone(), &participants)
+                    .await
+                {
+                    Ok(changes) => Ok(ToolResult::success(format!(
+                        "Revoked request codes in {jid}: {}",
+                        summarize_participant_changes(&changes)
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to revoke the request codes: {e}"
+                    ))),
+                }
+            }
+
+            "group_join_with_admin_invite" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let code = pget!(get_str(&input, "invite_code")).to_string();
+                let admin_raw = pget!(get_str(&input, "admin_jid")).to_string();
+                // Parsed here rather than passed as a string: the library takes
+                // `impl Into<Jid>`, and a raw string is not one of those.
+                let admin_jid: Jid = match admin_raw.parse() {
+                    Ok(j) => j,
+                    Err(e) => {
+                        return Ok(ToolResult::error(format!(
+                            "Invalid admin_jid '{admin_raw}': {e}"
+                        )));
+                    }
+                };
+                let expiration = input
+                    .get("expiration")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                match client
+                    .groups()
+                    .join_with_invite_v4(jid.clone(), &code, expiration, admin_jid)
+                    .await
+                {
+                    Ok(JoinGroupResult::Joined(j)) => Ok(ToolResult::success(format!(
+                        "Joined group {j} via the V4 invite."
+                    ))),
+                    Ok(JoinGroupResult::PendingApproval(j)) => Ok(ToolResult::success(format!(
+                        "Request to join {j} sent via the V4 invite; an admin must approve it \
+                         before you are a member."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to use that V4 invite: {e}"
+                    ))),
+                }
+            }
+
             // ── groups: policy and admin ─────────────────────────────────────
             // The settings an admin toggles. Each arm takes the value it is
             // setting, required rather than defaulted: a group policy that flips
@@ -3601,6 +5249,79 @@ impl Tool for WhatsAppSendTool {
                     None => false,
                 };
                 match client.contacts().get_profile_picture(&jid, preview).await {
+                    Ok(Some(pic)) => Ok(ToolResult::success(format!(
+                        "{jid_str}: {} profile picture at {} (id {}).",
+                        if preview { "preview" } else { "full-size" },
+                        pic.url,
+                        pic.id
+                    ))),
+                    Ok(None) => Ok(ToolResult::success(format!(
+                        "{jid_str}: no profile picture is visible to this account."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to fetch the profile picture for {jid_str}: {e}"
+                    ))),
+                }
+            }
+
+            "delete_label" => {
+                let label_id = pget!(get_str(&input, "label_id")).to_string();
+                match client.labels().delete_label(&label_id).await {
+                    Ok(_) => Ok(ToolResult::success(format!("Label {} deleted.", label_id))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to delete label {}: {}",
+                        label_id, e
+                    ))),
+                }
+            }
+
+            "is_blocked" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                match client.blocking().is_blocked(&jid).await {
+                    Ok(true) => Ok(ToolResult::success(format!("{} is blocked.", jid_str))),
+                    Ok(false) => Ok(ToolResult::success(format!("{} is not blocked.", jid_str))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to check whether {} is blocked: {}",
+                        jid_str, e
+                    ))),
+                }
+            }
+
+            // Same fetch as `get_profile_picture`, with the request timeout
+            // overridable so a slow or silent server cannot hold the call for
+            // the library default.
+            "get_profile_picture_with_timeout" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let preview = match input.get("preview") {
+                    Some(_) => pget!(get_bool(&input, "preview")),
+                    None => false,
+                };
+                let timeout = input
+                    .get("timeout_ms")
+                    .and_then(|v| v.as_u64())
+                    .map(std::time::Duration::from_millis);
+
+                match client
+                    .contacts()
+                    .get_profile_picture_with_timeout(&jid, preview, timeout)
+                    .await
+                {
                     Ok(Some(pic)) => Ok(ToolResult::success(format!(
                         "{jid_str}: {} profile picture at {} (id {}).",
                         if preview { "preview" } else { "full-size" },
@@ -4489,11 +6210,92 @@ impl Tool for WhatsAppSendTool {
                         None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
                     }
                 }
+                "identity" => match self.whatsapp_state.identity_summary().await {
+                    Some(text) => Ok(ToolResult::success(text)),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                "identity_tags" => match self.whatsapp_state.identity_tags_summary().await {
+                    Some(text) => Ok(ToolResult::success(text)),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                "memory_report" => match self.whatsapp_state.memory_report_summary().await {
+                    Some(text) => Ok(ToolResult::success(text)),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                "resource_report" => match self.whatsapp_state.resource_report_summary().await {
+                    Some(text) => Ok(ToolResult::success(text)),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                "skip_history_sync_enabled" => {
+                    match self.whatsapp_state.skip_history_sync_enabled().await {
+                        Some(enabled) => Ok(ToolResult::success(format!(
+                            "History-sync skipping is currently {}.",
+                            if enabled { "on" } else { "off" }
+                        ))),
+                        None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                    }
+                }
+                "wanted_pre_key_count" => match self.whatsapp_state.wanted_pre_key_count().await {
+                    Some(count) => Ok(ToolResult::success(format!(
+                        "Pre-key upload batch target is {count}."
+                    ))),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                op @ ("mex_query" | "mex_mutate") => {
+                    let Some(req) = input.get("mex_request") else {
+                        return Ok(ToolResult::error(
+                            "mex_query and mex_mutate need 'mex_request': {name, doc_id, \
+                             variables}."
+                                .to_string(),
+                        ));
+                    };
+                    // Both halves are required. `MexRequest::new` wants
+                    // `&'static str`, so the wrapper interns the pair rather
+                    // than leaking a fresh copy per call.
+                    let name = req.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let doc_id = req.get("doc_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if name.is_empty() || doc_id.is_empty() {
+                        return Ok(ToolResult::error(
+                            "mex_request needs both 'name' and 'doc_id': the persisted query is \
+                             identified by the pair, and neither half defaults."
+                                .to_string(),
+                        ));
+                    }
+                    let variables = req
+                        .get("variables")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    let ran = if op == "mex_query" {
+                        self.whatsapp_state.mex_query(name, doc_id, variables).await
+                    } else {
+                        self.whatsapp_state
+                            .mex_mutate(name, doc_id, variables)
+                            .await
+                    };
+                    match ran {
+                        Some(Ok(text)) => Ok(ToolResult::success(text)),
+                        Some(Err(e)) => {
+                            Ok(ToolResult::error(format!("MEX call '{name}' failed: {e}")))
+                        }
+                        None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                    }
+                }
+                "mex_reachout_timelock" => {
+                    match self.whatsapp_state.reachout_timelock_summary().await {
+                        Some(Ok(text)) => Ok(ToolResult::success(text)),
+                        Some(Err(e)) => Ok(ToolResult::error(format!(
+                            "Failed to read the reachout timelock: {e}"
+                        ))),
+                        None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                    }
+                }
                 other => Ok(ToolResult::error(format!(
                     "Unknown 'debug_op' value '{other}'. Expected one of: stats, wait_for_node, \
                      wait_for_sent_node, acquire_raw_node, release_raw_node, \
                      set_resend_rate_limit, set_skip_history_sync, set_wanted_pre_key_count, \
-                     set_retry_admission."
+                     set_retry_admission, identity, identity_tags, memory_report, \
+                     resource_report, skip_history_sync_enabled, wanted_pre_key_count, \
+                     mex_query, mex_mutate, mex_reachout_timelock."
                 ))),
             },
 
@@ -4503,11 +6305,11 @@ impl Tool for WhatsAppSendTool {
                  send_contact, react, send_poll, typing, mark_read, block_contact, \
                  unblock_contact, list_blocked, pin, unpin, forward, set_profile_name, \
                  set_profile_status, set_profile_picture, remove_profile_picture, \
-                 status_update, list_newsletters, create_label, \
+                 status_update, status_revoke, list_newsletters, create_label, \
                  assign_label, send_buttons, create_group, leave_group, set_group_subject, \
                  set_group_description, add_participants, remove_participants, \
                  promote_participants, demote_participants, get_group_metadata, \
-                 get_invite_link, join_with_invite_code, set_announce, set_locked, \
+                 get_invite_link, join_with_invite_code, group_invite_info, group_super_admins, group_refresh_info, group_batch_info, group_remove_participants_linked, group_set_member_link_mode, group_set_member_share_history_mode, group_update_member_label, group_revoke_request_code, group_join_with_admin_invite, set_announce, set_locked, \
                  set_ephemeral, set_membership_approval, set_member_add_mode, \
                  set_limit_sharing, set_group_history, set_no_frequently_forwarded, \
                  set_allow_admin_reports, get_membership_requests, \
@@ -4516,16 +6318,16 @@ impl Tool for WhatsAppSendTool {
                  get_profile_picture, get_group_profile_picture, is_on_whatsapp, \
                  get_user_info, archive_chat, unarchive_chat, mute_chat, unmute_chat, \
                  star_message, unstar_message, clear_chat, save_contact, set_available, \
-                 set_unavailable, subscribe_presence, unsubscribe_presence, create_quiz, \
+                 set_unavailable, subscribe_presence, unsubscribe_presence, presence_set, media_reupload_many, wa_privacy, wa_tokens, create_quiz, \
                  vote, decrypt_vote, aggregate_votes, newsletter_get_metadata, \
                  newsletter_get_metadata_by_invite, newsletter_join, newsletter_leave, \
-                 newsletter_create, newsletter_update, newsletter_revoke_message, \
+                 newsletter_create, newsletter_update, newsletter_revoke_message, newsletter_react, newsletter_set_follower_mute, newsletter_set_admin_mute, newsletter_subscribe_live_updates, newsletter_edit_message, \
                  newsletter_get_messages, community_create, community_deactivate, \
                  community_create_subgroup, community_link_subgroups, \
                  community_unlink_subgroups, community_join_subgroup, \
                  community_remove_participants, community_get_participating, \
                  community_get_subgroups, community_get_subgroup_participant_counts, \
-                 community_query_linked_group, community_get_linked_groups_participants, create_event, respond_event, post_comment, wa_introspect",
+                 community_query_linked_group, community_get_linked_groups_participants, create_event, respond_event, post_comment, wa_introspect, delete_message_for_me, delete_chat, mark_chat_as_read, set_user_status_mute, send_app_state_action, delete_label, is_blocked, get_profile_picture_with_timeout",
                 unknown
             ))),
         }

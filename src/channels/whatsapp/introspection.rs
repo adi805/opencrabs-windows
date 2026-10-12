@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use wacore_binary::jid::Jid;
+use whatsapp_rust::features::MexRequest;
 use whatsapp_rust::{NodeFilter, RawNodeLease, RetryAdmission, StatsSnapshot};
 
 use super::WhatsAppState;
@@ -32,6 +33,26 @@ pub const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 /// past this size drops the ones already back at full rather than growing with
 /// every chat the bot has ever seen.
 const MAX_TRACKED_CHATS: usize = 4096;
+
+/// Intern a MEX op name or doc id for the process lifetime.
+///
+/// `MexRequest::new` takes `&'static str` because every generated call site
+/// names a compile-time constant, and a runtime-supplied op has to be leaked to
+/// satisfy that. Caching the strings keeps the leak bounded by the number of
+/// distinct ops a caller actually uses: repeating an op reuses its entry
+/// instead of growing the heap on every call.
+fn intern_mex_str(value: &str) -> &'static str {
+    static INTERNED: std::sync::OnceLock<Mutex<HashMap<String, &'static str>>> =
+        std::sync::OnceLock::new();
+    let table = INTERNED.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = table.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = guard.get(value) {
+        return existing;
+    }
+    let leaked: &'static str = Box::leak(value.to_string().into_boxed_str());
+    guard.insert(value.to_string(), leaked);
+    leaked
+}
 
 impl WhatsAppState {
     /// Start forwarding raw decoded stanzas to this process, and hold the lease
@@ -68,6 +89,120 @@ impl WhatsAppState {
     /// Cumulative wire I/O and activity counters for the live session.
     pub async fn client_stats(&self) -> Option<StatsSnapshot> {
         Some(self.client().await?.stats())
+    }
+
+    /// This device's LID, phone JID and push name, as the session reports them.
+    ///
+    /// Read straight off the device snapshot rather than inferred: a bot whose
+    /// LID is unset looks the same as one whose LID is wrong from the outside,
+    /// and only the raw values tell them apart.
+    pub async fn identity_summary(&self) -> Option<String> {
+        let client = self.client().await?;
+        Some(format!(
+            "account identity:\n- lid: {}\n- pn: {}\n- push name: {}",
+            match client.lid() {
+                Some(j) => j.to_string(),
+                None => "not set (pairing incomplete?)".to_string(),
+            },
+            match client.pn() {
+                Some(j) => j.to_string(),
+                None => "not set (pairing incomplete?)".to_string(),
+            },
+            client.push_name()
+        ))
+    }
+
+    /// The identity tags the tracing layer uses on spans and errors.
+    ///
+    /// Reported alongside the raw identity because these are what a span
+    /// carries: a redacted PN here against a full PN above means the redaction
+    /// path is doing something the caller did not expect.
+    pub async fn identity_tags_summary(&self) -> Option<String> {
+        let client = self.client().await?;
+        Some(format!("span identity tags: {:?}", client.identity_tags()))
+    }
+
+    /// In-process collection footprint for this session.
+    pub async fn memory_report_summary(&self) -> Option<String> {
+        let client = self.client().await?;
+        Some(format!("{:#?}", client.memory_report().await))
+    }
+
+    /// The same footprint plus storage, transport and HTTP components.
+    pub async fn resource_report_summary(&self) -> Option<String> {
+        let client = self.client().await?;
+        Some(format!("{:#?}", client.resource_report().await))
+    }
+
+    /// Whether history sync is currently being skipped.
+    ///
+    /// Distinct from the setter's return value: the setter reports whether the
+    /// call was accepted, this reports the state the client is actually in.
+    pub async fn skip_history_sync_enabled(&self) -> Option<bool> {
+        Some(self.client().await?.skip_history_sync_enabled())
+    }
+
+    /// The pre-key count the client targets for its next upload batch.
+    pub async fn wanted_pre_key_count(&self) -> Option<usize> {
+        Some(self.client().await?.wanted_pre_key_count())
+    }
+
+    /// Run a MEX GraphQL query by op name and document id.
+    ///
+    /// Both halves are required and passed through as given: the persisted
+    /// query is identified by the pair, and a wrong id fails at the server with
+    /// nothing to point at, so the caller names the operation rather than this
+    /// wrapper guessing one.
+    pub async fn mex_query(
+        &self,
+        name: &str,
+        doc_id: &str,
+        variables: serde_json::Value,
+    ) -> Option<std::result::Result<String, String>> {
+        let client = self.client().await?;
+        let request = MexRequest::new(intern_mex_str(name), intern_mex_str(doc_id), variables);
+        Some(match client.mex().query(request).await {
+            Ok(response) => Ok(format!("{response:#?}")),
+            Err(e) => Err(e.to_string()),
+        })
+    }
+
+    /// Run a MEX GraphQL mutation. See [`Self::mex_query`].
+    pub async fn mex_mutate(
+        &self,
+        name: &str,
+        doc_id: &str,
+        variables: serde_json::Value,
+    ) -> Option<std::result::Result<String, String>> {
+        let client = self.client().await?;
+        let request = MexRequest::new(intern_mex_str(name), intern_mex_str(doc_id), variables);
+        Some(match client.mex().mutate(request).await {
+            Ok(response) => Ok(format!("{response:#?}")),
+            Err(e) => Err(e.to_string()),
+        })
+    }
+
+    /// The account's current reachout-timelock state.
+    ///
+    /// A timelock restricts who the account may message first; reading it is
+    /// how a caller finds out that an outreach failure was a policy limit
+    /// rather than a bad number.
+    pub async fn reachout_timelock_summary(&self) -> Option<std::result::Result<String, String>> {
+        let client = self.client().await?;
+        Some(match client.mex().fetch_reachout_timelock().await {
+            Ok(lock) => Ok(format!(
+                "reachout timelock:\n- active: {}\n- enforcement type: {}\n- ends: {}",
+                match lock.is_active {
+                    Some(b) => b.to_string(),
+                    None => "not reported".to_string(),
+                },
+                lock.enforcement_type.as_deref().unwrap_or("not reported"),
+                lock.time_enforcement_ends
+                    .as_deref()
+                    .unwrap_or("not reported")
+            )),
+            Err(e) => Err(e.to_string()),
+        })
     }
 
     /// Wait for the next inbound node whose tag matches, optionally narrowed by
