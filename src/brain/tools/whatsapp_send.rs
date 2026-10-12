@@ -5132,19 +5132,35 @@ state_user_status_mute.",
                         )));
                     }
                 };
-                // The payload is a cache type the tool cannot name, so this
-                // reports the resolution and not a field dump: what the caller
-                // needs to know is which snapshot the cache now holds.
                 let label = format!("{freshness:?}");
                 match client
                     .groups()
                     .query_info_with_freshness(&jid, freshness)
                     .await
                 {
-                    Ok(_) => Ok(ToolResult::success(format!(
-                        "Group info for {jid} resolved with freshness {label}; the cached snapshot \
-                         now holds what the server returned."
-                    ))),
+                    Ok(info) => {
+                        // The payload used to be reported as "resolved" only,
+                        // because the cached type could not be named from here.
+                        // It is reachable as `wacore::client::context::GroupInfo`,
+                        // so the fields a caller actually asks a group about are
+                        // now reported instead of a statement that a refresh
+                        // happened.
+                        let announce = match info.is_community_announce {
+                            Some(true) => "yes",
+                            Some(false) => "no",
+                            // `None` is not "no": the persisted blob predates the
+                            // field, so the honest answer is that it is unknown
+                            // and a fresh query is needed.
+                            None => "unknown (the cached record predates this field; re-query)",
+                        };
+                        Ok(ToolResult::success(format!(
+                            "Group info for {jid} resolved with freshness {label}:\n\
+                             - participants: {}\n- addressing mode: {:?}\n\
+                             - community announcement group: {announce}",
+                            info.participants.len(),
+                            info.addressing_mode
+                        )))
+                    }
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to refresh info for {jid}: {e}"
                     ))),
@@ -5257,12 +5273,18 @@ state_user_status_mute.",
             "group_update_member_label" => {
                 let jid = pget!(resolve_group_jid(&input));
                 let label = pget!(get_str(&input, "member_label")).to_string();
+                // `update_member_label` is a thin wrapper over this call that
+                // discards the returned message id. Keeping the id matters: the
+                // label change goes out as a message, so without it the change
+                // is unaddressable and can never be revoked.
                 match client
                     .groups()
-                    .update_member_label(jid.clone(), label)
+                    .update_member_label_with_id(jid.clone(), label)
                     .await
                 {
-                    Ok(()) => Ok(ToolResult::success(format!("Member label for {jid} set."))),
+                    Ok(msg_id) => Ok(ToolResult::success(format!(
+                        "Member label for {jid} set (message id {msg_id})."
+                    ))),
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to set the member label: {e}"
                     ))),
