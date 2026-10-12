@@ -1,15 +1,17 @@
 //! A ratchet on how many channel actions have no test naming them.
 //!
-//! Measured on `origin/main` at the time this was written:
+//! Measured on the branch that introduces this test. `origin/main` measured
+//! 43/24/12/11 just before it; this PR's own sweeps name `wa_introspect`, which
+//! is why whatsapp sits one lower here than on main:
 //!
 //! | tool          | actions | untested |
 //! |---------------|---------|----------|
-//! | whatsapp_send | 139     | 53       |
+//! | whatsapp_send | 139     | 42       |
 //! | telegram_send | 48      | 24       |
 //! | discord_send  | 28      | 12       |
 //! | slack_send    | 17      | 11       |
 //!
-//! That is 100 of 232 actions. The counts are pinned rather than fixed, because
+//! That is 89 of 232 actions. The counts are pinned rather than fixed, because
 //! a ratchet that fails on a pre-existing gap is a test nobody can keep green;
 //! a ratchet that fails when the gap GROWS is one that cannot be ignored.
 //!
@@ -24,7 +26,7 @@ const TOOLS: &[(&str, &str, usize)] = &[
     (
         "whatsapp_send",
         include_str!("../brain/tools/whatsapp_send.rs"),
-        53,
+        42,
     ),
     (
         "telegram_send",
