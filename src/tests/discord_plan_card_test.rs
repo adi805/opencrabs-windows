@@ -212,10 +212,14 @@ fn the_card_is_resticked_after_both_delivery_paths() {
     );
 }
 
-/// The re-stick is the settle tail ONLY. Turn start and the 4 s flow ticker
-/// must keep editing in place: re-sticking on every tick would churn the card
-/// toward Discord's write limits for no benefit, since a tick is not a settled
-/// turn. Pinned from source so a later "let's also restick there" fails loudly.
+/// The 4 s flow ticker keeps the in-place refresh as its DEFAULT: re-sticking
+/// on every tick would churn the card toward Discord's write limits for no
+/// benefit, since a tick is not a settled turn. What the ticker MAY do is move
+/// a card the live bubble has BURIED back below the output, once per turn: the
+/// Discord twin of Telegram's `restick_flow_if_buried` (#451). Without it the
+/// board kept advancing in place above the running turn and scrolled off
+/// screen, so progress was unreadable exactly while it was being made.
+/// Pinned from source so a later "just restick every tick" fails loudly.
 #[test]
 fn the_ticker_and_turn_start_keep_the_in_place_refresh() {
     let handler = flatten(read("src/channels/discord/handler.rs"));
@@ -228,6 +232,16 @@ fn the_ticker_and_turn_start_keep_the_in_place_refresh() {
     assert!(
         handler.contains("super::plan_card::refresh_plan_card(&http,channel,&dstate,sid).await;"),
         "the flow ticker must keep refreshing in place, not re-sticking"
+    );
+    assert!(
+        handler.contains(
+            "super::plan_card::restick_plan_card_after_turn(&http,channel,&dstate,sid).await;"
+        ),
+        "the ticker must re-post a card the live bubble has buried"
+    );
+    assert!(
+        handler.contains("card_mid<mid.get()"),
+        "the ticker restick must stay gated on the card being older than the group"
     );
 }
 

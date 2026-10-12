@@ -271,6 +271,25 @@ pub(super) fn spawn_flow_ticker(
                 // tool call. Keep waiting.
                 continue;
             };
+            // Buried-restick (the Discord twin of Telegram's #451 gate:
+            // "buried iff newest incoming id > block id"). The newest incoming
+            // id here is this turn's own bubble, so a card younger than the
+            // group already sits below it and there is nothing to do. A card
+            // OLDER than the group sits above the live bubble and scrolls out
+            // of view while the turn runs, which is what made progress
+            // unreadable mid-turn: the board advanced in place, off-screen.
+            // Re-post it below the turn's output.
+            //
+            // Self-limiting by construction: after the re-post the card is
+            // younger than the group, so this fires at most once per turn, and
+            // the sticky budget still gates the create+delete pair. The tick's
+            // default stays the in-place refresh above.
+            if let Some(sid) = dstate.session_owner_by_channel(channel.get()).await
+                && let Some((card_mid, _, _)) = dstate.plan_card(sid).await
+                && card_mid < mid.get()
+            {
+                super::plan_card::restick_plan_card_after_turn(&http, channel, &dstate, sid).await;
+            }
             let Some(group) = dstate.tool_group_snapshot(mid.get()).await else {
                 // The group left the store under the ticker. Settle the last
                 // rendering we read instead of walking away: a bare `break`
