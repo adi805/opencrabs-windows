@@ -1,6 +1,8 @@
 //! Inbound poll vote resolution (#1482).
 
-use crate::channels::whatsapp::poll::{POLL_CAPACITY, PollOptions, describe_vote, resolve_options};
+use crate::channels::whatsapp::poll::{
+    POLL_CAPACITY, PollOptions, VOTE_TALLY_CAPACITY, VoteTally, describe_vote, resolve_options,
+};
 use wacore::poll::compute_option_hash;
 
 fn hash(option: &str) -> Vec<u8> {
@@ -104,4 +106,60 @@ async fn re_remembering_a_poll_replaces_its_options() {
     polls.remember("p", vec!["new".to_string()]).await;
     assert_eq!(polls.get("p").await, Some(vec!["new".to_string()]));
     assert_eq!(polls.len().await, 1);
+}
+
+/// A voter who changes their answer replaces it, matching WhatsApp itself. Two
+/// entries for one voter would make the tally read as two people.
+#[tokio::test]
+async fn a_voter_changing_their_answer_replaces_it() {
+    let votes = VoteTally::default();
+    votes.record("p", "Ana", vec!["Rust".to_string()]).await;
+    votes.record("p", "Ana", vec!["Zig".to_string()]).await;
+    let tally = votes.for_poll("p").await;
+    assert_eq!(tally.len(), 1);
+    assert_eq!(tally[0].1, vec!["Zig".to_string()]);
+}
+
+/// A vote that resolves to no option is a voter CLEARING their answer, not an
+/// answer, so it must not be counted as one.
+#[tokio::test]
+async fn a_cleared_vote_is_not_recorded() {
+    let votes = VoteTally::default();
+    votes.record("p", "Ana", vec!["Rust".to_string()]).await;
+    votes.record("p", "Ana", Vec::new()).await;
+    assert_eq!(votes.for_poll("p").await.len(), 1);
+    let empty = VoteTally::default();
+    empty.record("p", "Ana", Vec::new()).await;
+    assert!(empty.for_poll("p").await.is_empty());
+}
+
+/// The tally is bounded like the option window: a long-lived account cannot
+/// grow it without limit, and a poll dropped from the window reads as
+/// unrecorded rather than as a wrong count.
+#[tokio::test]
+async fn the_tally_keeps_only_the_newest_polls() {
+    let votes = VoteTally::default();
+    for i in 0..=VOTE_TALLY_CAPACITY {
+        votes
+            .record(&format!("poll-{i}"), "Ana", vec!["Rust".to_string()])
+            .await;
+    }
+    assert!(votes.for_poll("poll-0").await.is_empty());
+    assert_eq!(
+        votes
+            .for_poll(&format!("poll-{VOTE_TALLY_CAPACITY}"))
+            .await
+            .len(),
+        1
+    );
+}
+
+/// Votes are filed per poll, so two polls running at once do not share a count.
+#[tokio::test]
+async fn the_tally_is_per_poll() {
+    let votes = VoteTally::default();
+    votes.record("a", "Ana", vec!["Rust".to_string()]).await;
+    votes.record("b", "Budi", vec!["Zig".to_string()]).await;
+    assert_eq!(votes.for_poll("a").await.len(), 1);
+    assert_eq!(votes.for_poll("b").await[0].0, "Budi");
 }

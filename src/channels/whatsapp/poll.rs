@@ -102,6 +102,132 @@ pub(crate) struct Vote {
     pub chosen: Vec<String>,
 }
 
+/// Decoded votes per poll, so a tally survives the message that carried it.
+///
+/// `decode_vote` already resolves each inbound vote to labels; without this the
+/// result is rendered once into the chat and the count is gone, which leaves
+/// the agent able to READ a poll but never to ANSWER "how many picked what".
+/// Keyed on the poll's message id, and bounded like `PollOptions` so a busy
+/// account cannot grow it without limit.
+pub(crate) const VOTE_TALLY_CAPACITY: usize = 100;
+
+#[derive(Default)]
+struct TallyInner {
+    order: Vec<String>,
+    /// poll id -> (voter label -> chosen labels). Last vote from a voter wins,
+    /// which is what WhatsApp itself does when a voter changes their answer.
+    votes: HashMap<String, Vec<(String, Vec<String>)>>,
+}
+
+#[derive(Default)]
+pub(crate) struct VoteTally {
+    inner: Mutex<TallyInner>,
+}
+
+impl VoteTally {
+    /// Record one decoded vote. A vote that resolves to nothing is dropped:
+    /// that is a voter CLEARING their answer, not an answer.
+    pub async fn record(&self, poll_id: &str, voter: &str, chosen: Vec<String>) {
+        if poll_id.is_empty() || voter.is_empty() || chosen.is_empty() {
+            return;
+        }
+        let mut inner = self.inner.lock().await;
+        if !inner.votes.contains_key(poll_id) {
+            inner.order.push(poll_id.to_string());
+        }
+        let entry = inner.votes.entry(poll_id.to_string()).or_default();
+        if let Some(existing) = entry.iter_mut().find(|(who, _)| who == voter) {
+            existing.1 = chosen;
+        } else {
+            entry.push((voter.to_string(), chosen));
+        }
+        while inner.order.len() > VOTE_TALLY_CAPACITY {
+            let evicted = inner.order.remove(0);
+            inner.votes.remove(&evicted);
+        }
+    }
+
+    /// Every vote recorded for a poll, oldest voter first.
+    pub async fn for_poll(&self, poll_id: &str) -> Vec<(String, Vec<String>)> {
+        self.inner
+            .lock()
+            .await
+            .votes
+            .get(poll_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+/// The `sender` keys a poll's `message_secret` may be stored under, most
+/// likely first.
+///
+/// `MsgSecretStore` keys a secret on (chat, sender, message id), with `sender`
+/// the author of the creation message as the capturing side saw it. A poll
+/// update names that author in `participant` for a group and leaves it out in
+/// a DM, where the peer IS the chat; and the same account can be addressed by
+/// PN or LID depending on the namespace the message used. So there is no
+/// single right key to compute, only a short list to try in order.
+pub(crate) fn secret_sender_candidates(
+    participant: Option<&str>,
+    from_me: bool,
+    chat: &str,
+    own_jid: Option<&str>,
+) -> Vec<String> {
+    let mut raw: Vec<&str> = Vec::new();
+    if let Some(participant) = participant {
+        raw.push(participant);
+    }
+    if from_me && let Some(own) = own_jid {
+        raw.push(own);
+    }
+    raw.push(chat);
+    if let Some(own) = own_jid {
+        raw.push(own);
+    }
+    let mut keys: Vec<String> = Vec::new();
+    for candidate in raw {
+        let Ok(jid) = candidate.parse::<wacore_binary::jid::Jid>() else {
+            continue;
+        };
+        let key = jid.to_non_ad_string();
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    keys
+}
+
+/// The stored `message_secret` of a poll, with the key it was found under.
+///
+/// The key comes back because it names the poll's author, and the vote crypto
+/// is addressed to that author. Deriving it separately from the lookup is how
+/// a decryption that had the right secret still fails.
+pub(crate) async fn poll_secret(
+    client: &whatsapp_rust::client::Client,
+    chat: &str,
+    candidates: &[String],
+    poll_id: &str,
+) -> Option<(Vec<u8>, String)> {
+    let backend = client.persistence_manager().backend();
+    for sender in candidates {
+        match backend.get_msg_secret(chat, sender, poll_id).await {
+            Ok(Some(secret)) => return Some((secret, sender.clone())),
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(
+                    target: "whatsapp",
+                    error = %e,
+                    poll_id,
+                    "message-secret lookup failed; poll vote dropped"
+                );
+                return None;
+            }
+        }
+    }
+    None
+}
+
 /// Decode one inbound poll vote into a line for the agent (#1482).
 ///
 /// `None` covers every "nothing useful to say" case, and each one is logged
@@ -132,48 +258,39 @@ pub(crate) async fn decode_vote(
     let vote = update.vote.as_option()?;
     let (payload, iv) = (vote.enc_payload.as_deref()?, vote.enc_iv.as_deref()?);
 
-    // The secret is keyed on the poll's own chat and author. We only track
-    // polls WE created, so the author is this account.
-    // Both halves of the key are normalised the same way. The store writes
-    // `to_non_ad_string()` on both, so comparing a device-suffixed JID here
-    // would miss a secret that is actually present.
+    // The secret is keyed on (chat, author, message id), where the author is
+    // whoever the capturing side saw as the sender of the creation message.
+    // A poll update names that author in `participant` for a group and leaves
+    // it out in a DM, and the same account can be addressed by PN or LID, so
+    // the key is probed in a short ordered list rather than guessed once.
     let chat = chat_jid.to_non_ad_string();
-    let creator = key
-        .remote_jid
-        .as_deref()
-        .and_then(|j| j.parse::<wacore_binary::jid::Jid>().ok())
-        .map(|j| j.to_non_ad_string())
-        .unwrap_or_else(|| chat.clone());
-    let secret = match client
-        .persistence_manager()
-        .backend()
-        .get_msg_secret(&chat, &creator, poll_id)
-        .await
-    {
-        Ok(Some(secret)) => secret,
-        Ok(None) => {
-            tracing::debug!(
-                target: "whatsapp",
-                poll_id,
-                "no message secret stored for this poll; vote cannot be decrypted"
-            );
-            return None;
-        }
-        Err(e) => {
-            tracing::warn!(
-                target: "whatsapp",
-                error = %e,
-                poll_id,
-                "message-secret lookup failed; poll vote dropped"
-            );
-            return None;
-        }
+    let own = state.owner_jid().await;
+    let candidates = secret_sender_candidates(
+        key.participant.as_deref(),
+        key.from_me.unwrap_or(false),
+        &chat,
+        own.as_deref(),
+    );
+    let Some((secret, author)) = poll_secret(client, &chat, &candidates, poll_id).await else {
+        tracing::debug!(
+            target: "whatsapp",
+            poll_id,
+            "no message secret stored for this poll; vote cannot be decrypted"
+        );
+        return None;
     };
 
-    let creator_jid = key
-        .remote_jid
-        .as_deref()
-        .and_then(|j| j.parse::<wacore_binary::jid::Jid>().ok())
+    // The vote crypto is addressed to the poll's author, so the key the secret
+    // was found under is the right answer; `participant` is the fallback for a
+    // secret that was matched on the chat itself.
+    let creator_jid = author
+        .parse::<wacore_binary::jid::Jid>()
+        .ok()
+        .or_else(|| {
+            key.participant
+                .as_deref()
+                .and_then(|p| p.parse::<wacore_binary::jid::Jid>().ok())
+        })
         .unwrap_or_else(|| chat_jid.clone());
     let selected = match client
         .polls()
@@ -203,5 +320,9 @@ pub(crate) async fn decode_vote(
 
     let chosen = resolve_options(&selected, &options);
     let line = describe_vote(voter_label, &chosen)?;
+    state
+        .votes
+        .record(poll_id, voter_label, chosen.clone())
+        .await;
     Some(Vote { line, chosen })
 }

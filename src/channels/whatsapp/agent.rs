@@ -17,9 +17,15 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::store::Store;
+use wacore::stanza::call::REJECT_REASON_BUSY;
+use wacore::types::call::{CallAction, IncomingCall, MissedReason};
 use wacore::types::events::{ConnectFailureReason, Event, TempBanReason};
+use wacore_binary::Node;
+use wacore_binary::builder::NodeBuilder;
+use wacore_binary::jid::Jid;
 use whatsapp_rust::TokioRuntime;
 use whatsapp_rust::bot::Bot;
+use whatsapp_rust::client::Client;
 use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
 use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
@@ -95,6 +101,133 @@ pub(crate) fn lock_alert(reason: &ConnectFailureReason) -> Option<String> {
             "WhatsApp temporary ban at connect (402). Messages will not go through until it expires.".to_string(),
         ),
         _ => None,
+    }
+}
+
+/// The human-facing half of a call alert: a `+number` when the JID carries a
+/// phone number, the raw user part otherwise (a LID has no number to show).
+/// The `@server` and `:device` suffixes are dropped so the line reads as a
+/// contact rather than a wire address.
+pub(crate) fn caller_label(from: &Jid) -> String {
+    let user: &str = &from.user;
+    let digits = user.trim_start_matches('+');
+    let is_number = from.server.carries_phone_number()
+        && digits.len() >= 7
+        && digits.bytes().all(|b| b.is_ascii_digit());
+    if is_number {
+        format!("+{digits}")
+    } else {
+        user.to_owned()
+    }
+}
+
+/// The stanza that declines an incoming call as ONE DEVICE being busy.
+///
+/// `reason="busy"` is load-bearing. A reject with NO reason reads as the callee
+/// declining, which tears the call down on every device, the owner's own phone
+/// included: that is exactly what the library's `Voip` reject helper sends, and
+/// `wacore::stanza::call::build_reject` has no parameter to change it. `busy`
+/// instead says "this device could not take it", so the caller keeps ringing the
+/// owner's other devices. Neither helper can express that, hence a hand-built
+/// node; `count="0"` and the wrapper `id` match WA Web's reject wire shape.
+pub(crate) fn busy_reject_node(
+    call_id: &str,
+    peer: &Jid,
+    call_creator: &Jid,
+    wrapper_id: &str,
+) -> Node {
+    let reject = NodeBuilder::new("reject")
+        .attr("call-id", call_id)
+        .attr("call-creator", call_creator)
+        .attr("count", "0")
+        .attr("reason", REJECT_REASON_BUSY)
+        .build();
+    NodeBuilder::new("call")
+        .attr("to", peer)
+        .attr("id", wrapper_id)
+        .children([reject])
+        .build()
+}
+
+/// The owner-facing line for a call this device turned down as busy. It names
+/// the caller and the medium, and says the call is still ringing elsewhere: the
+/// whole point of `reason="busy"` is that the owner's other devices keep
+/// alerting, so a silent decline would read as a dropped call.
+pub(crate) fn call_alert(from: &Jid, is_video: bool) -> String {
+    let medium = if is_video { "video" } else { "voice" };
+    format!(
+        "WhatsApp {medium} call from {}: declined as busy, so it keeps ringing on your \
+         other devices.",
+        caller_label(from)
+    )
+}
+
+/// The owner-facing line for a call that never rang on this device.
+/// `MissedReason` separates the two causes: the offer was replayed from the
+/// offline queue on reconnect (`Offline`), or the caller gave up on a call this
+/// device never answered (`Remote`). The enum is `#[non_exhaustive]`, so an
+/// upstream reason added later lands on the neutral wording instead of failing
+/// to compile.
+pub(crate) fn missed_call_alert(from: &Jid, reason: &MissedReason) -> String {
+    let cause = match reason {
+        MissedReason::Offline => "while the account was offline",
+        MissedReason::Remote => "after the caller gave up",
+        _ => "for an unknown reason",
+    };
+    format!(
+        "WhatsApp: a call from {} was missed {cause}.",
+        caller_label(from)
+    )
+}
+
+/// Decline an incoming 1:1 call because THIS device is busy, then tell the owner.
+///
+/// Only a 1:1 `<offer>` is a call this device can decline. A group
+/// `offer_notice` is a fan-out telling us a call exists: rejecting it would knock
+/// the call off the owner's other devices, so it is only logged.
+async fn decline_incoming_call(client: &Client, alert: OwnerAlert, call: &IncomingCall) {
+    // Logged before the action is inspected, so this line appears for every
+    // inbound call event: it is the evidence that call events reach `on_event`
+    // at all, independently of how the call is then handled. Without it, a
+    // silent phone is indistinguishable from a call event that never arrived.
+    tracing::info!(
+        target: "wa.call",
+        caller = %call.from.observe(),
+        action = ?call.action,
+        "WhatsApp: inbound call event"
+    );
+    if let CallAction::Offer {
+        call_id,
+        call_creator,
+        is_video,
+        ..
+    } = &call.action
+    {
+        // `reason="busy"`, never a bare reject: a reasonless reject reads as the
+        // callee declining and tears the call down on every device (see
+        // `busy_reject_node`). Busy keeps the owner's other devices ringing.
+        let wrapper_id = Uuid::new_v4().simple().to_string();
+        let node = busy_reject_node(call_id, &call.from, call_creator, &wrapper_id);
+        tracing::info!(
+            target: "whatsapp",
+            caller = %call.from.observe(),
+            video = *is_video,
+            "WhatsApp: declining an incoming call as busy"
+        );
+        if let Err(e) = client.send_node(node).await {
+            tracing::warn!(
+                target: "whatsapp",
+                error = %e,
+                "WhatsApp: could not send the busy reject"
+            );
+        }
+        alert(call_alert(&call.from, *is_video));
+    } else {
+        tracing::debug!(
+            target: "whatsapp",
+            call_id = call.action.call_id(),
+            "WhatsApp: incoming call event without an offer"
+        );
     }
 }
 
@@ -600,6 +733,33 @@ impl WhatsAppAgent {
                             }
                             Event::IdentityChange(_) => {
                                 tracing::warn!("WhatsApp: a contact's identity key changed");
+                            }
+                            Event::IncomingCall(call) => {
+                                // This device has no call UI, so it never rings:
+                                // it declines the offer as busy, which leaves the
+                                // owner's other devices ringing (a plain decline
+                                // would end the call everywhere).
+                                decline_incoming_call(&client, owner_alert.clone(), call).await;
+                            }
+                            Event::MissedCall(missed) => {
+                                tracing::info!(
+                                    target: "whatsapp",
+                                    caller = %missed.from.observe(),
+                                    reason = ?missed.reason,
+                                    "WhatsApp: missed call"
+                                );
+                                owner_alert(missed_call_alert(&missed.from, &missed.reason));
+                            }
+                            Event::CallEndedElsewhere(ended) => {
+                                // Answered or declined on one of the owner's other
+                                // devices; nothing to do, but the log line tells
+                                // this apart from a genuinely missed call.
+                                tracing::debug!(
+                                    target: "whatsapp",
+                                    caller = %ended.from.observe(),
+                                    outcome = ?ended.outcome,
+                                    "WhatsApp: call resolved on another device"
+                                );
                             }
                             other => {
                                 tracing::debug!("WhatsApp: unhandled event: {:?}", other);

@@ -6,7 +6,7 @@
 //! Layout: [`state`] holds the shared `WhatsAppState` struct and its
 //! constructor; each concern has its own impl module beside it
 //! (`approval`, `cancel`, `connection`, `followups`, `onboarding_events`,
-//! `pairing`, `photos`, `sessions`); `agent` runs the client event loop,
+//! `introspection`, `pairing`, `photos`, `sessions`); `agent` runs the client event loop,
 //! `handler` routes inbound messages, `resume` re-delivers background
 //! results and `store` persists the session. This file is declarations
 //! only — no function definitions live here (CONTRIBUTING.md).
@@ -24,6 +24,7 @@ pub(crate) mod history;
 pub(crate) mod identity;
 pub(crate) mod inbound;
 pub(crate) mod interactive;
+pub(crate) mod introspection;
 pub(crate) mod media_retry;
 pub(crate) mod newsletter;
 mod onboarding_events;

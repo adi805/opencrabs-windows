@@ -96,6 +96,9 @@ pub struct WhatsAppState {
     /// options by hash, never by name, so labelling a vote needs the poll's
     /// own list. See `poll.rs`.
     pub(crate) polls: super::poll::PollOptions,
+    /// Decoded votes per poll (#1482 follow-up), so the tally outlives the
+    /// message that carried the vote. See `poll.rs`.
+    pub(crate) votes: super::poll::VoteTally,
     /// Bounded memory of recently seen messages (#1484), so `forward` can
     /// hand `Client::forward_message` the original proto. See `recent.rs`.
     pub(crate) recent: super::recent::RecentMessages,
@@ -109,6 +112,10 @@ pub struct WhatsAppState {
     /// loops, the resume path and the drainer task - one budget for the
     /// whole channel. `pub(crate)` so brain/tools can gate through it.
     pub(crate) rate_limiter: std::sync::Arc<super::rate_limit::WhatsappRateLimiter>,
+    /// Raw-stanza forwarding lease (#1485). `Event::RawNode` stays enabled
+    /// only while a lease is held, so the lease is stored here rather than in
+    /// the call that acquired it. See `introspection.rs`.
+    pub(super) raw_node_lease: std::sync::Mutex<Option<whatsapp_rust::RawNodeLease>>,
 }
 
 impl Default for WhatsAppState {
@@ -142,10 +149,12 @@ impl WhatsAppState {
             session_jids: Mutex::new(HashMap::new()),
             jid_sessions: Mutex::new(HashMap::new()),
             polls: super::poll::PollOptions::default(),
+            votes: super::poll::VoteTally::default(),
             recent: super::recent::RecentMessages::default(),
             blocklist: super::blocklist::Blocklist::default(),
             outbox: super::outbox::Outbox::default(),
             rate_limiter: std::sync::Arc::new(super::rate_limit::WhatsappRateLimiter::new()),
+            raw_node_lease: std::sync::Mutex::new(None),
         }
     }
 }
