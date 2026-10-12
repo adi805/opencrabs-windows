@@ -935,6 +935,8 @@ impl Tool for WhatsAppSendTool {
                         "send_buttons",
                         "status_update", "list_newsletters",
                         "create_label", "assign_label",
+                        "delete_label", "is_blocked",
+                        "get_profile_picture_with_timeout",
                         "create_group", "leave_group", "set_group_subject",
                         "set_group_description", "add_participants", "remove_participants",
                         "promote_participants", "demote_participants", "get_group_metadata",
@@ -1020,7 +1022,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "label_id": {
                     "type": "string",
-                    "description": "For create_label (omit to make a new label; supplying an existing id renames/recolors it) and assign_label (required)"
+                    "description": "For create_label (omit to make a new label; supplying an existing id renames/recolors it), assign_label (required), and delete_label (required)"
                 },
                 "label_color": {
                     "type": "integer",
@@ -1133,6 +1135,10 @@ impl Tool for WhatsAppSendTool {
                 "app_state": {
                     "type": "string",
                     "description": "For send_app_state_action: which chat-level app-state mutation to fire. One of mute_indefinite, mute_until, unmute, pin, unpin, archive, unarchive, clear_chat, mark_chat_as_read, user_status_mute."
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "For get_profile_picture_with_timeout: request timeout in milliseconds. Omit to use the library default."
                 },
                 "full_name": {
                     "type": "string",
@@ -3893,6 +3899,79 @@ mark_chat_as_read, user_status_mute.",
                 }
             }
 
+            "delete_label" => {
+                let label_id = pget!(get_str(&input, "label_id")).to_string();
+                match client.labels().delete_label(&label_id).await {
+                    Ok(_) => Ok(ToolResult::success(format!("Label {} deleted.", label_id))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to delete label {}: {}",
+                        label_id, e
+                    ))),
+                }
+            }
+
+            "is_blocked" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                match client.blocking().is_blocked(&jid).await {
+                    Ok(true) => Ok(ToolResult::success(format!("{} is blocked.", jid_str))),
+                    Ok(false) => Ok(ToolResult::success(format!("{} is not blocked.", jid_str))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to check whether {} is blocked: {}",
+                        jid_str, e
+                    ))),
+                }
+            }
+
+            // Same fetch as `get_profile_picture`, with the request timeout
+            // overridable so a slow or silent server cannot hold the call for
+            // the library default.
+            "get_profile_picture_with_timeout" => {
+                let (jid, jid_str) = pget!(
+                    resolve_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let preview = match input.get("preview") {
+                    Some(_) => pget!(get_bool(&input, "preview")),
+                    None => false,
+                };
+                let timeout = input
+                    .get("timeout_ms")
+                    .and_then(|v| v.as_u64())
+                    .map(std::time::Duration::from_millis);
+
+                match client
+                    .contacts()
+                    .get_profile_picture_with_timeout(&jid, preview, timeout)
+                    .await
+                {
+                    Ok(Some(pic)) => Ok(ToolResult::success(format!(
+                        "{jid_str}: {} profile picture at {} (id {}).",
+                        if preview { "preview" } else { "full-size" },
+                        pic.url,
+                        pic.id
+                    ))),
+                    Ok(None) => Ok(ToolResult::success(format!(
+                        "{jid_str}: no profile picture is visible to this account."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to fetch the profile picture for {jid_str}: {e}"
+                    ))),
+                }
+            }
+
             "get_group_profile_picture" => {
                 let jids = pget!(resolve_group_jids(&input));
                 let preview = match input.get("preview") {
@@ -4802,7 +4881,7 @@ mark_chat_as_read, user_status_mute.",
                  community_unlink_subgroups, community_join_subgroup, \
                  community_remove_participants, community_get_participating, \
                  community_get_subgroups, community_get_subgroup_participant_counts, \
-                 community_query_linked_group, community_get_linked_groups_participants, create_event, respond_event, post_comment, wa_introspect, delete_message_for_me, delete_chat, mark_chat_as_read, set_user_status_mute, send_app_state_action",
+                 community_query_linked_group, community_get_linked_groups_participants, create_event, respond_event, post_comment, wa_introspect, delete_message_for_me, delete_chat, mark_chat_as_read, set_user_status_mute, send_app_state_action, delete_label, is_blocked, get_profile_picture_with_timeout",
                 unknown
             ))),
         }
