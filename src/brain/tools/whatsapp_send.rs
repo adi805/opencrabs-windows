@@ -1059,6 +1059,7 @@ impl Tool for WhatsAppSendTool {
                         "refresh_media_conn",
                         "fetch_sticker_pack",
                         "send_spam_report",
+                        "wa_session",
                         "typing", "mark_read",
                         "delete_message_for_me", "delete_chat", "mark_chat_as_read",
                         "set_user_status_mute", "send_app_state_action",
@@ -1436,15 +1437,19 @@ impl Tool for WhatsAppSendTool {
                 },
                 "sub_op": {
                     "type": "string",
-                    "description": "For wa_privacy: which account setting to touch. Reads: fetch_privacy_settings, get_business_profile, fetch_props. Writes (all need \"confirm\": true): set_privacy_setting, set_privacy_disallowed_list, set_default_disappearing_mode, set_chat_disappearing_timer, set_client_profile, set_device_props, set_passive. For wa_tokens: tctoken_issue, tctoken_list, tctoken_get, tctoken_prune, lid_pn_get, lid_pn_migrated, lid_pn_add, rotate_signed_pre_key."
+                    "description": "For wa_privacy: which account setting to touch. Reads: fetch_privacy_settings, get_business_profile, fetch_props. Writes (all need \"confirm\": true): set_privacy_setting, set_privacy_disallowed_list, set_default_disappearing_mode, set_chat_disappearing_timer, set_client_profile, set_device_props, set_passive. For wa_tokens: tctoken_issue, tctoken_list, tctoken_get, tctoken_prune, lid_pn_get, lid_pn_migrated, lid_pn_add, rotate_signed_pre_key. For wa_session (this bot's own connection, all need \"confirm\": true): disconnect, reconnect_immediately, and logout (which additionally needs \"confirm_op\": \"logout\")."
                 },
                 "lid": {
                     "type": "string",
                     "description": "For wa_tokens sub_op lid_pn_add: the LID user part to map, e.g. '100000012345678'. Paired with 'phone' to record one LID<->phone mapping in the local cache."
                 },
+                "confirm_op": {
+                    "type": "string",
+                    "description": "For wa_session logout only: must be the literal string \"logout\". Logout deregisters this companion device from the account and the bot returns only after a fresh QR scan, so it needs more than the boolean every other gated action accepts. disconnect and reconnect_immediately do not use this."
+                },
                 "confirm": {
                     "type": "boolean",
-                    "description": "For the wa_privacy WRITE sub-ops: must be true or nothing is changed. Account-level settings change what this account reveals to everyone and have no undo, so they are gated harder than sending a message, which is only rate-limited. Also required for send_spam_report, which files an accusation about a third party that cannot be withdrawn."
+                    "description": "For the wa_privacy WRITE sub-ops: must be true or nothing is changed. Account-level settings change what this account reveals to everyone and have no undo, so they are gated harder than sending a message, which is only rate-limited. Also required for send_spam_report, which files an accusation about a third party that cannot be withdrawn, and for every wa_session sub-op, which acts on this bot's own connection."
                 },
                 "privacy_category": {
                     "type": "string",
@@ -2267,6 +2272,86 @@ impl Tool for WhatsAppSendTool {
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to file a spam report for {msg_id}: {e}"
                     ))),
+                }
+            }
+
+            // ── wa_session ───────────────────────────────────────────────────
+            // The only action that can cut this bot's own link. All three
+            // sub-ops change the connection state of the session that is
+            // executing the call, so a wrong one takes the bot offline - or, in
+            // the case of `logout`, unpairs it.
+            //
+            // `logout` carries a second, stronger gate than the other two. A
+            // plain `confirm: true` is the same boolean every other gated
+            // action takes, which is exactly the thing a caller supplies
+            // reflexively; for an irreversible unpair that is not enough. So
+            // logout also demands `confirm_op` naming the op, while disconnect
+            // and reconnect_immediately (both recoverable by reconnecting) need
+            // only `confirm`.
+            "wa_session" => {
+                let op = pget!(get_str(&input, "sub_op")).to_string();
+                let confirmed = input
+                    .get("confirm")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                match op.as_str() {
+                    "logout" | "disconnect" | "reconnect_immediately" => {}
+                    other => {
+                        return Ok(ToolResult::error(format!(
+                            "Unknown 'sub_op' value '{other}'. Expected one of: logout, \
+                             disconnect, reconnect_immediately."
+                        )));
+                    }
+                }
+                if !confirmed {
+                    return Ok(ToolResult::error(format!(
+                        "wa_session '{op}' acts on this bot's OWN connection. \
+                         Pass \"confirm\": true to proceed."
+                    )));
+                }
+                if op == "logout" {
+                    let ack = input
+                        .get("confirm_op")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if ack != "logout" {
+                        return Ok(ToolResult::error(
+                            "wa_session 'logout' DEREGISTERS this companion device from the \
+                             WhatsApp account. It is not a reconnect: the bot comes back only \
+                             after a fresh QR scan. A boolean is not enough for that, so pass \
+                             \"confirm_op\": \"logout\" (the literal op name) as well. \
+                             Nothing was changed."
+                                .to_string(),
+                        ));
+                    }
+                }
+                match op.as_str() {
+                    "logout" => {
+                        client.logout().await;
+                        Ok(ToolResult::success(
+                            "Logout requested. This device is deregistered and the session is \
+                             disconnected. The deregistration IQ is best-effort, so it is \
+                             logged rather than reported here, and stored keys are NOT wiped - \
+                             the bot comes back only after a fresh QR scan."
+                                .to_string(),
+                        ))
+                    }
+                    "disconnect" => {
+                        client.disconnect().await;
+                        Ok(ToolResult::success(
+                            "Disconnected intentionally. Auto-reconnect is off for this teardown; \
+                             a restart or 'reconnect_immediately' brings the session back."
+                                .to_string(),
+                        ))
+                    }
+                    _ => {
+                        client.reconnect_immediately().await;
+                        Ok(ToolResult::success(
+                            "Reconnect started: the current connection is being dropped and \
+                             re-established."
+                                .to_string(),
+                        ))
+                    }
                 }
             }
 
