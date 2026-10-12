@@ -67,10 +67,10 @@ impl GenerationCandidate {
         &self.model
     }
 
-    /// img2img is a Gemini-only capability: the OpenAI
-    /// `/v1/images/generations` shape has no input-image slot.
+    /// Every backend takes input images (#2045): Gemini as `inlineData`
+    /// parts, the OpenAI-compatible wire as `/images/edits` with `image[]`.
     fn supports_image_input(&self) -> bool {
-        matches!(&self.backend, Backend::Gemini { .. })
+        true
     }
 }
 
@@ -216,8 +216,11 @@ impl Tool for GenerateImageTool {
                     "description": "Text description of the image to generate, or editing instruction when an input image is provided"
                 },
                 "image": {
-                    "type": "string",
-                    "description": "Optional input image (local file path or HTTPS URL) for img2img editing. The model will modify, restyle, or composite onto this image based on the prompt. Gemini backend only."
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "array", "items": {"type": "string"}, "maxItems": MAX_INPUT_IMAGES}
+                    ],
+                    "description": "Optional input image, or a list of up to 8 (each a local file path or HTTPS URL), for img2img editing. Several images let the model combine them into one result, for example a brand asset placed into a photo. The model modifies, restyles or composites onto them based on the prompt."
                 },
                 "filename": {
                     "type": "string",
@@ -250,10 +253,10 @@ impl Tool for GenerateImageTool {
             }
         };
 
-        let image = input["image"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
+        let images = match parse_image_inputs(&input["image"]) {
+            Ok(v) => v,
+            Err(msg) => return Ok(ToolResult::error(msg)),
+        };
 
         // A caller-supplied filename is used verbatim, so one without an
         // extension produced an extensionless file. Downstream consumers
@@ -299,19 +302,8 @@ impl Tool for GenerateImageTool {
             return Ok(ToolResult::error(GENERATION_SETUP_HINT.to_string()));
         }
 
-        // img2img is a Gemini-only capability — an OpenAI-compatible
-        // candidate would reject it mid-roll and burn the request. Filter
-        // up front so the instruction is clear when NOTHING can take it.
-        if image.is_some() {
+        if !images.is_empty() {
             candidates.retain(GenerationCandidate::supports_image_input);
-            if candidates.is_empty() {
-                return Ok(ToolResult::error(
-                    "No Gemini-backend candidate is configured, and img2img input images \
-                     require the Gemini backend. Either set up Gemini (`/image \
-                     gemini <key>`) or retry without the `image` parameter."
-                        .to_string(),
-                ));
-            }
         }
 
         // Roll through candidates in order: a failure logs and tries the
@@ -320,20 +312,14 @@ impl Tool for GenerateImageTool {
         for candidate in &candidates {
             let attempt = match &candidate.backend {
                 Backend::Gemini { api_key } => {
-                    Self::execute_gemini(
-                        &candidate.model,
-                        &prompt,
-                        image.as_deref(),
-                        api_key,
-                        &save_path,
-                    )
-                    .await
+                    Self::execute_gemini(&candidate.model, &prompt, &images, api_key, &save_path)
+                        .await
                 }
                 Backend::OpenAi { api_key, base_url } => {
                     Self::execute_openai(
                         &candidate.model,
                         &prompt,
-                        image.as_deref(),
+                        &images,
                         api_key,
                         base_url,
                         &save_path,
@@ -382,18 +368,18 @@ impl GenerateImageTool {
     async fn execute_gemini(
         model: &str,
         prompt: &str,
-        image: Option<&str>,
+        images: &[String],
         api_key: &str,
         save_path: &std::path::Path,
     ) -> super::error::Result<ToolResult> {
         let url = format!("{}/models/{}:generateContent", GEMINI_BASE_URL, model);
 
-        // Build parts list: optional input image first, then the text prompt.
-        let mut parts: Vec<Value> = Vec::with_capacity(2);
-        if let Some(src) = image {
-            parts.push(build_image_part(src).await?);
+        // Input images first, one inlineData part each, then the text prompt (#2045).
+        let mut image_parts: Vec<Value> = Vec::with_capacity(images.len());
+        for src in images {
+            image_parts.push(build_image_part(src).await?);
         }
-        parts.push(serde_json::json!({"text": prompt}));
+        let parts = gemini_request_parts(image_parts, prompt);
 
         let body = serde_json::json!({
             "contents": [{"parts": parts}],
@@ -471,27 +457,18 @@ impl GenerateImageTool {
     async fn execute_openai(
         model: &str,
         prompt: &str,
-        image: Option<&str>,
+        images: &[String],
         api_key: &str,
         base_url: &str,
         save_path: &std::path::Path,
     ) -> super::error::Result<ToolResult> {
-        // Defensive: `execute` filters img2img requests down to Gemini
-        // candidates before ever reaching this backend.
-        if image.is_some() {
-            return Ok(ToolResult::error(
-                "The active image generation backend (OpenAI-compatible) does not support \
-                 input images. img2img editing requires the Gemini backend. Either switch \
-                 the generation provider to Gemini, or retry without the `image` parameter."
-                    .to_string(),
-            ));
-        }
-
-        // OpenAI `/v1/images/generations` shape — matches OpenAI,
-        // OpenRouter, Together, and most clones. `response_format =
-        // b64_json` keeps the byte path local; providers that only
-        // emit URLs fall through into the URL-fetch branch below.
-        let url = format!("{}/images/generations", base_url.trim_end_matches('/'));
+        // `/images/generations` for text-only, `/images/edits` when inputs are
+        // given (#2045). Both return the same `data[]` shape.
+        let url = format!(
+            "{}{}",
+            base_url.trim_end_matches('/'),
+            openai_images_path(!images.is_empty())
+        );
         let body = serde_json::json!({
             "model": model,
             "prompt": prompt,
@@ -504,11 +481,17 @@ impl GenerateImageTool {
             .build()
             .map_err(|e| super::error::ToolError::Execution(e.to_string()))?;
 
-        let response = client
+        let request = client
             .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .json(&body)
+            .header("Authorization", format!("Bearer {}", api_key));
+        let request = if images.is_empty() {
+            request
+                .header("Content-Type", "application/json")
+                .json(&body)
+        } else {
+            request.multipart(openai_edit_form(model, prompt, images).await?)
+        };
+        let response = request
             .send()
             .await
             .map_err(|e| super::error::ToolError::Execution(e.to_string()))?;
@@ -566,8 +549,65 @@ impl GenerateImageTool {
 /// Build a Gemini-compatible `inlineData` part from a local file path
 /// or HTTPS URL. Reuses `base64_encode` and `detect_mime_type` from
 /// `analyze_image` to stay consistent with the vision tool.
-async fn build_image_part(src: &str) -> super::error::Result<Value> {
-    use super::analyze_image::{base64_encode, detect_mime_type};
+/// Most input images one call takes (#2045).
+const MAX_INPUT_IMAGES: usize = 8;
+
+/// The `image` argument as a list: a single string (the original form) or an
+/// array of strings. Empty entries are ignored, as an empty string always was.
+pub(crate) fn parse_image_inputs(value: &Value) -> Result<Vec<String>, String> {
+    let raw: Vec<&str> = match value {
+        Value::Null => return Ok(Vec::new()),
+        Value::String(s) => vec![s.as_str()],
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_str() {
+                    Some(s) => out.push(s),
+                    None => {
+                        return Err(
+                            "Each `image` entry must be a string (a file path or URL).".to_string()
+                        );
+                    }
+                }
+            }
+            out
+        }
+        _ => return Err("`image` must be a string or a list of strings.".to_string()),
+    };
+    let images: Vec<String> = raw
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if images.len() > MAX_INPUT_IMAGES {
+        return Err(format!(
+            "At most {MAX_INPUT_IMAGES} input images per call, got {}.",
+            images.len()
+        ));
+    }
+    Ok(images)
+}
+
+/// Gemini request parts: every input image in order, then the text (#2045).
+pub(crate) fn gemini_request_parts(image_parts: Vec<Value>, prompt: &str) -> Vec<Value> {
+    let mut parts = image_parts;
+    parts.push(serde_json::json!({"text": prompt}));
+    parts
+}
+
+/// The OpenAI-compatible route: generations for text, edits when inputs are given.
+pub(crate) fn openai_images_path(has_inputs: bool) -> &'static str {
+    if has_inputs {
+        "/images/edits"
+    } else {
+        "/images/generations"
+    }
+}
+
+/// Bytes, MIME type and a file name for one input image, from a local path or
+/// an HTTPS URL.
+async fn fetch_image_bytes(src: &str) -> super::error::Result<(Vec<u8>, String, String)> {
+    use super::analyze_image::detect_mime_type;
 
     if src.starts_with("http://") || src.starts_with("https://") {
         let client = reqwest::Client::builder()
@@ -601,11 +641,16 @@ async fn build_image_part(src: &str) -> super::error::Result<Value> {
         let bytes = resp.bytes().await.map_err(|e| {
             super::error::ToolError::Execution(format!("Failed to read image bytes: {}", e))
         })?;
-
-        let b64 = base64_encode(&bytes);
-        Ok(serde_json::json!({
-            "inlineData": { "mimeType": mime_type, "data": b64 }
-        }))
+        let name = src
+            .split(['?', '#'])
+            .next()
+            .unwrap_or(src)
+            .rsplit('/')
+            .next()
+            .filter(|n| !n.is_empty())
+            .unwrap_or("image.png")
+            .to_string();
+        Ok((bytes.to_vec(), mime_type, name))
     } else {
         let bytes = tokio::fs::read(src).await.map_err(|e| {
             super::error::ToolError::Execution(format!(
@@ -613,12 +658,45 @@ async fn build_image_part(src: &str) -> super::error::Result<Value> {
                 src, e
             ))
         })?;
-        let mime_type = detect_mime_type(src);
-        let b64 = base64_encode(&bytes);
-        Ok(serde_json::json!({
-            "inlineData": { "mimeType": mime_type, "data": b64 }
-        }))
+        let name = std::path::Path::new(src)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("image.png")
+            .to_string();
+        Ok((bytes, detect_mime_type(src).to_string(), name))
     }
+}
+
+/// One Gemini `inlineData` part for an input image.
+async fn build_image_part(src: &str) -> super::error::Result<Value> {
+    use super::analyze_image::base64_encode;
+
+    let (bytes, mime_type, _) = fetch_image_bytes(src).await?;
+    Ok(serde_json::json!({
+        "inlineData": { "mimeType": mime_type, "data": base64_encode(&bytes) }
+    }))
+}
+
+/// The multipart body for `/images/edits`: the fields, then one `image[]` per input.
+async fn openai_edit_form(
+    model: &str,
+    prompt: &str,
+    images: &[String],
+) -> super::error::Result<reqwest::multipart::Form> {
+    let mut form = reqwest::multipart::Form::new()
+        .text("model", model.to_string())
+        .text("prompt", prompt.to_string())
+        .text("n", "1")
+        .text("response_format", "b64_json");
+    for src in images {
+        let (bytes, mime, name) = fetch_image_bytes(src).await?;
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(name)
+            .mime_str(&mime)
+            .map_err(|e| super::error::ToolError::Execution(e.to_string()))?;
+        form = form.part("image[]", part);
+    }
+    Ok(form)
 }
 
 async fn save_decoded_image(

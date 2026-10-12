@@ -600,6 +600,7 @@ pub mod compaction_artifact_claim_test;
 pub mod discord_channel_scope_config_test;
 pub mod discord_cowork_test;
 pub mod discord_dm_channel_history_test;
+pub mod generate_image_multi_input_test;
 pub mod glm_reasoning_test;
 pub mod kimi_reasoning_test;
 pub mod lazy_tools_test;
