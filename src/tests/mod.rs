@@ -599,6 +599,7 @@ pub mod click_to_expand_test;
 pub mod compaction_artifact_claim_test;
 pub mod discord_channel_scope_config_test;
 pub mod discord_cowork_test;
+pub mod discord_dm_channel_history_test;
 pub mod glm_reasoning_test;
 pub mod kimi_reasoning_test;
 pub mod lazy_tools_test;

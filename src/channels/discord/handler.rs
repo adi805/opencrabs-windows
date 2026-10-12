@@ -529,10 +529,9 @@ pub(crate) async fn handle_message(
         }
     }
 
-    // Also store directed channel messages for complete history
-    if !is_dm {
-        store_channel_msg(msg.content.clone()).await;
-    }
+    // Store the directed message for history. DMs too (#2025): channel_search
+    // must see a DM conversation, and the session table alone is not searchable.
+    store_channel_msg(msg.content.clone()).await;
 
     // Check for audio attachments → STT
     let audio_attachment = msg.attachments.iter().find(|a| {
@@ -2008,6 +2007,8 @@ pub(crate) async fn handle_message(
                 }
             }
 
+            // The answer's last chunk id, for the DM lookup record below (#2025).
+            let mut reply_msg_id: Option<String> = None;
             if skip_final_post {
                 // Answer already visible via the kept intermediate (#459's
                 // keep-intermediate outcome): skip the duplicate post. The
@@ -2081,7 +2082,7 @@ pub(crate) async fn handle_message(
                     }
                 } else {
                     for chunk in &chunks {
-                        if let Err(e) = super::governor::say(
+                        match super::governor::say(
                             &discord_state.governor,
                             target,
                             &ctx.http,
@@ -2090,7 +2091,8 @@ pub(crate) async fn handle_message(
                         )
                         .await
                         {
-                            tracing::error!("Discord: failed to send reply: {}", e);
+                            Ok(m) => reply_msg_id = Some(m.id.get().to_string()),
+                            Err(e) => tracing::error!("Discord: failed to send reply: {}", e),
                         }
                     }
                 }
@@ -2098,10 +2100,10 @@ pub(crate) async fn handle_message(
 
             // Record the bot's reply in channel_messages so the recent() query
             // used for group context on the next guild turn sees both sides of
-            // the conversation. Without this, the bot loads only user messages
-            // and responds blind to its own prior replies. Skip for DMs — the
-            // session's messages table already carries full history there.
-            if !is_dm && !text_only.trim().is_empty() {
+            // the conversation, and so channel_search can find it. A DM reply is
+            // stored when it has a message id, as Telegram's DM replies are
+            // (#2025); the session's messages table still carries full history.
+            if (!is_dm || reply_msg_id.is_some()) && !text_only.trim().is_empty() {
                 let bot_id = discord_state.bot_user_id().await;
                 let bot_sender_id = bot_id
                     .map(|id| id.to_string())
@@ -2118,7 +2120,7 @@ pub(crate) async fn handle_message(
                     "OpenCrabs".into(),
                     text_only.clone(),
                     "text".into(),
-                    None,
+                    reply_msg_id.clone(),
                 );
                 if let Err(e) = channel_msg_repo.insert(&cm).await {
                     tracing::warn!(
