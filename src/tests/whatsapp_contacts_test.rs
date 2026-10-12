@@ -94,13 +94,13 @@ fn a_preview_flag_is_optional_but_never_silently_reinterpreted() {
     let compact = compact();
     assert_eq!(
         compact.matches("input.get(\"preview\")").count(),
-        2,
-        "both picture actions must treat 'preview' as optional"
+        3,
+        "all three picture actions must treat 'preview' as optional"
     );
     assert_eq!(
         compact.matches("get_bool(&input,\"preview\")").count(),
-        2,
-        "both picture actions must refuse a non-boolean 'preview' rather than coerce it"
+        3,
+        "all three picture actions must refuse a non-boolean 'preview' rather than coerce it"
     );
     assert_eq!(
         get_bool(&json!({"preview": true}), "preview").ok(),
