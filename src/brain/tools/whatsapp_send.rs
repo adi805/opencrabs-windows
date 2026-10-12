@@ -1657,7 +1657,7 @@ impl Tool for WhatsAppSendTool {
                     }
                 };
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -1761,7 +1761,7 @@ impl Tool for WhatsAppSendTool {
             "reply" => {
                 let message = pget!(get_str(&input, "message")).to_string();
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -1866,7 +1866,7 @@ impl Tool for WhatsAppSendTool {
             // ── delete ───────────────────────────────────────────────────────
             "delete" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -2362,7 +2362,7 @@ impl Tool for WhatsAppSendTool {
             // shape does not exist in the protocol.
             "pin" | "unpin" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -2398,7 +2398,7 @@ impl Tool for WhatsAppSendTool {
             // silently sending nothing.
             "forward" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -2493,7 +2493,7 @@ impl Tool for WhatsAppSendTool {
             // ── send_photo ───────────────────────────────────────────────────
             "send_photo" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -2539,7 +2539,7 @@ impl Tool for WhatsAppSendTool {
             // ── send_document ────────────────────────────────────────────────
             "send_document" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -2588,7 +2588,7 @@ impl Tool for WhatsAppSendTool {
             // ── send_audio ───────────────────────────────────────────────────
             "send_audio" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -2650,7 +2650,7 @@ impl Tool for WhatsAppSendTool {
             // ── send_video ───────────────────────────────────────────────────
             "send_video" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -2696,7 +2696,7 @@ impl Tool for WhatsAppSendTool {
             // ── send_sticker ─────────────────────────────────────────────────
             "send_sticker" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -2737,7 +2737,7 @@ impl Tool for WhatsAppSendTool {
             // ── send_location ────────────────────────────────────────────────
             "send_location" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -2794,7 +2794,7 @@ impl Tool for WhatsAppSendTool {
             // ── send_contact ─────────────────────────────────────────────────
             "send_contact" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -2828,7 +2828,7 @@ impl Tool for WhatsAppSendTool {
             // ── react ────────────────────────────────────────────────────────
             "react" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -2884,7 +2884,7 @@ impl Tool for WhatsAppSendTool {
             // ── edit ────────────────────────────────────────────────────────────────
             "edit" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -2942,7 +2942,7 @@ impl Tool for WhatsAppSendTool {
             // ── send_poll ────────────────────────────────────────────────────
             "send_poll" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -2999,7 +2999,7 @@ impl Tool for WhatsAppSendTool {
             // ── typing ───────────────────────────────────────────────────────
             "typing" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -3033,7 +3033,7 @@ impl Tool for WhatsAppSendTool {
             // ── mark_read ────────────────────────────────────────────────────
             "mark_read" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -3287,7 +3287,7 @@ state_user_status_mute.",
             // the screen, and only then decide about `interactive_buttons`.
             "send_buttons" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -4142,7 +4142,7 @@ state_user_status_mute.",
 
             "assign_label" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
@@ -6277,7 +6277,7 @@ state_user_status_mute.",
             // quiz's votes readable through the same path a poll's are.
             "create_quiz" => {
                 let (jid, jid_str) = pget!(
-                    resolve_jid(
+                    resolve_chat_jid(
                         &input,
                         &self.whatsapp_state,
                         &self.config_rx,
