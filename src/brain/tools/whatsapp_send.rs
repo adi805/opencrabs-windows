@@ -890,6 +890,83 @@ async fn upload_media(
         .map_err(|e| ToolResult::error(format!("Media upload failed: {}", e)))
 }
 
+/// Probe a video's duration in whole seconds with `ffprobe`.
+///
+/// Returns `None` when ffprobe is missing, fails, or reports something that is
+/// not a finite non-negative number. A status video carries the duration as a
+/// display hint only, so a failed probe degrades the label instead of failing
+/// the send.
+async fn probe_video_duration_secs(path: &str) -> Option<u32> {
+    let out = tokio::process::Command::new("ffprobe")
+        .kill_on_drop(true)
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+        ])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let secs = text.trim().parse::<f64>().ok()?;
+    if !secs.is_finite() || secs < 0.0 {
+        return None;
+    }
+    Some(secs.round() as u32)
+}
+
+/// Build the JPEG thumbnail a video status must carry.
+///
+/// WhatsApp wants a JPEG frame next to a video status, not the video itself,
+/// so this extracts the first frame with `ffmpeg` and re-encodes it down to the
+/// status thumbnail size. Returns `None` when ffmpeg is unavailable or the
+/// frame cannot be decoded.
+async fn make_video_thumbnail(path: &str) -> Option<Vec<u8>> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let frame = std::env::temp_dir().join(format!(
+        "wa-status-frame-{}-{}.jpg",
+        std::process::id(),
+        nanos
+    ));
+    let frame_str = frame.to_string_lossy().into_owned();
+    let status = tokio::process::Command::new("ffmpeg")
+        .kill_on_drop(true)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            path,
+            "-frames:v",
+            "1",
+            "-q:v",
+            "3",
+            &frame_str,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await;
+    if !matches!(status, Ok(s) if s.success()) {
+        let _ = tokio::fs::remove_file(&frame).await;
+        return None;
+    }
+    let bytes = tokio::fs::read(&frame).await.ok();
+    let _ = tokio::fs::remove_file(&frame).await;
+    make_jpeg_thumbnail(&bytes?)
+}
+
 /// Build a vCard string from name and phone number.
 pub(crate) fn build_vcard(name: &str, phone: &str) -> String {
     format!(
@@ -933,7 +1010,7 @@ impl Tool for WhatsAppSendTool {
                         "set_user_status_mute", "send_app_state_action",
                         "block_contact", "unblock_contact", "list_blocked",
                         "send_buttons",
-                        "status_update", "list_newsletters",
+                        "status_update", "status_revoke", "list_newsletters",
                         "create_label", "assign_label",
                         "delete_label", "is_blocked",
                         "get_profile_picture_with_timeout",
@@ -1018,7 +1095,15 @@ impl Tool for WhatsAppSendTool {
                 "targets": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "For status_update: phone numbers to post the status to. Every one must appear in channels.whatsapp.broadcast.allowed_targets or NOTHING is sent. Omit to use the whole allowlist."
+                    "description": "For status_update / status_revoke: phone numbers to post the status to. Every one must appear in channels.whatsapp.broadcast.allowed_targets or NOTHING is sent. Omit to use the whole allowlist."
+                },
+                "status_id": {
+                    "type": "string",
+                    "description": "For status_revoke: the message id that status_update reported when the status was posted. A status cannot be listed back from the protocol, so this id is the only handle on it."
+                },
+                "duration_seconds": {
+                    "type": "integer",
+                    "description": "For status_update with a video file: the clip length in seconds. Omit to probe it with ffprobe; falls back to 0 when the probe fails."
                 },
                 "label_id": {
                     "type": "string",
@@ -2689,32 +2774,72 @@ mark_chat_as_read, user_status_mute.",
                     }
                 }
                 let opts = whatsapp_rust::features::StatusSendOptions::default();
-                let posted = match media_path {
+                // A posted status cannot be listed back from the protocol, so
+                // the id returned here is the ONLY handle a caller ever gets on
+                // it: `status_revoke` has nothing to name without it. Report it
+                // on every branch.
+                let posted: std::result::Result<String, String> = match media_path {
                     Some(path) => {
                         let (bytes, mime, _filename) =
                             pget!(read_local_media(&path, "image/jpeg").await);
-                        if !mime.starts_with("image/") {
+                        if mime.starts_with("video/") {
+                            let thumbnail = match make_video_thumbnail(&path).await {
+                                Some(t) => t,
+                                None => {
+                                    return Ok(ToolResult::error(format!(
+                                        "'{path}' could not be decoded as a video frame; nothing \
+                                         was sent. Is ffmpeg installed?"
+                                    )));
+                                }
+                            };
+                            let duration =
+                                match input.get("duration_seconds").and_then(|v| v.as_u64()) {
+                                    Some(secs) => secs.min(u32::MAX as u64) as u32,
+                                    None => probe_video_duration_secs(&path).await.unwrap_or(0),
+                                };
+                            let upload = pget!(
+                                upload_media(&client, bytes, wacore::download::MediaType::Video)
+                                    .await
+                            );
+                            client
+                                .status()
+                                .send_video(
+                                    upload,
+                                    thumbnail,
+                                    duration,
+                                    text.as_deref(),
+                                    &jids,
+                                    opts,
+                                )
+                                .await
+                                .map(|r| format!("video status from {path} (id {})", r.message_id))
+                                .map_err(|e| e.to_string())
+                        } else if mime.starts_with("image/") {
+                            let thumbnail = match make_jpeg_thumbnail(&bytes) {
+                                Some(t) => t,
+                                None => {
+                                    return Ok(ToolResult::error(format!(
+                                        "'{path}' could not be decoded as an image; nothing was \
+                                         sent."
+                                    )));
+                                }
+                            };
+                            let upload = pget!(
+                                upload_media(&client, bytes, wacore::download::MediaType::Image)
+                                    .await
+                            );
+                            client
+                                .status()
+                                .send_image(upload, thumbnail, text.as_deref(), &jids, opts)
+                                .await
+                                .map(|r| format!("image status from {path} (id {})", r.message_id))
+                                .map_err(|e| e.to_string())
+                        } else {
                             return Ok(ToolResult::error(format!(
-                                "'{path}' is {mime}; a status carries text or an image, and \
-                                 nothing was sent."
+                                "'{path}' is {mime}; a status carries text, an image, or a video, \
+                                 and nothing was sent."
                             )));
                         }
-                        let thumbnail = match make_jpeg_thumbnail(&bytes) {
-                            Some(t) => t,
-                            None => {
-                                return Ok(ToolResult::error(format!(
-                                    "'{path}' could not be decoded as an image; nothing was sent."
-                                )));
-                            }
-                        };
-                        let upload = pget!(
-                            upload_media(&client, bytes, wacore::download::MediaType::Image).await
-                        );
-                        client
-                            .status()
-                            .send_image(upload, thumbnail, text.as_deref(), &jids, opts)
-                            .await
-                            .map(|_| format!("image status from {path}"))
                     }
                     None => {
                         let body = text.as_deref().unwrap_or_default();
@@ -2728,19 +2853,102 @@ mark_chat_as_read, user_status_mute.",
                                 opts,
                             )
                             .await
-                            .map(|_| "text status".to_string())
+                            .map(|r| format!("text status (id {})", r.message_id))
+                            .map_err(|e| e.to_string())
                     }
                 };
                 match posted {
                     Ok(kind) => Ok(ToolResult::success(format!(
                         "Status update ({kind}) posted to {} allowlisted recipient(s), paced at \
-                         {}s (at least {}s of wall clock).",
+                         {}s (at least {}s of wall clock). Pass the id to 'status_revoke' to take \
+                         it back.",
                         jids.len(),
                         pace.as_secs(),
                         broadcast::burst_floor(jids.len(), pace).as_secs()
                     ))),
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to post the status update: {e}"
+                    ))),
+                }
+            }
+
+            // ── status_revoke ────────────────────────────────────────────────
+            // #1485 follow-up. A status cannot be listed back from the
+            // protocol, so taking one down means naming the id that
+            // `status_update` reported at post time. The same rails apply as
+            // posting: only allowlisted recipients, paced, because the revoke
+            // is encrypted to the same devices the post went to.
+            "status_revoke" => {
+                let status_id = pget!(get_str(&input, "status_id")).to_string();
+                let (allowlist, pace) = {
+                    let wa = &self.config_rx.borrow().channels.whatsapp;
+                    (
+                        wa.broadcast.allowed_targets.clone(),
+                        broadcast::delay(wa.broadcast.min_delay_seconds),
+                    )
+                };
+                let targets: Vec<String> = match input.get("targets").and_then(|v| v.as_array()) {
+                    Some(arr) => arr
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect(),
+                    None => allowlist.clone(),
+                };
+                if targets.is_empty() {
+                    return Ok(ToolResult::error(
+                        "No status recipients. Set channels.whatsapp.broadcast.allowed_targets \
+                         in config.toml, or pass 'targets'. An empty allowlist allows nobody on \
+                         purpose."
+                            .to_string(),
+                    ));
+                }
+                let (allowed, refused) = broadcast::partition(&targets, &allowlist);
+                if !refused.is_empty() {
+                    return Ok(ToolResult::error(format!(
+                        "{} target(s) are not on channels.whatsapp.broadcast.allowed_targets and \
+                         NOTHING was revoked: {}. Broadcast is opt-in per number; add them to the \
+                         config first.",
+                        refused.len(),
+                        refused
+                            .iter()
+                            .map(|t| t.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )));
+                }
+                let mut jids = Vec::with_capacity(allowed.len());
+                for target in &allowed {
+                    match broadcast::target_jid(target) {
+                        Some(jid) => jids.push(jid),
+                        None => {
+                            return Ok(ToolResult::error(format!(
+                                "'{target}' is not a usable phone number; nothing was revoked."
+                            )));
+                        }
+                    }
+                }
+                for (i, jid) in jids.iter().enumerate() {
+                    let jid_str = jid.to_string();
+                    gate_send!(self, jid_str, "the status revoke");
+                    if i > 0 {
+                        tokio::time::sleep(pace).await;
+                    }
+                }
+                let opts = whatsapp_rust::features::StatusSendOptions::default();
+                // `as_str()` keeps `status_id` usable for the report below:
+                // passing the String by value would move it and the success
+                // line would fail to compile.
+                match client
+                    .status()
+                    .revoke(status_id.as_str(), &jids, opts)
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Status '{status_id}' revoked for {} allowlisted recipient(s).",
+                        jids.len()
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to revoke the status update: {e}"
                     ))),
                 }
             }
@@ -4859,7 +5067,7 @@ mark_chat_as_read, user_status_mute.",
                  send_contact, react, send_poll, typing, mark_read, block_contact, \
                  unblock_contact, list_blocked, pin, unpin, forward, set_profile_name, \
                  set_profile_status, set_profile_picture, remove_profile_picture, \
-                 status_update, list_newsletters, create_label, \
+                 status_update, status_revoke, list_newsletters, create_label, \
                  assign_label, send_buttons, create_group, leave_group, set_group_subject, \
                  set_group_description, add_participants, remove_participants, \
                  promote_participants, demote_participants, get_group_metadata, \
