@@ -159,6 +159,9 @@ fn the_tool_action_is_discoverable_and_reachable() {
         "set_skip_history_sync",
         "set_wanted_pre_key_count",
         "set_retry_admission",
+        "is_connected",
+        "is_logged_in",
+        "wait_for_connected",
     ] {
         assert!(
             compact.contains(&format!("\"{op}\"=>"))

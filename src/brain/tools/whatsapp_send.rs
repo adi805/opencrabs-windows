@@ -21,6 +21,7 @@ use std::sync::Arc;
 use wacore_binary::jid::{Jid, Server};
 use whatsapp_rust::ClientProfile;
 use whatsapp_rust::Freshness;
+use whatsapp_rust::PinDuration;
 use whatsapp_rust::features::{
     BatchGroupResult, CommunitySubgroup, CreateCommunityOptions, EventCreationParams,
     EventResponseType, GroupCreateOptions, GroupDescription, GroupMetadata,
@@ -34,6 +35,7 @@ use whatsapp_rust::privacy_settings::{
     DisallowedListAction, DisallowedListUpdate, DisallowedListUserEntry, PrivacyCategory,
     PrivacyValue,
 };
+use whatsapp_rust::{SpamFlow, SpamReportRequest};
 
 /// Reported by `wa_introspect` when a runtime call needs a live session and
 /// there is none to act on.
@@ -1050,6 +1052,14 @@ impl Tool for WhatsAppSendTool {
                         "send_photo", "send_document", "send_audio", "send_video", "send_sticker",
                         "send_location", "send_contact",
                         "react", "send_poll", "edit",
+                        "pin_message", "unpin_message", "keep_message",
+                        "retransmit_message",
+                        "mark_as_played", "acknowledge_group",
+                        "fetch_message_history",
+                        "refresh_media_conn",
+                        "fetch_sticker_pack",
+                        "send_spam_report",
+                        "wa_session",
                         "typing", "mark_read",
                         "delete_message_for_me", "delete_chat", "mark_chat_as_read",
                         "set_user_status_mute", "send_app_state_action",
@@ -1104,19 +1114,23 @@ impl Tool for WhatsAppSendTool {
                 },
                 "message": {
                     "type": "string",
-                    "description": "Message text (send, reply, caption for media); the new name or status text for set_profile_name / set_profile_status. For status_update: the text status, or the caption when 'media_path' is given."
+                    "description": "Message text (send, reply, edit, caption for media); the new name or status text for set_profile_name / set_profile_status. For status_update: the text status, or the caption when 'media_path' is given."
                 },
                 "phone": {
                     "type": "string",
-                    "description": "Phone number in E.164 format (e.g. '+15551234567'). For the chat actions (archive_chat, unarchive_chat, mute_chat, unmute_chat, clear_chat, star_message, unstar_message) it names the chat to act on; for save_contact it is required, and for subscribe_presence / unsubscribe_presence it names the contact whose updates to watch. Omit to message the owner."
+                    "description": "Phone number in E.164 format (e.g. '+15551234567'). For the chat actions (archive_chat, unarchive_chat, mute_chat, unmute_chat, clear_chat, star_message, unstar_message) it names the chat to act on; for save_contact it is required; for subscribe_presence / unsubscribe_presence it names the contact whose updates to watch; for send_spam_report it names the reported contact, and is not subject to the outbound allowlist because reporting a sender is not sending to them. Omit to message the owner."
                 },
                 "message_id": {
                     "type": "string",
-                    "description": "WhatsApp message ID for reply, delete, edit, react, mark_read, forward, star_message, unstar_message"
+                    "description": "WhatsApp message ID for reply, delete, edit, react, mark_read, forward, star_message, unstar_message; for fetch_message_history it is the OLDEST message the caller already has, which the primary device pages backwards from; for retransmit_message it is the id to reuse."
                 },
                 "stanza_id": {
                     "type": "string",
                     "description": "For edit only: pin the outer stanza id to an existing message id so clients re-render that slot. Best-effort and server dependent, and the edit then skips id-keyed local state. Omit for a fresh stanza id, which is the safe default."
+                },
+                "message_secret": {
+                    "type": "string",
+                    "description": "For edit only: base64 message secret from the original send. Required to edit a message in a community announcement group, where the edit is encrypted; the arm then uses edit_message_encrypted instead of the plaintext path. Omit for ordinary chats."
                 },
                 "from_me": {
                     "type": "boolean",
@@ -1125,6 +1139,32 @@ impl Tool for WhatsAppSendTool {
                 "participant": {
                     "type": "string",
                     "description": "For react only: the JID of the original sender of a group or status message being reacted to. Required for a group reaction to be attributed; omit for a direct message."
+                },
+                "duration": {
+                    "type": "string",
+                    "enum": ["24h", "7d", "30d"],
+                    "description": "For pin_message only: how long the message stays pinned. Defaults to 7d."
+                },
+                "spam_flow": {
+                    "type": "string",
+                    "enum": ["message_menu", "contact_info", "group_info", "group_banner", "status"],
+                    "description": "For send_spam_report only: which surface the report is filed from, which WhatsApp uses to weigh it. Defaults to message_menu. 'contact_info' and the group flows are the ones WhatsApp treats as a contact- or group-level report rather than a single message."
+                },
+                "pack_id": {
+                    "type": "string",
+                    "description": "For fetch_sticker_pack only: the pack's id, as it appears in a sticker-pack link or message."
+                },
+                "locale": {
+                    "type": "string",
+                    "description": "For fetch_sticker_pack only: which localized pack metadata to ask for, e.g. 'en_US'. Defaults to en_US."
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "For refresh_media_conn only: true re-fetches the media route even if the cached one has not expired. Default false, which reuses a still-valid route."
+                },
+                "keep": {
+                    "type": "boolean",
+                    "description": "For keep_message only: true (default) keeps the message for everyone in a disappearing chat, false undoes a previous keep."
                 },
                 "media_path": {
                     "type": "string",
@@ -1383,9 +1423,13 @@ impl Tool for WhatsAppSendTool {
                     "type": "string",
                     "description": "Target newsletter (channel) for the newsletter_* actions, e.g. '1234@newsletter'. A bare channel id is accepted."
                 },
+                "timestamp_ms": {
+                    "type": "integer",
+                    "description": "For fetch_message_history only: the oldest known message's timestamp in milliseconds, which the primary device uses to bound the page. Default 0."
+                },
                 "count": {
                     "type": "integer",
-                    "description": "For newsletter_get_messages: how many posts to fetch, newest first. Default 20, capped at 100."
+                    "description": "For newsletter_get_messages: how many posts to fetch, newest first. Default 20, capped at 100. For fetch_message_history: how many earlier messages to ask the primary device for. Default 50, capped at 100."
                 },
                 "before": {
                     "type": "integer",
@@ -1393,15 +1437,19 @@ impl Tool for WhatsAppSendTool {
                 },
                 "sub_op": {
                     "type": "string",
-                    "description": "For wa_privacy: which account setting to touch. Reads: fetch_privacy_settings, get_business_profile, fetch_props. Writes (all need \"confirm\": true): set_privacy_setting, set_privacy_disallowed_list, set_default_disappearing_mode, set_chat_disappearing_timer, set_client_profile, set_device_props, set_passive. For wa_tokens: tctoken_issue, tctoken_list, tctoken_get, tctoken_prune, lid_pn_get, lid_pn_migrated, lid_pn_add, rotate_signed_pre_key."
+                    "description": "For wa_privacy: which account setting to touch. Reads: fetch_privacy_settings, get_business_profile, fetch_props. Writes (all need \"confirm\": true): set_privacy_setting, set_privacy_disallowed_list, set_default_disappearing_mode, set_chat_disappearing_timer, set_client_profile, set_device_props, set_passive. For wa_tokens: tctoken_issue, tctoken_list, tctoken_get, tctoken_prune, lid_pn_get, lid_pn_migrated, lid_pn_add, rotate_signed_pre_key. For wa_session (this bot's own connection, all need \"confirm\": true): disconnect, reconnect_immediately, and logout (which additionally needs \"confirm_op\": \"logout\")."
                 },
                 "lid": {
                     "type": "string",
                     "description": "For wa_tokens sub_op lid_pn_add: the LID user part to map, e.g. '100000012345678'. Paired with 'phone' to record one LID<->phone mapping in the local cache."
                 },
+                "confirm_op": {
+                    "type": "string",
+                    "description": "For wa_session logout only: must be the literal string \"logout\". Logout deregisters this companion device from the account and the bot returns only after a fresh QR scan, so it needs more than the boolean every other gated action accepts. disconnect and reconnect_immediately do not use this."
+                },
                 "confirm": {
                     "type": "boolean",
-                    "description": "For the wa_privacy WRITE sub-ops: must be true or nothing is changed. Account-level settings change what this account reveals to everyone and have no undo, so they are gated harder than sending a message, which is only rate-limited."
+                    "description": "For the wa_privacy WRITE sub-ops: must be true or nothing is changed. Account-level settings change what this account reveals to everyone and have no undo, so they are gated harder than sending a message, which is only rate-limited. Also required for send_spam_report, which files an accusation about a third party that cannot be withdrawn, and for every wa_session sub-op, which acts on this bot's own connection."
                 },
                 "privacy_category": {
                     "type": "string",
@@ -1508,8 +1556,8 @@ impl Tool for WhatsAppSendTool {
                 },
                 "debug_op": {
                     "type": "string",
-                    "enum": ["stats", "wait_for_node", "wait_for_sent_node", "acquire_raw_node", "release_raw_node", "set_resend_rate_limit", "set_skip_history_sync", "set_wanted_pre_key_count", "set_retry_admission", "identity", "identity_tags", "memory_report", "resource_report", "skip_history_sync_enabled", "wanted_pre_key_count", "mex_query", "mex_mutate", "mex_reachout_timelock"],
-                    "description": "For wa_introspect: which runtime call to make against the live session. Read-only ops: stats, wait_for_node, wait_for_sent_node, identity, identity_tags, memory_report, resource_report, skip_history_sync_enabled, wanted_pre_key_count, mex_query, mex_mutate, mex_reachout_timelock. The rest change the running client."
+                    "enum": ["stats", "wait_for_node", "wait_for_sent_node", "acquire_raw_node", "release_raw_node", "set_resend_rate_limit", "set_skip_history_sync", "set_wanted_pre_key_count", "set_retry_admission", "identity", "identity_tags", "memory_report", "resource_report", "skip_history_sync_enabled", "wanted_pre_key_count", "mex_query", "mex_mutate", "mex_reachout_timelock", "is_connected", "is_logged_in", "wait_for_connected"],
+                    "description": "For wa_introspect: which runtime call to make against the live session. Read-only ops: stats, wait_for_node, wait_for_sent_node, identity, identity_tags, memory_report, resource_report, skip_history_sync_enabled, wanted_pre_key_count, is_connected, is_logged_in, wait_for_connected, mex_query, mex_mutate, mex_reachout_timelock. The rest change the running client."
                 },
                 "mex_request": {
                     "type": "object",
@@ -1840,6 +1888,470 @@ impl Tool for WhatsAppSendTool {
                         "Failed to delete message: {}",
                         e
                     ))),
+                }
+            }
+
+            // ── pin_message / unpin_message / keep_message ───────────────────
+            // These pin a MESSAGE, unlike `pin`/`unpin` above which pin the
+            // CHAT itself. The names are deliberately distinct: round 2's CI
+            // failure was two namespaces sharing a name, and a message pin
+            // sharing a name with a chat pin is the same trap.
+            "pin_message" | "unpin_message" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let from_me = input
+                    .get("from_me")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let participant = pget!(resolve_optional_participant(&input));
+                let key = waproto::whatsapp::MessageKey {
+                    remote_jid: Some(jid_str.clone()),
+                    from_me: Some(from_me),
+                    id: Some(msg_id.clone()),
+                    participant: participant.as_ref().map(|j| j.to_string()),
+                };
+                let pinning = action == "pin_message";
+                let result = if pinning {
+                    let duration = match input.get("duration").and_then(|v| v.as_str()) {
+                        Some("24h") => PinDuration::Hours24,
+                        Some("30d") => PinDuration::Days30,
+                        _ => PinDuration::Days7,
+                    };
+                    client.pin_message(&jid, key, duration).await
+                } else {
+                    client.unpin_message(&jid, key).await
+                };
+                match result {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Message {msg_id} in {jid_str} {}.",
+                        if pinning { "pinned" } else { "unpinned" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to {} message {msg_id} in {jid_str}: {e}",
+                        if pinning { "pin" } else { "unpin" }
+                    ))),
+                }
+            }
+
+            // keep_message goes through the send path, so it returns a
+            // SendResult and carries the same send gate as every other send.
+            "keep_message" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let from_me = input
+                    .get("from_me")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let participant = pget!(resolve_optional_participant(&input));
+                let keep = input.get("keep").and_then(|v| v.as_bool()).unwrap_or(true);
+                let key = waproto::whatsapp::MessageKey {
+                    remote_jid: Some(jid_str.clone()),
+                    from_me: Some(from_me),
+                    id: Some(msg_id.clone()),
+                    participant: participant.as_ref().map(|j| j.to_string()),
+                };
+                gate_send!(self, jid_str, "the keep-in-chat request");
+                match client.keep_message(&jid, key, keep).await {
+                    Ok(sent) => Ok(ToolResult::success(format!(
+                        "Message {msg_id} in {jid_str} {}. Keep message id {}.",
+                        if keep {
+                            "kept for everyone"
+                        } else {
+                            "un-kept for everyone"
+                        },
+                        sent.message_id
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to keep message {msg_id} in {jid_str}: {e}"
+                    ))),
+                }
+            }
+
+            // ── retransmit_message ───────────────────────────────────────────
+            // Repair a send that failed by re-sending the same body under the
+            // SAME message id, so the peer sees one message rather than a
+            // duplicate. `SendOptions::message_id` is the library's own
+            // documented hook for exactly this ("useful for resending a failed
+            // message with the same ID or idempotency").
+            //
+            // The library's `retransmit_message` / `request_message_retry` are
+            // NOT this: both are receive-path protocol handlers. The first
+            // needs a `MessageRetransmission` carrying the original proto, the
+            // second takes a `&NodeRef` borrowed from the inbound stanza the
+            // receive loop holds. A tool call has neither, so exposing them
+            // would mean a fabricated retry receipt - protocol traffic at a
+            // peer that nothing asked for.
+            "retransmit_message" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let body = pget!(get_str(&input, "message")).to_string();
+                gate_send!(self, jid_str, "the retransmission");
+                let wa_msg = waproto::whatsapp::Message {
+                    conversation: Some(body),
+                    ..Default::default()
+                };
+                let opts =
+                    whatsapp_rust::send::SendOptions::default().with_message_id(msg_id.clone());
+                match client.send_message_with_options(jid, wa_msg, opts).await {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Message {msg_id} retransmitted to {jid_str} under the same id."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to retransmit {msg_id} to {jid_str}: {e}"
+                    ))),
+                }
+            }
+
+            // ── mark_as_played / acknowledge_group ───────────────────────────
+            // `mark_as_read` tells the sender the message arrived; it does not
+            // tell them a voice note was actually listened to. `mark_as_played`
+            // is that second receipt, and it is the one a sender waits for.
+            "mark_as_played" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                // In a group the receipt must name who sent the note, or it
+                // cannot be attributed. Same param as the other per-sender
+                // actions.
+                let sender = pget!(resolve_optional_participant(&input));
+                match client
+                    .mark_as_played(&jid, sender.as_ref(), &[msg_id.as_str()])
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Played receipt sent for {msg_id} in {jid_str}."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to send played receipt for {msg_id} in {jid_str}: {e}"
+                    ))),
+                }
+            }
+
+            // The library's `acknowledge` is a GROUP notification ack (an IQ
+            // against the group, no message id), so the name carries the
+            // suffix. The bare name would sit next to the message actions and
+            // read as a message ack, which it is not.
+            "acknowledge_group" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let jid_str = jid.to_string();
+                match client.groups().acknowledge(jid).await {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Group {jid_str} acknowledged."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to acknowledge group {jid_str}: {e}"
+                    ))),
+                }
+            }
+
+            // ── fetch_message_history ────────────────────────────────────────
+            // Asks the PRIMARY DEVICE for messages older than the one named.
+            // This is a request, not a read: the answer comes back over the
+            // receive path later, so the reply says so rather than implying the
+            // history is already in hand.
+            "fetch_message_history" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let from_me = input
+                    .get("from_me")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let ts_ms = input
+                    .get("timestamp_ms")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let count = input
+                    .get("count")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(50)
+                    .clamp(1, 100) as i32;
+                match client
+                    .fetch_message_history(&jid, &msg_id, from_me, ts_ms, count)
+                    .await
+                {
+                    Ok(request_id) => Ok(ToolResult::success(format!(
+                        "Requested {count} messages older than {msg_id} in {jid_str} \
+                         (request {request_id}). This is a request to the primary device; \
+                         the history arrives asynchronously and is not in hand yet."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to request history for {jid_str}: {e}"
+                    ))),
+                }
+            }
+
+            // ── refresh_media_conn ───────────────────────────────────────────
+            // Media downloads go through a route the server hands out with a
+            // TTL. When that route goes stale or its auth is rejected, a
+            // download fails and nothing could re-fetch it short of a restart.
+            // This forces the re-fetch.
+            //
+            // The reply reports the host set rather than an expiry flag: the
+            // accessor only ever returns a connection it just validated or
+            // fetched, so `is_expired()` read here would be structurally false
+            // and would tell a caller "still valid" in exactly the case they
+            // came to fix. The hosts and their TTLs are the fields that
+            // actually answer the question.
+            "refresh_media_conn" => {
+                let force = input
+                    .get("force")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                match client.refresh_media_conn(force).await {
+                    Ok(conn) => {
+                        let mut lines = Vec::with_capacity(conn.hosts.len());
+                        for host in &conn.hosts {
+                            let fallback = match host.fallback_hostname.as_deref() {
+                                Some(f) => format!(" (fallback: {f})"),
+                                None => String::new(),
+                            };
+                            lines.push(format!(
+                                "- {} [{:?}]{fallback}",
+                                host.hostname, host.host_type
+                            ));
+                        }
+                        let ttl = match conn.auth_ttl {
+                            Some(auth) => format!("{}s route, {auth}s auth", conn.ttl),
+                            None => format!("{}s", conn.ttl),
+                        };
+                        Ok(ToolResult::success(format!(
+                            "Media route {} (ttl {ttl}):\n{}",
+                            if force {
+                                "force-refreshed"
+                            } else {
+                                "current or freshly fetched"
+                            },
+                            if lines.is_empty() {
+                                "(the server returned no hosts)".to_string()
+                            } else {
+                                lines.join("\n")
+                            }
+                        )))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to refresh the media connection: {e}"
+                    ))),
+                }
+            }
+
+            // ── fetch_sticker_pack ───────────────────────────────────────────
+            // Reads a pack's metadata from the server. The bot could send a
+            // sticker it already had but could not look one up by id, so a pack
+            // named by a user was unanswerable.
+            "fetch_sticker_pack" => {
+                let pack_id = pget!(get_str(&input, "pack_id")).to_string();
+                let locale = input
+                    .get("locale")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("en_US")
+                    .to_string();
+                match client.fetch_sticker_pack(&pack_id, &locale).await {
+                    Ok(pack) => {
+                        let name = pack.name.as_deref().unwrap_or("(unnamed)");
+                        let publisher = pack.publisher.as_deref().unwrap_or("(unknown)");
+                        let id = pack.sticker_pack_id.as_deref().unwrap_or(&pack_id);
+                        Ok(ToolResult::success(format!(
+                            "Sticker pack {id}: {name} by {publisher}\n                             - stickers: {}\n- animated: {}",
+                            pack.stickers.len(),
+                            if pack.animated != 0 { "yes" } else { "no" }
+                        )))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to fetch sticker pack '{pack_id}': {e}"
+                    ))),
+                }
+            }
+
+            // ── send_spam_report ─────────────────────────────────────────────
+            // Files a spam report with WhatsApp about a specific message. This
+            // is an accusation about a third party that leaves this machine and
+            // cannot be withdrawn, so it is gated behind `confirm` rather than
+            // merely rate-limited: the risk is not volume, it is that a wrong
+            // call says something about someone that cannot be unsaid.
+            //
+            // The reported contact is resolved WITHOUT the outbound allowlist
+            // check that `resolve_jid` applies. That check exists to stop the
+            // bot messaging someone it was not told to; reporting a sender is
+            // not sending to them, and gating it would make a report impossible
+            // in exactly the case it is needed - a stranger who messaged in.
+            "send_spam_report" => {
+                if !input
+                    .get("confirm")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    return Ok(ToolResult::error(
+                        "send_spam_report files a spam report about a third party with WhatsApp. \
+                         It leaves this machine, it names someone, and it cannot be withdrawn. \
+                         Pass \"confirm\": true to proceed."
+                            .to_string(),
+                    ));
+                }
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let reported = match input.get("phone").and_then(|v| v.as_str()) {
+                    Some(raw) => Some(pget!(parse_contact_jid(raw, "phone"))),
+                    None => None,
+                };
+                let participant = pget!(resolve_optional_participant(&input));
+                let group = match input.get("group_jid").and_then(|v| v.as_str()) {
+                    Some(_) => Some(pget!(resolve_group_jid(&input))),
+                    None => None,
+                };
+                let flow = match input.get("spam_flow").and_then(|v| v.as_str()) {
+                    Some("contact_info") => SpamFlow::ContactInfo,
+                    Some("group_info") => SpamFlow::GroupInfoReport,
+                    Some("group_banner") => SpamFlow::GroupSpamBannerReport,
+                    Some("status") => SpamFlow::StatusReport,
+                    _ => SpamFlow::MessageMenu,
+                };
+                let ts_ms = input
+                    .get("timestamp_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let request = SpamReportRequest {
+                    message_id: msg_id.clone(),
+                    message_timestamp: ts_ms,
+                    from_jid: reported.clone(),
+                    participant_jid: participant,
+                    group_jid: group.clone(),
+                    spam_flow: flow,
+                    ..Default::default()
+                };
+                match client.send_spam_report(request).await {
+                    Ok(result) => Ok(ToolResult::success(format!(
+                        "Spam report filed for message {msg_id}{}{}. Report id: {}",
+                        match &reported {
+                            Some(j) => format!(" from {j}"),
+                            None => String::new(),
+                        },
+                        match &group {
+                            Some(g) => format!(" in group {g}"),
+                            None => String::new(),
+                        },
+                        result.report_id.as_deref().unwrap_or("(none returned)")
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to file a spam report for {msg_id}: {e}"
+                    ))),
+                }
+            }
+
+            // ── wa_session ───────────────────────────────────────────────────
+            // The only action that can cut this bot's own link. All three
+            // sub-ops change the connection state of the session that is
+            // executing the call, so a wrong one takes the bot offline - or, in
+            // the case of `logout`, unpairs it.
+            //
+            // `logout` carries a second, stronger gate than the other two. A
+            // plain `confirm: true` is the same boolean every other gated
+            // action takes, which is exactly the thing a caller supplies
+            // reflexively; for an irreversible unpair that is not enough. So
+            // logout also demands `confirm_op` naming the op, while disconnect
+            // and reconnect_immediately (both recoverable by reconnecting) need
+            // only `confirm`.
+            "wa_session" => {
+                let op = pget!(get_str(&input, "sub_op")).to_string();
+                let confirmed = input
+                    .get("confirm")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                match op.as_str() {
+                    "logout" | "disconnect" | "reconnect_immediately" => {}
+                    other => {
+                        return Ok(ToolResult::error(format!(
+                            "Unknown 'sub_op' value '{other}'. Expected one of: logout, \
+                             disconnect, reconnect_immediately."
+                        )));
+                    }
+                }
+                if !confirmed {
+                    return Ok(ToolResult::error(format!(
+                        "wa_session '{op}' acts on this bot's OWN connection. \
+                         Pass \"confirm\": true to proceed."
+                    )));
+                }
+                if op == "logout" {
+                    let ack = input
+                        .get("confirm_op")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if ack != "logout" {
+                        return Ok(ToolResult::error(
+                            "wa_session 'logout' DEREGISTERS this companion device from the \
+                             WhatsApp account. It is not a reconnect: the bot comes back only \
+                             after a fresh QR scan. A boolean is not enough for that, so pass \
+                             \"confirm_op\": \"logout\" (the literal op name) as well. \
+                             Nothing was changed."
+                                .to_string(),
+                        ));
+                    }
+                }
+                match op.as_str() {
+                    "logout" => {
+                        client.logout().await;
+                        Ok(ToolResult::success(
+                            "Logout requested. This device is deregistered and the session is \
+                             disconnected. The deregistration IQ is best-effort, so it is \
+                             logged rather than reported here, and stored keys are NOT wiped - \
+                             the bot comes back only after a fresh QR scan."
+                                .to_string(),
+                        ))
+                    }
+                    "disconnect" => {
+                        client.disconnect().await;
+                        Ok(ToolResult::success(
+                            "Disconnected intentionally. Auto-reconnect is off for this teardown; \
+                             a restart or 'reconnect_immediately' brings the session back."
+                                .to_string(),
+                        ))
+                    }
+                    _ => {
+                        client.reconnect_immediately().await;
+                        Ok(ToolResult::success(
+                            "Reconnect started: the current connection is being dropped and \
+                             re-established."
+                                .to_string(),
+                        ))
+                    }
                 }
             }
 
@@ -2382,7 +2894,7 @@ impl Tool for WhatsAppSendTool {
                 );
                 gate_send!(self, jid_str, "the edit");
                 let msg_id = pget!(get_str(&input, "message_id")).to_string();
-                let new_text = pget!(get_str(&input, "text")).to_string();
+                let new_text = pget!(get_str(&input, "message")).to_string();
                 let wa_msg = waproto::whatsapp::Message {
                     conversation: Some(new_text),
                     ..Default::default()
@@ -2390,19 +2902,33 @@ impl Tool for WhatsAppSendTool {
                 // The lib owns the edit envelope. Pinning the outer stanza id is
                 // best-effort and skips id-keyed state binding, so it is opt-in
                 // rather than the default.
-                let sent = match input.get("stanza_id").and_then(|v| v.as_str()) {
-                    Some(sid) => {
-                        client
-                            .edit_message_with_options(
-                                jid,
-                                msg_id.clone(),
-                                wa_msg,
-                                whatsapp_rust::send::EditOptions::default()
-                                    .with_stanza_id(sid.to_string()),
-                            )
-                            .await
+                // A community announcement group encrypts the edit, so it needs
+                // the target's message secret, which the caller already has from
+                // the original send. Absent the param the plaintext path below is
+                // unchanged, so no existing caller changes behaviour.
+                let secret = match input.get("message_secret").and_then(|v| v.as_str()) {
+                    Some(_) => Some(pget!(decode_b64(&input, "message_secret"))),
+                    None => None,
+                };
+                let sent = if let Some(secret) = secret.as_ref() {
+                    client
+                        .edit_message_encrypted(jid, msg_id.clone(), secret, wa_msg)
+                        .await
+                } else {
+                    match input.get("stanza_id").and_then(|v| v.as_str()) {
+                        Some(sid) => {
+                            client
+                                .edit_message_with_options(
+                                    jid,
+                                    msg_id.clone(),
+                                    wa_msg,
+                                    whatsapp_rust::send::EditOptions::default()
+                                        .with_stanza_id(sid.to_string()),
+                                )
+                                .await
+                        }
+                        None => client.edit_message(jid, msg_id.clone(), wa_msg).await,
                     }
-                    None => client.edit_message(jid, msg_id.clone(), wa_msg).await,
                 };
                 match sent {
                     Ok(_) => Ok(ToolResult::success(format!(
@@ -4691,19 +5217,35 @@ state_user_status_mute.",
                         )));
                     }
                 };
-                // The payload is a cache type the tool cannot name, so this
-                // reports the resolution and not a field dump: what the caller
-                // needs to know is which snapshot the cache now holds.
                 let label = format!("{freshness:?}");
                 match client
                     .groups()
                     .query_info_with_freshness(&jid, freshness)
                     .await
                 {
-                    Ok(_) => Ok(ToolResult::success(format!(
-                        "Group info for {jid} resolved with freshness {label}; the cached snapshot \
-                         now holds what the server returned."
-                    ))),
+                    Ok(info) => {
+                        // The payload used to be reported as "resolved" only,
+                        // because the cached type could not be named from here.
+                        // It is reachable as `wacore::client::context::GroupInfo`,
+                        // so the fields a caller actually asks a group about are
+                        // now reported instead of a statement that a refresh
+                        // happened.
+                        let announce = match info.is_community_announce {
+                            Some(true) => "yes",
+                            Some(false) => "no",
+                            // `None` is not "no": the persisted blob predates the
+                            // field, so the honest answer is that it is unknown
+                            // and a fresh query is needed.
+                            None => "unknown (the cached record predates this field; re-query)",
+                        };
+                        Ok(ToolResult::success(format!(
+                            "Group info for {jid} resolved with freshness {label}:\n\
+                             - participants: {}\n- addressing mode: {:?}\n\
+                             - community announcement group: {announce}",
+                            info.participants.len(),
+                            info.addressing_mode
+                        )))
+                    }
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to refresh info for {jid}: {e}"
                     ))),
@@ -4816,12 +5358,18 @@ state_user_status_mute.",
             "group_update_member_label" => {
                 let jid = pget!(resolve_group_jid(&input));
                 let label = pget!(get_str(&input, "member_label")).to_string();
+                // `update_member_label` is a thin wrapper over this call that
+                // discards the returned message id. Keeping the id matters: the
+                // label change goes out as a message, so without it the change
+                // is unaddressable and can never be revoked.
                 match client
                     .groups()
-                    .update_member_label(jid.clone(), label)
+                    .update_member_label_with_id(jid.clone(), label)
                     .await
                 {
-                    Ok(()) => Ok(ToolResult::success(format!("Member label for {jid} set."))),
+                    Ok(msg_id) => Ok(ToolResult::success(format!(
+                        "Member label for {jid} set (message id {msg_id})."
+                    ))),
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to set the member label: {e}"
                     ))),
@@ -6289,12 +6837,55 @@ state_user_status_mute.",
                         None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
                     }
                 }
+                "is_connected" => match self.whatsapp_state.client_is_connected().await {
+                    Some(connected) => Ok(ToolResult::success(format!(
+                        "Transport is {}.",
+                        if connected {
+                            "connected"
+                        } else {
+                            "not connected"
+                        }
+                    ))),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                "is_logged_in" => match self.whatsapp_state.is_logged_in().await {
+                    Some(logged_in) => Ok(ToolResult::success(format!(
+                        "This device is {}.",
+                        if logged_in {
+                            "logged in"
+                        } else {
+                            "connected but NOT logged in, so an IQ cannot be answered yet"
+                        }
+                    ))),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                "wait_for_connected" => {
+                    let timeout = std::time::Duration::from_millis(
+                        input
+                            .get("timeout_ms")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(WAIT_TIMEOUT.as_millis() as u64)
+                            .clamp(100, 60_000),
+                    );
+                    match self.whatsapp_state.wait_for_connected(timeout).await {
+                        Some(Ok(())) => Ok(ToolResult::success(
+                            "Session is fully ready (connected, logged in, critical sync done)."
+                                .to_string(),
+                        )),
+                        Some(Err(e)) => Ok(ToolResult::error(format!(
+                            "Session did not become fully ready within {}ms: {e}",
+                            timeout.as_millis()
+                        ))),
+                        None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                    }
+                }
                 other => Ok(ToolResult::error(format!(
                     "Unknown 'debug_op' value '{other}'. Expected one of: stats, wait_for_node, \
                      wait_for_sent_node, acquire_raw_node, release_raw_node, \
                      set_resend_rate_limit, set_skip_history_sync, set_wanted_pre_key_count, \
                      set_retry_admission, identity, identity_tags, memory_report, \
                      resource_report, skip_history_sync_enabled, wanted_pre_key_count, \
+                     is_connected, is_logged_in, wait_for_connected, \
                      mex_query, mex_mutate, mex_reachout_timelock."
                 ))),
             },

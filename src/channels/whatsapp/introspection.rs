@@ -290,6 +290,37 @@ impl WhatsAppState {
     pub async fn set_retry_admission(&self, policy: Arc<dyn RetryAdmission>) -> Option<bool> {
         Some(self.client().await?.set_retry_admission(policy))
     }
+
+    /// Whether the transport is connected right now.
+    ///
+    /// Deliberately NOT the same question as [`Self::is_logged_in`]: a client
+    /// can hold the socket open and still not have completed the login
+    /// handshake. Reading one as the other reports a broken session as
+    /// healthy, which is the failure this pair exists to separate.
+    pub async fn client_is_connected(&self) -> Option<bool> {
+        Some(self.client().await?.is_connected())
+    }
+
+    /// Whether the login handshake has completed for this device.
+    pub async fn is_logged_in(&self) -> Option<bool> {
+        Some(self.client().await?.is_logged_in())
+    }
+
+    /// Wait until the session is fully ready, or until the timeout expires.
+    ///
+    /// Stricter than [`Self::client_is_connected`] on purpose: the library's readiness
+    /// wait means connected AND logged in AND critical sync done. Work started
+    /// against a merely-connected session gets an IQ that cannot be answered
+    /// yet, so the caller wants this one, not the flag.
+    pub async fn wait_for_connected(&self, timeout: Duration) -> Option<Result<(), String>> {
+        let client = self.client().await?;
+        Some(
+            client
+                .wait_for_connected(timeout)
+                .await
+                .map_err(|e| e.to_string()),
+        )
+    }
 }
 
 /// Build the node filter, narrowing by one attribute only when one was given.
