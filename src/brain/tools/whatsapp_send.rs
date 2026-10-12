@@ -21,6 +21,7 @@ use std::sync::Arc;
 use wacore_binary::jid::{Jid, Server};
 use whatsapp_rust::ClientProfile;
 use whatsapp_rust::Freshness;
+use whatsapp_rust::PinDuration;
 use whatsapp_rust::features::{
     BatchGroupResult, CommunitySubgroup, CreateCommunityOptions, EventCreationParams,
     EventResponseType, GroupCreateOptions, GroupDescription, GroupMetadata,
@@ -1050,6 +1051,7 @@ impl Tool for WhatsAppSendTool {
                         "send_photo", "send_document", "send_audio", "send_video", "send_sticker",
                         "send_location", "send_contact",
                         "react", "send_poll", "edit",
+                        "pin_message", "unpin_message", "keep_message",
                         "typing", "mark_read",
                         "delete_message_for_me", "delete_chat", "mark_chat_as_read",
                         "set_user_status_mute", "send_app_state_action",
@@ -1125,6 +1127,15 @@ impl Tool for WhatsAppSendTool {
                 "participant": {
                     "type": "string",
                     "description": "For react only: the JID of the original sender of a group or status message being reacted to. Required for a group reaction to be attributed; omit for a direct message."
+                },
+                "duration": {
+                    "type": "string",
+                    "enum": ["24h", "7d", "30d"],
+                    "description": "For pin_message only: how long the message stays pinned. Defaults to 7d."
+                },
+                "keep": {
+                    "type": "boolean",
+                    "description": "For keep_message only: true (default) keeps the message for everyone in a disappearing chat, false undoes a previous keep."
                 },
                 "media_path": {
                     "type": "string",
@@ -1839,6 +1850,98 @@ impl Tool for WhatsAppSendTool {
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to delete message: {}",
                         e
+                    ))),
+                }
+            }
+
+            // ── pin_message / unpin_message / keep_message ───────────────────
+            // These pin a MESSAGE, unlike `pin`/`unpin` above which pin the
+            // CHAT itself. The names are deliberately distinct: round 2's CI
+            // failure was two namespaces sharing a name, and a message pin
+            // sharing a name with a chat pin is the same trap.
+            "pin_message" | "unpin_message" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let from_me = input
+                    .get("from_me")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let participant = pget!(resolve_optional_participant(&input));
+                let key = waproto::whatsapp::MessageKey {
+                    remote_jid: Some(jid_str.clone()),
+                    from_me: Some(from_me),
+                    id: Some(msg_id.clone()),
+                    participant: participant.clone(),
+                };
+                let pinning = action == "pin_message";
+                let result = if pinning {
+                    let duration = match input.get("duration").and_then(|v| v.as_str()) {
+                        Some("24h") => PinDuration::Hours24,
+                        Some("30d") => PinDuration::Days30,
+                        _ => PinDuration::Days7,
+                    };
+                    client.pin_message(&jid, key, duration).await
+                } else {
+                    client.unpin_message(&jid, key).await
+                };
+                match result {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Message {msg_id} in {jid_str} {}.",
+                        if pinning { "pinned" } else { "unpinned" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to {} message {msg_id} in {jid_str}: {e}",
+                        if pinning { "pin" } else { "unpin" }
+                    ))),
+                }
+            }
+
+            // keep_message goes through the send path, so it returns a
+            // SendResult and carries the same send gate as every other send.
+            "keep_message" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let from_me = input
+                    .get("from_me")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let participant = pget!(resolve_optional_participant(&input));
+                let keep = input.get("keep").and_then(|v| v.as_bool()).unwrap_or(true);
+                let key = waproto::whatsapp::MessageKey {
+                    remote_jid: Some(jid_str.clone()),
+                    from_me: Some(from_me),
+                    id: Some(msg_id.clone()),
+                    participant: participant.clone(),
+                };
+                gate_send!(self, jid_str, "the keep-in-chat request");
+                match client.keep_message(&jid, key, keep).await {
+                    Ok(sent) => Ok(ToolResult::success(format!(
+                        "Message {msg_id} in {jid_str} {}. Keep message id {}.",
+                        if keep {
+                            "kept for everyone"
+                        } else {
+                            "un-kept for everyone"
+                        },
+                        sent.message_id
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to keep message {msg_id} in {jid_str}: {e}"
                     ))),
                 }
             }
