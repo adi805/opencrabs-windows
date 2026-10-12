@@ -569,6 +569,7 @@ pub mod empty_answer_nudge_test;
 pub mod evolve_diagnose_test;
 pub mod evolve_homebrew_reporting_test;
 pub mod evolve_homebrew_supervision_test;
+pub mod evolve_package_identity_test;
 pub mod evolve_systemd_restart_test;
 pub mod evolve_test;
 pub mod exa_search_test;

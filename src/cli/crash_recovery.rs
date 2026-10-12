@@ -119,7 +119,7 @@ async fn download_and_install_binary(url: &str, version: &str) -> Result<()> {
     swap_binary(&binary_data, version).await
 }
 
-/// Install a specific version via `cargo install opencrabs@version`.
+/// Install a specific version via `cargo install <package>@version`.
 async fn cargo_install_version(version: &str) -> Result<()> {
     let orange = "\x1b[38;2;215;100;20m";
     let reset = "\x1b[0m";
@@ -130,7 +130,13 @@ async fn cargo_install_version(version: &str) -> Result<()> {
     );
 
     let status = tokio::process::Command::new("cargo")
-        .args(["install", "opencrabs", "--version", version, "--force"])
+        .args([
+            "install",
+            crate::utils::update_source::DEFAULT_UPDATE_PACKAGE,
+            "--version",
+            version,
+            "--force",
+        ])
         .status()
         .await?;
 

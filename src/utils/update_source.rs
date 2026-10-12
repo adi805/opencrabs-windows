@@ -27,6 +27,17 @@ pub const DEFAULT_UPDATE_REPO: &str = "adi805/opencrabs-windows";
 /// Branch used for raw template fetches unless overridden.
 pub const DEFAULT_UPDATE_BRANCH: &str = "main";
 
+/// Distribution package name this build updates from.
+///
+/// This is the *package* identity, not the executable name. Upstream
+/// publishes `opencrabs`; this fork publishes a different package while
+/// keeping the `opencrabs` binary name. The two must not be conflated:
+/// `cargo install` resolves the package, so naming the upstream crate
+/// installs a different distribution and still exits zero (#214).
+///
+/// Read from the manifest so it cannot drift from what this build is.
+pub const DEFAULT_UPDATE_PACKAGE: &str = env!("CARGO_PKG_NAME");
+
 /// Env var that overrides [`DEFAULT_UPDATE_REPO`].
 pub const REPO_ENV: &str = "OPENCRABS_UPDATE_REPO";
 

@@ -9,7 +9,7 @@ pub enum InstallMethod {
     /// Built from source — exe lives inside a cargo `target/` dir with a `Cargo.toml` ancestor.
     /// Contains the project root path.
     Source(std::path::PathBuf),
-    /// Installed via `cargo install opencrabs` — exe lives in `~/.cargo/bin/`.
+    /// Installed via `cargo install <package>` — exe lives in `~/.cargo/bin/`.
     CargoInstall,
     /// Installed by Homebrew — exe lives inside a Cellar under a brew prefix.
     ///
@@ -108,7 +108,7 @@ fn is_in_cargo_bin(exe: &std::path::Path) -> bool {
 }
 
 /// Get the cargo bin directory (~/.cargo/bin or $CARGO_HOME/bin).
-fn cargo_bin_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn cargo_bin_dir() -> Option<std::path::PathBuf> {
     if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
         return Some(std::path::PathBuf::from(cargo_home).join("bin"));
     }
