@@ -14,14 +14,12 @@
 //! (2) `is_structured_report` exempts the genre from the discard wholesale,
 //! with the fired branches logged for forensics.
 //!
-//! Deliberate trade-off, owner-ruled: #1423's fabricated table report would
-//! now be delivered instead of discarded, with a WARN trail instead of
-//! silence. The zero-tool turn-end verdict (#752) does NOT exempt structured
-//! reports (#1541 fix): a structured report with zero tools is fabricated by
-//! construction, so the turn-end note fires. The in-loop exemption at #1506
-//! is gated on `tool_calls_completed_this_turn > 0`, so it only protects
-//! legitimate post-tool summaries. Every prose-shaped detector keeps full
-//! authority over non-structured narration.
+//! Branch-class gate (#2039): the exemption covers the phrase matchers only.
+//! A structured report that trips a fact check (an unbacked sha, tally or
+//! quoted result) is killed in-loop and at turn end, with or without tools,
+//! because a table does not make a fabricated fact true. The fact check is
+//! the one detector a report cannot talk its way past. Every prose-shaped
+//! detector keeps full authority over non-structured narration.
 //!
 //! Fixtures are synthetic and carry no user identifiers.
 
@@ -233,16 +231,14 @@ fn the_suppressed_report_logs_its_branches_for_forensics() {
     );
 }
 
-// ─── wiring sentinel: the turn-end verdict honors the exemption (#1541) ───
+// ─── wiring sentinel: the turn-end verdict is branch-class gated (#2039) ───
 
 #[test]
-fn the_turn_end_verdict_does_not_exempt_structured_reports_with_zero_tools() {
-    // #1541 fix: the turn-end verdict is already gated on
-    // `tool_calls_completed_this_turn == 0`. A structured completion report
-    // with zero tools is fabricated by construction — the #1541 exemption
-    // was only valid post-tool, where it belongs (see the in-loop gate at
-    // #1506, which now checks `tool_calls_completed_this_turn > 0`).
-    // The old test asserted the exemption existed here; that WAS the bug.
+fn the_turn_end_verdict_exempts_structured_reports_from_phrases_only() {
+    // The #752 verdict keeps the structured exemption for the phrase matchers
+    // (report prose false-positives there), but a zero-tool answer whose facts
+    // the conversation cannot back is killed whatever its shape. A table with
+    // invented shas is still fabricated (#2039).
     let verdict = TOOL_LOOP_SRC
         .split("Turn-end phantom verdict (#752)")
         .nth(1)
@@ -252,8 +248,13 @@ fn the_turn_end_verdict_does_not_exempt_structured_reports_with_zero_tools() {
         .next()
         .expect("#752 note assignment not found");
     assert!(
-        !verdict.contains("!super::phantom::is_structured_report(&final_text)"),
-        "the #752 turn-end verdict must NOT exempt structured reports — zero tools means fabricated"
+        verdict.contains("let turn_end_fabricated"),
+        "the #752 verdict never runs the fact check at turn end"
+    );
+    assert!(
+        verdict.contains("turn_end_fabricated\n")
+            && verdict.contains("|| (!super::phantom::is_structured_report(&final_text)"),
+        "the structured exemption must cover only the phrase matchers"
     );
     // The in-loop exemption is branch-class gated: phrase matchers yield to a
     // structured report, fact checks never do (#2039).

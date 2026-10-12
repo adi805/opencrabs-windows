@@ -8006,21 +8006,30 @@ impl AgentService {
         // on empty text), so guard the delivered answer here. Multilingual by
         // construction — reuses the phantom_lang detectors. Replace the lie with
         // a truthful message instead of telling the user it was done.
+        // Branch-class rule at turn end (#2039), mirroring the in-loop gate. A
+        // structured report is exempt from the phrase matchers, never from a
+        // fact check: a zero-tool answer that states facts the conversation
+        // cannot back is fabricated whatever its shape.
+        let turn_end_asserted = super::phantom::asserted_facts(&final_text);
+        let turn_end_fabricated = tool_calls_completed_this_turn == 0
+            && !turn_end_asserted.is_empty()
+            && !super::phantom::unbacked_facts(
+                &turn_end_asserted,
+                &Self::conversation_evidence(&context, &turn_tool_output),
+            )
+            .is_empty();
         if tool_calls_completed_this_turn == 0
             && !final_text.trim().is_empty()
-            // #1541 carve-out REMOVED: this block already requires zero tool
-            // calls. A structured completion report with zero tools ran is
-            // fabricated by construction — the exemption was only valid
-            // post-tool, where it belongs (see the in-loop gate at #1506,
-            // which now checks tool_calls_completed_this_turn > 0).
-            && (super::phantom::has_phantom_tool_intent_no_tools(&final_text)
-                || super::phantom::claims_unbacked_side_effects(&final_text)
-                || super::phantom::claims_unbacked_media_result(&final_text)
-                // Structural tell (#1194): the answer IS a shell command in a
-                // shell-tagged fence, and no tool ran. Carries no phrase list,
-                // so it holds where the phrase detectors above have their next
-                // gap — and it is what the reported turn actually was.
-                || super::fenced_command::narrates_unrun_shell_block(&final_text))
+            && (turn_end_fabricated
+                || (!super::phantom::is_structured_report(&final_text)
+                    && (super::phantom::has_phantom_tool_intent_no_tools(&final_text)
+                        || super::phantom::claims_unbacked_side_effects(&final_text)
+                        || super::phantom::claims_unbacked_media_result(&final_text)
+                        // Structural tell (#1194): the answer IS a shell command in a
+                        // shell-tagged fence, and no tool ran. Carries no phrase list,
+                        // so it holds where the phrase detectors above have their next
+                        // gap, and it is what the reported turn actually was.
+                        || super::fenced_command::narrates_unrun_shell_block(&final_text))))
         {
             tracing::warn!(
                 "Turn-end phantom verdict: 0 tools ran but the answer narrates action — \
