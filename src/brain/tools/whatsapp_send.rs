@@ -1036,6 +1036,9 @@ impl Tool for WhatsAppSendTool {
                         "newsletter_join", "newsletter_leave",
                         "newsletter_create", "newsletter_update",
                         "newsletter_revoke_message", "newsletter_get_messages",
+                        "newsletter_react", "newsletter_set_follower_mute",
+                        "newsletter_set_admin_mute", "newsletter_subscribe_live_updates",
+                        "newsletter_edit_message",
                         "community_create", "community_deactivate",
                         "community_create_subgroup", "community_link_subgroups",
                         "community_unlink_subgroups", "community_join_subgroup",
@@ -1211,7 +1214,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "muted": {
                     "type": "boolean",
-                    "description": "For set_user_status_mute: true (the default) hides that contact's status updates, false shows them again."
+                    "description": "For set_user_status_mute: true (the default) hides that contact's status updates, false shows them again. For newsletter_set_follower_mute / newsletter_set_admin_mute: true silences that class of channel notification, false restores it (defaults to true)."
                 },
                 "from_me": {
                     "type": "boolean",
@@ -1335,6 +1338,10 @@ impl Tool for WhatsAppSendTool {
                 "before": {
                     "type": "integer",
                     "description": "For newsletter_get_messages: fetch posts older than this server_id, the pagination cursor from a previous page."
+                },
+                "server_id": {
+                    "type": "integer",
+                    "description": "For newsletter_react: the server-assigned id of the post to react to, as reported by newsletter_get_messages. This is NOT the message id that edit/revoke key on."
                 },
                 "event_msg_id": {
                     "type": "string",
@@ -3093,6 +3100,107 @@ mark_chat_as_read, user_status_mute.",
                     ))),
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to delete {msg_id} from {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "newsletter_react" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                let server_id = match input.get("server_id").and_then(|v| v.as_u64()) {
+                    Some(id) => id,
+                    None => {
+                        return Ok(ToolResult::error(
+                            "newsletter_react needs 'server_id': the server-assigned id of the \
+                             post, which newsletter_get_messages reports for every post."
+                                .to_string(),
+                        ));
+                    }
+                };
+                let emoji = input
+                    .get("emoji")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                match client
+                    .newsletter()
+                    .send_reaction(&jid, server_id, &emoji)
+                    .await
+                {
+                    Ok(()) if emoji.is_empty() => Ok(ToolResult::success(format!(
+                        "Removed the reaction on post {server_id} in {jid}."
+                    ))),
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Reacted '{emoji}' to post {server_id} in {jid}."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to react to post {server_id} in {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "newsletter_set_follower_mute" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                let muted = input.get("muted").and_then(|v| v.as_bool()).unwrap_or(true);
+                match client.newsletter().set_follower_mute(&jid, muted).await {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Follower-activity notifications for {jid} are now {}.",
+                        if muted { "muted" } else { "on" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to change follower-activity notifications for {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "newsletter_set_admin_mute" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                let muted = input.get("muted").and_then(|v| v.as_bool()).unwrap_or(true);
+                match client.newsletter().set_admin_mute(&jid, muted).await {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Admin-activity notifications for {jid} are now {}.",
+                        if muted { "muted" } else { "on" }
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to change admin-activity notifications for {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "newsletter_subscribe_live_updates" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                match client
+                    .newsletter()
+                    .subscribe_live_updates(jid.clone())
+                    .await
+                {
+                    Ok(seconds) => Ok(ToolResult::success(format!(
+                        "Subscribed to live updates from {jid} for {seconds}s; the server pushes \
+                         newsletter notification stanzas until the subscription lapses."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to subscribe to live updates from {jid}: {e}"
+                    ))),
+                }
+            }
+
+            "newsletter_edit_message" => {
+                let jid = pget!(resolve_newsletter_jid(&input));
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let body = pget!(get_str(&input, "message")).to_string();
+                let new_content = waproto::whatsapp::Message {
+                    conversation: Some(body),
+                    ..Default::default()
+                };
+                match client
+                    .newsletter()
+                    .edit_message(&jid, msg_id.clone(), new_content)
+                    .await
+                {
+                    Ok(()) => Ok(ToolResult::success(format!(
+                        "Edited post {msg_id} in {jid}."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to edit post {msg_id} in {jid}: {e}"
                     ))),
                 }
             }
@@ -5083,7 +5191,7 @@ mark_chat_as_read, user_status_mute.",
                  set_unavailable, subscribe_presence, unsubscribe_presence, create_quiz, \
                  vote, decrypt_vote, aggregate_votes, newsletter_get_metadata, \
                  newsletter_get_metadata_by_invite, newsletter_join, newsletter_leave, \
-                 newsletter_create, newsletter_update, newsletter_revoke_message, \
+                 newsletter_create, newsletter_update, newsletter_revoke_message, newsletter_react, newsletter_set_follower_mute, newsletter_set_admin_mute, newsletter_subscribe_live_updates, newsletter_edit_message, \
                  newsletter_get_messages, community_create, community_deactivate, \
                  community_create_subgroup, community_link_subgroups, \
                  community_unlink_subgroups, community_join_subgroup, \
