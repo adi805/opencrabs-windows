@@ -1052,6 +1052,7 @@ impl Tool for WhatsAppSendTool {
                         "send_location", "send_contact",
                         "react", "send_poll", "edit",
                         "pin_message", "unpin_message", "keep_message",
+                        "retransmit_message",
                         "typing", "mark_read",
                         "delete_message_for_me", "delete_chat", "mark_chat_as_read",
                         "set_user_status_mute", "send_app_state_action",
@@ -1946,6 +1947,49 @@ impl Tool for WhatsAppSendTool {
                     ))),
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to keep message {msg_id} in {jid_str}: {e}"
+                    ))),
+                }
+            }
+
+            // ── retransmit_message ───────────────────────────────────────────
+            // Repair a send that failed by re-sending the same body under the
+            // SAME message id, so the peer sees one message rather than a
+            // duplicate. `SendOptions::message_id` is the library's own
+            // documented hook for exactly this ("useful for resending a failed
+            // message with the same ID or idempotency").
+            //
+            // The library's `retransmit_message` / `request_message_retry` are
+            // NOT this: both are receive-path protocol handlers. The first
+            // needs a `MessageRetransmission` carrying the original proto, the
+            // second takes a `&NodeRef` borrowed from the inbound stanza the
+            // receive loop holds. A tool call has neither, so exposing them
+            // would mean a fabricated retry receipt - protocol traffic at a
+            // peer that nothing asked for.
+            "retransmit_message" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let body = pget!(get_str(&input, "message")).to_string();
+                gate_send!(self, jid_str, "the retransmission");
+                let wa_msg = waproto::whatsapp::Message {
+                    conversation: Some(body),
+                    ..Default::default()
+                };
+                let opts =
+                    whatsapp_rust::send::SendOptions::default().with_message_id(msg_id.clone());
+                match client.send_message_with_options(jid, wa_msg, opts).await {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Message {msg_id} retransmitted to {jid_str} under the same id."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to retransmit {msg_id} to {jid_str}: {e}"
                     ))),
                 }
             }
