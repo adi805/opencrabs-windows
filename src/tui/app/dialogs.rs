@@ -22,10 +22,36 @@ impl App {
         if !saved {
             return;
         }
-        let prompt = welcome_message_for(mode);
-        if let Err(e) = self.send_message(prompt.to_string()).await {
+        let (provider, model) = self.welcome_provider_and_model().await;
+        let prompt = welcome_message_for(mode, &provider, &model);
+        if let Err(e) = self.send_message(prompt).await {
             tracing::warn!(error = %e, "failed to send welcome message");
         }
+    }
+
+    /// Provider and model serving the current session, read from its row in
+    /// the database. Falls back to the agent's view when the row is missing
+    /// or has no value recorded, so the greeting always names a model.
+    pub(crate) async fn welcome_provider_and_model(&self) -> (String, String) {
+        let row = match self.current_session.as_ref() {
+            Some(session) => match self.session_service.get_session(session.id).await {
+                Ok(found) => found,
+                Err(e) => {
+                    tracing::warn!(error = %e, "welcome: could not read session row");
+                    None
+                }
+            },
+            None => None,
+        };
+        let provider = row
+            .as_ref()
+            .and_then(|s| s.provider_name.clone())
+            .unwrap_or_else(|| self.provider_name_for_current_session());
+        let model = row
+            .as_ref()
+            .and_then(|s| s.model.clone())
+            .unwrap_or_else(|| self.provider_model_for_current_session());
+        (provider, model)
     }
 
     fn quit_from_onboarding(&mut self) {

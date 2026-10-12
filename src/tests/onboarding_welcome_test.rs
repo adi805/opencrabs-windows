@@ -4,7 +4,8 @@
 //! `WELCOME_MESSAGE` constant used in `dialogs.rs`.
 
 use crate::tui::onboarding::{
-    OnboardingWizard, WELCOME_MESSAGE, WELCOME_QUICK_START_MESSAGE, WizardMode, welcome_message_for,
+    OnboardingWizard, WELCOME_MESSAGE, WELCOME_QUICK_START_MESSAGE, WizardMode,
+    quick_start_welcome, welcome_message_for,
 };
 
 // ── OnboardingWizard::is_first_time ─────────────────────────────
@@ -83,16 +84,41 @@ fn welcome_message_is_system_prompt() {
 // ── welcome_message_for (quick start vs advanced) ───────────────
 
 #[test]
-fn quick_start_gets_the_interview_prompt() {
+fn quick_start_gets_the_interview_prompt_for_the_session_model() {
     assert_eq!(
-        welcome_message_for(WizardMode::QuickStart),
-        WELCOME_QUICK_START_MESSAGE
+        welcome_message_for(WizardMode::QuickStart, "zai", "glm-5.3-flash"),
+        quick_start_welcome("zai", "glm-5.3-flash")
     );
 }
 
 #[test]
 fn advanced_keeps_the_existing_welcome() {
-    assert_eq!(welcome_message_for(WizardMode::Advanced), WELCOME_MESSAGE);
+    assert_eq!(
+        welcome_message_for(WizardMode::Advanced, "zai", "glm-5.3-flash"),
+        WELCOME_MESSAGE
+    );
+}
+
+#[test]
+fn quick_start_welcome_fills_the_session_provider_and_model() {
+    let p = quick_start_welcome("opencrabs", "deepseek-v4.1-flash");
+    assert!(p.contains("the opencrabs provider with model deepseek-v4.1-flash"));
+    assert!(p.contains("brain is online on deepseek-v4.1-flash"));
+    assert!(!p.contains("{provider}"));
+    assert!(!p.contains("{model}"));
+}
+
+#[test]
+fn quick_start_welcome_follows_the_session_not_a_hardcoded_model() {
+    let p = quick_start_welcome("anthropic", "claude-sonnet-5-5");
+    assert!(p.contains("claude-sonnet-5-5"));
+    assert!(!p.contains("deepseek-v4.1-flash"));
+}
+
+#[test]
+fn welcome_prompts_have_no_em_dash() {
+    assert!(!WELCOME_MESSAGE.contains('\u{2014}'));
+    assert!(!quick_start_welcome("opencrabs", "deepseek-v4.1-flash").contains('\u{2014}'));
 }
 
 #[test]
@@ -110,15 +136,8 @@ fn quick_start_prompt_leaves_soul_alone_unless_asked() {
 }
 
 #[test]
-fn quick_start_prompt_has_no_em_dash() {
-    assert!(!WELCOME_QUICK_START_MESSAGE.contains('\u{2014}'));
-}
-
-#[test]
-fn quick_start_prompt_names_the_default_model_and_offers_the_options() {
+fn quick_start_prompt_offers_the_options() {
     let p = WELCOME_QUICK_START_MESSAGE;
-    assert!(p.contains("OpenCrabs provider"));
-    assert!(p.contains("deepseek-v4.1-flash"));
     assert!(p.contains("fallback provider"));
     assert!(p.contains("speech to text"));
     assert!(p.contains("vision"));

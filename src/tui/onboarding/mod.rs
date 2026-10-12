@@ -52,18 +52,27 @@ pub(crate) use self::config::build_onboarding_systemd_unit;
 /// Starts with `[SYSTEM:` so it's hidden from the user display but processed
 /// by the agent. The agent uses its personality (SOUL.md) and user knowledge
 /// (USER.md) to craft a personalized surprise instead of a hardcoded greeting.
-pub const WELCOME_MESSAGE: &str = "[SYSTEM: Onboarding complete. Check your environment — use load_config to see what's configured and tool_search to discover what you have. You know who your user is (USER.md) and you have your personality (SOUL.md). Now do something that'll make them go 'holy shit'. Not a boring greeting. Not 'hey how can I help'. Something only YOU would say, like your best friend just walked in. Be creative, be unexpected. Then ask if they want daily check-ins, task reminders, or heartbeat — you can set those up with cron_manage right now.]";
+pub const WELCOME_MESSAGE: &str = "[SYSTEM: Onboarding complete. Check your environment, use load_config to see what's configured and tool_search to discover what you have. You know who your user is (USER.md) and you have your personality (SOUL.md). Now do something that'll make them go 'holy shit'. Not a boring greeting. Not 'hey how can I help'. Something only YOU would say, like your best friend just walked in. Be creative, be unexpected. Then ask if they want daily check-ins, task reminders, or heartbeat, you can set those up with cron_manage right now.]";
 
 /// Hidden system prompt for a quick start. Quick start skips the profile and
-/// soul steps, so USER.md is still empty. The agent introduces itself and
-/// interviews the user to fill it in, one or two questions at a time.
-/// SOUL.md stays as shipped unless the user asks to change it.
-pub const WELCOME_QUICK_START_MESSAGE: &str = "[SYSTEM: Setup just finished on the OpenCrabs provider, model deepseek-v4.1-flash. Quick start kept the defaults: workspace ~/.opencrabs, SOUL.md as seeded, daemon off. You know nothing about the user yet. Introduce yourself in one or two short lines, in your own voice from SOUL.md. Then get to know them: ask their name, what they do, what they want help with, and how they like to be addressed. Ask one or two questions at a time, never a form. As they answer, save each fact to USER.md with write_opencrabs_file using operation=append. Keep entries short and factual. Do not rewrite SOUL.md unless they explicitly ask you to change your personality. Once you know who they are, offer, without setting anything up, the next options: a fallback provider, speech to text and text to speech, vision, and image generation. Only configure one if they say yes.]";
+/// soul steps, so USER.md is still empty. `{provider}` and `{model}` are filled
+/// per send from the session row in the database, so the greeting names the
+/// model that is actually serving this session. SOUL.md stays as shipped unless
+/// the user asks to change it.
+pub const WELCOME_QUICK_START_MESSAGE: &str = "[SYSTEM: Setup just finished. This session runs on the {provider} provider with model {model}. Quick start kept the defaults: workspace ~/.opencrabs, SOUL.md as seeded, daemon off. You know nothing about the user yet, so this is a first meeting. Greet them in your own voice from SOUL.md, short and a little playful, and say the brain is online on {model}. Then get to know them: ask their name, what they do, what they want help with, and how they like to be addressed. Ask one or two questions at a time, never a form. As they answer, save each fact to USER.md with write_opencrabs_file using operation=append. Keep entries short and factual. Do not rewrite SOUL.md unless they explicitly ask you to change your personality. Once you know who they are, offer, without setting anything up, a fallback provider, speech to text and text to speech, vision, and image generation. Only configure one if they say yes.]";
 
-/// Pick the hidden welcome prompt for the flow the user just finished.
-pub fn welcome_message_for(mode: WizardMode) -> &'static str {
+/// Build the quick-start welcome for the provider and model serving this session.
+pub fn quick_start_welcome(provider: &str, model: &str) -> String {
+    WELCOME_QUICK_START_MESSAGE
+        .replace("{provider}", provider)
+        .replace("{model}", model)
+}
+
+/// Pick the hidden welcome prompt for the flow the user just finished. The
+/// quick-start prompt is filled with the provider and model serving the session.
+pub fn welcome_message_for(mode: WizardMode, provider: &str, model: &str) -> String {
     match mode {
-        WizardMode::QuickStart => WELCOME_QUICK_START_MESSAGE,
-        WizardMode::Advanced => WELCOME_MESSAGE,
+        WizardMode::QuickStart => quick_start_welcome(provider, model),
+        WizardMode::Advanced => WELCOME_MESSAGE.to_string(),
     }
 }

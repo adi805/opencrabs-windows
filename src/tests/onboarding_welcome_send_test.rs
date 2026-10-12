@@ -66,3 +66,24 @@ async fn saved_completion_sends_welcome_without_first_run_flag() {
         "a saved /onboard completion must start the welcome turn"
     );
 }
+
+#[tokio::test]
+async fn welcome_reads_provider_and_model_from_the_session_row() {
+    let mut app = app().await;
+    let session = app
+        .session_service
+        .create_session_with_provider(
+            Some("onboarding".into()),
+            Some("opencrabs".into()),
+            Some("deepseek-v4.1-flash".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    app.current_session = Some(session);
+
+    let (provider, model) = app.welcome_provider_and_model().await;
+
+    assert_eq!(provider, "opencrabs");
+    assert_eq!(model, "deepseek-v4.1-flash");
+}
