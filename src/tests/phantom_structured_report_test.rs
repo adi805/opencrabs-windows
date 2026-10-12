@@ -179,7 +179,7 @@ fn the_exempt_path_is_suppression_not_a_branch_of_the_kill() {
     // The suppression branch must fire BEFORE the kill body: a structured
     // report takes the log-and-deliver path, never the discard path.
     let gate = TOOL_LOOP_SRC
-        .split("if kill && structured_report")
+        .split("structured_report_exempts(structured_report, &fired_branches)")
         .nth(1)
         .expect("suppression branch not found");
     let gate = gate
@@ -219,7 +219,7 @@ fn the_suppressed_report_logs_its_branches_for_forensics() {
     // The #1423 trade-off is visible, not silent: a fabricated table report
     // ships with a WARN naming what would have fired.
     let gate = TOOL_LOOP_SRC
-        .split("if kill && structured_report")
+        .split("structured_report_exempts(structured_report, &fired_branches)")
         .nth(1)
         .expect("suppression branch not found");
     let gate = gate.split("} else if kill {").next().unwrap();
@@ -255,10 +255,11 @@ fn the_turn_end_verdict_does_not_exempt_structured_reports_with_zero_tools() {
         !verdict.contains("!super::phantom::is_structured_report(&final_text)"),
         "the #752 turn-end verdict must NOT exempt structured reports — zero tools means fabricated"
     );
-    // The exemption DOES belong in-loop, gated on tools having run.
+    // The in-loop exemption is branch-class gated: phrase matchers yield to a
+    // structured report, fact checks never do (#2039).
     assert!(
-        TOOL_LOOP_SRC.contains("kill && structured_report && tool_calls_completed_this_turn > 0"),
-        "the #1506 in-loop exemption must be gated on tool_calls_completed_this_turn > 0"
+        TOOL_LOOP_SRC.contains("structured_report_exempts(structured_report, &fired_branches)"),
+        "the #1506 in-loop exemption must route through the branch-class gate"
     );
 }
 

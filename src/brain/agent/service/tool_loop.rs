@@ -5287,16 +5287,18 @@ impl AgentService {
                 // for forensics, so #1423's fabricated-table shape trades a
                 // silent discard for a visible delivery with a trail.
                 //
-                // Gate on tool_calls_completed_this_turn > 0: the exemption
-                // protects post-tool reports (real work ran, summary is
-                // legitimate). With zero tools, a structured report is
-                // fabricated by construction and must not ship.
+                // Branch-class gate (#2039). The report exempts the phrase
+                // matchers only. A fired fact check (unbacked facts, uncalled
+                // commands, unbacked evidence) kills the report whatever its
+                // shape, because a fabricated table is still fabricated.
                 let structured_report = super::phantom::is_structured_report(&iteration_text);
                 let kill = phantom_retries_used < MAX_PHANTOM_RETRIES
                     && phantom_detections_total < MAX_PHANTOM_DETECTIONS_TOTAL
                     && phantom_eligible
                     && !fired_branches.is_empty();
-                if kill && structured_report && tool_calls_completed_this_turn > 0 {
+                if kill
+                    && super::phantom::structured_report_exempts(structured_report, &fired_branches)
+                {
                     tracing::warn!(
                         branches = ?fired_branches,
                         text_len = iteration_text.len(),

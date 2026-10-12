@@ -1984,10 +1984,9 @@ pub fn claims_unsent_file(text: &str, tool_inputs: &[String]) -> bool {
 /// misfires — four legitimate batch reports (1.8-2.0 KB, tables included)
 /// were discarded on 2026-09-10 while every fact in them was real. The
 /// owner's standing directive: reports with tables and structured data are
-/// NEVER discarded. The mid-loop kill exempts this genre wholesale; the
-/// fired branches still land in the log for forensics, so a genuinely
-/// fabricated table report (#1423's shape) trades a silent discard for a
-/// visible delivery with a WARN trail.
+/// NEVER discarded. The mid-loop kill exempts this genre from the phrase
+/// matchers; a fired fact check still kills it (#2039). The fired branches
+/// land in the log for forensics.
 ///
 /// Prose-shaped completions keep the full detector set: a short fabricated
 /// "Done, shipped abc1234" matches nothing here and dies as before.
@@ -2016,4 +2015,21 @@ pub fn is_structured_report(text: &str) -> bool {
         .filter(|line| line.trim_start().starts_with("## "))
         .count()
         >= 2
+}
+
+/// Branches that check a claim against evidence: the facts it states, the
+/// commands it names, the results it quotes. A fired fact check is proof of
+/// fabrication, so a structured report may never exempt it (#2039).
+pub fn is_fact_check_branch(branch: &str) -> bool {
+    matches!(
+        branch,
+        "unbacked_facts" | "uncalled_commands" | "unbacked_evidence"
+    )
+}
+
+/// Whether a structured report escapes the phantom kill for the branches that
+/// fired. Phrase matchers false-positive on distilled report prose, so the
+/// report exempts them. Fact checks never yield to the exemption (#2039).
+pub fn structured_report_exempts(structured: bool, fired_branches: &[&str]) -> bool {
+    structured && !fired_branches.iter().any(|b| is_fact_check_branch(b))
 }
