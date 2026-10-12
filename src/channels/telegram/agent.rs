@@ -1037,6 +1037,64 @@ impl TelegramAgent {
                             // the user just switched to. The current session is
                             // already switched; this covers the rest, which pick
                             // it up on their next message.
+                            // Apply-to-all, step one (#2042): ask first. Shows how many
+                            // sessions would change, with Confirm and Cancel. Nothing is
+                            // written by this tap.
+                            if let Some(rest) = data.strip_prefix("allq:") {
+                                crate::channels::telegram::keyboards::ack_callback(&bot, &query, "apply-all").await;
+                                if let (Some((prov, model)), Some(msg)) = (rest.split_once('|'), &query.message) {
+                                    let session_svc = crate::services::SessionService::new(
+                                        agent.context().clone(),
+                                    );
+                                    let (text, markup) = match session_svc
+                                        .count_provider_model_all_sessions(prov, model)
+                                        .await
+                                    {
+                                        Ok(n) => {
+                                            let text = crate::channels::commands::apply_all_prompt_text(prov, model, n);
+                                            let mut rows = Vec::new();
+                                            if n > 0
+                                                && let Some(confirm) = crate::channels::commands::apply_all_confirm_data(prov, model)
+                                            {
+                                                rows.push(vec![teloxide::types::InlineKeyboardButton::callback("Confirm", confirm)]);
+                                            }
+                                            rows.push(vec![teloxide::types::InlineKeyboardButton::callback("Cancel", "allx")]);
+                                            (text, teloxide::types::InlineKeyboardMarkup::new(rows))
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("apply-all count failed: {e}");
+                                            (format!("⚠️ Could not count sessions: {e}"), teloxide::types::InlineKeyboardMarkup::default())
+                                        }
+                                    };
+                                    super::edit_retry::edit_text_ui(
+                                        bot.clone(),
+                                        msg.chat().id,
+                                        msg.id(),
+                                        text,
+                                        false,
+                                        Some(markup),
+                                        "apply-all prompt",
+                                    );
+                                }
+                                return ResponseResult::Ok(());
+                            }
+                            // Cancel on the apply-all prompt: nothing was written (#2042).
+                            if data == "allx" {
+                                crate::channels::telegram::keyboards::ack_callback(&bot, &query, "apply-all").await;
+                                if let Some(msg) = &query.message {
+                                    super::edit_retry::edit_text_ui(
+                                        bot.clone(),
+                                        msg.chat().id,
+                                        msg.id(),
+                                        "Not applied. Sessions keep their models.".to_string(),
+                                        false,
+                                        Some(teloxide::types::InlineKeyboardMarkup::default()),
+                                        "apply-all cancel",
+                                    );
+                                }
+                                return ResponseResult::Ok(());
+                            }
+                            // Apply-to-all, step two: Confirm. The only tap that writes.
                             if let Some(rest) = data.strip_prefix("allm:") {
                                 let reply = if let Some((prov, model)) = rest.split_once('|') {
                                     let session_svc = crate::services::SessionService::new(

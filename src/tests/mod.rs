@@ -725,6 +725,8 @@ pub mod rtk_rewrite_test;
 pub mod rtk_tracker_test;
 pub mod stop_intent_test;
 pub mod stream_total_wall_clock_test;
+pub mod telegram_apply_all_confirm_test;
+pub mod telegram_cli_models_menu_test;
 pub mod telegram_cooldown_discipline_1854_test;
 pub mod telegram_cooldown_lock;
 pub mod theme_global_lock;

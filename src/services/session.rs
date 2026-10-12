@@ -323,6 +323,18 @@ impl SessionService {
     /// never stamped — recency ordering and title-suffix lookups survive.
     /// Live sessions apply the pair on their next message via the
     /// existing sync path.
+    /// Sessions an apply-to-all for this pair would change, for the confirmation prompt (#2042).
+    pub async fn count_provider_model_all_sessions(
+        &self,
+        provider: &str,
+        model: &str,
+    ) -> Result<usize> {
+        SessionRepository::new(self.context.pool())
+            .count_provider_model_for_all(provider.to_string(), model.to_string())
+            .await
+            .context("Failed to count sessions for apply-to-all")
+    }
+
     pub async fn set_provider_model_all_sessions(
         &self,
         provider: &str,

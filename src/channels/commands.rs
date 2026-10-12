@@ -2045,16 +2045,38 @@ pub fn provider_marker(name: &str, current_provider: &str, configured: bool) -> 
     }
 }
 
-/// Build the `allm:<provider>|<model>` callback payload behind the
+/// Build the `allq:<provider>|<model>` callback payload behind the
 /// "Apply to all sessions" button (#468), enforcing Telegram's 64-byte
 /// callback_data cap centrally (#1149). `None` = payload too long; callers
 /// omit the button rather than truncating — an omitted button beats a broken
-/// one, and no index-fallback form exists for `allm:`. The generator (this +
+/// one, and no index-fallback form exists for `allq:`. The generator (this +
 /// the telegram/agent.rs picker-success path + the commands_tg textual-switch
-/// path) and the `allm:` parser MUST agree on this pipe format.
+/// path) and the `allq:` parser MUST agree on this pipe format.
 pub fn apply_all_callback_data(provider_name: &str, model: &str) -> Option<String> {
+    // The first tap only asks (#2042): it shows the count and Confirm/Cancel.
+    let data = format!("allq:{provider_name}|{model}");
+    (data.len() <= 64).then_some(data)
+}
+
+/// The Confirm button on the apply-all prompt: the only tap that writes (#2042).
+pub fn apply_all_confirm_data(provider_name: &str, model: &str) -> Option<String> {
     let data = format!("allm:{provider_name}|{model}");
     (data.len() <= 64).then_some(data)
+}
+
+/// The apply-all prompt text, quoting the number of sessions the write changes.
+pub fn apply_all_prompt_text(provider_name: &str, model: &str, sessions: usize) -> String {
+    match sessions {
+        0 => {
+            format!("Every other session already uses {provider_name}/{model}. Nothing to change.")
+        }
+        1 => format!(
+            "Apply {provider_name}/{model} to 1 other session? Their model changes on their next message."
+        ),
+        n => format!(
+            "Apply {provider_name}/{model} to {n} other sessions? Their models change on their next message."
+        ),
+    }
 }
 
 /// Build the Telegram `callback_data` for a model button, guaranteed to fit

@@ -271,6 +271,32 @@ impl SessionRepository {
     /// the NULL-safe `IS NOT` predicate, and `updated_at` is never touched,
     /// so recency ordering in `/sessions` and title-suffix/most-recent
     /// lookups stays intact. Returns the number of rows changed.
+    /// How many sessions `set_provider_model_for_all` would change, with the same
+    /// predicate, so the confirmation prompt quotes the number the write touches (#2042).
+    pub async fn count_provider_model_for_all(
+        &self,
+        provider: String,
+        model: String,
+    ) -> Result<usize> {
+        self.pool
+            .get()
+            .await
+            .context("Failed to get connection")?
+            .interact(move |conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sessions
+                     WHERE archived_at IS NULL
+                       AND (provider_name IS NOT ?1 OR model IS NOT ?2)",
+                    params![provider, model],
+                    |row| row.get::<_, i64>(0),
+                )
+            })
+            .await
+            .map_err(interact_err)?
+            .map(|n| n.max(0) as usize)
+            .context("Failed to count sessions for apply-to-all")
+    }
+
     pub async fn set_provider_model_for_all(
         &self,
         provider: String,
