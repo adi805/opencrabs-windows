@@ -1106,7 +1106,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "message": {
                     "type": "string",
-                    "description": "Message text (send, reply, caption for media); the new name or status text for set_profile_name / set_profile_status. For status_update: the text status, or the caption when 'media_path' is given."
+                    "description": "Message text (send, reply, edit, caption for media); the new name or status text for set_profile_name / set_profile_status. For status_update: the text status, or the caption when 'media_path' is given."
                 },
                 "phone": {
                     "type": "string",
@@ -2489,7 +2489,7 @@ impl Tool for WhatsAppSendTool {
                 );
                 gate_send!(self, jid_str, "the edit");
                 let msg_id = pget!(get_str(&input, "message_id")).to_string();
-                let new_text = pget!(get_str(&input, "text")).to_string();
+                let new_text = pget!(get_str(&input, "message")).to_string();
                 let wa_msg = waproto::whatsapp::Message {
                     conversation: Some(new_text),
                     ..Default::default()
