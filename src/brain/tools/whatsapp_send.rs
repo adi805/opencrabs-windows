@@ -1053,6 +1053,7 @@ impl Tool for WhatsAppSendTool {
                         "react", "send_poll", "edit",
                         "pin_message", "unpin_message", "keep_message",
                         "retransmit_message",
+                        "mark_as_played", "acknowledge_group",
                         "typing", "mark_read",
                         "delete_message_for_me", "delete_chat", "mark_chat_as_read",
                         "set_user_status_mute", "send_app_state_action",
@@ -1990,6 +1991,55 @@ impl Tool for WhatsAppSendTool {
                     ))),
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to retransmit {msg_id} to {jid_str}: {e}"
+                    ))),
+                }
+            }
+
+            // ── mark_as_played / acknowledge_group ───────────────────────────
+            // `mark_as_read` tells the sender the message arrived; it does not
+            // tell them a voice note was actually listened to. `mark_as_played`
+            // is that second receipt, and it is the one a sender waits for.
+            "mark_as_played" => {
+                let (jid, jid_str) = pget!(
+                    resolve_chat_jid(
+                        &input,
+                        &self.whatsapp_state,
+                        &self.config_rx,
+                        context.session_id
+                    )
+                    .await
+                );
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                // In a group the receipt must name who sent the note, or it
+                // cannot be attributed. Same param as the other per-sender
+                // actions.
+                let sender = pget!(resolve_optional_participant(&input));
+                match client
+                    .mark_as_played(&jid, sender.as_ref(), &[msg_id.as_str()])
+                    .await
+                {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Played receipt sent for {msg_id} in {jid_str}."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to send played receipt for {msg_id} in {jid_str}: {e}"
+                    ))),
+                }
+            }
+
+            // The library's `acknowledge` is a GROUP notification ack (an IQ
+            // against the group, no message id), so the name carries the
+            // suffix. The bare name would sit next to the message actions and
+            // read as a message ack, which it is not.
+            "acknowledge_group" => {
+                let jid = pget!(resolve_group_jid(&input));
+                let jid_str = jid.to_string();
+                match client.groups().acknowledge(jid).await {
+                    Ok(_) => Ok(ToolResult::success(format!(
+                        "Group {jid_str} acknowledged."
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to acknowledge group {jid_str}: {e}"
                     ))),
                 }
             }
