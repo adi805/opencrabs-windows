@@ -35,6 +35,7 @@ use whatsapp_rust::privacy_settings::{
     DisallowedListAction, DisallowedListUpdate, DisallowedListUserEntry, PrivacyCategory,
     PrivacyValue,
 };
+use whatsapp_rust::{SpamFlow, SpamReportRequest};
 
 /// Reported by `wa_introspect` when a runtime call needs a live session and
 /// there is none to act on.
@@ -1057,6 +1058,7 @@ impl Tool for WhatsAppSendTool {
                         "fetch_message_history",
                         "refresh_media_conn",
                         "fetch_sticker_pack",
+                        "send_spam_report",
                         "typing", "mark_read",
                         "delete_message_for_me", "delete_chat", "mark_chat_as_read",
                         "set_user_status_mute", "send_app_state_action",
@@ -1115,7 +1117,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "phone": {
                     "type": "string",
-                    "description": "Phone number in E.164 format (e.g. '+15551234567'). For the chat actions (archive_chat, unarchive_chat, mute_chat, unmute_chat, clear_chat, star_message, unstar_message) it names the chat to act on; for save_contact it is required, and for subscribe_presence / unsubscribe_presence it names the contact whose updates to watch. Omit to message the owner."
+                    "description": "Phone number in E.164 format (e.g. '+15551234567'). For the chat actions (archive_chat, unarchive_chat, mute_chat, unmute_chat, clear_chat, star_message, unstar_message) it names the chat to act on; for save_contact it is required; for subscribe_presence / unsubscribe_presence it names the contact whose updates to watch; for send_spam_report it names the reported contact, and is not subject to the outbound allowlist because reporting a sender is not sending to them. Omit to message the owner."
                 },
                 "message_id": {
                     "type": "string",
@@ -1141,6 +1143,11 @@ impl Tool for WhatsAppSendTool {
                     "type": "string",
                     "enum": ["24h", "7d", "30d"],
                     "description": "For pin_message only: how long the message stays pinned. Defaults to 7d."
+                },
+                "spam_flow": {
+                    "type": "string",
+                    "enum": ["message_menu", "contact_info", "group_info", "group_banner", "status"],
+                    "description": "For send_spam_report only: which surface the report is filed from, which WhatsApp uses to weigh it. Defaults to message_menu. 'contact_info' and the group flows are the ones WhatsApp treats as a contact- or group-level report rather than a single message."
                 },
                 "pack_id": {
                     "type": "string",
@@ -1437,7 +1444,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "confirm": {
                     "type": "boolean",
-                    "description": "For the wa_privacy WRITE sub-ops: must be true or nothing is changed. Account-level settings change what this account reveals to everyone and have no undo, so they are gated harder than sending a message, which is only rate-limited."
+                    "description": "For the wa_privacy WRITE sub-ops: must be true or nothing is changed. Account-level settings change what this account reveals to everyone and have no undo, so they are gated harder than sending a message, which is only rate-limited. Also required for send_spam_report, which files an accusation about a third party that cannot be withdrawn."
                 },
                 "privacy_category": {
                     "type": "string",
@@ -2185,6 +2192,80 @@ impl Tool for WhatsAppSendTool {
                     }
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to fetch sticker pack '{pack_id}': {e}"
+                    ))),
+                }
+            }
+
+            // ── send_spam_report ─────────────────────────────────────────────
+            // Files a spam report with WhatsApp about a specific message. This
+            // is an accusation about a third party that leaves this machine and
+            // cannot be withdrawn, so it is gated behind `confirm` rather than
+            // merely rate-limited: the risk is not volume, it is that a wrong
+            // call says something about someone that cannot be unsaid.
+            //
+            // The reported contact is resolved WITHOUT the outbound allowlist
+            // check that `resolve_jid` applies. That check exists to stop the
+            // bot messaging someone it was not told to; reporting a sender is
+            // not sending to them, and gating it would make a report impossible
+            // in exactly the case it is needed - a stranger who messaged in.
+            "send_spam_report" => {
+                if !input
+                    .get("confirm")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    return Ok(ToolResult::error(
+                        "send_spam_report files a spam report about a third party with WhatsApp. \
+                         It leaves this machine, it names someone, and it cannot be withdrawn. \
+                         Pass \"confirm\": true to proceed."
+                            .to_string(),
+                    ));
+                }
+                let msg_id = pget!(get_str(&input, "message_id")).to_string();
+                let reported = match input.get("phone").and_then(|v| v.as_str()) {
+                    Some(raw) => Some(pget!(parse_contact_jid(raw, "phone"))),
+                    None => None,
+                };
+                let participant = pget!(resolve_optional_participant(&input));
+                let group = match input.get("group_jid").and_then(|v| v.as_str()) {
+                    Some(_) => Some(pget!(resolve_group_jid(&input))),
+                    None => None,
+                };
+                let flow = match input.get("spam_flow").and_then(|v| v.as_str()) {
+                    Some("contact_info") => SpamFlow::ContactInfo,
+                    Some("group_info") => SpamFlow::GroupInfoReport,
+                    Some("group_banner") => SpamFlow::GroupSpamBannerReport,
+                    Some("status") => SpamFlow::StatusReport,
+                    _ => SpamFlow::MessageMenu,
+                };
+                let ts_ms = input
+                    .get("timestamp_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let request = SpamReportRequest {
+                    message_id: msg_id.clone(),
+                    message_timestamp: ts_ms,
+                    from_jid: reported.clone(),
+                    participant_jid: participant,
+                    group_jid: group.clone(),
+                    spam_flow: flow,
+                    ..Default::default()
+                };
+                match client.send_spam_report(request).await {
+                    Ok(result) => Ok(ToolResult::success(format!(
+                        "Spam report filed for message {msg_id}{}{}. Report id: {}",
+                        match &reported {
+                            Some(j) => format!(" from {j}"),
+                            None => String::new(),
+                        },
+                        match &group {
+                            Some(g) => format!(" in group {g}"),
+                            None => String::new(),
+                        },
+                        result.report_id.as_deref().unwrap_or("(none returned)")
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to file a spam report for {msg_id}: {e}"
                     ))),
                 }
             }
