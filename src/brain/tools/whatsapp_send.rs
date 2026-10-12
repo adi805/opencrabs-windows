@@ -1067,7 +1067,7 @@ impl Tool for WhatsAppSendTool {
                         "group_batch_info", "group_remove_participants_linked",
                         "group_set_member_link_mode", "group_set_member_share_history_mode",
                         "group_update_member_label", "group_revoke_request_code",
-                        "group_join_with_invite_v4",
+                        "group_join_with_admin_invite",
                         "set_announce", "set_locked", "set_ephemeral",
                         "set_membership_approval", "set_member_add_mode",
                         "set_limit_sharing", "set_group_history",
@@ -1274,7 +1274,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "app_state": {
                     "type": "string",
-                    "description": "For send_app_state_action: which chat-level app-state mutation to fire. One of mute_indefinite, mute_until, unmute, pin, unpin, archive, unarchive, clear_chat, mark_chat_as_read, user_status_mute."
+                    "description": "For send_app_state_action: which chat-level app-state mutation to fire. One of state_mute_indefinite, state_mute_until, state_unmute, state_pin, state_unpin, state_archive, state_unarchive, state_clear, state_mark_as_read, state_user_status_mute."
                 },
                 "timeout_ms": {
                     "type": "integer",
@@ -1463,7 +1463,7 @@ impl Tool for WhatsAppSendTool {
                 },
                 "admin_jid": {
                     "type": "string",
-                    "description": "For group_join_with_invite_v4: the JID of the admin who issued the V4 invite. Required, because the server verifies the invite against that admin."
+                    "description": "For group_join_with_admin_invite: the JID of the admin who issued the V4 invite. Required, because the server verifies the invite against that admin."
                 },
                 "server_id": {
                     "type": "integer",
@@ -2690,20 +2690,20 @@ impl Tool for WhatsAppSendTool {
                 let op = pget!(get_str(&input, "app_state")).to_string();
                 let actions = client.chat_actions();
                 let res = match op.as_str() {
-                    "mute_indefinite" => actions.mute_chat(&jid).await,
-                    "mute_until" => {
+                    "state_mute_indefinite" => actions.mute_chat(&jid).await,
+                    "state_mute_until" => {
                         let until = input
                             .get("mute_until_ms")
                             .and_then(|v| v.as_i64())
                             .unwrap_or(0);
                         actions.mute_chat_until(&jid, until).await
                     }
-                    "unmute" => actions.unmute_chat(&jid).await,
-                    "pin" => actions.pin_chat(&jid).await,
-                    "unpin" => actions.unpin_chat(&jid).await,
-                    "archive" => actions.archive_chat(&jid, None).await,
-                    "unarchive" => actions.unarchive_chat(&jid, None).await,
-                    "clear_chat" => {
+                    "state_unmute" => actions.unmute_chat(&jid).await,
+                    "state_pin" => actions.pin_chat(&jid).await,
+                    "state_unpin" => actions.unpin_chat(&jid).await,
+                    "state_archive" => actions.archive_chat(&jid, None).await,
+                    "state_unarchive" => actions.unarchive_chat(&jid, None).await,
+                    "state_clear" => {
                         let delete_starred = match input.get("delete_starred") {
                             Some(_) => pget!(get_bool(&input, "delete_starred")),
                             None => false,
@@ -2716,14 +2716,14 @@ impl Tool for WhatsAppSendTool {
                             .clear_chat(&jid, delete_starred, delete_media, None)
                             .await
                     }
-                    "mark_chat_as_read" => {
+                    "state_mark_as_read" => {
                         let read = match input.get("read") {
                             Some(_) => pget!(get_bool(&input, "read")),
                             None => true,
                         };
                         actions.mark_chat_as_read(&jid, read, None).await
                     }
-                    "user_status_mute" => {
+                    "state_user_status_mute" => {
                         let muted = match input.get("muted") {
                             Some(_) => pget!(get_bool(&input, "muted")),
                             None => true,
@@ -2732,9 +2732,10 @@ impl Tool for WhatsAppSendTool {
                     }
                     other => {
                         return Ok(ToolResult::error(format!(
-                            "Unknown app_state '{}'. Use one of: mute_indefinite, \
-mute_until, unmute, pin, unpin, archive, unarchive, clear_chat, \
-mark_chat_as_read, user_status_mute.",
+                            "Unknown app_state '{}'. Use one of: \
+state_mute_indefinite, state_mute_until, state_unmute, state_pin, state_unpin, \
+state_archive, state_unarchive, state_clear, state_mark_as_read, \
+state_user_status_mute.",
                             other
                         )));
                     }
@@ -4845,7 +4846,7 @@ mark_chat_as_read, user_status_mute.",
                 }
             }
 
-            "group_join_with_invite_v4" => {
+            "group_join_with_admin_invite" => {
                 let jid = pget!(resolve_group_jid(&input));
                 let code = pget!(get_str(&input, "invite_code")).to_string();
                 let admin_raw = pget!(get_str(&input, "admin_jid")).to_string();
@@ -6308,7 +6309,7 @@ mark_chat_as_read, user_status_mute.",
                  assign_label, send_buttons, create_group, leave_group, set_group_subject, \
                  set_group_description, add_participants, remove_participants, \
                  promote_participants, demote_participants, get_group_metadata, \
-                 get_invite_link, join_with_invite_code, group_invite_info, group_super_admins, group_refresh_info, group_batch_info, group_remove_participants_linked, group_set_member_link_mode, group_set_member_share_history_mode, group_update_member_label, group_revoke_request_code, group_join_with_invite_v4, set_announce, set_locked, \
+                 get_invite_link, join_with_invite_code, group_invite_info, group_super_admins, group_refresh_info, group_batch_info, group_remove_participants_linked, group_set_member_link_mode, group_set_member_share_history_mode, group_update_member_label, group_revoke_request_code, group_join_with_admin_invite, set_announce, set_locked, \
                  set_ephemeral, set_membership_approval, set_member_add_mode, \
                  set_limit_sharing, set_group_history, set_no_frequently_forwarded, \
                  set_allow_admin_reports, get_membership_requests, \
