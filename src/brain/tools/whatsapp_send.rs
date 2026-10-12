@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 use wacore_binary::jid::{Jid, Server};
+use whatsapp_rust::ClientProfile;
 use whatsapp_rust::Freshness;
 use whatsapp_rust::features::{
     BatchGroupResult, CommunitySubgroup, CreateCommunityOptions, EventCreationParams,
@@ -27,6 +28,10 @@ use whatsapp_rust::features::{
     MemberAddMode, MemberLinkMode, MemberShareHistoryMode, MembershipApprovalMode,
     NewsletterMessage, NewsletterMetadata, ParticipantChangeResponse, PictureType,
     PollVoteCiphertext, PresenceStatus, PreviousDescription, group_type,
+};
+use whatsapp_rust::privacy_settings::{
+    DisallowedListAction, DisallowedListUpdate, DisallowedListUserEntry, PrivacyCategory,
+    PrivacyValue,
 };
 
 /// Reported by `wa_introspect` when a runtime call needs a live session and
@@ -970,6 +975,42 @@ async fn make_video_thumbnail(path: &str) -> Option<Vec<u8>> {
     make_jpeg_thumbnail(&bytes?)
 }
 
+/// Parse a `privacy_category` argument.
+///
+/// The wire spellings are the user-facing ones (`groupadd`, `readreceipts`,
+/// `calladd`), so the caller names what WhatsApp names rather than a Rust
+/// variant. An unknown value is refused with the list instead of silently
+/// becoming `Other(..)`, which the library would pass straight to the server.
+fn parse_privacy_category(raw: &str) -> Option<PrivacyCategory> {
+    Some(match raw {
+        "last" => PrivacyCategory::Last,
+        "online" => PrivacyCategory::Online,
+        "profile" => PrivacyCategory::Profile,
+        "status" => PrivacyCategory::Status,
+        "groupadd" => PrivacyCategory::GroupAdd,
+        "readreceipts" => PrivacyCategory::ReadReceipts,
+        "calladd" => PrivacyCategory::CallAdd,
+        "messages" => PrivacyCategory::Messages,
+        "defense" => PrivacyCategory::DefenseMode,
+        _ => return None,
+    })
+}
+
+/// Parse a `privacy_value` argument. See [`parse_privacy_category`].
+fn parse_privacy_value(raw: &str) -> Option<PrivacyValue> {
+    Some(match raw {
+        "all" => PrivacyValue::All,
+        "contacts" => PrivacyValue::Contacts,
+        "none" => PrivacyValue::None,
+        "contact_blacklist" => PrivacyValue::ContactBlacklist,
+        "match_last_seen" => PrivacyValue::MatchLastSeen,
+        "known" => PrivacyValue::Known,
+        "off" => PrivacyValue::Off,
+        "on_standard" => PrivacyValue::OnStandard,
+        _ => return None,
+    })
+}
+
 /// Build a vCard string from name and phone number.
 pub(crate) fn build_vcard(name: &str, phone: &str) -> String {
     format!(
@@ -1040,6 +1081,7 @@ impl Tool for WhatsAppSendTool {
                         "set_available", "set_unavailable", "subscribe_presence",
                         "unsubscribe_presence",
                         "presence_set", "media_reupload_many",
+                        "wa_privacy",
                         "create_quiz", "vote", "decrypt_vote", "aggregate_votes",
                         "newsletter_get_metadata", "newsletter_get_metadata_by_invite",
                         "newsletter_join", "newsletter_leave",
@@ -1347,6 +1389,47 @@ impl Tool for WhatsAppSendTool {
                 "before": {
                     "type": "integer",
                     "description": "For newsletter_get_messages: fetch posts older than this server_id, the pagination cursor from a previous page."
+                },
+                "sub_op": {
+                    "type": "string",
+                    "description": "For wa_privacy: which account setting to touch. Reads: fetch_privacy_settings, get_business_profile, fetch_props. Writes (all need \"confirm\": true): set_privacy_setting, set_privacy_disallowed_list, set_default_disappearing_mode, set_chat_disappearing_timer, set_client_profile, set_device_props, set_passive."
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "For the wa_privacy WRITE sub-ops: must be true or nothing is changed. Account-level settings change what this account reveals to everyone and have no undo, so they are gated harder than sending a message, which is only rate-limited."
+                },
+                "privacy_category": {
+                    "type": "string",
+                    "description": "For set_privacy_setting / set_privacy_disallowed_list: one of last, online, profile, status, groupadd, readreceipts, calladd, messages, defense."
+                },
+                "privacy_value": {
+                    "type": "string",
+                    "description": "For set_privacy_setting: one of all, contacts, none, contact_blacklist, match_last_seen, known, off, on_standard. Checked against the category before the call, because not every value is legal for every category."
+                },
+                "dhash": {
+                    "type": "string",
+                    "description": "For set_privacy_disallowed_list: the current disallowed-list hash for conflict detection, taken from a previous fetch_privacy_settings response."
+                },
+                "disallowed_users": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "For set_privacy_disallowed_list: an array of {jid, action} where action is 'add' or 'remove'. Only last, profile, status and groupadd support a disallowed list."
+                },
+                "timer_seconds": {
+                    "type": "integer",
+                    "description": "For set_default_disappearing_mode (the account default) and set_chat_disappearing_timer (one 1:1 chat): the duration in seconds. 0 disables."
+                },
+                "client_profile": {
+                    "type": "object",
+                    "description": "For set_client_profile: {device, os_version, manufacturer, locale_language, locale_country} overrides on top of the web defaults. In-memory and pairing-time only: after this account is paired it has no wire effect, so it is reported as stored rather than as applied."
+                },
+                "device_props": {
+                    "type": "object",
+                    "description": "For set_device_props: {os, require_full_sync} overrides. Pairing-time only, like client_profile."
+                },
+                "passive": {
+                    "type": "boolean",
+                    "description": "For set_passive: true keeps the connection passive, so the server holds queued messages instead of pushing them on connect."
                 },
                 "presence": {
                     "type": "string",
@@ -4001,6 +4084,363 @@ mark_chat_as_read, user_status_mute.",
                 Ok(ToolResult::success(out))
             }
 
+            // ── wa_privacy (account-level settings) ──────────────────────────
+            // #1485 follow-up. Everything here changes what THIS ACCOUNT
+            // reveals, or how it presents itself to the server, rather than
+            // what one chat sees. There is no undo on the wire: a message can
+            // be deleted, a privacy change cannot be taken back once the
+            // server has told every contact's client about it. That is why
+            // these writes demand an explicit `confirm` on top of any rate
+            // limit, and why they are grouped under one action with a
+            // required sub-op: the whole write surface is auditable in one
+            // place instead of scattered across ten near-identical actions.
+            "wa_privacy" => {
+                const WRITE_OPS: &[&str] = &[
+                    "set_privacy_setting",
+                    "set_privacy_disallowed_list",
+                    "set_default_disappearing_mode",
+                    "set_chat_disappearing_timer",
+                    "set_client_profile",
+                    "set_device_props",
+                    "set_passive",
+                ];
+                let op = pget!(get_str(&input, "sub_op")).to_string();
+                let confirmed = input
+                    .get("confirm")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if WRITE_OPS.contains(&op.as_str()) && !confirmed {
+                    return Ok(ToolResult::error(format!(
+                        "wa_privacy '{op}' is an account-level write and needs \"confirm\": true. \
+                         It changes what this account reveals to everyone, the server propagates \
+                         it to other clients, and there is no undo (unlike deleting a message). \
+                         Nothing was changed."
+                    )));
+                }
+                match op.as_str() {
+                    "fetch_privacy_settings" => match client.fetch_privacy_settings().await {
+                        Ok(r) => {
+                            let mut out = format!("{} privacy setting(s):", r.settings.len());
+                            for s in &r.settings {
+                                out.push_str(&format!("\n- {:?}: {:?}", s.category, s.value));
+                            }
+                            Ok(ToolResult::success(out))
+                        }
+                        Err(e) => Ok(ToolResult::error(format!(
+                            "Failed to fetch privacy settings: {e}"
+                        ))),
+                    },
+
+                    "set_privacy_setting" => {
+                        let cat_raw = pget!(get_str(&input, "privacy_category")).to_string();
+                        let val_raw = pget!(get_str(&input, "privacy_value")).to_string();
+                        let Some(category) = parse_privacy_category(&cat_raw) else {
+                            return Ok(ToolResult::error(format!(
+                                "Unknown privacy_category '{cat_raw}'. Expected one of: last, \
+                                 online, profile, status, groupadd, readreceipts, calladd, \
+                                 messages, defense."
+                            )));
+                        };
+                        let Some(value) = parse_privacy_value(&val_raw) else {
+                            return Ok(ToolResult::error(format!(
+                                "Unknown privacy_value '{val_raw}'. Expected one of: all, \
+                                 contacts, none, contact_blacklist, match_last_seen, known, off, \
+                                 on_standard."
+                            )));
+                        };
+                        // Checked locally: the server rejects an illegal pair
+                        // with a bare failure, and a caller cannot tell a bad
+                        // combination from a network problem.
+                        if !category.is_valid_value(&value) {
+                            return Ok(ToolResult::error(format!(
+                                "'{val_raw}' is not a legal value for '{cat_raw}'. Nothing was \
+                                 changed."
+                            )));
+                        }
+                        match client.set_privacy_setting(category, value).await {
+                            Ok(r) => Ok(ToolResult::success(format!(
+                                "Privacy '{cat_raw}' set to '{val_raw}'{}.",
+                                match r.dhash.as_deref() {
+                                    Some(d) => format!(" (dhash {d})"),
+                                    None => String::new(),
+                                }
+                            ))),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to set privacy '{cat_raw}': {e}"
+                            ))),
+                        }
+                    }
+
+                    "set_privacy_disallowed_list" => {
+                        let cat_raw = pget!(get_str(&input, "privacy_category")).to_string();
+                        let Some(category) = parse_privacy_category(&cat_raw) else {
+                            return Ok(ToolResult::error(format!(
+                                "Unknown privacy_category '{cat_raw}'."
+                            )));
+                        };
+                        let dhash = pget!(get_str(&input, "dhash")).to_string();
+                        let Some(entries) =
+                            input.get("disallowed_users").and_then(|v| v.as_array())
+                        else {
+                            return Ok(ToolResult::error(
+                                "set_privacy_disallowed_list needs 'disallowed_users': an array \
+                                 of {jid, action} where action is 'add' or 'remove'."
+                                    .to_string(),
+                            ));
+                        };
+                        let mut users = Vec::with_capacity(entries.len());
+                        for (i, entry) in entries.iter().enumerate() {
+                            let jid_raw = match entry.get("jid").and_then(|v| v.as_str()) {
+                                Some(s) if !s.is_empty() => s,
+                                _ => {
+                                    return Ok(ToolResult::error(format!(
+                                        "disallowed_users[{i}] needs a non-empty 'jid'."
+                                    )));
+                                }
+                            };
+                            let jid: Jid = match jid_raw.parse() {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    return Ok(ToolResult::error(format!(
+                                        "disallowed_users[{i}] has an invalid 'jid' \
+                                         '{jid_raw}': {e}"
+                                    )));
+                                }
+                            };
+                            let action = match entry
+                                .get("action")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("add")
+                            {
+                                "add" => DisallowedListAction::Add,
+                                "remove" => DisallowedListAction::Remove,
+                                other => {
+                                    return Ok(ToolResult::error(format!(
+                                        "disallowed_users[{i}] has an unknown action '{other}'; \
+                                         use 'add' or 'remove'."
+                                    )));
+                                }
+                            };
+                            users.push(DisallowedListUserEntry {
+                                action,
+                                jid,
+                                pn_jid: None,
+                            });
+                        }
+                        let update = DisallowedListUpdate { dhash, users };
+                        match client.set_privacy_disallowed_list(category, update).await {
+                            Ok(r) => Ok(ToolResult::success(format!(
+                                "Disallowed list for '{cat_raw}' updated for {} entr(ies){}.",
+                                entries.len(),
+                                match r.dhash.as_deref() {
+                                    Some(d) => format!("; new dhash {d}"),
+                                    None => String::new(),
+                                }
+                            ))),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to update the disallowed list for '{cat_raw}': {e}"
+                            ))),
+                        }
+                    }
+
+                    "set_default_disappearing_mode" => {
+                        let secs = match input.get("timer_seconds").and_then(|v| v.as_u64()) {
+                            Some(s) => s.min(u32::MAX as u64) as u32,
+                            None => {
+                                return Ok(ToolResult::error(
+                                    "set_default_disappearing_mode needs 'timer_seconds' (0 \
+                                     disables)."
+                                        .to_string(),
+                                ));
+                            }
+                        };
+                        match client.set_default_disappearing_mode(secs).await {
+                            Ok(()) => Ok(ToolResult::success(format!(
+                                "Account default disappearing timer set to {secs}s{}.",
+                                if secs == 0 { " (disabled)" } else { "" }
+                            ))),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to set the default disappearing timer: {e}"
+                            ))),
+                        }
+                    }
+
+                    "set_chat_disappearing_timer" => {
+                        // 1:1 only, and it delivers a protocol message, so it
+                        // is charged to the send budget like any other send.
+                        let (jid, jid_str) = pget!(
+                            resolve_jid(
+                                &input,
+                                &self.whatsapp_state,
+                                &self.config_rx,
+                                context.session_id
+                            )
+                            .await
+                        );
+                        gate_send!(self, jid_str, "the disappearing-timer change");
+                        let secs = match input.get("timer_seconds").and_then(|v| v.as_u64()) {
+                            Some(s) => s.min(u32::MAX as u64) as u32,
+                            None => {
+                                return Ok(ToolResult::error(
+                                    "set_chat_disappearing_timer needs 'timer_seconds' (0 \
+                                     disables)."
+                                        .to_string(),
+                                ));
+                            }
+                        };
+                        match client.set_chat_disappearing_timer(jid, secs).await {
+                            Ok(r) => Ok(ToolResult::success(format!(
+                                "Disappearing timer for {jid_str} set to {secs}s (id {}).",
+                                r.message_id
+                            ))),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to set the disappearing timer for {jid_str}: {e}"
+                            ))),
+                        }
+                    }
+
+                    "get_business_profile" => {
+                        let phone = pget!(get_str(&input, "phone")).to_string();
+                        let Some(jid) = broadcast::target_jid(&phone) else {
+                            return Ok(ToolResult::error(format!(
+                                "'{phone}' is not a usable phone number."
+                            )));
+                        };
+                        match client.get_business_profile(&jid).await {
+                            Ok(None) => Ok(ToolResult::success(format!(
+                                "{jid} has no business profile (not a WhatsApp Business account)."
+                            ))),
+                            Ok(Some(bp)) => {
+                                let mut out = format!("Business profile for {jid}:");
+                                if !bp.description.is_empty() {
+                                    out.push_str(&format!("\n  description: {}", bp.description));
+                                }
+                                if let Some(email) = bp.email.as_deref() {
+                                    out.push_str(&format!("\n  email: {email}"));
+                                }
+                                if !bp.website.is_empty() {
+                                    out.push_str(&format!(
+                                        "\n  website: {}",
+                                        bp.website.join(", ")
+                                    ));
+                                }
+                                if let Some(addr) = bp.address.as_deref() {
+                                    out.push_str(&format!("\n  address: {addr}"));
+                                }
+                                out.push_str(&format!("\n  categories: {}", bp.categories.len()));
+                                Ok(ToolResult::success(out))
+                            }
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to read the business profile for {jid}: {e}"
+                            ))),
+                        }
+                    }
+
+                    "set_client_profile" => {
+                        let Some(obj) = input.get("client_profile") else {
+                            return Ok(ToolResult::error(
+                                "set_client_profile needs 'client_profile': an object with any of \
+                                 device, os_version, manufacturer, locale_language, \
+                                 locale_country."
+                                    .to_string(),
+                            ));
+                        };
+                        let mut profile = ClientProfile::web();
+                        let mut changed: Vec<String> = Vec::new();
+                        for (key, slot) in [
+                            ("device", &mut profile.device),
+                            ("os_version", &mut profile.os_version),
+                            ("manufacturer", &mut profile.manufacturer),
+                            ("locale_language", &mut profile.locale_language),
+                            ("locale_country", &mut profile.locale_country),
+                        ] {
+                            if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
+                                *slot = v.to_string();
+                                changed.push(format!("{key}={v}"));
+                            }
+                        }
+                        if changed.is_empty() {
+                            return Ok(ToolResult::error(
+                                "client_profile named none of device, os_version, manufacturer, \
+                                 locale_language, locale_country; nothing was changed."
+                                    .to_string(),
+                            ));
+                        }
+                        client.set_client_profile(profile).await;
+                        Ok(ToolResult::success(format!(
+                            "Stored client profile ({}). This is pairing-time and in-memory: it \
+                             shapes the next connection's ClientPayload, and on an already \
+                             paired account it has no wire effect.",
+                            changed.join(", ")
+                        )))
+                    }
+
+                    "fetch_props" => match client.fetch_props().await {
+                        Ok(()) => Ok(ToolResult::success(
+                            "Server properties fetched and the local cache refreshed.".to_string(),
+                        )),
+                        Err(e) => Ok(ToolResult::error(format!(
+                            "Failed to fetch server properties: {e}"
+                        ))),
+                    },
+
+                    "set_device_props" => {
+                        let Some(obj) = input.get("device_props") else {
+                            return Ok(ToolResult::error(
+                                "set_device_props needs 'device_props': an object with 'os' \
+                                 and/or 'require_full_sync'."
+                                    .to_string(),
+                            ));
+                        };
+                        let mut over = wacore::store::DevicePropsOverride::new();
+                        let mut changed: Vec<String> = Vec::new();
+                        if let Some(os) = obj.get("os").and_then(|v| v.as_str()) {
+                            over.os = Some(os.to_string());
+                            changed.push(format!("os={os}"));
+                        }
+                        if let Some(b) = obj.get("require_full_sync").and_then(|v| v.as_bool()) {
+                            over.require_full_sync = Some(b);
+                            changed.push(format!("require_full_sync={b}"));
+                        }
+                        if changed.is_empty() {
+                            return Ok(ToolResult::error(
+                                "device_props named neither 'os' nor 'require_full_sync'; nothing \
+                                 was changed."
+                                    .to_string(),
+                            ));
+                        }
+                        client.set_device_props(over).await;
+                        Ok(ToolResult::success(format!(
+                            "Stored device props ({}). Pairing-time only: applied on the next \
+                             pairing, no wire effect on an already paired account.",
+                            changed.join(", ")
+                        )))
+                    }
+
+                    "set_passive" => {
+                        let passive = pget!(get_bool(&input, "passive"));
+                        match client.set_passive(passive).await {
+                            Ok(()) => Ok(ToolResult::success(format!(
+                                "Passive mode is now {passive}: the server {} push queued \
+                                 messages on connect.",
+                                if passive { "will hold" } else { "will" }
+                            ))),
+                            Err(e) => Ok(ToolResult::error(format!(
+                                "Failed to set passive mode: {e}"
+                            ))),
+                        }
+                    }
+
+                    other => Ok(ToolResult::error(format!(
+                        "Unknown wa_privacy sub_op '{other}'. Reads: fetch_privacy_settings, \
+                         get_business_profile, fetch_props. Writes: set_privacy_setting, \
+                         set_privacy_disallowed_list, set_default_disappearing_mode, \
+                         set_chat_disappearing_timer, set_client_profile, set_device_props, \
+                         set_passive."
+                    ))),
+                }
+            }
+
             // ── groups: reads and membership ─────────────────────────────────
             // #1485 follow-up. The group surface had the admin toggles but not
             // the reads that decide which ones to use, nor the membership paths
@@ -5615,7 +6055,7 @@ mark_chat_as_read, user_status_mute.",
                  get_profile_picture, get_group_profile_picture, is_on_whatsapp, \
                  get_user_info, archive_chat, unarchive_chat, mute_chat, unmute_chat, \
                  star_message, unstar_message, clear_chat, save_contact, set_available, \
-                 set_unavailable, subscribe_presence, unsubscribe_presence, presence_set, media_reupload_many, create_quiz, \
+                 set_unavailable, subscribe_presence, unsubscribe_presence, presence_set, media_reupload_many, wa_privacy, create_quiz, \
                  vote, decrypt_vote, aggregate_votes, newsletter_get_metadata, \
                  newsletter_get_metadata_by_invite, newsletter_join, newsletter_leave, \
                  newsletter_create, newsletter_update, newsletter_revoke_message, newsletter_react, newsletter_set_follower_mute, newsletter_set_admin_mute, newsletter_subscribe_live_updates, newsletter_edit_message, \
