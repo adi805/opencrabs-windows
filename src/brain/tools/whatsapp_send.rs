@@ -10,6 +10,7 @@ use super::r#trait::{Tool, ToolCapability, ToolExecutionContext, ToolHints, Tool
 use crate::channels::whatsapp::WhatsAppState;
 use crate::channels::whatsapp::broadcast;
 use crate::channels::whatsapp::interactive;
+use crate::channels::whatsapp::introspection::{RetryBucket, WAIT_TIMEOUT};
 use crate::channels::whatsapp::newsletter::post_body;
 use crate::channels::whatsapp::poll::resolve_options;
 use crate::channels::whatsapp::rate_limit::GateOutcome;
@@ -24,6 +25,10 @@ use whatsapp_rust::features::{
     JoinGroupResult, MemberAddMode, MembershipApprovalMode, NewsletterMessage, NewsletterMetadata,
     ParticipantChangeResponse, PictureType, PollVoteCiphertext, PreviousDescription, group_type,
 };
+
+/// Reported by `wa_introspect` when a runtime call needs a live session and
+/// there is none to act on.
+const NOT_CONNECTED: &str = "Not connected to WhatsApp, so there is no live session to act on.";
 
 /// Tool for comprehensive WhatsApp control (14 actions).
 pub struct WhatsAppSendTool {
@@ -577,6 +582,15 @@ fn decode_b64(input: &Value, key: &str) -> std::result::Result<Vec<u8>, ToolResu
         .map_err(|e| ToolResult::error(format!("'{key}' is not valid base64: {e}")))
 }
 
+/// A non-negative integer parameter, defaulting to `0` when it is absent.
+///
+/// `0` is the documented off switch for both the resend limiter and the
+/// retry bucket, so a missing value lands on "off" rather than on an
+/// arbitrary budget the caller never asked for.
+fn u32_param(input: &Value, key: &str) -> u32 {
+    input.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as u32
+}
+
 /// The JID of the account that authored a poll.
 ///
 /// `vote` and `decrypt_vote` both key their crypto on the creator, so it has
@@ -948,7 +962,7 @@ impl Tool for WhatsAppSendTool {
                         "community_get_subgroups", "community_get_subgroup_participant_counts",
                         "community_query_linked_group",
                         "community_get_linked_groups_participants",
-                        "create_event", "respond_event", "post_comment"
+                        "create_event", "respond_event", "post_comment", "wa_introspect"
                     ],
                     "description": "The WhatsApp action to perform."
                 },
@@ -1241,6 +1255,43 @@ impl Tool for WhatsAppSendTool {
                 "end_time": {
                     "type": "integer",
                     "description": "For create_event: event end time in milliseconds since the epoch."
+                },
+                "debug_op": {
+                    "type": "string",
+                    "enum": ["stats", "wait_for_node", "wait_for_sent_node", "acquire_raw_node", "release_raw_node", "set_resend_rate_limit", "set_skip_history_sync", "set_wanted_pre_key_count", "set_retry_admission"],
+                    "description": "For wa_introspect: which runtime call to make against the live session. Read-only ops are 'stats', 'wait_for_node' and 'wait_for_sent_node'; the rest change the running client."
+                },
+                "node_tag": {
+                    "type": "string",
+                    "description": "For wa_introspect wait_for_node/wait_for_sent_node: the stanza tag to match, e.g. 'notification' or 'message'."
+                },
+                "node_attr_key": {
+                    "type": "string",
+                    "description": "For wa_introspect wait_for_node/wait_for_sent_node: narrows the match to one attribute, e.g. 'type'. Set together with node_attr_value."
+                },
+                "node_attr_value": {
+                    "type": "string",
+                    "description": "For wa_introspect wait_for_node/wait_for_sent_node: the attribute value to match, e.g. 'w:gp2'."
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "For wa_introspect wait_for_node/wait_for_sent_node: how long to wait before reporting that nothing arrived. Default 10000, clamped to 100..60000."
+                },
+                "burst": {
+                    "type": "integer",
+                    "description": "For wa_introspect set_resend_rate_limit/set_retry_admission: the instantaneous per-chat allowance. 0 disables the limiter."
+                },
+                "refill_per_min": {
+                    "type": "integer",
+                    "description": "For wa_introspect set_resend_rate_limit/set_retry_admission: the sustained per-chat allowance, refilled every minute."
+                },
+                "debug_enabled": {
+                    "type": "boolean",
+                    "description": "For wa_introspect set_skip_history_sync: true acknowledges history-sync notifications without downloading them."
+                },
+                "pre_key_count": {
+                    "type": "integer",
+                    "description": "For wa_introspect set_wanted_pre_key_count: how many one-time pre-keys to generate per upload batch. Takes effect on the next upload."
                 },
                 "subgroup_jid": {
                     "type": "string",
@@ -4290,6 +4341,162 @@ impl Tool for WhatsAppSendTool {
                 }
             }
 
+            // ── wa_introspect ────────────────────────────────────────────────
+            // #1485. The client's counters, node waiters and pacing knobs,
+            // reachable against the live session so a running bot can be
+            // diagnosed and retuned without a rebuild.
+            "wa_introspect" => match pget!(get_str(&input, "debug_op")) {
+                "stats" => match self.whatsapp_state.client_stats().await {
+                    Some(s) => Ok(ToolResult::success(format!(
+                        "WhatsApp session counters:\n- wire bytes: {} sent, {} received\n\
+                         - frames: {} sent, {} received\n- messages: {} sent, {} received\n\
+                         - events dropped: {}\n- reconnects: {} ({} consecutive errors)\n\
+                         - resends throttled by the per-chat bucket: {}\n\
+                         - last data received at {} ms since the epoch",
+                        s.bytes_sent,
+                        s.bytes_received,
+                        s.frames_sent,
+                        s.frames_received,
+                        s.messages_sent,
+                        s.messages_received,
+                        s.events_dropped,
+                        s.reconnects,
+                        s.reconnect_errors,
+                        s.resends_throttled,
+                        s.last_data_received_ms
+                    ))),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                op @ ("wait_for_node" | "wait_for_sent_node") => {
+                    let tag = pget!(get_str(&input, "node_tag"));
+                    let key = input.get("node_attr_key").and_then(|v| v.as_str());
+                    let value = input.get("node_attr_value").and_then(|v| v.as_str());
+                    // An attribute narrows a filter, so half of one is a
+                    // request the caller did not make: refuse rather than
+                    // silently match on the tag alone and report a node they
+                    // were not asking about.
+                    let attr = match (key, value) {
+                        (Some(k), Some(v)) => Some((k, v)),
+                        (None, None) => None,
+                        _ => {
+                            return Ok(ToolResult::error(
+                                "'node_attr_key' and 'node_attr_value' are set together or \
+                                 not at all."
+                                    .to_string(),
+                            ));
+                        }
+                    };
+                    let timeout = std::time::Duration::from_millis(
+                        input
+                            .get("timeout_ms")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(WAIT_TIMEOUT.as_millis() as u64)
+                            .clamp(100, 60_000),
+                    );
+                    let waited = if op == "wait_for_node" {
+                        self.whatsapp_state.wait_for_node(tag, attr, timeout).await
+                    } else {
+                        self.whatsapp_state
+                            .wait_for_sent_node(tag, attr, timeout)
+                            .await
+                    };
+                    match waited {
+                        Some(node) => Ok(ToolResult::success(format!(
+                            "Node matching tag '{tag}':\n{node}"
+                        ))),
+                        None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                    }
+                }
+                "acquire_raw_node" => match self.whatsapp_state.acquire_raw_node_forwarding().await
+                {
+                    Some(true) => Ok(ToolResult::success(
+                        "Raw stanza forwarding was already on; the existing lease is kept."
+                            .to_string(),
+                    )),
+                    Some(false) => Ok(ToolResult::success(
+                        "Raw stanza forwarding is on, so Event::RawNode now fires for this \
+                         session. 'release_raw_node' turns it off."
+                            .to_string(),
+                    )),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                "release_raw_node" => Ok(ToolResult::success(
+                    if self.whatsapp_state.release_raw_node_forwarding() {
+                        "Raw-stanza lease released. Forwarding stops unless another lease is \
+                         still held."
+                            .to_string()
+                    } else {
+                        "No raw-stanza lease was held, so nothing changed.".to_string()
+                    },
+                )),
+                "set_resend_rate_limit" => {
+                    let burst = u32_param(&input, "burst");
+                    let refill = u32_param(&input, "refill_per_min");
+                    if self
+                        .whatsapp_state
+                        .set_resend_rate_limit(burst, refill)
+                        .await
+                    {
+                        Ok(ToolResult::success(format!(
+                            "Per-chat resend limiter set to burst {burst} and {refill} refills \
+                             per minute. {}",
+                            if burst == 0 {
+                                "A burst of 0 disables the limiter."
+                            } else {
+                                "Takes effect on each chat's next retry."
+                            }
+                        )))
+                    } else {
+                        Ok(ToolResult::error(NOT_CONNECTED.to_string()))
+                    }
+                }
+                "set_skip_history_sync" => {
+                    let enabled = pget!(get_bool(&input, "debug_enabled"));
+                    if self.whatsapp_state.set_skip_history_sync(enabled).await {
+                        Ok(ToolResult::success(format!(
+                            "History-sync skipping is now {}.",
+                            if enabled { "on" } else { "off" }
+                        )))
+                    } else {
+                        Ok(ToolResult::error(NOT_CONNECTED.to_string()))
+                    }
+                }
+                "set_wanted_pre_key_count" => {
+                    let count = u32_param(&input, "pre_key_count") as usize;
+                    if self.whatsapp_state.set_wanted_pre_key_count(count).await {
+                        Ok(ToolResult::success(format!(
+                            "Pre-key upload batch size set to {count}; it takes effect on the \
+                             next upload."
+                        )))
+                    } else {
+                        Ok(ToolResult::error(NOT_CONNECTED.to_string()))
+                    }
+                }
+                "set_retry_admission" => {
+                    let burst = u32_param(&input, "burst");
+                    let refill = u32_param(&input, "refill_per_min");
+                    let policy = std::sync::Arc::new(RetryBucket::new(burst, refill));
+                    match self.whatsapp_state.set_retry_admission(policy).await {
+                        Some(true) => Ok(ToolResult::success(format!(
+                            "Retry admission is now bounded per chat: burst {burst}, {refill} \
+                             refills per minute."
+                        ))),
+                        Some(false) => Ok(ToolResult::error(
+                            "A retry-admission policy is already registered for this session, \
+                             and the client ignores a second one, so this call changed nothing."
+                                .to_string(),
+                        )),
+                        None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                    }
+                }
+                other => Ok(ToolResult::error(format!(
+                    "Unknown 'debug_op' value '{other}'. Expected one of: stats, wait_for_node, \
+                     wait_for_sent_node, acquire_raw_node, release_raw_node, \
+                     set_resend_rate_limit, set_skip_history_sync, set_wanted_pre_key_count, \
+                     set_retry_admission."
+                ))),
+            },
+
             unknown => Ok(ToolResult::error(format!(
                 "Unknown action '{}'. Valid actions: send, reply, delete, send_photo, \
                  send_document, send_audio, send_video, send_sticker, send_location, \
@@ -4318,7 +4525,7 @@ impl Tool for WhatsAppSendTool {
                  community_unlink_subgroups, community_join_subgroup, \
                  community_remove_participants, community_get_participating, \
                  community_get_subgroups, community_get_subgroup_participant_counts, \
-                 community_query_linked_group, community_get_linked_groups_participants, create_event, respond_event, post_comment",
+                 community_query_linked_group, community_get_linked_groups_participants, create_event, respond_event, post_comment, wa_introspect",
                 unknown
             ))),
         }

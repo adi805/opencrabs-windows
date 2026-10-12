@@ -112,6 +112,10 @@ pub struct WhatsAppState {
     /// loops, the resume path and the drainer task - one budget for the
     /// whole channel. `pub(crate)` so brain/tools can gate through it.
     pub(crate) rate_limiter: std::sync::Arc<super::rate_limit::WhatsappRateLimiter>,
+    /// Raw-stanza forwarding lease (#1485). `Event::RawNode` stays enabled
+    /// only while a lease is held, so the lease is stored here rather than in
+    /// the call that acquired it. See `introspection.rs`.
+    pub(super) raw_node_lease: std::sync::Mutex<Option<whatsapp_rust::RawNodeLease>>,
 }
 
 impl Default for WhatsAppState {
@@ -150,6 +154,7 @@ impl WhatsAppState {
             blocklist: super::blocklist::Blocklist::default(),
             outbox: super::outbox::Outbox::default(),
             rate_limiter: std::sync::Arc::new(super::rate_limit::WhatsappRateLimiter::new()),
+            raw_node_lease: std::sync::Mutex::new(None),
         }
     }
 }
