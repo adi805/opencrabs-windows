@@ -1055,6 +1055,7 @@ impl Tool for WhatsAppSendTool {
                         "retransmit_message",
                         "mark_as_played", "acknowledge_group",
                         "fetch_message_history",
+                        "refresh_media_conn",
                         "typing", "mark_read",
                         "delete_message_for_me", "delete_chat", "mark_chat_as_read",
                         "set_user_status_mute", "send_app_state_action",
@@ -1139,6 +1140,10 @@ impl Tool for WhatsAppSendTool {
                     "type": "string",
                     "enum": ["24h", "7d", "30d"],
                     "description": "For pin_message only: how long the message stays pinned. Defaults to 7d."
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "For refresh_media_conn only: true re-fetches the media route even if the cached one has not expired. Default false, which reuses a still-valid route."
                 },
                 "keep": {
                     "type": "boolean",
@@ -2089,6 +2094,60 @@ impl Tool for WhatsAppSendTool {
                     ))),
                     Err(e) => Ok(ToolResult::error(format!(
                         "Failed to request history for {jid_str}: {e}"
+                    ))),
+                }
+            }
+
+            // ── refresh_media_conn ───────────────────────────────────────────
+            // Media downloads go through a route the server hands out with a
+            // TTL. When that route goes stale or its auth is rejected, a
+            // download fails and nothing could re-fetch it short of a restart.
+            // This forces the re-fetch.
+            //
+            // The reply reports the host set rather than an expiry flag: the
+            // accessor only ever returns a connection it just validated or
+            // fetched, so `is_expired()` read here would be structurally false
+            // and would tell a caller "still valid" in exactly the case they
+            // came to fix. The hosts and their TTLs are the fields that
+            // actually answer the question.
+            "refresh_media_conn" => {
+                let force = input
+                    .get("force")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                match client.refresh_media_conn(force).await {
+                    Ok(conn) => {
+                        let mut lines = Vec::with_capacity(conn.hosts.len());
+                        for host in &conn.hosts {
+                            let fallback = match host.fallback_hostname.as_deref() {
+                                Some(f) => format!(" (fallback: {f})"),
+                                None => String::new(),
+                            };
+                            lines.push(format!(
+                                "- {} [{:?}]{fallback}",
+                                host.hostname, host.host_type
+                            ));
+                        }
+                        let ttl = match conn.auth_ttl {
+                            Some(auth) => format!("{}s route, {auth}s auth", conn.ttl),
+                            None => format!("{}s", conn.ttl),
+                        };
+                        Ok(ToolResult::success(format!(
+                            "Media route {} (ttl {ttl}):\n{}",
+                            if force {
+                                "force-refreshed"
+                            } else {
+                                "current or freshly fetched"
+                            },
+                            if lines.is_empty() {
+                                "(the server returned no hosts)".to_string()
+                            } else {
+                                lines.join("\n")
+                            }
+                        )))
+                    }
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "Failed to refresh the media connection: {e}"
                     ))),
                 }
             }
