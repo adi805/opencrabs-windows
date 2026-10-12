@@ -1508,8 +1508,12 @@ impl Tool for WhatsAppSendTool {
                 },
                 "debug_op": {
                     "type": "string",
-                    "enum": ["stats", "wait_for_node", "wait_for_sent_node", "acquire_raw_node", "release_raw_node", "set_resend_rate_limit", "set_skip_history_sync", "set_wanted_pre_key_count", "set_retry_admission"],
-                    "description": "For wa_introspect: which runtime call to make against the live session. Read-only ops are 'stats', 'wait_for_node' and 'wait_for_sent_node'; the rest change the running client."
+                    "enum": ["stats", "wait_for_node", "wait_for_sent_node", "acquire_raw_node", "release_raw_node", "set_resend_rate_limit", "set_skip_history_sync", "set_wanted_pre_key_count", "set_retry_admission", "identity", "identity_tags", "memory_report", "resource_report", "skip_history_sync_enabled", "wanted_pre_key_count", "mex_query", "mex_mutate", "mex_reachout_timelock"],
+                    "description": "For wa_introspect: which runtime call to make against the live session. Read-only ops: stats, wait_for_node, wait_for_sent_node, identity, identity_tags, memory_report, resource_report, skip_history_sync_enabled, wanted_pre_key_count, mex_query, mex_mutate, mex_reachout_timelock. The rest change the running client."
+                },
+                "mex_request": {
+                    "type": "object",
+                    "description": "For wa_introspect mex_query / mex_mutate: {name, doc_id, variables}. Both name and doc_id are required - the persisted query is identified by the pair, and a wrong id fails at the server with nothing to point at. variables defaults to {}."
                 },
                 "node_tag": {
                     "type": "string",
@@ -6205,11 +6209,92 @@ mark_chat_as_read, user_status_mute.",
                         None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
                     }
                 }
+                "identity" => match self.whatsapp_state.identity_summary().await {
+                    Some(text) => Ok(ToolResult::success(text)),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                "identity_tags" => match self.whatsapp_state.identity_tags_summary().await {
+                    Some(text) => Ok(ToolResult::success(text)),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                "memory_report" => match self.whatsapp_state.memory_report_summary().await {
+                    Some(text) => Ok(ToolResult::success(text)),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                "resource_report" => match self.whatsapp_state.resource_report_summary().await {
+                    Some(text) => Ok(ToolResult::success(text)),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                "skip_history_sync_enabled" => {
+                    match self.whatsapp_state.skip_history_sync_enabled().await {
+                        Some(enabled) => Ok(ToolResult::success(format!(
+                            "History-sync skipping is currently {}.",
+                            if enabled { "on" } else { "off" }
+                        ))),
+                        None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                    }
+                }
+                "wanted_pre_key_count" => match self.whatsapp_state.wanted_pre_key_count().await {
+                    Some(count) => Ok(ToolResult::success(format!(
+                        "Pre-key upload batch target is {count}."
+                    ))),
+                    None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                },
+                op @ ("mex_query" | "mex_mutate") => {
+                    let Some(req) = input.get("mex_request") else {
+                        return Ok(ToolResult::error(
+                            "mex_query and mex_mutate need 'mex_request': {name, doc_id, \
+                             variables}."
+                                .to_string(),
+                        ));
+                    };
+                    // Both halves are required. `MexRequest::new` wants
+                    // `&'static str`, so the wrapper interns the pair rather
+                    // than leaking a fresh copy per call.
+                    let name = req.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let doc_id = req.get("doc_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if name.is_empty() || doc_id.is_empty() {
+                        return Ok(ToolResult::error(
+                            "mex_request needs both 'name' and 'doc_id': the persisted query is \
+                             identified by the pair, and neither half defaults."
+                                .to_string(),
+                        ));
+                    }
+                    let variables = req
+                        .get("variables")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    let ran = if op == "mex_query" {
+                        self.whatsapp_state.mex_query(name, doc_id, variables).await
+                    } else {
+                        self.whatsapp_state
+                            .mex_mutate(name, doc_id, variables)
+                            .await
+                    };
+                    match ran {
+                        Some(Ok(text)) => Ok(ToolResult::success(text)),
+                        Some(Err(e)) => {
+                            Ok(ToolResult::error(format!("MEX call '{name}' failed: {e}")))
+                        }
+                        None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                    }
+                }
+                "mex_reachout_timelock" => {
+                    match self.whatsapp_state.reachout_timelock_summary().await {
+                        Some(Ok(text)) => Ok(ToolResult::success(text)),
+                        Some(Err(e)) => Ok(ToolResult::error(format!(
+                            "Failed to read the reachout timelock: {e}"
+                        ))),
+                        None => Ok(ToolResult::error(NOT_CONNECTED.to_string())),
+                    }
+                }
                 other => Ok(ToolResult::error(format!(
                     "Unknown 'debug_op' value '{other}'. Expected one of: stats, wait_for_node, \
                      wait_for_sent_node, acquire_raw_node, release_raw_node, \
                      set_resend_rate_limit, set_skip_history_sync, set_wanted_pre_key_count, \
-                     set_retry_admission."
+                     set_retry_admission, identity, identity_tags, memory_report, \
+                     resource_report, skip_history_sync_enabled, wanted_pre_key_count, \
+                     mex_query, mex_mutate, mex_reachout_timelock."
                 ))),
             },
 

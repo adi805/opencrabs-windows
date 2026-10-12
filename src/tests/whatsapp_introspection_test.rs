@@ -26,6 +26,20 @@ const KNOBS: &[(&str, &str)] = &[
     ("history-sync skip", ".set_skip_history_sync("),
     ("pre-key batch", ".set_wanted_pre_key_count("),
     ("retry admission", ".set_retry_admission("),
+    // The pins below name the CLIENT call each wrapper makes, not the wrapper
+    // itself: a wrapper that reached for the wrong accessor would still
+    // compile, and `lid`/`pn` are exactly the pair a transposition would
+    // silently swap.
+    ("account lid", ".lid()"),
+    ("account pn", ".pn()"),
+    ("push name", ".push_name()"),
+    ("span identity tags", ".identity_tags()"),
+    ("memory report", ".memory_report()"),
+    ("resource report", ".resource_report()"),
+    ("history-sync skip read", ".skip_history_sync_enabled()"),
+    ("pre-key target", ".wanted_pre_key_count()"),
+    ("mex accessor", ".mex()"),
+    ("reachout timelock", ".fetch_reachout_timelock()"),
 ];
 
 /// The text with all whitespace removed, so an assertion does not depend on
