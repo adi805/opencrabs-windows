@@ -138,6 +138,133 @@ fn every_dispatch_arm_is_a_declared_action() {
     }
 }
 
+/// The byte range of the parameter schema: the top-level `"properties"` block.
+///
+/// Anchored on the indent-12 `"properties"` and `"required"` lines so that a
+/// nested object schema (a button row, a select menu) cannot truncate it.
+fn schema_range(src: &str) -> Option<(usize, usize)> {
+    let mut offset = 0usize;
+    let mut start = None;
+    for line in src.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if indent == 12 && trimmed.starts_with("\"properties\"") {
+            start = Some(offset);
+        } else if start.is_some() && indent == 12 && trimmed.starts_with("\"required\"") {
+            return Some((start?, offset));
+        }
+        offset += line.len();
+    }
+    None
+}
+
+/// The values of `key`'s `"enum": [ ... ]` inside the schema.
+fn enum_values(src: &str, key: &str) -> Vec<String> {
+    let Some((s, e)) = schema_range(src) else {
+        return Vec::new();
+    };
+    let schema = &src[s..e];
+    let needle = format!("\"{key}\": {{");
+    let Some(at) = schema.find(&needle) else {
+        return Vec::new();
+    };
+    let rest = &schema[at..];
+    let Some(rel) = rest.find("\"enum\": [") else {
+        return Vec::new();
+    };
+    let from = rel + "\"enum\": [".len();
+    let Some(close) = rest[from..].find(']') else {
+        return Vec::new();
+    };
+    quoted(&rest[from..from + close])
+}
+
+/// The body of a dispatch arm, from its `"name" => {` line to the next arm.
+fn arm_body(src: &str, name: &str) -> String {
+    let needle = format!("\"{name}\" =>");
+    let Some(at) = src.find(&needle) else {
+        return String::new();
+    };
+    let mut out = String::new();
+    let mut seen_first = false;
+    for line in src[at..].split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        // The next arm, or the match's own closing brace, ends this one. A
+        // nested `}` inside the arm body sits deeper than the arms, so testing
+        // the indent (not just a leading brace) keeps it from truncating the
+        // body early.
+        if seen_first
+            && ((indent == 12 && (trimmed.starts_with('"') || trimmed.starts_with('|')))
+                || indent < 12)
+        {
+            break;
+        }
+        seen_first = true;
+        out.push_str(line);
+    }
+    out
+}
+
+/// A sub-operation declared in an enum must have its own branch.
+///
+/// `debug_op` selects which runtime call `wa_introspect` makes, so every value
+/// needs a match arm: a value with no arm is a declared, discoverable
+/// operation that errors when the model asks for it. This is the nested form of
+/// the reachability check above, and it is the shape that made
+/// `wait_for_sent_node` look unreachable.
+///
+/// Value enums (`duration`, `spam_flow`, `event_response`) are deliberately not
+/// swept this way: their unmatched values fall through to a documented default
+/// (`_ => PinDuration::Days7`), which is a real behaviour rather than a hole.
+#[test]
+fn every_declared_sub_operation_has_a_branch() {
+    let Some((_, src)) = TOOLS.iter().find(|(n, _)| *n == "whatsapp_send") else {
+        panic!("whatsapp_send is in the tool table");
+    };
+    let values = enum_values(src, "debug_op");
+    assert!(
+        values.len() > 15,
+        "parsed only {} debug_op values, so the schema scan stopped matching",
+        values.len()
+    );
+    let body: String = arm_body(src, "wa_introspect")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let missing: Vec<&String> = values
+        .iter()
+        .filter(|v| {
+            let q = format!("\"{v}\"");
+            !(body.contains(&format!("{q}=>"))
+                || body.contains(&format!("{q}|"))
+                || body.contains(&format!("|{q}")))
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these wa_introspect operations are named in the schema with no branch to run them: \
+         {missing:?}"
+    );
+}
+
+#[test]
+fn every_declared_action_has_a_dispatch_arm() {
+    for (name, src) in TOOLS {
+        let arms: BTreeSet<String> = dispatch_arms(src).into_iter().collect();
+        let mut missing: Vec<String> = declared_actions(src)
+            .into_iter()
+            .filter(|a| !arms.contains(a))
+            .collect();
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "{name}: declared in the action list but with no arm to run it: {missing:?}"
+        );
+    }
+}
+
 #[test]
 fn every_declared_action_has_a_dispatch_arm() {
     for (name, src) in TOOLS {
