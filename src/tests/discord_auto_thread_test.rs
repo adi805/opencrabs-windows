@@ -14,25 +14,18 @@
 //! routing decision in `handler.rs`. It does not re-test the pager's rendering
 //! and it says nothing about Telegram.
 
-use std::path::Path;
+use crate::tests::source_shape::{flatten, read};
 
 /// `handler.rs` as written, for the positional checks.
 fn handler_src() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/channels/discord/handler.rs");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-/// The same source with all whitespace removed, so a call split across lines
-/// still matches a needle written on one line.
-fn flat(src: &str) -> String {
-    src.chars().filter(|c| !c.is_whitespace()).collect()
+    read("src/channels/discord/handler.rs")
 }
 
 /// The thread decision must not be a function of the pager's page count.
 #[test]
 fn the_thread_is_decided_before_the_pager() {
     let src = handler_src();
-    let flat_src = flat(&src);
+    let flat_src = flatten(&src);
 
     assert!(
         flat_src.contains("super::long_answer::wants_thread("),
@@ -66,7 +59,7 @@ fn the_thread_is_decided_before_the_pager() {
 /// be posted twice: once as page 0 and once in the thread.
 #[test]
 fn a_wanted_thread_suppresses_the_pager() {
-    let flat_src = flat(&handler_src());
+    let flat_src = flatten(handler_src());
     assert!(
         flat_src.contains("if!want_thread&&chunks.len()>1"),
         "the pager no longer excludes an answer that wants a thread, so the \
@@ -80,7 +73,7 @@ fn a_wanted_thread_suppresses_the_pager() {
 #[test]
 fn a_refused_thread_falls_back_to_the_in_place_chunker() {
     let src = handler_src();
-    let flat_src = flat(&src);
+    let flat_src = flatten(&src);
 
     assert!(
         flat_src.contains("create_thread_from_message("),
@@ -107,7 +100,7 @@ fn a_refused_thread_falls_back_to_the_in_place_chunker() {
 /// reject and only then fall back to posting in place.
 #[test]
 fn a_thread_is_not_opened_inside_a_thread_or_a_dm() {
-    let flat_src = flat(&handler_src());
+    let flat_src = flatten(handler_src());
     assert!(
         flat_src.contains("want_thread=long_enough&&!is_dm&&!channel_is_thread("),
         "the thread decision no longer excludes a DM or an answer that already \
@@ -137,7 +130,7 @@ fn the_scan_sees_the_send_path_it_governs() {
         src.len()
     );
     assert!(
-        flat(&src).contains("writes::say("),
+        flatten(&src).contains("writes::say("),
         "handler.rs no longer owns the final send path, so this scan is \
          looking at the wrong file"
     );

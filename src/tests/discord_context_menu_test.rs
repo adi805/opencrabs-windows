@@ -11,45 +11,13 @@
 //! access gate, one dispatch arm). It does not cover the gateway handshake,
 //! which needs a live Discord.
 
-use std::path::Path;
-
 use crate::channels::discord::commands::{sanitize_name, sync_signature};
 use crate::channels::discord::context_menu::{
     ENTRIES, MESSAGE_COMMAND, NAME_MAX, USER_COMMAND, commands, message_prompt, signature,
     user_prompt,
 };
+use crate::tests::source_shape::{flatten, read, sources_in};
 use serenity::model::application::CommandType;
-
-/// Read a file from the crate root.
-fn read(relative: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-/// Whitespace-insensitive view, so a pin does not break on a reflow.
-fn flat(src: &str) -> String {
-    src.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
-/// Every `.rs` file in the discord channel module, sorted by name.
-fn discord_sources() -> Vec<(String, String)> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/channels/discord");
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("read src/channels/discord") {
-        let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-            continue;
-        }
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?")
-            .to_string();
-        out.push((name, std::fs::read_to_string(&path).expect("read source")));
-    }
-    out.sort();
-    out
-}
 
 #[test]
 fn the_two_menus_are_registered_with_discords_own_types() {
@@ -186,7 +154,7 @@ fn the_menus_travel_in_the_same_overwrite_as_the_catalog() {
         1,
         "the whole command set goes in one overwrite"
     );
-    let folded = flat(&src);
+    let folded = flatten(&src);
     assert!(
         folded.contains("super::context_menu::commands()"),
         "the menus join the payload"
@@ -236,7 +204,7 @@ fn a_picked_command_rebuilds_the_text_a_typed_message_would_have_had() {
 #[test]
 fn an_unreadable_target_is_refused_in_place_and_never_panicked() {
     let src = read("src/channels/discord/agent.rs");
-    let folded = flat(&src);
+    let folded = flatten(&src);
     // A right-click routes to the context-menu request builder, and a picked
     // command to the catalog one: one arm, two sources of text.
     assert!(folded.contains("CommandType::Message|CommandType::User=>{"));
@@ -244,7 +212,7 @@ fn an_unreadable_target_is_refused_in_place_and_never_panicked() {
     assert!(folded.contains("CommandType::ChatInput=>Some(super::commands::invocation(command))"));
     // A type we never registered is refused rather than guessed at.
     assert!(
-        folded.contains("_=>None,"),
+        folded.contains("_=>None}"),
         "an unknown kind has no request"
     );
     // `None` is answered ephemeral, in place: a refused interaction beats the
@@ -266,7 +234,7 @@ fn every_interaction_entry_point_shares_one_gate_and_one_dispatch() {
     // `handler.rs`; inside the interaction path there must be exactly one.
     let mut definitions = 0usize;
     let mut call_sites = 0usize;
-    for (name, src) in discord_sources() {
+    for (name, src) in sources_in("src/channels/discord") {
         for line in src.lines() {
             let hits = line.matches("identity_admitted(").count();
             if hits == 0 {

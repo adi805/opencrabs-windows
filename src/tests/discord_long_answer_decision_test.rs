@@ -37,31 +37,11 @@
 //! this pins the routing decision in `handler.rs`. It does not re-test the
 //! pager's rendering, and it says nothing about Telegram.
 
-use std::path::Path;
-
-fn discord_dir() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/channels/discord")
-}
+use crate::tests::source_shape::{flatten, read_in};
 
 /// `handler.rs` as written, for the positional checks.
 fn handler_src() -> String {
-    let path = discord_dir().join("handler.rs");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-/// The same source with all whitespace removed, so a call split across lines
-/// still matches a needle written on one line.
-/// Flatten source for needle matching.
-///
-/// Whitespace first, then the trailing comma rustfmt inserts before the closing
-/// paren of a call it wrapped: `f(a,)` and `f(a)` are the same call, but only
-/// the second matches a needle written the way the call reads on one line.
-/// Without this the same call matches or not depending on whether rustfmt
-/// happened to wrap it, which is the reflow that makes a source-pinning test
-/// lie (#1880).
-fn flat(src: &str) -> String {
-    let stripped: String = src.chars().filter(|c| !c.is_whitespace()).collect();
-    stripped.replace(",)", ")")
+    read_in("src/channels/discord", "handler.rs")
 }
 
 /// AC-020: a long answer routes into the pager rather than into a run of
@@ -73,7 +53,7 @@ fn flat(src: &str) -> String {
 /// test that pinned the old argument would fail on a change that is correct.
 #[test]
 fn a_long_answer_routes_into_the_pager_not_a_wall() {
-    let flat_src = flat(&handler_src());
+    let flat_src = flatten(handler_src());
 
     assert!(
         flat_src.contains("super::long_answer::PAGE_CHARS"),
@@ -109,7 +89,7 @@ fn a_long_answer_routes_into_the_pager_not_a_wall() {
 /// page nothing can serve (#1880, M4).
 #[test]
 fn the_pages_are_stored_before_the_pager_row_is_attached() {
-    let flat_src = flat(&handler_src());
+    let flat_src = flatten(handler_src());
 
     let store = flat_src
         .find("store_long_answer(mid,target,chunks.clone())")
@@ -134,7 +114,7 @@ fn the_pages_are_stored_before_the_pager_row_is_attached() {
 #[test]
 fn paging_suppresses_the_thread_and_the_plain_split() {
     let src = handler_src();
-    let flat_src = flat(&src);
+    let flat_src = flatten(&src);
 
     assert!(
         flat_src.contains("if!want_thread&&chunks.len()>1"),
@@ -177,7 +157,7 @@ fn the_scan_sees_the_send_path_it_governs() {
          reading the wrong file",
         src.len()
     );
-    let flat_src = flat(&src);
+    let flat_src = flatten(&src);
     for needle in ["writes::send(", "writes::edit("] {
         assert!(
             flat_src.contains(needle),
@@ -194,9 +174,7 @@ fn the_scan_sees_the_send_path_it_governs() {
 /// unrelated bubble. The slice runs from the prefix match that opens the
 /// branch to the `toolgroup:` match that opens the next one.
 fn pager_branch() -> String {
-    let agent_path = discord_dir().join("agent.rs");
-    let src = std::fs::read_to_string(&agent_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", agent_path.display()));
+    let src = read_in("src/channels/discord", "agent.rs");
     let start = src
         .find("strip_prefix(super::long_answer::PAGER_PREFIX)")
         .expect("agent.rs no longer matches PAGER_PREFIX: the pager press moved");
@@ -223,7 +201,7 @@ fn pager_branch() -> String {
 /// looking for a builder that was removed (#1880, L1).
 #[test]
 fn the_pager_starts_on_page_zero_and_redraws_the_row_in_place() {
-    let flat_handler = flat(&handler_src());
+    let flat_handler = flatten(handler_src());
     assert!(
         flat_handler.contains("pager_row(mid,0,chunks.len())"),
         "the row attached to page 0 no longer starts at page 0, so `◀` on the \
@@ -231,7 +209,7 @@ fn the_pager_starts_on_page_zero_and_redraws_the_row_in_place() {
     );
 
     assert!(
-        flat(&pager_branch()).contains("pager_row("),
+        flatten(pager_branch()).contains("pager_row("),
         "the pager press no longer carries a row, so every page after the \
          first press is stored but unreachable (AC-020)"
     );
@@ -246,7 +224,7 @@ fn the_pager_starts_on_page_zero_and_redraws_the_row_in_place() {
 /// none of them can see this.
 #[test]
 fn the_pager_attach_is_not_a_droppable_class() {
-    let flat_handler = flat(&handler_src());
+    let flat_handler = flatten(handler_src());
     let row = flat_handler
         .find("pager_row(mid,0,chunks.len())")
         .expect("the page-0 pager row moved: this test pins the attach class");
@@ -285,7 +263,7 @@ fn the_pager_attach_is_not_a_droppable_class() {
 /// silently reintroduce the bug, which is exactly what happened once already.
 #[test]
 fn a_page_press_edits_the_card_instead_of_posting_an_ephemeral_bubble() {
-    let branch = flat(&pager_branch());
+    let branch = flatten(pager_branch());
     let update = branch
         .find("CreateInteractionResponse::UpdateMessage(")
         .expect(
@@ -325,7 +303,7 @@ fn a_page_press_edits_the_card_instead_of_posting_an_ephemeral_bubble() {
 /// goes into `UpdateMessage`, which is the only thing that matters.
 #[test]
 fn a_page_press_renders_the_same_card_shape_as_page_zero() {
-    let branch = flat(&pager_branch());
+    let branch = flatten(pager_branch());
 
     let embed = branch.find("auto_embed_response(").expect(
         "the pager press no longer applies the auto-embed decision, so a \
@@ -346,7 +324,7 @@ fn a_page_press_renders_the_same_card_shape_as_page_zero() {
     // governed send path, this test would be pinning a decision against a
     // create that no longer embeds, and the pair would be symmetric by
     // accident rather than by rule.
-    let handler = flat(&handler_src());
+    let handler = flatten(handler_src());
     assert!(
         handler.contains("writes::send(") && handler.contains("Class::Final)"),
         "page 0 no longer goes through the governed send path, so the embed \

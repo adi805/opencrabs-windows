@@ -482,6 +482,7 @@ pub mod session_surface_test;
 pub mod shared_session_internal_gate_test;
 pub mod shared_session_memory_gate_test;
 pub mod shutdown_recovery_row_test;
+pub mod source_shape;
 pub mod spawn_retry_test;
 pub mod ssrf_redirect_guard_test;
 #[cfg(feature = "telegram")]
@@ -1012,6 +1013,7 @@ pub mod discord_card_persist_test;
 pub mod discord_component_spec_test;
 pub mod discord_context_menu_test;
 pub mod discord_dead_control_test;
+pub mod discord_dm_channel_message_test;
 pub mod discord_evidence_footer_test;
 pub mod discord_flow_ticker_test;
 pub mod discord_followup_tap_tool_loop_test;

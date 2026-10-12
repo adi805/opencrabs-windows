@@ -11,16 +11,7 @@
 //!   backing off from a 429, because a dropped reaction is transient while the
 //!   reply itself still has to be delivered.
 
-use std::path::Path;
-
-/// Flattened source: all whitespace removed, so a call split across lines still
-/// matches a single-line needle.
-fn flattened(relative: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
-    let src =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    src.chars().filter(|c| !c.is_whitespace()).collect()
-}
+use crate::tests::source_shape::{flatten, read};
 
 const ACK: &str = "ReactionType::Unicode(\"\u{1F440}\".to_string())";
 
@@ -28,7 +19,7 @@ const ACK: &str = "ReactionType::Unicode(\"\u{1F440}\".to_string())";
 /// first progress write of the turn.
 #[test]
 fn the_ack_reaction_fires_before_the_first_progress_write() {
-    let flat = flattened("src/channels/discord/handler.rs");
+    let flat = flatten(read("src/channels/discord/handler.rs"));
 
     let ack = flat
         .find(ACK)
@@ -55,7 +46,7 @@ fn the_ack_reaction_fires_before_the_first_progress_write() {
 /// backing off from a 429 skips the reaction instead of failing the turn.
 #[test]
 fn the_ack_is_skipped_while_the_channel_backs_off() {
-    let flat = flattened("src/channels/discord/handler.rs");
+    let flat = flatten(read("src/channels/discord/handler.rs"));
 
     let gate = flat
         .find("cooldown_remaining(msg.channel_id.get()).is_none()")

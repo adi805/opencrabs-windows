@@ -20,23 +20,10 @@
 //! menu or the TUI's completion, which are separate projections of the same
 //! catalog.
 
-use std::path::Path;
-
 use crate::channels::discord::autocomplete::{
     CHOICE_MAX, Catalog, CatalogValues, MAX_CHOICES, catalog_for, suggestions_for,
 };
-
-/// The named source file, read from the crate root.
-fn read(relative: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-/// The same source with all whitespace removed, so a call split across lines
-/// still matches a needle written on one line.
-fn flat(src: &str) -> String {
-    src.chars().filter(|c| !c.is_whitespace()).collect()
-}
+use crate::tests::source_shape::{flatten, read};
 
 // ---------------------------------------------------------------------------
 // The decision (AC-007)
@@ -206,7 +193,7 @@ fn the_command_table_reads_a_slash_and_a_bare_name_the_same_way() {
 #[test]
 fn the_interaction_arm_answers_autocomplete() {
     let src = read("src/channels/discord/agent.rs");
-    let flat_src = flat(&src);
+    let flat_src = flatten(&src);
 
     assert!(
         flat_src.contains("ifletInteraction::Autocomplete(command)=&interaction{"),
@@ -238,7 +225,7 @@ fn the_interaction_arm_answers_autocomplete() {
 #[test]
 fn only_enumerable_commands_ask_the_client_for_suggestions() {
     let src = read("src/channels/discord/commands.rs");
-    let flat_src = flat(&src);
+    let flat_src = flatten(&src);
 
     assert!(
         flat_src.contains("super::autocomplete::catalog_for(source_name).is_some()"),

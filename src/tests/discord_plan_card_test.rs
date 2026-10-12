@@ -8,8 +8,7 @@
 //! structural, so it is pinned by scanning the source, the same way
 //! `discord_fr004_one_message_test` pins AC-008.
 
-use std::path::Path;
-
+use crate::tests::source_shape::{flatten, read};
 use serenity::builder::CreateActionRow;
 
 use crate::channels::discord::plan_card::{
@@ -29,15 +28,6 @@ fn plan_with(status: PlanStatus, tasks: Vec<(&str, TaskStatus, usize)>) -> PlanD
         p.add_task(t);
     }
     p
-}
-
-/// Flattened source: all whitespace removed, so a signature or a call split
-/// across lines still matches a single-line needle.
-fn flattened(relative: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
-    let src =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    src.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
 fn button_count(row: &CreateActionRow) -> usize {
@@ -156,7 +146,7 @@ fn a_plan_with_nothing_renderable_yields_no_card() {
 /// The buttons must actually carry the plan custom_ids, not just exist.
 #[test]
 fn the_buttons_carry_the_plan_custom_ids() {
-    let src = flattened("src/channels/discord/plan_card.rs");
+    let src = flatten(read("src/channels/discord/plan_card.rs"));
     assert!(
         src.contains("CreateButton::new(PLAN_APPROVE)"),
         "the Approve button must be built from PLAN_APPROVE"
@@ -171,7 +161,7 @@ fn the_buttons_carry_the_plan_custom_ids() {
 /// tapper is re-checked — same rule the tool-approval keyboard follows.
 #[test]
 fn the_card_is_owner_gated_and_routed_from_the_component_dispatch() {
-    let src = flattened("src/channels/discord/agent.rs");
+    let src = flatten(read("src/channels/discord/agent.rs"));
     assert!(
         src.contains("ifsuper::plan_card::is_plan_callback(custom_id){"),
         "the plan callbacks must be routed from the component dispatch"
@@ -186,13 +176,13 @@ fn the_card_is_owner_gated_and_routed_from_the_component_dispatch() {
     );
     assert!(
         src.contains(
-            "crate::utils::plan_mode::try_approve(session_id,crate::tui::plan::ApprovalSource::User,).await"
+            "crate::utils::plan_mode::try_approve(session_id,crate::tui::plan::ApprovalSource::User).await"
         ),
         "Approve must use the same validator Telegram uses"
     );
     assert!(
         src.contains(
-            "super::plan_card::remove_plan_card(&ctx.http,channel_id,&self.discord_state,session_id,).await"
+            "super::plan_card::remove_plan_card(&ctx.http,channel_id,&self.discord_state,session_id).await"
         ),
         "Discard must take the card down with the plan"
     );
@@ -206,14 +196,14 @@ fn the_card_is_owner_gated_and_routed_from_the_component_dispatch() {
 /// re-stick tail, or the board freezes at a stale position.
 #[test]
 fn the_card_is_resticked_after_both_delivery_paths() {
-    let message_path = flattened("src/channels/discord/handler.rs");
+    let message_path = flatten(read("src/channels/discord/handler.rs"));
     assert!(
         message_path.contains(
             "super::plan_card::restick_plan_card_after_turn(&ctx.http,target,&discord_state,session_id).await;"
         ),
         "the message path must re-stick the plan card after the turn"
     );
-    let tap_path = flattened("src/channels/discord/interactions.rs");
+    let tap_path = flatten(read("src/channels/discord/interactions.rs"));
     assert!(
         tap_path.contains(
             "super::plan_card::restick_plan_card_after_turn(&http,channel,&discord_state,session_id).await;"
@@ -228,7 +218,7 @@ fn the_card_is_resticked_after_both_delivery_paths() {
 /// turn. Pinned from source so a later "let's also restick there" fails loudly.
 #[test]
 fn the_ticker_and_turn_start_keep_the_in_place_refresh() {
-    let handler = flattened("src/channels/discord/handler.rs");
+    let handler = flatten(read("src/channels/discord/handler.rs"));
     assert!(
         handler.contains(
             "super::plan_card::refresh_plan_card(&ctx.http,target,&discord_state,session_id).await;"
@@ -353,7 +343,7 @@ fn an_editing_card_without_prose_still_renders() {
 /// renderer fix never reaches a real card.
 #[test]
 fn the_refresh_path_loads_the_plan_prose() {
-    let src = flattened("src/channels/discord/plan_card.rs");
+    let src = flatten(read("src/channels/discord/plan_card.rs"));
     assert!(
         src.contains("flow_chrome::load_plan_prose(session_id).await"),
         "the card refresh must load the design prose"

@@ -104,6 +104,31 @@ pub(crate) struct SettledSnapshot {
     pub waiting: bool,
 }
 
+/// Place a stored age back on this process's monotonic clock.
+///
+/// `Instant::now()` is time since boot, not since process start, so a card
+/// written before a reboot can carry an age that reaches further back than the
+/// clock's origin. `now - age` panics there, and a press on a card that is
+/// still sitting in the channel must never do that. An age older than this
+/// process's clock can plausibly be is treated as unplaceable and the card is
+/// placed at `now`, so it reads as just-started. Same reasoning as
+/// `failure_window::cutoff`, which leaves the same call to its caller.
+///
+/// `checked_sub` alone does not settle that question: CI accepted a duration
+/// beyond any host uptime and reported the card as `i64::MAX` seconds old, so
+/// the bound is applied before the subtraction rather than inferred from it.
+fn resumed_instant(now: Instant, secs_ago: u64) -> Instant {
+    // Longer than any host's uptime, so an age past it cannot be placed on a
+    // clock that counts from boot.
+    const MAX_PLACEABLE_SECS: u64 = 100 * 365 * 24 * 60 * 60;
+
+    if secs_ago > MAX_PLACEABLE_SECS {
+        return now;
+    }
+    now.checked_sub(Duration::from_secs(secs_ago))
+        .unwrap_or(now)
+}
+
 impl GroupState {
     /// The durable form of this card (H1).
     pub(crate) fn to_snapshot(&self) -> GroupSnapshot {
@@ -169,8 +194,8 @@ impl GroupState {
             expanded: snap.expanded,
             // Ages, not instants: a restarted process has its own epoch, so the
             // card resumes the clock it was showing instead of restarting it.
-            started_at: now - Duration::from_secs(snap.started_secs_ago),
-            last_activity_at: now - Duration::from_secs(snap.activity_secs_ago),
+            started_at: resumed_instant(now, snap.started_secs_ago),
+            last_activity_at: resumed_instant(now, snap.activity_secs_ago),
             live_ctx: snap.live_ctx,
             settled,
         })
