@@ -1,7 +1,7 @@
 //! Dialogs — onboarding wizard, file/directory pickers, usage dashboard.
 
 use super::events::{AppMode, TuiEvent};
-use super::onboarding::{OnboardingStep, WELCOME_MESSAGE, WizardAction};
+use super::onboarding::{OnboardingStep, WizardAction, WizardMode, welcome_message_for};
 use super::*;
 use crate::brain::provider::{ContentBlock, LLMRequest};
 use anyhow::Result;
@@ -18,11 +18,12 @@ impl App {
     /// Runs for every completion, quick or advanced, first run or `/onboard`.
     /// A failed save sends nothing, so the agent never greets an unconfigured
     /// install (#2022).
-    pub(crate) async fn send_onboarding_welcome(&mut self, saved: bool) {
+    pub(crate) async fn send_onboarding_welcome(&mut self, saved: bool, mode: WizardMode) {
         if !saved {
             return;
         }
-        if let Err(e) = self.send_message(WELCOME_MESSAGE.to_string()).await {
+        let prompt = welcome_message_for(mode);
+        if let Err(e) = self.send_message(prompt.to_string()).await {
             tracing::warn!(error = %e, "failed to send welcome message");
         }
     }
@@ -281,13 +282,17 @@ impl App {
                             }
                         }
                     }
+                    let mode = self
+                        .onboarding
+                        .as_ref()
+                        .map_or(WizardMode::QuickStart, |w| w.mode);
                     self.onboarding = None;
                     self.sync_session_to_provider().await;
                     self.switch_mode(AppMode::Chat).await?;
 
                     // Hidden system prompt so the agent can check its environment
                     // and greet the user. The `[SYSTEM:` prefix hides it from display.
-                    self.send_onboarding_welcome(saved).await;
+                    self.send_onboarding_welcome(saved, mode).await;
                 }
                 WizardAction::FetchModels => {
                     let provider_idx = wizard.ps.selected_provider;
@@ -759,13 +764,17 @@ impl App {
                             }
                         }
                     }
+                    let mode = self
+                        .onboarding
+                        .as_ref()
+                        .map_or(WizardMode::QuickStart, |w| w.mode);
                     self.onboarding = None;
                     self.sync_session_to_provider().await;
                     self.switch_mode(AppMode::Chat).await?;
 
                     // Hidden system prompt so the agent can check its environment
                     // and greet the user. Sent on every saved completion (#2022).
-                    self.send_onboarding_welcome(saved).await;
+                    self.send_onboarding_welcome(saved, mode).await;
 
                     // Fire brain generation in the background
                     if let Some((prompt, workspace)) = brain_context {

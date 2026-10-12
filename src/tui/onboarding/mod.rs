@@ -53,3 +53,17 @@ pub(crate) use self::config::build_onboarding_systemd_unit;
 /// by the agent. The agent uses its personality (SOUL.md) and user knowledge
 /// (USER.md) to craft a personalized surprise instead of a hardcoded greeting.
 pub const WELCOME_MESSAGE: &str = "[SYSTEM: Onboarding complete. Check your environment — use load_config to see what's configured and tool_search to discover what you have. You know who your user is (USER.md) and you have your personality (SOUL.md). Now do something that'll make them go 'holy shit'. Not a boring greeting. Not 'hey how can I help'. Something only YOU would say, like your best friend just walked in. Be creative, be unexpected. Then ask if they want daily check-ins, task reminders, or heartbeat — you can set those up with cron_manage right now.]";
+
+/// Hidden system prompt for a quick start. Quick start skips the profile and
+/// soul steps, so USER.md is still empty. The agent introduces itself and
+/// interviews the user to fill it in, one or two questions at a time.
+/// SOUL.md stays as shipped unless the user asks to change it.
+pub const WELCOME_QUICK_START_MESSAGE: &str = "[SYSTEM: Onboarding complete (quick start). The setup skipped the profile questions, so you know nothing about your user yet. Introduce yourself in one or two short lines, in your own voice from SOUL.md. Then get to know them: ask who they are, what they do, what they want help with, and how they like to be addressed. Ask one or two questions at a time, never a form. As they answer, save each fact to USER.md with write_opencrabs_file using operation=append. Keep entries short and factual. Do not rewrite SOUL.md unless they ask you to change your personality. Once you have their name and a main goal, offer daily check-ins or reminders and set them up with cron_manage only if they say yes.]";
+
+/// Pick the hidden welcome prompt for the flow the user just finished.
+pub fn welcome_message_for(mode: WizardMode) -> &'static str {
+    match mode {
+        WizardMode::QuickStart => WELCOME_QUICK_START_MESSAGE,
+        WizardMode::Advanced => WELCOME_MESSAGE,
+    }
+}

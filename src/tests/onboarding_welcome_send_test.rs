@@ -9,6 +9,7 @@ use crate::db::Database;
 use crate::services::ServiceContext;
 use crate::tests::agent_service_mocks::MockProvider;
 use crate::tui::app::App;
+use crate::tui::onboarding::WizardMode;
 
 async fn app_with_session() -> App {
     let mut app = app().await;
@@ -46,7 +47,8 @@ async fn failed_save_sends_no_welcome() {
     let mut app = app_with_session().await;
     let messages_before = app.messages.len();
 
-    app.send_onboarding_welcome(false).await;
+    app.send_onboarding_welcome(false, WizardMode::QuickStart)
+        .await;
 
     assert!(!app.is_processing, "a failed save must not start a turn");
     assert_eq!(app.messages.len(), messages_before);
@@ -56,7 +58,8 @@ async fn failed_save_sends_no_welcome() {
 async fn saved_completion_sends_welcome_without_first_run_flag() {
     let mut app = app_with_session().await;
 
-    app.send_onboarding_welcome(true).await;
+    app.send_onboarding_welcome(true, WizardMode::QuickStart)
+        .await;
 
     assert!(
         app.is_processing,
