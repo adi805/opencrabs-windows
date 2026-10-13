@@ -1309,6 +1309,7 @@ fn generation_base_url(session_id: &str, cfg: &ProviderConfig) -> Option<String>
             "qwen" => QWEN_DEFAULT_DASHSCOPE_URL.to_string(),
             "ollama" => "http://localhost:11434/v1".to_string(),
             "gemini" => GEMINI_GENERATION_MARKER_URL.to_string(),
+            "opencrabs" => super::opencrabs_install::OPENCRABS_BASE_URL.to_string(),
             // CLI wrappers, native protocols, and anything else without an
             // explicit base_url: no derivable images endpoint.
             _ => return None,
