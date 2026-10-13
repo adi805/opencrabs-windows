@@ -23,7 +23,8 @@ impl App {
             return;
         }
         let (provider, model) = self.welcome_provider_and_model().await;
-        let prompt = welcome_message_for(mode, &provider, &model);
+        let gaps = crate::tui::onboarding::setup_gaps::read_setup_gaps();
+        let prompt = welcome_message_for(mode, &provider, &model, &gaps);
         if let Err(e) = self.send_message(prompt).await {
             tracing::warn!(error = %e, "failed to send welcome message");
         }
