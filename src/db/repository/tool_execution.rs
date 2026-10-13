@@ -309,9 +309,12 @@ impl ToolExecutionRepository {
     // AFTER, so a resumed turn can tell "already landed" from "not yet" and
     // never replay a side effect that already happened.
 
-    /// Record a tool call's intent before its effect runs. `effect_key` is the
-    /// idempotency key: resume treats a row already settled as landed and
-    /// skips it.
+    /// Record a tool call's intent before its effect runs, returning the
+    /// number of rows inserted: `1` means this caller WON the claim on
+    /// `effect_key`, `0` means the key already existed and this caller must
+    /// read the existing row instead of assuming it owns the effect. The
+    /// count comes from `INSERT OR IGNORE` against the unique partial index,
+    /// so it is an atomic compare-and-claim rather than a read-then-write.
     #[allow(clippy::too_many_arguments)] // one INSERT: id, turn, message, session, tool, key, hash
     pub async fn record_intent(
         &self,
@@ -322,7 +325,7 @@ impl ToolExecutionRepository {
         tool_name: &str,
         effect_key: &str,
         args_hash: &str,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let id = id.to_string();
         let turn_id = turn_id.to_string();
         let message_id = message_id.to_string();
@@ -330,7 +333,8 @@ impl ToolExecutionRepository {
         let tool_name = tool_name.to_string();
         let effect_key = effect_key.to_string();
         let args_hash = args_hash.to_string();
-        self.pool
+        let claimed = self
+            .pool
             .get()
             .await
             .context("Failed to get connection")?
@@ -345,7 +349,7 @@ impl ToolExecutionRepository {
             .await
             .map_err(interact_err)?
             .context("Failed to record effect intent")?;
-        Ok(())
+        Ok(claimed)
     }
 
     /// Settle an effect opened by [`Self::record_intent`]. Returns the number
