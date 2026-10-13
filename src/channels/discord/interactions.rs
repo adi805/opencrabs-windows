@@ -257,7 +257,6 @@ pub(crate) async fn handle_invoked_request(
     let cfg = config_rx.borrow().clone();
     let dc = &cfg.channels.discord;
     let role_ids = interaction_role_ids(command.member.as_deref());
-    let channel_str = channel_id.to_string();
     // One shared gate for every interaction kind (#212); the command path used
     // to own this logic and the component/modal paths had none.
     let verdict = admit_interaction(&ctx.http, dc, user, is_dm, channel_id, &role_ids).await;
