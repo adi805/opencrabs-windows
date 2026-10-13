@@ -111,12 +111,24 @@ pub(crate) struct Vote {
 /// account cannot grow it without limit.
 pub(crate) const VOTE_TALLY_CAPACITY: usize = 100;
 
+/// One voter's answer, as filed in the tally.
+struct RecordedVote {
+    /// Stable identity: the voter's resolved JID. Never the push name, which
+    /// is self-chosen and therefore neither unique nor stable.
+    voter: String,
+    /// The name to render. Taken from the message that carried the vote, so a
+    /// rename shows up without splitting the voter into two entries.
+    display: String,
+    chosen: Vec<String>,
+}
+
 #[derive(Default)]
 struct TallyInner {
     order: Vec<String>,
-    /// poll id -> (voter label -> chosen labels). Last vote from a voter wins,
-    /// which is what WhatsApp itself does when a voter changes their answer.
-    votes: HashMap<String, Vec<(String, Vec<String>)>>,
+    /// poll id -> one entry per voter, in arrival order. A voter is identified
+    /// by their JID; the last vote from a voter wins, which is what WhatsApp
+    /// itself does when a voter changes their answer.
+    votes: HashMap<String, Vec<RecordedVote>>,
 }
 
 #[derive(Default)]
@@ -125,21 +137,52 @@ pub(crate) struct VoteTally {
 }
 
 impl VoteTally {
-    /// Record one decoded vote. A vote that resolves to nothing is dropped:
-    /// that is a voter CLEARING their answer, not an answer.
-    pub async fn record(&self, poll_id: &str, voter: &str, chosen: Vec<String>) {
-        if poll_id.is_empty() || voter.is_empty() || chosen.is_empty() {
+    /// Record one decoded vote.
+    ///
+    /// `voter` is the voter's resolved JID and is the tally KEY. A push name
+    /// cannot be one: it is self-chosen, so two voters can share it (they
+    /// would collapse into a single entry) and one voter can rename themselves
+    /// (they would split into two). `display` is carried for rendering only.
+    ///
+    /// An empty `chosen` is a voter CLEARING their answer, so the entry is
+    /// REMOVED. Treating that as "nothing to record" leaves the withdrawn
+    /// choice live and keeps the poll counting a vote that no longer exists.
+    pub async fn record(&self, poll_id: &str, voter: &str, display: &str, chosen: Vec<String>) {
+        if poll_id.is_empty() || voter.is_empty() {
             return;
         }
         let mut inner = self.inner.lock().await;
+
+        if chosen.is_empty() {
+            let emptied = match inner.votes.get_mut(poll_id) {
+                Some(entry) => {
+                    entry.retain(|recorded| recorded.voter != voter);
+                    entry.is_empty()
+                }
+                None => false,
+            };
+            // A poll nobody is answering any more is not worth tracking, so it
+            // leaves the eviction order too rather than lingering as a key.
+            if emptied {
+                inner.votes.remove(poll_id);
+                inner.order.retain(|id| id != poll_id);
+            }
+            return;
+        }
+
         if !inner.votes.contains_key(poll_id) {
             inner.order.push(poll_id.to_string());
         }
         let entry = inner.votes.entry(poll_id.to_string()).or_default();
-        if let Some(existing) = entry.iter_mut().find(|(who, _)| who == voter) {
-            existing.1 = chosen;
+        if let Some(existing) = entry.iter_mut().find(|recorded| recorded.voter == voter) {
+            existing.display = display.to_string();
+            existing.chosen = chosen;
         } else {
-            entry.push((voter.to_string(), chosen));
+            entry.push(RecordedVote {
+                voter: voter.to_string(),
+                display: display.to_string(),
+                chosen,
+            });
         }
         while inner.order.len() > VOTE_TALLY_CAPACITY {
             let evicted = inner.order.remove(0);
@@ -147,14 +190,20 @@ impl VoteTally {
         }
     }
 
-    /// Every vote recorded for a poll, oldest voter first.
+    /// Every vote recorded for a poll, oldest voter first, as
+    /// `(display name, chosen labels)`.
     pub async fn for_poll(&self, poll_id: &str) -> Vec<(String, Vec<String>)> {
         self.inner
             .lock()
             .await
             .votes
             .get(poll_id)
-            .cloned()
+            .map(|entry| {
+                entry
+                    .iter()
+                    .map(|recorded| (recorded.display.clone(), recorded.chosen.clone()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }
@@ -319,10 +368,14 @@ pub(crate) async fn decode_vote(
     };
 
     let chosen = resolve_options(&selected, &options);
-    let line = describe_vote(voter_label, &chosen)?;
+    // File the vote BEFORE rendering. A cleared selection has no line to show,
+    // so `describe_vote` returns None for it, and recording after that `?`
+    // would drop the withdrawal and leave the old answer counted.
+    let voter_key = voter_jid.to_non_ad_string();
     state
         .votes
-        .record(poll_id, voter_label, chosen.clone())
+        .record(poll_id, &voter_key, voter_label, chosen.clone())
         .await;
+    let line = describe_vote(voter_label, &chosen)?;
     Some(Vote { line, chosen })
 }
