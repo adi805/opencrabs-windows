@@ -14,7 +14,7 @@ use crate::brain::tools::ToolExecutionContext;
 use crate::brain::tools::ToolResult;
 use crate::brain::tools::load_brain_file::LoadBrainFileTool;
 use crate::brain::tools::memory_search::MemorySearchTool;
-use crate::memory::mark_session_shared;
+use crate::memory::{mark_session_personal, mark_session_shared};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -65,13 +65,31 @@ async fn all_scope_is_refused_in_a_shared_session() {
 
 #[tokio::test]
 async fn a_private_session_is_not_gated() {
-    // Unmarked session: the gate must NOT fire. Whatever happens next (the
-    // store may be unavailable inside a test binary) the refusal text must be
-    // absent, and that absence is the property under test.
-    let out = search(Uuid::new_v4(), Some("brain")).await;
+    // A VERIFIED private session - the state #217's acceptance criteria name
+    // ("verified private sessions retain intended personal-memory access").
+    // It has to be marked: an unmarked session is `Unknown`, not private, and
+    // `an_unclassified_session_is_not_assumed_private` below pins that
+    // distinction.
+    let s = Uuid::new_v4();
+    mark_session_personal(s);
+    let out = search(s, Some("brain")).await;
     assert!(
         !out.contains(GATE),
-        "private session must not be gated: {out}"
+        "a verified private session must not be gated: {out}"
+    );
+}
+
+#[tokio::test]
+async fn an_unclassified_session_is_not_assumed_private() {
+    // #217: absence is not privacy. A turn that reaches the gate with nothing
+    // having classified its session - a boot-resumed channel turn dispatched
+    // past ingress, or a process that cannot read the durable column - must be
+    // treated as shared for personal content. Same decision function as the
+    // test above, opposite entry state, so the pair pins the tri-state.
+    let out = search(Uuid::new_v4(), Some("brain")).await;
+    assert!(
+        out.contains(GATE),
+        "an unclassified session must fail closed: {out}"
     );
 }
 

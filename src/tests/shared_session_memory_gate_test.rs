@@ -8,7 +8,9 @@
 //! every surface consults.
 
 use crate::config::types::MemoryConfig;
-use crate::memory::{internal_content_blocked, is_personal_brain_file, mark_session_shared};
+use crate::memory::{
+    internal_content_blocked, is_personal_brain_file, mark_session_personal, mark_session_shared,
+};
 use uuid::Uuid;
 
 #[test]
@@ -63,13 +65,23 @@ fn personal_files_are_blocked_and_generic_files_are_not() {
 }
 
 #[test]
-fn blocked_only_for_shared_sessions() {
-    // Fresh sessions are not shared: internal surfaces stay open, matching
-    // the documented main-session default.
+fn blocked_unless_classified_personal() {
+    // #217: an unclassified session is NOT assumed private. Absence used to
+    // read as "not shared" and the gate stayed open; a process cannot tell a
+    // DM from a group it has not seen, so absence fails closed instead.
+    let unclassified = Uuid::new_v4();
+    assert!(
+        internal_content_blocked(unclassified),
+        "#217: missing classification must not silently allow personal content"
+    );
+
+    // The verified-private half: an explicitly personal session keeps access,
+    // matching the documented main-session default.
     let main_session = Uuid::new_v4();
+    mark_session_personal(main_session);
     assert!(
         !internal_content_blocked(main_session),
-        "a non-shared session must never be blocked"
+        "a known-personal session must keep its personal memory"
     );
 
     // A marked-shared session is blocked under the default config (the opt
@@ -83,6 +95,7 @@ fn blocked_only_for_shared_sessions() {
 
     // Marking one session never taints another (unique ids per session).
     let other_session = Uuid::new_v4();
+    mark_session_personal(other_session);
     assert!(
         !internal_content_blocked(other_session),
         "the gate is per session, not process-wide"

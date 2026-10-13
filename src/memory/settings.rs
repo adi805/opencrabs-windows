@@ -78,7 +78,18 @@ pub(crate) fn internal_allowed_in_shared() -> bool {
 /// The prompt always promised main-session-only; this is where the code
 /// starts keeping that promise.
 pub fn internal_content_blocked(session_id: uuid::Uuid) -> bool {
-    crate::memory::is_session_shared(session_id) && !internal_allowed_in_shared()
+    match crate::memory::session_sharing(session_id) {
+        // Known shared/group chat: default-deny, with the documented opt-in.
+        crate::memory::SessionSharing::Shared => !internal_allowed_in_shared(),
+        // Known to be the owner's own session: personal context is the point.
+        crate::memory::SessionSharing::Personal => false,
+        // #217: absence is not privacy. An unclassified session is treated as
+        // shared for personal content, because several people might be able to
+        // read the reply and guessing "private" is the exact failure this
+        // closes. Callers should run `restore_sharing` first so a resumed turn
+        // gets the durable answer rather than landing here by default.
+        crate::memory::SessionSharing::Unknown => !internal_allowed_in_shared(),
+    }
 }
 
 /// Seconds between external freshness sweeps (#1051).

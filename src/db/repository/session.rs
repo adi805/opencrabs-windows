@@ -47,6 +47,49 @@ impl SessionRepository {
     }
 
     /// Find session by ID
+    /// The durable audience classification for a session (#217), or `None`
+    /// when the row has never been classified. `None` is a real answer, not a
+    /// default: callers must treat it as unknown and fail closed for personal
+    /// content rather than assuming an unclassified session is private.
+    pub async fn sharing_of(&self, id: Uuid) -> Result<Option<String>> {
+        let key = id.to_string();
+        self.pool
+            .get()
+            .await
+            .context("Failed to get connection")?
+            .interact(move |conn| {
+                conn.prepare_cached("SELECT sharing FROM sessions WHERE id = ?1")?
+                    .query_row(params![key], |row| row.get::<_, Option<String>>(0))
+                    .optional()
+                    .map(|opt| opt.flatten())
+            })
+            .await
+            .map_err(interact_err)?
+            .context("Failed to read session sharing")
+    }
+
+    /// Persist a session's audience classification (#217). The in-memory mark
+    /// is the fast path for the current process; this is what a restart, a
+    /// resumed turn, or a second process reads back.
+    pub async fn set_sharing(&self, id: Uuid, sharing: &str) -> Result<()> {
+        let key = id.to_string();
+        let value = sharing.to_string();
+        self.pool
+            .get()
+            .await
+            .context("Failed to get connection")?
+            .interact(move |conn| {
+                conn.execute(
+                    "UPDATE sessions SET sharing = ?2 WHERE id = ?1",
+                    params![key, value],
+                )
+            })
+            .await
+            .map_err(interact_err)?
+            .context("Failed to persist session sharing")?;
+        Ok(())
+    }
+
     pub async fn find_by_id(&self, id: Uuid) -> Result<Option<Session>> {
         let id_str = id.to_string();
         self.pool
@@ -122,8 +165,8 @@ impl SessionRepository {
             .interact(move |conn| {
                 conn.execute(
                     "INSERT INTO sessions (id, title, model, provider_name, created_at, updated_at,
-                                          archived_at, token_count, total_cost, working_directory, auto_title_attempted, project_id)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                                          archived_at, token_count, total_cost, working_directory, auto_title_attempted, project_id, sharing)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'personal')",
                     params![
                         s.id.to_string(),
                         s.title,
@@ -171,8 +214,8 @@ impl SessionRepository {
                 conn.execute(
                     "INSERT INTO sessions (id, title, model, provider_name, created_at, updated_at,
                                            archived_at, token_count, total_cost, working_directory,
-                                           auto_title_attempted, project_id, channel_chat_key)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                                           auto_title_attempted, project_id, channel_chat_key, sharing)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'personal')
                      ON CONFLICT(channel_chat_key) WHERE channel_chat_key IS NOT NULL AND archived_at IS NULL DO NOTHING",
                     params![
                         cloned.id.to_string(),

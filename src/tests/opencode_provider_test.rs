@@ -639,7 +639,12 @@ async fn memory_search_tool_returns_result_for_query() {
     use crate::brain::tools::memory_search::MemorySearchTool;
 
     let tool = MemorySearchTool;
-    let ctx = ToolExecutionContext::new(Uuid::new_v4());
+    // A local session, marked the way production marks it at creation
+    // (`sharing = 'personal'`). Unmarked reads as `Unknown`, which #217 fails
+    // closed on, and a test binary has no database to restore it from.
+    let sid = Uuid::new_v4();
+    crate::memory::mark_session_personal(sid);
+    let ctx = ToolExecutionContext::new(sid);
 
     let result = tool
         .execute(

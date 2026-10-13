@@ -159,6 +159,10 @@ impl Tool for LoadBrainFileTool {
         // always said MEMORY.md and USER.md are main-session-only; the skill
         // forms above are public and stay reachable. Below this line,
         // everything reads the owner's home dir.
+        // #217: read the durable classification back first. A resumed or
+        // cold-start turn reaches this path with no ingress mark, and absence
+        // must not read as private.
+        crate::memory::restore_sharing(ctx.session_id).await;
         let internal_blocked = crate::memory::internal_content_blocked(ctx.session_id);
         if internal_blocked && name != "all" && crate::memory::is_personal_brain_file(name) {
             return Ok(ToolResult::error(format!(
