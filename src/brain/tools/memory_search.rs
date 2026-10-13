@@ -123,6 +123,10 @@ impl Tool for MemorySearchTool {
         // External session gate (#1051, ADR-003): external content is
         // default-deny in shared/group sessions. The gate — not the exclude
         // patterns — is the security boundary.
+        // #217: restore the durable classification first. Without this a
+        // resumed turn has no in-memory mark, and an unmarked session used to
+        // read as private.
+        crate::memory::restore_sharing(context.session_id).await;
         let external_blocked = crate::memory::is_session_shared(context.session_id)
             && !crate::memory::external_allowed_in_shared();
         // Internal gate (#1957): the prompt has always said MEMORY.md is

@@ -363,9 +363,12 @@ impl AgentService {
         // to recall a correction it has forgotten exists.
         // #1957: MEMORY.md recall is owner context. Do not ride it along in a
         // shared/group session unless the operator opted in.
-        let recall = if crate::memory::is_session_shared(session_id)
-            && !crate::memory::internal_allowed_in_shared()
-        {
+        // #217: read the durable classification back before deciding. A
+        // resumed or cold-start turn reaches this path without an ingress mark,
+        // so the in-memory set alone would answer "unknown" and, before this
+        // change, that read as private.
+        crate::memory::restore_sharing(session_id).await;
+        let recall = if crate::memory::internal_content_blocked(session_id) {
             None
         } else {
             crate::brain::memory_recall::recall_for(user_message).await

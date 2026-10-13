@@ -58,7 +58,11 @@ pub(crate) use settings::{
     external_allowed_in_shared, external_excludes, extra_paths_config, internal_allowed_in_shared,
     read_memory_config, sweep_interval_secs, vector_enabled,
 };
-pub use shared_sessions::{is_personal_brain_file, is_session_shared, mark_session_shared};
+pub use shared_sessions::{
+    SessionSharing, is_personal_brain_file, is_session_shared, mark_session_personal,
+    mark_session_personal_durable, mark_session_shared, mark_session_shared_durable,
+    restore_sharing, session_sharing,
+};
 pub use store::get_store;
 pub use types::MemoryResult;
 pub(crate) use types::{COLLECTION_BRAIN, COLLECTION_EXTERNAL, COLLECTION_MEMORY};

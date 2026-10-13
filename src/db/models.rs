@@ -156,6 +156,12 @@ pub struct Session {
     /// Stable channel identity `[chat:<id>]` extracted from the title
     /// (#1721). NULL for TUI/local sessions; unique across live rows.
     pub channel_chat_key: Option<String>,
+    /// Durable audience classification for the personal-memory gates (#217):
+    /// `"shared"` (several people can read the reply), `"personal"` (owner
+    /// only), or NULL when the session has never been classified. NULL is a
+    /// real state, not a default: the gates treat it as shared for personal
+    /// content rather than guessing that an unclassified chat is private.
+    pub sharing: Option<String>,
 }
 
 impl Session {
@@ -178,6 +184,7 @@ impl Session {
                 .flatten()
                 .and_then(|s| Uuid::parse_str(&s).ok()),
             channel_chat_key: row.get("channel_chat_key")?,
+            sharing: row.get::<_, Option<String>>("sharing").ok().flatten(),
         })
     }
 
@@ -202,6 +209,7 @@ impl Session {
             auto_title_attempted: false,
             project_id: None,
             channel_chat_key: None,
+            sharing: Some("personal".to_string()),
         }
     }
 

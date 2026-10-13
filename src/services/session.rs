@@ -58,6 +58,7 @@ impl SessionService {
             auto_title_attempted: false,
             project_id: None,
             channel_chat_key: None,
+            sharing: Some("personal".to_string()),
         };
 
         repo.create(&session)
@@ -97,6 +98,7 @@ impl SessionService {
             auto_title_attempted: false,
             project_id: None,
             channel_chat_key: None,
+            sharing: Some("personal".to_string()),
         };
 
         let result = repo

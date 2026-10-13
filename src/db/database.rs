@@ -166,6 +166,14 @@ pub(crate) const MIGRATION_SQL: &[&str] = &[
     // Idempotent CREATE, so no heal pass; appended last per the list
     // invariant above.
     include_str!("../migrations/20261011000001_add_discord_card_state.sql"),
+    // #217: durable shared/personal classification on sessions. The gate's
+    // answer lived only in a process-local set that starts empty, and absence
+    // read as "not shared" (fail open). Column add is nullable by design:
+    // NULL means never classified and is NOT backfilled for channel-bound
+    // rows, so an unclassified channel session blocks personal content until
+    // its next ingress marks it. Local rows (NULL chat key) are backfilled to
+    // 'personal' inside the migration. Appended last per the list invariant.
+    include_str!("../migrations/20261013000001_add_session_sharing.sql"),
 ];
 
 pub(crate) fn build_migrations() -> Migrations<'static> {

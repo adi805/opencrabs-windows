@@ -1263,8 +1263,10 @@ async fn handle_message(
 
     // Session gate (#1051, ADR-003): mark group sessions so memory_search
     // keeps external index content out of them by default.
-    if !is_dm {
-        crate::memory::mark_session_shared(session_id);
+    if is_dm {
+        crate::memory::mark_session_personal_durable(session_id).await;
+    } else {
+        crate::memory::mark_session_shared_durable(session_id).await;
     }
 
     // The user sent their own message — any follow-up suggestion buttons from
