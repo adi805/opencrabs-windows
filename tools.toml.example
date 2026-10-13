@@ -67,12 +67,19 @@ description = "Full webhook URL"
 required = true
 
 # --- Shell Tools ---
+#
+# QUOTE EVERY INTERPOLATION. A `{{param}}` in an UNQUOTED span is escaped only
+# for single quotes, so `;`, `|`, `&`, `$(...)`, backticks and spaces inside the
+# value reach the shell as SYNTAX. A param is model-supplied text, so unquoted
+# interpolation is command injection. Inside double quotes the escaper also
+# neutralizes `$`, backtick, `\` and `"`, so `"{{param}}"` is the safe default.
+# Values that are complex or multi-valued belong in `$OPENCRABS_PARAMS` instead.
 
 [[tools]]
 name = "disk_usage"
 description = "Show disk usage for a directory"
 executor = "shell"
-command = "du -sh {{path}} 2>/dev/null || echo 'Path not found'"
+command = "du -sh \"{{path}}\" 2>/dev/null || echo 'Path not found'"
 timeout_secs = 10
 requires_approval = false
 enabled = true
@@ -96,7 +103,7 @@ enabled = true
 name = "git_log_summary"
 description = "Show recent git commits in a repository"
 executor = "shell"
-command = "cd {{repo_path}} && git log --oneline -{{count}}"
+command = "cd \"{{repo_path}}\" && git log --oneline -\"{{count}}\""
 timeout_secs = 10
 requires_approval = false
 enabled = true
@@ -117,7 +124,7 @@ required = false
 name = "deploy_staging"
 description = "Deploy a branch to the staging environment"
 executor = "shell"
-command = "cd ~/project && ./deploy.sh {{branch}} staging"
+command = "cd ~/project && ./deploy.sh \"{{branch}}\" staging"
 timeout_secs = 120
 requires_approval = true
 enabled = false
@@ -225,8 +232,14 @@ coerce_empty_to = "omit"
 #                   Supports `{{#name}}…{{/name}}` conditional blocks
 #                   that render only when `name` is present in the
 #                   coerced params — pair with `coerce_empty_to = "omit"`
-#                   so a flag like `{{#ids}}--ids {{ids}}{{/ids}}` is
+#                   so a flag like `{{#ids}}--ids "{{ids}}"{{/ids}}` is
 #                   dropped entirely when `ids` is an empty array.
+#                   ALWAYS QUOTE a scalar interpolation: in an unquoted
+#                   span the value is escaped for single quotes only, so
+#                   `;`, `|`, `$(...)` and spaces would reach the shell
+#                   as syntax. Inside double quotes `$`, backtick, `\`
+#                   and `"` are escaped too. Multi-valued params should
+#                   go through `$OPENCRABS_PARAMS`, not inline.
 #
 # Per-parameter coercion (issue #95):
 #   coerce_empty_to  (optional) What to do when the value is an empty

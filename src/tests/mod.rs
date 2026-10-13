@@ -606,6 +606,7 @@ pub mod tool_description_redaction_test;
 pub mod tool_execution_stats_test;
 pub mod tool_process_kill_on_drop_test;
 pub mod tool_repeat_test;
+pub mod tools_example_quoting_test;
 //pub mod error_scenarios_test;
 pub mod evolve_verify_test;
 pub mod execution_blocklist_floor_test;
