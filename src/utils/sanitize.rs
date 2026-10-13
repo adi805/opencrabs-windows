@@ -429,6 +429,10 @@ const KEY_PREFIXES: &[(&str, usize)] = &[
     // --- Auth / Crypto ---
     ("eyJ", 30),    // JWT tokens (base64 of `{"`)
     ("whsec_", 15), // Webhook signing secrets
+    // --- OpenCrabs built-in provider ---
+    // Install tokens issued by the inference proxy. The hex rule cannot see
+    // them: `_` is a word character, so there is no boundary before the digits.
+    ("ocp_", 15), // OpenCrabs inference proxy install tokens
 ];
 
 /// Regex for long hex strings that look like API tokens (32+ hex chars).
