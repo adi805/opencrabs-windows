@@ -357,7 +357,9 @@ async fn run_submission(
 ///
 /// Emits `submission` events on state change and `message` events for new
 /// transcript rows, then `done` once at least one submission has been seen and
-/// none of them is still queued or running. Polling rather than an in-process
+/// none of them is still queued or running, and closes the stream. A client
+/// that reconnects gets a fresh cursor, so it re-reads the DB and is handed its
+/// own `done` before that stream closes too. Polling rather than an in-process
 /// broadcast channel keeps the surface correct across a process restart: the
 /// state it reads is the state the DB holds, so a client that reconnects after
 /// the core was killed re-attaches to the same truth.
@@ -376,8 +378,14 @@ async fn events(
         |mut cursor| async move {
             loop {
                 match cursor.step().await {
-                    Ok(Some(event)) => return Some((Ok(event), cursor)),
-                    Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+                    Ok(Step::Event(event)) => return Some((Ok(event), cursor)),
+                    Ok(Step::Idle) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await
+                    }
+                    // The terminal `done` has been sent: end the stream so the
+                    // client stops being fed the same event every tick, and so a
+                    // finished session stops polling the DB twice a second.
+                    Ok(Step::Finished) => return None,
                     Err(e) => {
                         tracing::warn!("session surface event stream error: {e}");
                         return None;
@@ -390,6 +398,18 @@ async fn events(
     Ok(sse::Sse::new(stream))
 }
 
+/// What one poll produced.
+enum Step {
+    /// An event to hand to the client.
+    Event(sse::Event),
+    /// Nothing new yet; poll again after a short sleep.
+    Idle,
+    /// `done` has been sent for this connection, so the stream ends. A client
+    /// that reconnects gets a fresh cursor and re-reads the DB, which is what
+    /// keeps reconnection correct after a core restart.
+    Finished,
+}
+
 /// Tracks what the event stream has already emitted, so each poll only sends
 /// the delta.
 struct EventCursor {
@@ -399,6 +419,12 @@ struct EventCursor {
     seen_states: std::collections::HashMap<String, String>,
     last_sequence: i32,
     saw_any_submission: bool,
+    /// Set once the terminal `done` has been emitted.
+    ///
+    /// Without it the poll re-sends `done` on every tick for as long as the
+    /// client stays connected: the stream never terminates, and a session that
+    /// finished keeps hitting the DB twice a second forever (#238).
+    emitted_done: bool,
 }
 
 impl EventCursor {
@@ -410,11 +436,17 @@ impl EventCursor {
             seen_states: std::collections::HashMap::new(),
             last_sequence: i32::MIN,
             saw_any_submission: false,
+            emitted_done: false,
         }
     }
 
-    /// One poll. `Ok(Some(event))` yields, `Ok(None)` means "nothing new yet".
-    async fn step(&mut self) -> anyhow::Result<Option<sse::Event>> {
+    /// One poll. [`Step::Idle`] means "nothing new yet"; [`Step::Finished`]
+    /// means the terminal `done` was already sent and the stream is over.
+    async fn step(&mut self) -> anyhow::Result<Step> {
+        if self.emitted_done {
+            return Ok(Step::Finished);
+        }
+
         let submissions = SubmissionRepository::new(self.pool.clone())
             .list_for_session(&self.session_id_raw)
             .await?;
@@ -438,7 +470,7 @@ impl EventCursor {
                     "state": submission.state,
                     "message_id": submission.message_id,
                 });
-                return Ok(Some(
+                return Ok(Step::Event(
                     sse::Event::default()
                         .event("submission")
                         .data(payload.to_string()),
@@ -461,7 +493,7 @@ impl EventCursor {
                 "content": message.content,
                 "sequence": message.sequence,
             });
-            return Ok(Some(
+            return Ok(Step::Event(
                 sse::Event::default()
                     .event("message")
                     .data(payload.to_string()),
@@ -469,14 +501,100 @@ impl EventCursor {
         }
 
         if self.saw_any_submission && all_terminal {
+            self.emitted_done = true;
             let payload = serde_json::json!({ "session_id": self.session_id_raw });
-            return Ok(Some(
+            return Ok(Step::Event(
                 sse::Event::default()
                     .event("done")
                     .data(payload.to_string()),
             ));
         }
 
-        Ok(None)
+        Ok(Step::Idle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::a2a::test_helpers::helpers;
+
+    /// A session whose submissions have all reached a terminal state must be
+    /// handed `done` exactly once, and the stream must then end.
+    ///
+    /// Before the fix `step` re-sent `done` on every poll, so a connected client
+    /// was fed the same terminal event twice a second for as long as it stayed
+    /// connected, and the stream never terminated (#238).
+    #[tokio::test]
+    async fn a_terminal_session_emits_done_once_then_finishes() {
+        let pool = helpers::placeholder_service_context().await.pool();
+        let session_id = Uuid::new_v4();
+        let raw = session_id.to_string();
+
+        let repo = SubmissionRepository::new(pool.clone());
+        repo.claim("req-terminal", &raw).await.expect("claim");
+        repo.set_state("req-terminal", SUBMISSION_DONE, None)
+            .await
+            .expect("mark done");
+
+        let mut cursor = EventCursor::new(pool, session_id, raw);
+
+        // The state change is the first event.
+        assert!(matches!(
+            cursor.step().await.expect("poll 1"),
+            Step::Event(_)
+        ));
+        // Nothing changed and every submission is terminal: this is `done`.
+        assert!(matches!(
+            cursor.step().await.expect("poll 2"),
+            Step::Event(_)
+        ));
+        assert!(cursor.emitted_done, "the terminal event was recorded");
+        // The next poll ends the stream instead of repeating `done`.
+        assert!(matches!(
+            cursor.step().await.expect("poll 3"),
+            Step::Finished
+        ));
+        assert!(matches!(
+            cursor.step().await.expect("poll 4"),
+            Step::Finished
+        ));
+    }
+
+    /// A submission still in flight must idle, never finish: ending the stream
+    /// early would strand a client mid-turn.
+    #[tokio::test]
+    async fn a_running_session_idles_instead_of_finishing() {
+        let pool = helpers::placeholder_service_context().await.pool();
+        let session_id = Uuid::new_v4();
+        let raw = session_id.to_string();
+
+        let repo = SubmissionRepository::new(pool.clone());
+        repo.claim("req-running", &raw).await.expect("claim");
+        repo.set_state("req-running", SUBMISSION_RUNNING, None)
+            .await
+            .expect("mark running");
+
+        let mut cursor = EventCursor::new(pool, session_id, raw);
+
+        assert!(matches!(
+            cursor.step().await.expect("poll 1"),
+            Step::Event(_)
+        ));
+        assert!(matches!(cursor.step().await.expect("poll 2"), Step::Idle));
+        assert!(!cursor.emitted_done, "an in-flight turn is not terminal");
+    }
+
+    /// A session that never submitted anything has nothing to terminate on, so
+    /// the cursor must idle rather than claim the turn is over.
+    #[tokio::test]
+    async fn a_session_with_no_submission_never_reports_done() {
+        let pool = helpers::placeholder_service_context().await.pool();
+        let session_id = Uuid::new_v4();
+        let raw = session_id.to_string();
+
+        let mut cursor = EventCursor::new(pool, session_id, raw);
+        assert!(matches!(cursor.step().await.expect("poll 1"), Step::Idle));
+        assert!(!cursor.emitted_done);
     }
 }
