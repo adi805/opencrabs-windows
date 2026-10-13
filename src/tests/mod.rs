@@ -176,6 +176,7 @@ pub mod channel_factory_subagent_test;
 pub mod channel_impl_method_test;
 pub mod channel_restart_target_test;
 pub mod channel_schema_param_test;
+pub mod channel_search_authz_test;
 pub mod channel_search_test;
 pub mod channel_session_resolve_test;
 pub mod channel_user_command_owner_gate_test;
