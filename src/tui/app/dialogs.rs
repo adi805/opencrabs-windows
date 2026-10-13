@@ -63,6 +63,68 @@ impl App {
         self.should_quit = true;
     }
 
+    /// Save the wizard's config, enter chat, and greet the user. Shared by a
+    /// finished wizard and the quick start that skips its steps (#2048).
+    pub(crate) async fn finish_onboarding(&mut self) -> Result<()> {
+        // Apply wizard config before transitioning
+        let mut saved = false;
+        if let Some(ref wizard) = self.onboarding {
+            match wizard.apply_config() {
+                Ok(()) => {
+                    saved = true;
+                    let (provider_name, model_name) = if wizard.ps.is_custom() {
+                        (
+                            format!("Custom ({})", wizard.ps.custom_name),
+                            wizard.ps.custom_model.clone(),
+                        )
+                    } else {
+                        (
+                            super::onboarding::PROVIDERS[wizard.ps.selected_provider]
+                                .name
+                                .to_string(),
+                            wizard.ps.selected_model_name().to_string(),
+                        )
+                    };
+                    // Record completion only where the config was
+                    // actually written. The Err arm below saved
+                    // nothing, so onboarding must run again rather
+                    // than be marked done (#919).
+                    crate::tui::onboarding::state::OnboardingState::mark_completed();
+                    self.push_system_message(format!(
+                        "Setup complete! Provider: {} | Model: {}",
+                        provider_name, model_name
+                    ));
+                    // Rebuild agent service with new provider
+                    if let Err(e) = self.rebuild_agent_service().await {
+                        tracing::warn!("Failed to rebuild agent service: {}", e);
+                        self.push_system_message(format!(
+                            "Warning: Failed to reload provider: {}",
+                            e
+                        ));
+                    }
+                }
+                Err(e) => {
+                    // "finished with warnings" reads as success.
+                    // apply_config returning Err means the config
+                    // was NOT written (#914).
+                    self.push_system_message(format!("⚠️ Setup did NOT save: {e}"));
+                }
+            }
+        }
+        let mode = self
+            .onboarding
+            .as_ref()
+            .map_or(WizardMode::QuickStart, |w| w.mode);
+        self.onboarding = None;
+        self.sync_session_to_provider().await;
+        self.switch_mode(AppMode::Chat).await?;
+
+        // Hidden system prompt so the agent can check its environment
+        // and greet the user. The `[SYSTEM:` prefix hides it from display.
+        self.send_onboarding_welcome(saved, mode).await;
+        Ok(())
+    }
+
     /// Handle keys in onboarding wizard mode
     pub(crate) async fn handle_onboarding_key(
         &mut self,
@@ -263,62 +325,7 @@ impl App {
                     self.switch_mode(AppMode::Chat).await?;
                 }
                 WizardAction::Complete => {
-                    // Apply wizard config before transitioning
-                    let mut saved = false;
-                    if let Some(ref wizard) = self.onboarding {
-                        match wizard.apply_config() {
-                            Ok(()) => {
-                                saved = true;
-                                let (provider_name, model_name) = if wizard.ps.is_custom() {
-                                    (
-                                        format!("Custom ({})", wizard.ps.custom_name),
-                                        wizard.ps.custom_model.clone(),
-                                    )
-                                } else {
-                                    (
-                                        super::onboarding::PROVIDERS[wizard.ps.selected_provider]
-                                            .name
-                                            .to_string(),
-                                        wizard.ps.selected_model_name().to_string(),
-                                    )
-                                };
-                                // Record completion only where the config was
-                                // actually written. The Err arm below saved
-                                // nothing, so onboarding must run again rather
-                                // than be marked done (#919).
-                                crate::tui::onboarding::state::OnboardingState::mark_completed();
-                                self.push_system_message(format!(
-                                    "Setup complete! Provider: {} | Model: {}",
-                                    provider_name, model_name
-                                ));
-                                // Rebuild agent service with new provider
-                                if let Err(e) = self.rebuild_agent_service().await {
-                                    tracing::warn!("Failed to rebuild agent service: {}", e);
-                                    self.push_system_message(format!(
-                                        "Warning: Failed to reload provider: {}",
-                                        e
-                                    ));
-                                }
-                            }
-                            Err(e) => {
-                                // "finished with warnings" reads as success.
-                                // apply_config returning Err means the config
-                                // was NOT written (#914).
-                                self.push_system_message(format!("⚠️ Setup did NOT save: {e}"));
-                            }
-                        }
-                    }
-                    let mode = self
-                        .onboarding
-                        .as_ref()
-                        .map_or(WizardMode::QuickStart, |w| w.mode);
-                    self.onboarding = None;
-                    self.sync_session_to_provider().await;
-                    self.switch_mode(AppMode::Chat).await?;
-
-                    // Hidden system prompt so the agent can check its environment
-                    // and greet the user. The `[SYSTEM:` prefix hides it from display.
-                    self.send_onboarding_welcome(saved, mode).await;
+                    self.finish_onboarding().await?;
                 }
                 WizardAction::FetchModels => {
                     let provider_idx = wizard.ps.selected_provider;
