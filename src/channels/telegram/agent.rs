@@ -282,6 +282,38 @@ impl TelegramAgent {
                         if let Some(data) = query.data.as_deref() {
                             tracing::info!("Telegram callback query received: data={}", data);
 
+                            // #211: admit the tapper BEFORE any branch runs. The
+                            // keyboards sit in chats several people can see, and
+                            // the dispatch used to branch on the payload without
+                            // asking whether the caller was allowed to act at all.
+                            let cb_caller_id = query.from.id.0.to_string();
+                            let (cb_chat_id, cb_is_dm) = match query.message.as_ref() {
+                                Some(m) => (m.chat().id.0.to_string(), m.chat().is_private()),
+                                // The message is gone (deleted, or an inline-mode
+                                // keyboard), so there is no chat to authorize
+                                // against. Treat it as the caller's own DM: only a
+                                // privileged caller passes, and the branches that
+                                // need `query.message` would no-op anyway.
+                                None => (cb_caller_id.clone(), true),
+                            };
+                            let cb_admission = {
+                                let cfg = config_rx.borrow().clone();
+                                admit_callback(
+                                    &cfg.channels.telegram,
+                                    &cb_caller_id,
+                                    &cb_chat_id,
+                                    cb_is_dm,
+                                )
+                            };
+                            let Some(cb_admission) = cb_admission else {
+                                tracing::warn!(
+                                    "Telegram: callback from non-admitted caller {cb_caller_id} in \
+                                     chat {cb_chat_id} refused: {data}"
+                                );
+                                refuse_callback(&bot, &query, "\u{1f512} Not authorized").await;
+                                return ResponseResult::Ok(());
+                            };
+
                             // Stale keyboard from before the follow-up tools
                             // were merged into suggest_options (#1178 M7): the
                             // deleted question tool emitted `q:{id}:{idx}`
@@ -1038,6 +1070,14 @@ impl TelegramAgent {
                             // already switched; this covers the rest, which pick
                             // it up on their next message.
                             if let Some(rest) = data.strip_prefix("allm:") {
+                                if !cb_admission.is_privileged() {
+                                    tracing::warn!(
+                                        "Telegram: non-privileged caller {cb_caller_id} refused \
+                                         on a global callback: {data}"
+                                    );
+                                    refuse_callback(&bot, &query, "\u{1f512} Owner only").await;
+                                    return ResponseResult::Ok(());
+                                }
                                 let reply = if let Some((prov, model)) = rest.split_once('|') {
                                     let session_svc = crate::services::SessionService::new(
                                         agent.context().clone(),
@@ -1163,9 +1203,6 @@ impl TelegramAgent {
                                     let caller_id_raw = query.from.id.0;
                                     let is_owner = cfg.channels.telegram.is_owner(&caller_id_raw.to_string());
 
-                                    if is_owner {
-                                        *shared_session.lock().await = Some(new_id);
-                                    }
                                     // Owner and guest: bind chat_id → session_id for
                                     // handle_message (issue #121). Guest extra_sessions
                                     // map was removed — it was never read on ingest.
@@ -1174,6 +1211,28 @@ impl TelegramAgent {
                                         .as_ref()
                                         .map(|m| m.chat().id.0)
                                         .unwrap_or(caller_id_raw as i64);
+
+                                    // #211: selecting a session is an authorization
+                                    // decision, not just a UI action. An owner may
+                                    // switch to any session; a guest may only switch
+                                    // to one already bound to the chat they are
+                                    // standing in, so a shared keyboard cannot pull
+                                    // another chat's session into this one.
+                                    if !is_owner
+                                        && !session_selectable_by_guest(new_id, switch_chat_id).await
+                                    {
+                                        tracing::warn!(
+                                            "Telegram: caller {caller_id_raw} refused session \
+                                             switch to {new_id} from chat {switch_chat_id}"
+                                        );
+                                        refuse_callback(&bot, &query, "\u{1f512} Not your session")
+                                            .await;
+                                        return ResponseResult::Ok(());
+                                    }
+
+                                    if is_owner {
+                                        *shared_session.lock().await = Some(new_id);
+                                    }
                                     // Scope the binding to the forum topic the switch
                                     // happened in, so the next message in that topic
                                     // resolves to the switched session (#215).
@@ -1508,6 +1567,14 @@ impl TelegramAgent {
                                 }
 
                                 if let Some(name) = data.strip_prefix("prof:confirm_migrate:") {
+                                if !cb_admission.is_privileged() {
+                                    tracing::warn!(
+                                        "Telegram: non-privileged caller {cb_caller_id} refused \
+                                         on a global callback: {data}"
+                                    );
+                                    refuse_callback(&bot, &query, "\u{1f512} Owner only").await;
+                                    return ResponseResult::Ok(());
+                                }
                                     let active = crate::config::profile::active_profile().unwrap_or("default");
                                     match crate::config::profile::migrate_profile(active, name, true) {
                                         Ok(files) => {
@@ -1582,6 +1649,14 @@ impl TelegramAgent {
                                 }
 
                                 if let Some(name) = data.strip_prefix("prof:confirm_del:") {
+                                if !cb_admission.is_privileged() {
+                                    tracing::warn!(
+                                        "Telegram: non-privileged caller {cb_caller_id} refused \
+                                         on a global callback: {data}"
+                                    );
+                                    refuse_callback(&bot, &query, "\u{1f512} Owner only").await;
+                                    return ResponseResult::Ok(());
+                                }
                                     match crate::config::profile::delete_profile(name) {
                                         Ok(()) => {
                                             let text = format!("✅ Profile `{}` deleted.", name);
@@ -2402,6 +2477,106 @@ fn spawn_settle_watcher(
 /// processed) the shared session is used ONLY if it belongs to this same
 /// chat; otherwise the callback resolves to nothing rather than acting on a
 /// session that has no relationship to where the button was pressed.
+/// What a callback tapper is allowed to do, after channel admission (#211).
+///
+/// The inline keyboards sit in chats where several people can see them, and the
+/// callback dispatch branched on the payload without asking whether the tapper
+/// was allowed to act at all. Admission is the channel's own per-chat ACL
+/// (`user_allowed`), so group rosters and open groups behave exactly as they do
+/// on message ingress; privilege is `is_admin_or_owner`, which is what the
+/// global and destructive branches require.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallbackAdmission {
+    /// `bot_owner` or a global admin (`allowed_users`): may run global and
+    /// destructive callbacks.
+    Privileged,
+    /// Admitted to this chat only (group roster, or an open group).
+    Guest,
+}
+
+impl CallbackAdmission {
+    pub(crate) fn is_privileged(self) -> bool {
+        matches!(self, CallbackAdmission::Privileged)
+    }
+}
+
+/// Admit one callback tap, or refuse it (#211).
+///
+/// Returns `None` when the caller is not allowed in this chat at all, which is
+/// the same answer message ingress gives. A `Some(Guest)` may still only touch
+/// what belongs to the chat they are standing in; the caller decides that per
+/// branch.
+pub(crate) fn admit_callback(
+    cfg: &crate::config::types::TelegramConfig,
+    caller_id: &str,
+    chat_id: &str,
+    is_dm: bool,
+) -> Option<CallbackAdmission> {
+    if !cfg.user_allowed(caller_id, chat_id, is_dm) {
+        return None;
+    }
+    let uid = caller_id.trim_start_matches('+');
+    if cfg.is_admin_or_owner(uid) {
+        Some(CallbackAdmission::Privileged)
+    } else {
+        Some(CallbackAdmission::Guest)
+    }
+}
+
+/// Answer a callback with a refusal, so the tapper sees why instead of a button
+/// that silently does nothing (#211).
+pub(crate) async fn refuse_callback(bot: &Bot, query: &CallbackQuery, text: &str) {
+    if let Err(e) = bot
+        .answer_callback_query(query.id.clone())
+        .text(text.to_string())
+        .show_alert(true)
+        .await
+    {
+        tracing::warn!("Telegram: callback refusal ack failed: {e}");
+    }
+}
+
+/// Whether a guest may select `session_id` from `chat_id` (#211).
+///
+/// A guest may only switch to a session already bound to the chat they tapped
+/// in. The binding is the durable `channel_chat_key` written at session
+/// creation (`[chat:<id>]`, optionally with a `:topic:<tid>` tail), so this asks
+/// storage instead of trusting the callback payload.
+pub(crate) async fn session_selectable_by_guest(session_id: Uuid, chat_id: i64) -> bool {
+    let Some(pool) = crate::db::global_pool() else {
+        return false;
+    };
+    let repo = crate::db::repository::SessionRepository::new(pool.clone());
+    session_selectable_by_guest_with(&repo, session_id, chat_id).await
+}
+
+/// [`session_selectable_by_guest`] against an explicit repository, so the rule
+/// is testable without a global pool (the same split the effect ledger uses).
+pub(crate) async fn session_selectable_by_guest_with(
+    repo: &crate::db::repository::SessionRepository,
+    session_id: Uuid,
+    chat_id: i64,
+) -> bool {
+    match repo.find_by_id(session_id).await {
+        Ok(Some(session)) => session
+            .channel_chat_key
+            .as_deref()
+            .is_some_and(|k| chat_key_belongs_to(k, chat_id)),
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!("[TELEGRAM] could not resolve session {session_id} for authz: {e}");
+            false
+        }
+    }
+}
+
+/// Whether a `channel_chat_key` names `chat_id` (#211). Accepts both shapes the
+/// tree writes: `[chat:<id>]` and `[chat:<id>:topic:<tid>]`.
+pub(crate) fn chat_key_belongs_to(key: &str, chat_id: i64) -> bool {
+    crate::channels::session_resolve::chat_id_from_key(key)
+        .is_some_and(|id| id == chat_id.to_string())
+}
+
 async fn resolve_callback_session(
     query: &CallbackQuery,
     state: &super::TelegramState,

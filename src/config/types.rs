@@ -856,8 +856,9 @@ impl TelegramConfig {
     }
 
     /// A global admin (`allowed_users`) or the owner (`bot_owner`). These may
-    /// act in any chat, DMs included.
-    fn is_admin_or_owner(&self, uid: &str) -> bool {
+    /// act in any chat, DMs included, which is the privilege level the global
+    /// and destructive callbacks require (#211).
+    pub(crate) fn is_admin_or_owner(&self, uid: &str) -> bool {
         Self::id_in(&self.allowed_users, uid) || Self::id_in(&self.bot_owner, uid)
     }
 
