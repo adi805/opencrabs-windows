@@ -286,11 +286,13 @@ https://github.com/user-attachments/assets/7f45c5f8-acdf-48d5-b6a4-0e4811a9ee23
 | **Voice (STT)** | Voice notes transcribed via **Groq Whisper API** (`whisper-large-v3-turbo`), any **OpenAI-compatible STT endpoint** (set `base_url` + `model` under `[providers.stt.openai_compatible]` — works with self-hosted Whisper, Deepgram-compatible proxies, etc.), **Voicebox STT** (self-hosted open-source voice stack — point the `base_url` of `[providers.stt.voicebox]` at your instance; 2s liveness probe runs before each request so a dead voicebox fails fast), or **Local** whisper.cpp via `whisper-rs` (runs on-device, Tiny 75 MB / Base 142 MB / Small 466 MB / Medium 1.5 GB, zero API cost). All dispatched through a single entry point so every channel gets the same provider priority chain — and an optional `[providers.stt].fallback_chain` lets the user codify "if my local voicebox is down, try Groq, then OpenAI" so transient outages auto-route to the next provider with zero user action. Choose mode in `/voice`. Included by default |
 | **Voice (TTS)** | Agent replies to voice notes with audio via **OpenAI TTS API** (`gpt-4o-mini-tts`), any **OpenAI-compatible TTS endpoint** (set `base_url` + `model` + `voice` under `[providers.tts.openai_compatible]` — works with self-hosted Coqui/Bark, ElevenLabs-compatible proxies, etc.), **Voicebox TTS** (async `/generate` → poll `/generate/{id}/status` → fetch audio; set the `base_url` + `profile_id` of `[providers.tts.voicebox]`), or **Local** Piper TTS (runs on-device via Python venv, Ryan / Amy / Lessac / Kristin / Joe / Cori, zero API cost). All outputs normalised to OGG/Opus via `ensure_opus` before delivery — consistent format across every channel regardless of backend. `[providers.tts].fallback_chain` provides the same auto-failover behaviour as the STT side. Falls back to text if disabled |
 | **Attachment Indicator** | Attached images show as `[IMG1:filename.png]` in the input title bar |
-| **Image Generation** | Agent generates images via Google Gemini (`gemini-3.1-flash-image-preview` "Nano Banana") using the `generate_image` tool — enabled via `/image`. Returned as native images/attachments in all channels |
+| **Image Generation** | Agent generates images with the `generate_image` tool. The default route is Google Gemini (`gemini-3.1-flash-image-preview` "Nano Banana"), enabled via `/image`. The built-in OpenCrabs provider can serve it too once `generation_model` is set on its section (not set on fresh installs yet). Returned as native images/attachments in all channels |
 
 #### Vision setup — two paths, pick one
 
 > **Using Xiaomi?** Share images and OpenCrabs automatically routes to MiMo's multimodal model — no separate vision key needed.
+>
+> **Using OpenCrabs?** The built-in provider sets `vision_model = "deepseek-v4.1-flash"` on fresh installs, so attached images work on day 0 with no setup. Upgraded installs keep their existing `config.toml`; add `vision_model = "deepseek-v4.1-flash"` under `[providers.opencrabs]` to turn it on.
 
 **Path A (preferred, simpler).** Set `vision_model = "<model>"` on your active `[providers.<name>]` block in `config.toml`. Works for every built-in and custom provider — the agent calls the vision model on the **same provider endpoint** via the `analyze_image` tool, so no second API key is needed. Pick a vision-capable model on that provider (DeepSeek chat models like `deepseek-v4-flash` reject `image_url` content, so point `vision_model` at a vision-capable variant of the same family — every provider has at least one).
 
@@ -1192,6 +1194,7 @@ The CLI `migrate` command currently supports OpenClaw and Hermes. For everything
 | Provider | Auth | Models | Streaming | Tools | Notes |
 |----------|------|--------|-----------|-------|-------|
 | **Xiaomi (MiMo)** | API key | mimo-v2.5-pro (1M ctx), v2-pro, v2.5, omni, flash | ✅ | ✅ | OpenAI-compatible. Get a key at platform.xiaomimimo.com. MiMo v2.5 is multimodal (native vision) |
+| [OpenCrabs (built in)](#opencrabs-built-in) | Automatic (install token, no key to paste) | deepseek-v4.1-flash (200k ctx, multimodal) | ✅ | ✅ | Set up on first run with no account. No charge and no usage caps during the experimental phase |
 | [Anthropic Claude](#anthropic-claude) | API key | Claude Opus 4.6, Sonnet 4.5, Haiku 4.5+ | ✅ | ✅ | Cost tracking, automatic retry |
 | [OpenAI](#openai) | API key | GPT-5 Turbo, GPT-5 | ✅ | ✅ | |
 | [GitHub Copilot](#github-copilot) | OAuth | GPT-4o, Claude Sonnet 4+ | ✅ | ✅ | Uses your Copilot subscription — no API charges |
@@ -1311,6 +1314,32 @@ api_key = "sk-or-YOUR_KEY"
 Access 400+ models from every major provider through a single API key — Anthropic, OpenAI, Google, Meta, Mistral, DeepSeek, Qwen, and many more. Includes **free models** (DeepSeek-R1, Llama 3.3, Gemma 2, Mistral 7B) and stealth/preview models as they drop.
 
 Model list is **fetched live** from the OpenRouter API during onboarding and via `/models` — no binary update needed when new models are added.
+
+### OpenCrabs (built in)
+
+OpenCrabs ships its own provider, so a new install can chat without creating an account or pasting a key.
+
+**What you get on a fresh install**
+- **Chat model:** `deepseek-v4.1-flash`, 200k context window.
+- **Vision:** `vision_model` is set to the same model, so attached images work on day 0.
+- **Image generation:** not on by default yet. Set `generation_model` on `[providers.opencrabs]` to route `generate_image` through it (see [Image Generation & Vision](#-image-generation--vision)).
+
+**How the key works.** On first use, the install asks `inference.opencrabs.com` for its own token once and saves it in `keys.toml` under `[providers.opencrabs]`. The binary holds no shared upstream key, and the server keeps only a hash of each token. If `keys.toml` is lost, the install requests a new token automatically.
+
+**Cost and limits.** No charge and no usage caps during the experimental phase. If limits are added later, this section will say so before they apply.
+
+**Where your data goes.** Chat and image requests are sent to `inference.opencrabs.com`, which forwards them to the upstream model host. If that is not acceptable for a conversation, switch providers.
+
+**Switching.** Type `/models` and pick another provider, or run `/onboard` and choose Advanced. Keys for your other providers are not touched.
+
+```toml
+[providers.opencrabs]
+enabled = false                       # chosen through onboarding, not by hand
+default_model = "deepseek-v4.1-flash"
+models = ["deepseek-v4.1-flash"]
+context_window = 200000
+vision_model = "deepseek-v4.1-flash"
+```
 
 ### Google Gemini
 
@@ -1748,7 +1777,7 @@ MiniMax auto-configures this on first run. Works with any provider — just set 
 
 ## 🖼️ Image Generation & Vision
 
-OpenCrabs supports image generation and vision analysis via Google Gemini by default — independent of the main chat provider, so you can use Claude for chat and Gemini for images. The `generate_image` tool can also be routed at any OpenAI-compatible images endpoint (OpenAI, OpenRouter, Together, etc.) via the per-provider `generation_model` override; see [Picking a different generation model](#picking-a-different-generation-model) below.
+OpenCrabs supports image generation and vision analysis via Google Gemini by default, independent of the main chat provider, so you can use Claude for chat and Gemini for images. The built-in OpenCrabs provider can also serve `generate_image` once `generation_model` is set on its section; it is not set on fresh installs yet. The `generate_image` tool can be routed at any OpenAI-compatible images endpoint (OpenAI, OpenRouter, Together, etc.) via the per-provider `generation_model` override; see [Picking a different generation model](#picking-a-different-generation-model) below.
 
 ### Setup
 
@@ -2202,6 +2231,13 @@ First-time users are guided through a 9-step setup wizard that appears automatic
 - **CLI:** `cargo run --bin opencrabs -- onboard` (or `opencrabs onboard` after install)
 - **Chat flag:** `cargo run --bin opencrabs -- chat --onboard` to force the wizard before chat
 - **Slash command:** Type `/onboard` in the chat to re-run it anytime
+
+### First Run
+
+On a fresh install there is no setup step for the LLM. The session runs on the built-in OpenCrabs provider with `deepseek-v4.1-flash`, and the first screen goes straight to chat.
+
+- The welcome names what is already set (provider, model, vision) and asks only about what is still missing: your profile in `USER.md`, speech to text, text to speech, and image generation. Answer what you want and skip the rest.
+- To use another provider, type `/models`, or run `/onboard` and choose Advanced. On a first run, Advanced preselects OpenCrabs with its key and model already filled in, and you can pick any other provider instead.
 
 ### The 9 Steps
 
