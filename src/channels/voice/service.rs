@@ -439,7 +439,7 @@ async fn try_tts_chunked(
 /// Split text into chunks at sentence boundaries.
 ///
 /// Tries to break at `. `, `! `, `? `, or `\n` to keep sentences intact.
-/// Each chunk is at most `max_chars` characters. Falls back to hard split
+/// Each chunk is at most `max_chars` BYTES. Falls back to hard split
 /// at word boundaries if no sentence break is found.
 pub(crate) fn split_for_tts(text: &str, max_chars: usize) -> Vec<String> {
     if text.len() <= max_chars {
@@ -455,11 +455,28 @@ pub(crate) fn split_for_tts(text: &str, max_chars: usize) -> Vec<String> {
             break;
         }
 
-        // Find the best split point within max_chars
-        let search_area = &remaining[..max_chars];
+        // `max_chars` is a byte budget, and a raw `&remaining[..max_chars]`
+        // panics when a multibyte character straddles the cut (COR-04). Back
+        // up to the nearest char boundary first, and use that same bound as
+        // the fallback so a cut is never taken mid-character.
+        let mut safe_max = max_chars;
+        while safe_max > 0 && !remaining.is_char_boundary(safe_max) {
+            safe_max -= 1;
+        }
+        if safe_max == 0 {
+            // The budget cannot hold even one character: take the first one
+            // whole rather than looping forever on a zero-width split.
+            safe_max = remaining
+                .char_indices()
+                .nth(1)
+                .map_or(remaining.len(), |(i, _)| i);
+        }
+
+        // Find the best split point within the safe bound.
+        let search_area = &remaining[..safe_max];
         let split_pos = find_sentence_break(search_area)
             .or_else(|| find_word_break(search_area))
-            .unwrap_or(max_chars);
+            .unwrap_or(safe_max);
 
         chunks.push(remaining[..split_pos].trim().to_string());
         remaining = remaining[split_pos..].trim_start();
@@ -484,8 +501,15 @@ pub(crate) fn find_sentence_break(text: &str) -> Option<usize> {
 }
 
 /// Find the last word boundary within text.
+///
+/// The index returned is just past the whitespace character, so it is always a
+/// char boundary: `pos + 1` lands INSIDE a multibyte space (U+00A0, U+3000) and
+/// the caller's slice would panic on it.
 fn find_word_break(text: &str) -> Option<usize> {
-    text.rfind(char::is_whitespace).map(|pos| pos + 1)
+    text.char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map(|(i, c)| i + c.len_utf8())
 }
 
 /// Resolve which TTS provider runs first based on current config flags.
