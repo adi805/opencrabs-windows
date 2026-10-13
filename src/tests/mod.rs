@@ -97,6 +97,7 @@ pub mod brain_provider_factory_test;
 pub mod brain_provider_identity_test;
 pub mod brain_provider_json_repair_test;
 pub mod brain_provider_opencrabs_acquire_test;
+pub mod brain_provider_opencrabs_catalogue_test;
 pub mod brain_provider_opencrabs_factory_test;
 pub mod brain_provider_opencrabs_install_test;
 pub mod brain_provider_opencrabs_store_test;

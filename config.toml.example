@@ -22,6 +22,18 @@
 # key or an authenticated CLI on this machine. Think "not the default", not
 # "dead".
 # ========================================
+# Built-in OpenCrabs
+# ========================================
+# No key to type. Onboarding asks the inference proxy for an install token and
+# stores it in keys.toml ([providers.opencrabs] api_key). Enable it by choosing
+# OpenCrabs in onboarding, not by hand. The proxy serves one model today.
+[providers.opencrabs]
+enabled = false
+default_model = "deepseek-v4.1-flash"
+models = ["deepseek-v4.1-flash"]
+context_window = 200000
+
+# ========================================
 # Xiaomi MiMo
 # ========================================
 # OpenAI-compatible, keyed. Get an API key (sk-...) at platform.xiaomimimo.com
