@@ -11,8 +11,13 @@ import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
 
+import java.io.Closeable;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -38,6 +43,11 @@ public class CoreService extends Service {
     private static final int NOTIFICATION_ID = 1;
     private static final String BINARY_NAME = "libopencrabs.so";
 
+    /** The core's config table for the loopback HTTP/JSON surface (PRD FR-006). */
+    private static final String SURFACE_TABLE = "[session_surface]";
+    /** App-private file holding the generated bearer token. */
+    private static final String SURFACE_TOKEN_FILE = "surface_token";
+
     private Process core;
 
     /** The directory the package manager extracted our native libs into. */
@@ -59,6 +69,9 @@ public class CoreService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         startForeground(NOTIFICATION_ID, buildNotification());
+        // Before the spawn, so the config the core reads already carries the
+        // token. The surface starts listening during daemon boot.
+        ensureSurfaceToken(this);
         spawnCore();
         // START_STICKY: if the platform reclaims us under memory pressure it
         // restarts the service, which is the behaviour the operator expects
@@ -157,6 +170,145 @@ public class CoreService extends Service {
             core.destroy();
         }
         super.onDestroy();
+    }
+
+    // ------------------------------------------------------------- surface --
+
+    /**
+     * Generate the loopback surface's bearer token once, and seed it into the
+     * core's config.
+     *
+     * <p>Why the app owns this instead of leaving {@code api_key} unset: the
+     * Rust gate in {@code src/session/surface.rs} exempts a token-less listener
+     * on a loopback bind, on the reasoning that 127.0.0.1 is reachable only by
+     * the same user. That holds on a desktop and fails on Android, where the
+     * loopback interface is shared by every app on the device. A token-less
+     * surface on 127.0.0.1 is therefore reachable by any other installed app,
+     * and that surface can run the agent with tools. So the token is mandatory
+     * here, and the app is the only thing that can supply it: the core has no
+     * way to know it is running inside an APK.
+     *
+     * <p>Seeded only when the config does not already declare the table. A
+     * second {@code [session_surface]} header would make the file unparseable
+     * and the core would then refuse to start, so an existing table is never
+     * rewritten.
+     *
+     * <p>The token file is the hand-off to the session surface client
+     * (milestone 3). {@code filesDir} is app-private, so no other app can read
+     * the token back out of it.
+     */
+    static String ensureSurfaceToken(Context ctx) {
+        File tokenFile = new File(ctx.getFilesDir(), SURFACE_TOKEN_FILE);
+        String token = readText(tokenFile);
+        if (token == null || token.isEmpty()) {
+            token = newToken();
+            writeText(tokenFile, token);
+            Log.i(TAG, "surface token generated, " + token.length() + " chars");
+        } else {
+            Log.i(TAG, "surface token reused from " + tokenFile.getAbsolutePath());
+        }
+        seedSurfaceConfig(ctx, token);
+        return token;
+    }
+
+    /**
+     * 32 random bytes, hex encoded.
+     *
+     * <p>Hex rather than Base64 on purpose. {@code java.util.Base64} is API 26
+     * and {@code android.util.Base64} is not on the JDK classpath that javac
+     * resolves {@code java.*} against, and this file has already been bitten
+     * once by an API-level mismatch that compiled cleanly and threw on device
+     * (see the process api section below). Hex needs nothing beyond {@code
+     * Character.forDigit}, which exists on every API level.
+     */
+    private static String newToken() {
+        byte[] raw = new byte[32];
+        new SecureRandom().nextBytes(raw);
+        StringBuilder hex = new StringBuilder(raw.length * 2);
+        for (byte b : raw) {
+            hex.append(Character.forDigit((b >> 4) & 0xf, 16));
+            hex.append(Character.forDigit(b & 0xf, 16));
+        }
+        return hex.toString();
+    }
+
+    /** Write {@code [session_surface]} into the config the core will read. */
+    private static void seedSurfaceConfig(Context ctx, String token) {
+        File dir = new File(new File(ctx.getFilesDir(), "home"), ".opencrabs");
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            Log.e(TAG, "cannot create config dir " + dir.getAbsolutePath());
+            return;
+        }
+        File config = new File(dir, "config.toml");
+        String existing = readText(config);
+        if (existing != null && existing.contains(SURFACE_TABLE)) {
+            Log.i(TAG, "config already declares " + SURFACE_TABLE + ", left as-is");
+            return;
+        }
+        StringBuilder seeded = new StringBuilder();
+        if (existing != null) {
+            seeded.append(existing);
+            if (!existing.endsWith("\n")) {
+                seeded.append('\n');
+            }
+        }
+        seeded.append('\n')
+                .append(SURFACE_TABLE).append('\n')
+                .append("enabled = true\n")
+                .append("bind = \"127.0.0.1\"\n")
+                .append("api_key = \"").append(token).append("\"\n");
+        writeText(config, seeded.toString());
+        Log.i(TAG, "seeded " + SURFACE_TABLE + " into " + config.getAbsolutePath());
+    }
+
+    /** Whole-file read, or null when the file is absent or unreadable. */
+    private static String readText(File file) {
+        if (!file.isFile()) {
+            return null;
+        }
+        FileInputStream in = null;
+        try {
+            in = new FileInputStream(file);
+            byte[] buffer = new byte[(int) file.length()];
+            int offset = 0;
+            while (offset < buffer.length) {
+                int read = in.read(buffer, offset, buffer.length - offset);
+                if (read < 0) {
+                    break;
+                }
+                offset += read;
+            }
+            return new String(buffer, 0, offset, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            Log.w(TAG, "cannot read " + file.getAbsolutePath(), e);
+            return null;
+        } finally {
+            closeQuietly(in);
+        }
+    }
+
+    private static void writeText(File file, String text) {
+        FileOutputStream out = null;
+        try {
+            out = new FileOutputStream(file);
+            out.write(text.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+        } catch (Exception e) {
+            Log.e(TAG, "cannot write " + file.getAbsolutePath(), e);
+        } finally {
+            closeQuietly(out);
+        }
+    }
+
+    private static void closeQuietly(Closeable stream) {
+        if (stream == null) {
+            return;
+        }
+        try {
+            stream.close();
+        } catch (Exception ignored) {
+            // Nothing left to do: the read or write already succeeded or failed.
+        }
     }
 
     // ---------------------------------------------------------- process api --
