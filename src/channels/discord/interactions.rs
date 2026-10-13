@@ -150,6 +150,9 @@ pub(crate) struct InteractionAdmission {
     /// The operator's `dm_only` policy: false means the bot was told not to
     /// speak in guild channels at all.
     pub inside_dm_policy: bool,
+    /// Whether the actor is the configured owner. Carried out of the gate so
+    /// callers do not recompute it (and drift from the gate's own reading).
+    pub owner: bool,
 }
 
 impl InteractionAdmission {
@@ -219,6 +222,7 @@ pub(crate) async fn admit_interaction(
         admitted,
         channel_ok,
         inside_dm_policy,
+        owner,
     }
 }
 
@@ -252,7 +256,7 @@ pub(crate) async fn handle_invoked_request(
     // same check for both.
     let cfg = config_rx.borrow().clone();
     let dc = &cfg.channels.discord;
-    let role_ids = interaction_role_ids(command.member.as_ref());
+    let role_ids = interaction_role_ids(command.member.as_deref());
     let channel_str = channel_id.to_string();
     // One shared gate for every interaction kind (#212); the command path used
     // to own this logic and the component/modal paths had none.
@@ -261,6 +265,7 @@ pub(crate) async fn handle_invoked_request(
         admitted,
         channel_ok,
         inside_dm_policy,
+        owner,
     } = verdict;
 
     if !verdict.allowed() {
