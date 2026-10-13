@@ -53,16 +53,68 @@ pub fn near_duplicate(a: &str, b: &str) -> bool {
     if na == nb {
         return true;
     }
+    match similarity_scores(&na, &nb) {
+        Some((jaccard, overlap)) => {
+            jaccard >= NEAR_DUPLICATE_JACCARD || overlap >= NEAR_DUPLICATE_OVERLAP
+        }
+        None => false,
+    }
+}
+
+/// The two word-set scores behind [`near_duplicate`], as `(jaccard, overlap)`
+/// on normalized text. `None` when either side is too short to compare.
+/// Shared with the trip log so the logged scores are the decided ones (#2052).
+pub(crate) fn similarity_scores(na: &str, nb: &str) -> Option<(f64, f64)> {
     let wa: HashSet<&str> = na.split(' ').collect();
     let wb: HashSet<&str> = nb.split(' ').collect();
     if wa.len() < NEAR_DUPLICATE_MIN_WORDS || wb.len() < NEAR_DUPLICATE_MIN_WORDS {
-        return false;
+        return None;
     }
     let inter = wa.intersection(&wb).count() as f64;
     let union = wa.union(&wb).count() as f64;
     let min_len = wa.len().min(wb.len()) as f64;
-    (union > 0.0 && inter / union >= NEAR_DUPLICATE_JACCARD)
-        || (min_len > 0.0 && inter / min_len >= NEAR_DUPLICATE_OVERLAP)
+    let jaccard = if union > 0.0 { inter / union } else { 0.0 };
+    let overlap = if min_len > 0.0 { inter / min_len } else { 0.0 };
+    Some((jaccard, overlap))
+}
+
+/// Longest excerpt of a text the trip log carries. The full text stays in the
+/// session's messages; the log only needs enough to see what repeated.
+const TRIP_LOG_EXCERPT_CHARS: usize = 240;
+
+/// Debug-log every ring entry that matched a tripping text, with the scores
+/// that decided it (#2052). Debug only: no effect on the guard's decision.
+fn log_trip_pairs(text: &str, ring: &VecDeque<String>) {
+    let current = normalize_loop_text(text);
+    for prior in ring.iter() {
+        let prior_norm = normalize_loop_text(prior);
+        if !near_duplicate(text, prior) {
+            continue;
+        }
+        let (jaccard, overlap) = if current == prior_norm {
+            (1.0, 1.0)
+        } else {
+            similarity_scores(&current, &prior_norm).unwrap_or((0.0, 0.0))
+        };
+        tracing::debug!(
+            current_words = current.split(' ').count(),
+            prior_words = prior_norm.split(' ').count(),
+            exact = current == prior_norm,
+            jaccard = format!("{jaccard:.2}"),
+            overlap = format!("{overlap:.2}"),
+            current_text = %excerpt(text),
+            prior_text = %excerpt(prior),
+            "announcement_loop: near-duplicate pair at trip"
+        );
+    }
+}
+
+fn excerpt(text: &str) -> String {
+    let mut out: String = text.chars().take(TRIP_LOG_EXCERPT_CHARS).collect();
+    if text.chars().count() > TRIP_LOG_EXCERPT_CHARS {
+        out.push('…');
+    }
+    out
 }
 
 /// Outcome of checking an outgoing text against the session ring (#957).
@@ -101,6 +153,7 @@ impl OutgoingTextRing {
         }
         let hits = self.ring.iter().filter(|t| near_duplicate(text, t)).count();
         if hits >= TEXT_LOOP_TRIP_AT {
+            log_trip_pairs(text, &self.ring);
             if self.nudged {
                 TextLoopAction::Abort
             } else {
