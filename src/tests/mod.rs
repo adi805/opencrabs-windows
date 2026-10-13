@@ -604,6 +604,7 @@ pub mod provider_never_ignored_test;
 pub mod rate_limit_reporting_test;
 pub mod stream_cancel_test;
 //pub mod integration_test;
+pub mod announcement_loop_trip_log_test;
 pub mod channel_route_expectation_test;
 pub mod cli_context_window_test;
 pub mod click_to_expand_test;
