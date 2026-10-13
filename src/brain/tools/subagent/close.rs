@@ -75,24 +75,43 @@ impl Tool for CloseAgentTool {
 
         let state = self.manager.get_state(agent_id);
 
-        // Cancel if running or paused waiting for input
-        if matches!(
-            state,
+        // `cancel()` reports whether it actually cancelled anything: only a
+        // Running/AwaitingInput agent can be cancelled, so reporting
+        // "cancelled" for a Completed/Failed/Cancelled one is a false success
+        // (COR-01). Honour the return value instead of discarding it.
+        let was_running = matches!(
+            &state,
             Some(SubAgentState::Running) | Some(SubAgentState::AwaitingInput)
-        ) {
-            self.manager.cancel(agent_id);
+        );
+        let cancelled = was_running && self.manager.cancel(agent_id);
+
+        if remove {
+            self.manager.remove(agent_id);
+            let status = if cancelled {
+                "cancelled and removed from tracking"
+            } else {
+                "removed from tracking (it was not running, so nothing was cancelled)"
+            };
+            return Ok(ToolResult::success(format!(
+                "Sub-agent {} {}.",
+                agent_id, status
+            )));
         }
 
-        let status = if remove {
-            self.manager.remove(agent_id);
-            "cancelled and removed from tracking"
-        } else {
-            "cancelled"
-        };
+        if !cancelled {
+            let current = match state {
+                Some(s) => format!("{s:?}"),
+                None => "not tracked".to_string(),
+            };
+            return Ok(ToolResult::success(format!(
+                "Sub-agent {} was not cancelled: it is not running (state: {}).",
+                agent_id, current
+            )));
+        }
 
         Ok(ToolResult::success(format!(
-            "Sub-agent {} {}.",
-            agent_id, status
+            "Sub-agent {} cancelled.",
+            agent_id
         )))
     }
 }
