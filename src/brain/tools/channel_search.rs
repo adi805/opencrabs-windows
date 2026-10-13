@@ -90,6 +90,106 @@ fn same_chat(a: &str, b: &str) -> bool {
 /// the SESSION's own topic, which is resolved against the ambient binding
 /// below. An unknown value is a hard error naming the vocabulary: silently
 /// falling back to `all` is exactly the leak #718 is about.
+/// Which chats this caller is allowed to read (#215).
+///
+/// `channel_search` is registered in the shared core tool registry with no
+/// approval, and the captured message store holds DMs and unrelated group
+/// history. So the tool cannot treat "the caller passed a chat id" as
+/// authorization: the caller is the model, and a guest turn can pass any id.
+/// The boundary is the SESSION, resolved here from the same durable
+/// classification the memory gates use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChatReadScope {
+    /// The owner's own session: every chat in the store is readable.
+    CrossChat,
+    /// A shared/guest/unknown session, bound to exactly one chat. Reads are
+    /// limited to that chat and must name it explicitly.
+    OwnChat(String),
+    /// Shared/guest/unknown with no derivable chat binding, so there is no
+    /// scope to authorize against. Refuse rather than guess.
+    Refused,
+}
+
+impl ChatReadScope {
+    /// `list_chats` enumerates every chat in the store, including DMs, so it is
+    /// owner-only. There is no scoped form of "list all chats".
+    pub(crate) fn deny_listing(&self) -> Option<String> {
+        match self {
+            ChatReadScope::CrossChat => None,
+            _ => Some(
+                "operation=\"list_chats\" enumerates every captured chat, including private \
+                 DMs, so it is available only in the owner's own session (#215). In a \
+                 shared/guest session use operation=\"recent\" with this chat's id."
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// Authorize one retrieval. `requested` is the chat the caller named, or
+    /// `None` for a cross-chat read.
+    pub(crate) fn check(&self, requested: Option<&str>) -> std::result::Result<(), String> {
+        match self {
+            ChatReadScope::CrossChat => Ok(()),
+            ChatReadScope::OwnChat(own) => match requested {
+                Some(id) if same_chat(id, own) => Ok(()),
+                Some(_) => Err(
+                    "This session may only read its own chat history (#215). The requested chat \
+                     is outside the conversation this turn belongs to."
+                        .to_string(),
+                ),
+                None => Err(
+                    "A cross-chat read is not available in this session (#215); name the chat \
+                     this conversation belongs to."
+                        .to_string(),
+                ),
+            },
+            ChatReadScope::Refused => Err(
+                "This session has no authorized chat scope, so channel history is not readable \
+                 from it (#215)."
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+/// Extract the chat id from a session's `channel_chat_key` (`[chat:<id>]` or
+/// `[chat:<id>:topic:<tid>]`, #1721).
+pub(crate) fn chat_id_from_key(key: &str) -> Option<String> {
+    let rest = key.strip_prefix("[chat:")?;
+    let id = rest.split([':', ']']).next()?.trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+/// Resolve what this session may read (#215). Uses the durable classification,
+/// so a resumed or cold-start turn gets the same answer ingress decided.
+async fn chat_read_scope(session_id: uuid::Uuid) -> ChatReadScope {
+    let sharing = crate::memory::restore_sharing(session_id).await;
+    if sharing == crate::memory::SessionSharing::Personal
+        || crate::memory::channel_cross_chat_allowed_in_shared()
+    {
+        return ChatReadScope::CrossChat;
+    }
+    let Some(pool) = crate::db::global_pool() else {
+        return ChatReadScope::Refused;
+    };
+    let repo = crate::db::repository::SessionRepository::new(pool.clone());
+    let Ok(Some(session)) = repo.find_by_id(session_id).await else {
+        return ChatReadScope::Refused;
+    };
+    match session
+        .channel_chat_key
+        .as_deref()
+        .and_then(chat_id_from_key)
+    {
+        Some(own) => ChatReadScope::OwnChat(own),
+        None => ChatReadScope::Refused,
+    }
+}
+
 fn parse_topic_scope(raw: &str) -> Result<Option<TopicScope>> {
     match raw {
         "session" => Ok(None),
@@ -250,8 +350,17 @@ impl Tool for ChannelSearchTool {
         let channel = input.get("channel").and_then(|v| v.as_str());
         let n = input.get("n").and_then(|v| v.as_i64()).unwrap_or(20);
 
+        // #215: authorize the CALLER before any retrieval. The chat id in the
+        // input is a request, not a permission: the caller is the model, so a
+        // guest turn could otherwise name a private DM and read it. Named
+        // `read_scope` because each arm below binds its own `scope` for topics.
+        let read_scope = chat_read_scope(context.session_id).await;
+
         match operation {
             "list_chats" => {
+                if let Some(denied) = read_scope.deny_listing() {
+                    return Ok(ToolResult::error(denied));
+                }
                 let chats = self
                     .repo
                     .list_chats(channel)
@@ -307,6 +416,9 @@ impl Tool for ChannelSearchTool {
                     }
                 };
 
+                if let Err(denied) = read_scope.check(Some(chat_id)) {
+                    return Ok(ToolResult::error(denied));
+                }
                 let (scope, inherited) =
                     resolve_topic_scope(&input, context, Some(chat_id)).await?;
 
@@ -365,6 +477,9 @@ impl Tool for ChannelSearchTool {
                 };
 
                 let chat_id = input.get("chat_id").and_then(|v| v.as_str());
+                if let Err(denied) = read_scope.check(chat_id) {
+                    return Ok(ToolResult::error(denied));
+                }
                 let (scope, inherited) = resolve_topic_scope(&input, context, chat_id).await?;
                 if matches!(scope, TopicScope::General) && chat_id.is_none() {
                     return Ok(ToolResult::error(
@@ -445,6 +560,9 @@ impl Tool for ChannelSearchTool {
                     }
                 };
 
+                if let Err(denied) = read_scope.check(Some(chat_id)) {
+                    return Ok(ToolResult::error(denied));
+                }
                 let (scope, inherited) =
                     resolve_topic_scope(&input, context, Some(chat_id)).await?;
 

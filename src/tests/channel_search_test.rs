@@ -583,7 +583,14 @@ mod tool {
     }
 
     fn ctx() -> ToolExecutionContext {
-        ToolExecutionContext::new(uuid::Uuid::new_v4())
+        // The owner's own session. #215 derives what a caller may read from
+        // the session classification rather than from the input, and an
+        // unclassified session is refused. Production creates a local session
+        // with `sharing = 'personal'`; a test binary has no database pool to
+        // restore that from, so mark it explicitly.
+        let id = uuid::Uuid::new_v4();
+        crate::memory::mark_session_personal(id);
+        ToolExecutionContext::new(id)
     }
 
     fn insert_msg(
@@ -978,7 +985,11 @@ mod topic_scope {
         thread: Option<i32>,
         world: Option<Arc<dyn TargetResolution + Send + Sync>>,
     ) -> ToolExecutionContext {
-        let mut ctx = ToolExecutionContext::new(uuid::Uuid::new_v4());
+        // Owner's own session, as in `ctx()` below: the topic tests read
+        // across chats, which #215 permits only for the owner.
+        let sid = uuid::Uuid::new_v4();
+        crate::memory::mark_session_personal(sid);
+        let mut ctx = ToolExecutionContext::new(sid);
         ctx.origin_target = Some(Arc::new(OriginTarget {
             channel: "telegram",
             chat_id: chat_id.to_string(),
@@ -989,7 +1000,14 @@ mod topic_scope {
     }
 
     fn ctx() -> ToolExecutionContext {
-        ToolExecutionContext::new(uuid::Uuid::new_v4())
+        // The owner's own session. #215 derives what a caller may read from
+        // the session classification rather than from the input, and an
+        // unclassified session is refused. Production creates a local session
+        // with `sharing = 'personal'`; a test binary has no database pool to
+        // restore that from, so mark it explicitly.
+        let id = uuid::Uuid::new_v4();
+        crate::memory::mark_session_personal(id);
+        ToolExecutionContext::new(id)
     }
 
     fn row(chat: &str, content: &str, thread: Option<&str>) -> ChannelMessage {
