@@ -41,6 +41,7 @@ pub mod kimi_reasoning;
 pub mod model_fetch;
 pub(crate) mod nonstream_compat;
 pub mod opencode_cli;
+pub mod opencrabs_acquire;
 pub mod opencrabs_install;
 pub mod opencrabs_store;
 pub mod qwen;

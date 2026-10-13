@@ -42,6 +42,10 @@ pub enum InstallError {
     Unexpected(u16),
     /// The success body did not carry a token.
     MalformedReply,
+    /// The proxy could not be reached at all: DNS, connection or timeout.
+    Unreachable,
+    /// The token was issued but could not be written to keys.toml.
+    StorageFailed,
 }
 
 /// Generate a fresh install ID: 32 random hex characters.
@@ -124,6 +128,12 @@ pub fn install_error_message(err: &InstallError) -> &'static str {
         }
         InstallError::MalformedReply => {
             "The built-in OpenCrabs provider sent a reply without a token. Try again later or choose another provider."
+        }
+        InstallError::Unreachable => {
+            "Could not reach the built-in OpenCrabs provider. Check your connection, or choose another provider."
+        }
+        InstallError::StorageFailed => {
+            "The built-in OpenCrabs provider issued a token, but it could not be saved to keys.toml. Check the file permissions and try again."
         }
     }
 }
