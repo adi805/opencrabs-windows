@@ -48,6 +48,19 @@ on:
       - 'Cargo.lock'
       - '.github/scripts/android-emulator-smoke.sh'
       - '.github/workflows/android-artifact.yml'
+  # A pull request that touches the Android shell gets a compile verdict
+  # before it lands. `android/assemble-apk.sh` is the only thing in CI that
+  # runs javac + d8, and until this trigger existed a Java change reached main
+  # uncompiled: the push trigger above only fires after the merge.
+  #
+  # Deliberately narrower than push. `src/**` is NOT listed, because a
+  # core-only PR would then pay the full Android build (two Rust targets plus a
+  # staged APK, 90 minute cap) for an artifact it cannot change. Only files
+  # that reach the APK's Java or its packaging script are here.
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-artifact.yml'
 
 jobs:
   android-arm64:
