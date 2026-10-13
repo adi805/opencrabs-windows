@@ -35,6 +35,8 @@ fn shell_def(command: &str, params: Vec<ParamDef>) -> DynamicToolDef {
         timeout_secs: 5,
         command: Some(command.to_string()),
         params,
+        max_response_bytes: None,
+        allow_private_network: false,
     }
 }
 

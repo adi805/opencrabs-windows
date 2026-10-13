@@ -19,6 +19,9 @@ fn make_shell(name: &str, cmd: &str, params: Vec<ParamDef>) -> DynamicTool {
         timeout_secs: 10,
         command: Some(cmd.into()),
         params,
+
+        max_response_bytes: None,
+        allow_private_network: false,
     })
 }
 
@@ -139,6 +142,9 @@ fn test_roundtrip_toml() {
                 coerce_empty_to: Default::default(),
                 coerce_null_to: Default::default(),
             }],
+
+            max_response_bytes: None,
+            allow_private_network: false,
         }],
     };
     let content = toml::to_string_pretty(&config).unwrap();
@@ -177,6 +183,9 @@ async fn test_missing_command() {
         timeout_secs: 5,
         command: None,
         params: vec![],
+
+        max_response_bytes: None,
+        allow_private_network: false,
     });
     let result = t.execute(serde_json::json!({}), &ctx()).await.unwrap();
     assert!(!result.success);
@@ -196,6 +205,9 @@ async fn test_missing_url() {
         timeout_secs: 5,
         command: None,
         params: vec![],
+
+        max_response_bytes: None,
+        allow_private_network: false,
     });
     let result = t.execute(serde_json::json!({}), &ctx()).await.unwrap();
     assert!(!result.success);

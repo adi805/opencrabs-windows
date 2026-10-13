@@ -35,6 +35,8 @@ fn sample_tool_def() -> DynamicToolDef {
         timeout_secs: 30,
         command: Some("gh issue list".to_string()),
         params: Vec::new(),
+        max_response_bytes: None,
+        allow_private_network: false,
     }
 }
 

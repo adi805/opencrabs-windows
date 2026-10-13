@@ -67,6 +67,8 @@ fn sample_def(name: &str) -> DynamicToolDef {
         timeout_secs: 10,
         command: Some("echo".into()),
         params: vec![],
+        max_response_bytes: None,
+        allow_private_network: false,
     }
 }
 

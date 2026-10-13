@@ -22,6 +22,8 @@ fn shell_tool_def(name: &str, command: &str) -> DynamicToolDef {
         timeout_secs: 30,
         command: Some(command.to_string()),
         params: Vec::new(),
+        max_response_bytes: None,
+        allow_private_network: false,
     }
 }
 
@@ -38,6 +40,8 @@ fn http_tool_def(name: &str, url: &str) -> DynamicToolDef {
         timeout_secs: 10,
         command: None,
         params: Vec::new(),
+        max_response_bytes: None,
+        allow_private_network: false,
     }
 }
 

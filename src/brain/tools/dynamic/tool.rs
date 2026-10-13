@@ -428,7 +428,7 @@ impl DynamicTool {
         if !self.def.allow_private_network {
             if let Err(reason) = crate::brain::tools::ssrf::validate_url_resolved(&url).await {
                 return Ok(ToolResult::error(format!(
-                    "HTTP tool '{}' refused before sending: {reason}. If this target is a                      deliberate private-network integration, set `allow_private_network =                      true` on the tool definition (#216).",
+                    "HTTP tool '{}' refused before sending: {reason}. If this target is a deliberate private-network integration, set `allow_private_network = true` on the tool definition (#216).",
                     self.def.name
                 )));
             }
@@ -438,7 +438,9 @@ impl DynamicTool {
             !self.def.allow_private_network,
         )
         .build()
-        .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {e}"))?;
+        .map_err(|e| {
+            super::error::ToolError::Execution(format!("Failed to build HTTP client: {e}"))
+        })?;
         let mut req = match method.as_str() {
             "POST" => client.post(&url),
             "PUT" => client.put(&url),
