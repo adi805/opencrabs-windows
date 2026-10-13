@@ -450,10 +450,26 @@ async fn cancel_task(base_url: &str, api_key: Option<&str>, task_id: &str) -> Re
     let state = rpc_response["result"]["status"]["state"]
         .as_str()
         .unwrap_or("unknown");
-    Ok(ToolResult::success(format!(
-        "Task {} — cancelled (state: {})",
+
+    Ok(cancel_outcome(task_id, state))
+}
+
+/// Classify the remote agent's reply to `tasks/cancel`.
+///
+/// `tasks/cancel` is a request, not a command: the remote agent may answer
+/// with a terminal state that is NOT cancelled (`completed`/`failed`), or echo
+/// a state we do not recognise. Reporting "cancelled" for those is a false
+/// success (COR-02), so only a cancelled state counts as one and anything else
+/// is surfaced as a failure carrying the state the server actually sent.
+pub(crate) fn cancel_outcome(task_id: &str, state: &str) -> ToolResult {
+    if state.eq_ignore_ascii_case("canceled") || state.eq_ignore_ascii_case("cancelled") {
+        return ToolResult::success(format!("Task {} — cancelled (state: {})", task_id, state));
+    }
+
+    ToolResult::error(format!(
+        "Task {} was NOT cancelled: the agent reported state '{}'.",
         task_id, state
-    )))
+    ))
 }
 
 /// Extract readable text from a task's artifacts and status message.

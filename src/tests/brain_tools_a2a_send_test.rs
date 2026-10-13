@@ -138,6 +138,46 @@ fn test_extract_response_text_empty() {
     assert_eq!(extract_response_text(&task), "");
 }
 
+// ─── COR-02: cancel must not report a false success ────────────────────────
+
+#[test]
+fn test_cancel_outcome_accepts_cancelled_states() {
+    // Both spellings the A2A spec and its implementations emit count as a real
+    // cancellation, matched case-insensitively.
+    for state in ["cancelled", "canceled", "CANCELLED", "Canceled"] {
+        let result = cancel_outcome("t1", state);
+        assert!(
+            result.success,
+            "state {state:?} should be a successful cancellation: {:?}",
+            result.error
+        );
+        assert!(result.output.contains("cancelled"), "{}", result.output);
+    }
+}
+
+#[test]
+fn test_cancel_outcome_rejects_terminal_states() {
+    // COR-02: the remote agent answers `tasks/cancel` with whatever state the
+    // task is already in. Reporting "cancelled" for `completed` is the false
+    // success this helper exists to prevent.
+    for state in ["completed", "failed", "working", "unknown", ""] {
+        let result = cancel_outcome("t1", state);
+        assert!(
+            !result.success,
+            "state {state:?} must NOT be reported as cancelled"
+        );
+        let err = result.error.unwrap_or_default();
+        assert!(
+            err.contains("was NOT cancelled"),
+            "error must say it was not cancelled: {err}"
+        );
+        assert!(
+            err.contains(state),
+            "error must echo the state the server sent ({state:?}): {err}"
+        );
+    }
+}
+
 #[test]
 fn test_auth_headers_with_key() {
     let headers = auth_headers(Some("my-secret"));

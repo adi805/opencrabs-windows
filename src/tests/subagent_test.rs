@@ -722,7 +722,7 @@ mod close_agent_tool {
     }
 
     #[tokio::test]
-    async fn close_already_completed_agent() {
+    async fn close_already_completed_agent_reports_no_cancellation() {
         let mgr = Arc::new(SubAgentManager::new());
         mgr.insert(make_running_agent("a1"));
         mgr.mark_completed("a1", "done".to_string());
@@ -730,11 +730,47 @@ mod close_agent_tool {
         let tool = CloseAgentTool::new(mgr.clone());
         let ctx = test_context();
 
-        // Close on a completed agent should still succeed (just doesn't cancel)
+        // COR-01: closing a non-running agent must NOT claim it cancelled
+        // anything. `cancel()` returns false here, and the old code discarded
+        // that and always answered "cancelled".
         let result = tool.execute(json!({"agent_id": "a1"}), &ctx).await.unwrap();
         assert!(result.success);
-        // State stays Completed since cancel() returns false for non-running
+        assert!(
+            result.output.contains("was not cancelled"),
+            "expected an honest not-cancelled report, got: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("cancelled."),
+            "must not claim a cancellation that never happened: {}",
+            result.output
+        );
+        // State stays Completed since nothing was running to cancel.
         assert_eq!(mgr.get_state("a1"), Some(SubAgentState::Completed));
+    }
+
+    #[tokio::test]
+    async fn close_completed_agent_with_remove_reports_no_cancellation() {
+        let mgr = Arc::new(SubAgentManager::new());
+        mgr.insert(make_running_agent("a1"));
+        mgr.mark_completed("a1", "done".to_string());
+
+        let tool = CloseAgentTool::new(mgr.clone());
+        let ctx = test_context();
+
+        // COR-01, remove path: the agent is untracked either way, but the
+        // message must not claim a cancellation that never happened.
+        let result = tool
+            .execute(json!({"agent_id": "a1", "remove": true}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(
+            result.output.contains("not running"),
+            "expected the not-running wording, got: {}",
+            result.output
+        );
+        assert!(!mgr.exists("a1"));
     }
 }
 
