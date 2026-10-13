@@ -60,6 +60,33 @@ fn shell_pair_uses_sh_only_when_no_bash_exists() {
     }
 }
 
+/// Finding 5 of #238: Android has no FHS, so Termux's bash lives under the
+/// app's private prefix and `/bin/bash` never exists there. Before this entry
+/// was added, on-device discovery fell through to `sh` and every bash-only
+/// idiom the tool teaches ($'…', [[ ]], arrays, <<<) degraded silently: the
+/// exact #1704 failure mode, on a platform with no alternative shell.
+///
+/// The list is a const, so the regression is pinned without a spawn: a future
+/// trim of `BASH_CANDIDATES` that drops Android fails here instead of on a
+/// phone.
+#[cfg(not(windows))]
+#[test]
+fn the_bash_candidates_cover_termux() {
+    const TERMUX_BASH: &str = "/data/data/com.termux/files/usr/bin/bash";
+    assert!(
+        BASH_CANDIDATES.contains(&TERMUX_BASH),
+        "the Termux bash path is missing from BASH_CANDIDATES, so Android \
+         discovery falls back to sh (finding 5 of #238)"
+    );
+    // Adding Android must not have cost the desktop entries.
+    for desktop in ["/bin/bash", "/usr/bin/bash", "/opt/homebrew/bin/bash"] {
+        assert!(
+            BASH_CANDIDATES.contains(&desktop),
+            "the desktop candidate {desktop:?} was dropped"
+        );
+    }
+}
+
 /// #7, the Windows half of the same contract as the `sh` test above: a real
 /// bash is preferred, and `cmd /C` is only the answer when the host has none.
 #[cfg(windows)]

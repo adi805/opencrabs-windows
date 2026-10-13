@@ -45,15 +45,23 @@ use std::sync::OnceLock;
 ///
 /// Absolute paths only, no `PATH` walk: the daemon's `PATH` is whatever the
 /// supervisor handed it, and a `bash` resolved late in that list is more
-/// often a wrapper than a shell. These four cover the Linux distros
-/// (merged-usr put it in `/usr/bin`, older layouts in `/bin`) and Homebrew
-/// on both Intel and Apple-silicon macOS.
+/// often a wrapper than a shell. These five cover the Linux distros
+/// (merged-usr put it in `/usr/bin`, older layouts in `/bin`), Homebrew
+/// on both Intel and Apple-silicon macOS, and Termux on Android.
+///
+/// The Termux entry is last on purpose. Android has no FHS, so Termux's bash
+/// lives under the app's private prefix and `/bin/bash` never exists there;
+/// on a desktop the first candidate already answers the probe, so the extra
+/// entry costs nothing. Without it, on-device discovery fell through to
+/// `sh` and every bash-only idiom the tool teaches silently degraded
+/// (finding 5 of #238).
 #[cfg(not(windows))]
-pub(crate) const BASH_CANDIDATES: [&str; 4] = [
+pub(crate) const BASH_CANDIDATES: [&str; 5] = [
     "/bin/bash",
     "/usr/bin/bash",
     "/usr/local/bin/bash",
     "/opt/homebrew/bin/bash",
+    "/data/data/com.termux/files/usr/bin/bash",
 ];
 
 /// Windows candidates, tried in order.
