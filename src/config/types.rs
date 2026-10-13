@@ -2519,6 +2519,13 @@ pub struct ProviderConfigs {
     #[serde(default)]
     pub xiaomi: Option<ProviderConfig>,
 
+    /// Built-in OpenCrabs provider. The user never types its key: onboarding
+    /// asks the inference proxy for one token per install, and that token is
+    /// merged in from keys.toml ([providers.opencrabs] api_key). The install ID
+    /// stored beside it is not read here.
+    #[serde(default)]
+    pub opencrabs: Option<ProviderConfig>,
+
     /// Named custom OpenAI-compatible providers (e.g. [providers.custom.ollama])
     #[serde(default, deserialize_with = "deserialize_custom_providers")]
     pub custom: Option<BTreeMap<String, ProviderConfig>>,
@@ -2644,7 +2651,7 @@ impl ProviderConfigs {
     /// providers handled separately by the caller via `active_custom()`.
     pub(crate) fn provider_registry(
         &self,
-    ) -> [(&'static str, &'static str, bool, Option<&ProviderConfig>); 19] {
+    ) -> [(&'static str, &'static str, bool, Option<&ProviderConfig>); 20] {
         [
             // Xiaomi MiMo — keyed (requires_api_key = true): the user supplies
             // an API key from platform.xiaomimimo.com. An enabled-but-keyless
@@ -2682,6 +2689,8 @@ impl ProviderConfigs {
             ("ollama", "Ollama", false, self.ollama.as_ref()),
             ("bedrock", "AWS Bedrock", true, self.bedrock.as_ref()),
             ("vertex", "Google Vertex", true, self.vertex.as_ref()),
+            // Built-in OpenCrabs — keyed by the install token, which is not typed.
+            ("opencrabs", "OpenCrabs", true, self.opencrabs.as_ref()),
         ]
     }
 

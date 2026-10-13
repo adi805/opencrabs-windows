@@ -499,6 +499,13 @@ pub(crate) fn merge_provider_keys(
         let entry = base.xiaomi.get_or_insert_with(ProviderConfig::default);
         entry.api_key = Some(key);
     }
+    // Built-in OpenCrabs: the install token from keys.toml, like any key.
+    if let Some(k) = keys.opencrabs
+        && let Some(key) = k.api_key.and_then(real_key)
+    {
+        let entry = base.opencrabs.get_or_insert_with(ProviderConfig::default);
+        entry.api_key = Some(key);
+    }
     if let Some(k) = keys.gemini
         && let Some(key) = k.api_key.and_then(real_key)
     {

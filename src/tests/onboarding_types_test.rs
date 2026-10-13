@@ -69,7 +69,7 @@ fn all_steps_have_titles() {
 
 #[test]
 fn provider_count_matches_expected() {
-    assert_eq!(PROVIDERS.len(), 18);
+    assert_eq!(PROVIDERS.len(), 19);
 }
 
 #[test]
@@ -95,6 +95,8 @@ fn all_providers_have_key_label_and_help() {
         "command-code-cli",
         "opencode",
         "ollama",
+        // Built-in: the install token is issued by the proxy, never typed.
+        "opencrabs",
     ];
 
     for p in PROVIDERS.iter() {

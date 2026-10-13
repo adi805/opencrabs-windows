@@ -218,6 +218,14 @@ static REGISTRATIONS: LazyLock<Vec<ProviderRegistration>> = LazyLock::new(|| {
             config_field: |c| c.providers.ollama.as_ref(),
         },
         ProviderRegistration {
+            display_name: "OpenCrabs",
+            session_id: "opencrabs",
+            aliases: &[],
+            is_enabled: |c| c.providers.opencrabs.as_ref().is_some_and(|p| p.enabled),
+            factory: sync_factory(try_create_opencrabs),
+            config_field: |c| c.providers.opencrabs.as_ref(),
+        },
+        ProviderRegistration {
             display_name: "Custom",
             session_id: "custom",
             aliases: &[],
@@ -277,6 +285,7 @@ pub const PROVIDER_NAMES: &[&str] = &[
     "z.ai",
     "Moonshot AI",
     "Ollama",
+    "OpenCrabs",
     "Custom",
 ];
 
@@ -608,6 +617,7 @@ pub(crate) fn force_enable_section(config: &mut Config, session_id: &str) -> boo
     let p = &mut config.providers;
     let slot: Option<&mut Option<ProviderConfig>> = match session_id {
         "xiaomi" => Some(&mut p.xiaomi),
+        "opencrabs" => Some(&mut p.opencrabs),
         "claude-cli" => Some(&mut p.claude_cli),
         "opencode-cli" => Some(&mut p.opencode_cli),
         "codex-cli" => Some(&mut p.codex_cli),
@@ -1721,6 +1731,43 @@ fn try_create_xiaomi(config: &Config) -> Result<Option<Arc<dyn Provider>>> {
     // we deliberately do NOT set cache_enabled (which would send an
     // OpenRouter/Anthropic-style cache_control Xiaomi doesn't accept).
     let provider = configure_openai_compatible(builder, xiaomi_config, &config.agent);
+    Ok(Some(Arc::new(provider)))
+}
+
+/// Built-in OpenCrabs provider (#2047). The user never types its key: the
+/// install token came from the inference proxy and is merged in from keys.toml
+/// as `providers.opencrabs.api_key`. With no token yet the provider stays
+/// uncreatable rather than calling the proxy with no credentials.
+fn try_create_opencrabs(config: &Config) -> Result<Option<Arc<dyn Provider>>> {
+    let cfg = match &config.providers.opencrabs {
+        Some(cfg) => cfg,
+        None => return Ok(None),
+    };
+
+    let token = match cfg.api_key.clone().filter(|k| !k.is_empty()) {
+        Some(token) => token,
+        None => {
+            tracing::debug!("OpenCrabs has no install token yet; onboarding requests one");
+            return Ok(None);
+        }
+    };
+
+    let base_url = cfg
+        .base_url
+        .clone()
+        .unwrap_or_else(|| super::opencrabs_install::OPENCRABS_BASE_URL.to_string());
+    let base_url = if base_url.contains("/chat/completions") {
+        base_url
+    } else {
+        format!("{}/chat/completions", base_url.trim_end_matches('/'))
+    };
+
+    tracing::info!("Using OpenCrabs at: {base_url}");
+    let provider = configure_openai_compatible(
+        OpenAIProvider::with_base_url(token, base_url).with_name("opencrabs"),
+        cfg,
+        &config.agent,
+    );
     Ok(Some(Arc::new(provider)))
 }
 

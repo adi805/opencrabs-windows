@@ -333,6 +333,17 @@ pub const PROVIDERS: &[ProviderInfo] = &[
             "OpenAI-compatible — MiMo v2.5 models",
         ],
     },
+    // Built-in OpenCrabs — no key is typed. Onboarding requests the install token.
+    ProviderInfo {
+        id: "opencrabs",
+        name: "OpenCrabs",
+        models: &["deepseek-v4.1-flash"],
+        key_label: "",
+        help_lines: &[
+            "Built in: no account or key needed",
+            "Runs on the OpenCrabs inference service",
+        ],
+    },
     ProviderInfo {
         id: "", // dynamic — custom providers use runtime names
         name: "Custom OpenAI-Compatible",
