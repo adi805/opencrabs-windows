@@ -72,6 +72,12 @@ pub(crate) fn internal_allowed_in_shared() -> bool {
     read_memory_config().internal_allowed_in_shared
 }
 
+/// Whether `channel_search` may read chats other than the caller's own from a
+/// shared/guest session (#215). Default-deny, like its two siblings.
+pub(crate) fn channel_cross_chat_allowed_in_shared() -> bool {
+    read_memory_config().channel_cross_chat_allowed_in_shared
+}
+
 /// The single shared-session decision for every surface that can return the
 /// owner's personal context: brain/memory search scopes, personal brain
 /// files via `load_brain_file`, and the per-turn MEMORY.md recall (#1957).
