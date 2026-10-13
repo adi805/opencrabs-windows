@@ -30,8 +30,15 @@ on:
     # emulator (~30 min), so running it on every main push would burn a runner
     # on changes that cannot affect the Android client. It fires only when
     # something it actually exercises moved.
+    #
+    # The core sources are in the filter because this harness builds the core
+    # from this repo and runs it on-device: a src/** change is exactly what it
+    # exists to exercise. android_workflow_paths_test asserts they stay.
     paths:
       - 'android/**'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/scripts/android-emulator-smoke.sh'
       - '.github/workflows/android-emulator-smoke.yml'
 
