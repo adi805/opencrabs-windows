@@ -470,6 +470,47 @@ impl EventHandler for Handler {
         if let Interaction::Modal(modal) = &interaction {
             let custom_id = modal.data.custom_id.clone();
             if let Some(form_id) = custom_id.strip_prefix("formsub:") {
+                // #212: a modal submission routes a turn, so it gets the same
+                // admission gate a slash command does - and it runs BEFORE
+                // `take_form`, which CONSUMES the pending entry. Authorizing
+                // after the consume would let a refused user spend the owner's
+                // pending input even though their turn never ran.
+                let verdict = {
+                    let cfg = self.config_rx.borrow().clone();
+                    let dc = cfg.channels.discord.clone();
+                    let is_dm = modal.guild_id.is_none();
+                    let roles = super::interactions::interaction_role_ids(modal.member.as_ref());
+                    super::interactions::admit_interaction(
+                        &ctx.http,
+                        &dc,
+                        modal.user.id.get(),
+                        is_dm,
+                        modal.channel_id.get(),
+                        &roles,
+                    )
+                    .await
+                };
+                if !verdict.allowed() {
+                    tracing::warn!(
+                        "Discord: refused formsub:{form_id} from user {} (allowed={}, \
+                         channel={}, dm_only={})",
+                        modal.user.id.get(),
+                        verdict.admitted,
+                        verdict.channel_ok,
+                        verdict.inside_dm_policy
+                    );
+                    let _ = modal
+                        .create_response(
+                            &ctx.http,
+                            serenity::builder::CreateInteractionResponse::Message(
+                                serenity::builder::CreateInteractionResponseMessage::new()
+                                    .content("This bot is not enabled for you or this channel.")
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await;
+                    return;
+                }
                 let Some(spec) = self.discord_state.take_form(form_id).await else {
                     let _ack = modal
                         .create_response(
@@ -548,6 +589,55 @@ impl EventHandler for Handler {
                 comp.id,
                 comp.application_id
             );
+
+            // #212: components are entry points like any other message. Slash
+            // commands already applied this gate; the followup / `sel:` / form
+            // buttons did not, and those CONSUME pending state (the TTL select
+            // and form maps) and dispatch a turn. The gate therefore runs here,
+            // at the top of the branch, before anything is taken: authorizing
+            // inside an arm would leave every later arm ungated, and a refused
+            // tap could still spend the owner's pending input.
+            {
+                let verdict = {
+                    let cfg = self.config_rx.borrow().clone();
+                    let dc = cfg.channels.discord.clone();
+                    let is_dm = comp.guild_id.is_none();
+                    let roles = super::interactions::interaction_role_ids(comp.member.as_ref());
+                    super::interactions::admit_interaction(
+                        &ctx.http,
+                        &dc,
+                        comp.user.id.get(),
+                        is_dm,
+                        comp.channel_id.get(),
+                        &roles,
+                    )
+                    .await
+                };
+                if !verdict.allowed() {
+                    tracing::warn!(
+                        "Discord: refused component {custom_id} from user {} (allowed={}, \
+                         channel={}, dm_only={})",
+                        comp.user.id.get(),
+                        verdict.admitted,
+                        verdict.channel_ok,
+                        verdict.inside_dm_policy
+                    );
+                    use serenity::builder::{
+                        CreateInteractionResponse, CreateInteractionResponseMessage,
+                    };
+                    let _ = comp
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("This bot is not enabled for you or this channel.")
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+            }
 
             // Optional follow-up suggestion tapped (#598): inject the chosen
             // suggestion as the user's next message (a fresh turn). Options were
