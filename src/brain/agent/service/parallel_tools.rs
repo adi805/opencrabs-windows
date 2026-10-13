@@ -171,7 +171,7 @@ impl super::AgentService {
                     // than invisible side effects.
                     let effect_msg_id = assistant_msg_id.to_string();
                     let effect_session_id = session_id.to_string();
-                    let effect_id = crate::brain::agent::service::effect_ledger::open_effect(
+                    let effect_decision = crate::brain::agent::service::effect_ledger::open_effect(
                         turn_key.as_deref(),
                         &effect_msg_id,
                         &effect_session_id,
@@ -180,11 +180,23 @@ impl super::AgentService {
                         &tool_input,
                     )
                     .await;
-                    let exec = self
-                        .tool_registry
-                        .execute(&tool_name, tool_input.clone(), &ctx)
-                        .await;
-                    if let Some(eid) = effect_id.as_deref() {
+                    // #213: only a FRESH claim may run the effect. A key that
+                    // already landed reuses the recorded row, a pending key
+                    // refuses a silent replay, and a collision is rejected
+                    // outright, so the ledger can no longer describe an earlier
+                    // effect while a second one executes.
+                    let exec = if crate::brain::agent::service::effect_ledger::should_execute(
+                        &effect_decision,
+                    ) {
+                        self.tool_registry
+                            .execute(&tool_name, tool_input.clone(), &ctx)
+                            .await
+                    } else {
+                        Ok(crate::brain::agent::service::effect_ledger::skipped_result(
+                            &effect_decision,
+                        ))
+                    };
+                    if let Some(eid) = effect_decision.settle_id() {
                         let (st, pv): (&str, String) = match &exec {
                             Ok(r) => (
                                 if r.success { "success" } else { "error" },

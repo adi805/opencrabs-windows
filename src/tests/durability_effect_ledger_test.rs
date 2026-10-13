@@ -232,67 +232,185 @@ async fn reconciling_a_turn_keeps_its_unknown_effects_visible() {
 
 // ── the replay contract, end to end through the wiring ──────────────
 
-/// A replayed call must settle the row that EXISTS, not a fresh uuid.
+/// A replayed call must be DECIDED, not blindly re-run (#213).
 ///
-/// `record_intent` is `INSERT OR IGNORE` against a unique `effect_key`, so the
-/// second open of one call leaves the original row in place. If the handler
-/// kept the uuid it generated for the replay, the settle would target a row
-/// that was never written, return 0 rows changed, and leave the effect that
-/// actually landed stuck `pending` forever: the ledger would then report an
-/// effect as unknown exactly when it is known, and a resume would re-issue a
-/// side effect that already happened.
+/// `record_intent` is `INSERT OR IGNORE` against a unique `effect_key`, so a
+/// second open of one call leaves the original row in place. Returning that
+/// row's id alone was the defect: the caller ran the effect anyway, then
+/// settled a row that was already settled, so the ledger described the earlier
+/// effect while a second one executed. The open now returns an
+/// [`EffectDecision`] and only a `Fresh` claim may run.
 #[tokio::test]
-async fn a_replayed_open_returns_the_row_that_exists_so_its_settle_lands() {
-    use crate::brain::agent::service::effect_ledger::open_effect_with;
+async fn a_settled_effect_key_is_not_executed_again() {
+    use crate::brain::agent::service::effect_ledger::{
+        EffectDecision, open_effect_with, should_execute,
+    };
     use crate::db::repository::ToolExecutionRepository;
 
     let db = make_db().await;
     let repo = ToolExecutionRepository::new(db.pool().clone());
     let input = serde_json::json!({ "cmd": "git push" });
 
-    // First dispatch: the effect opens, then the process dies before settling.
+    // First dispatch: this caller wins the claim, so it may run the effect.
     let first = open_effect_with(
         &repo, "turn-9", "msg-9", "sess-9", "git_push", "tu_abc", &input,
     )
-    .await
-    .expect("the first open returns a row id");
-
-    // Resume: the provider re-issues the SAME tool-use id.
-    let replay = open_effect_with(
-        &repo, "turn-9", "msg-9", "sess-9", "git_push", "tu_abc", &input,
-    )
-    .await
-    .expect("the replayed open still returns a row id");
-
-    assert_eq!(
-        replay, first,
-        "the replay must resolve to the original row; a fresh uuid would settle nothing"
+    .await;
+    let first_id = match &first {
+        EffectDecision::Fresh(id) => id.clone(),
+        other => panic!("the first open must claim the key, got {other:?}"),
+    };
+    assert!(
+        should_execute(&first),
+        "a fresh claim is the one decision that may run the tool"
     );
 
-    // The settle that follows the replayed open has to change the real row.
+    // Resume BEFORE the settle: the row exists and is still `pending`. The
+    // ledger cannot prove the effect did not already land, so it must refuse
+    // the replay instead of repeating a side effect.
+    let pending = open_effect_with(
+        &repo, "turn-9", "msg-9", "sess-9", "git_push", "tu_abc", &input,
+    )
+    .await;
+    assert!(
+        matches!(pending, EffectDecision::Pending(_)),
+        "an unresolved key must read as pending, got {pending:?}"
+    );
+    assert!(
+        !should_execute(&pending),
+        "a pending effect must not be replayed: its outcome is unknown"
+    );
+
+    // The original owner settles it.
     assert_eq!(
-        repo.settle(&replay, "success", Some("pushed"), Some(11))
+        repo.settle(&first_id, "success", Some("pushed"), Some(11))
             .await
             .unwrap(),
         1,
-        "settling the resolved id must change exactly the row that exists"
+        "the claim owner settles exactly the row it created"
     );
-    let row = repo
-        .find_by_effect_key("turn-9:tu_abc")
-        .await
-        .unwrap()
-        .expect("the effect is readable by its key");
-    assert_eq!(row.status, "success");
-    assert_eq!(row.id, first, "the original row is the one that settled");
+
+    // Resume AFTER the settle: same tool, same args. Reuse the recorded
+    // outcome; never run the effect a second time.
+    let landed = open_effect_with(
+        &repo, "turn-9", "msg-9", "sess-9", "git_push", "tu_abc", &input,
+    )
+    .await;
+    assert!(
+        matches!(landed, EffectDecision::Landed(_)),
+        "a settled key with matching identity must read as landed, got {landed:?}"
+    );
+    assert!(
+        !should_execute(&landed),
+        "a settled effect must not execute again"
+    );
+    assert_eq!(
+        landed.settle_id(),
+        None,
+        "a landed effect owns no new row to settle"
+    );
 
     // A distinct call in the same turn is a distinct effect, not a replay.
     let other = open_effect_with(
         &repo, "turn-9", "msg-9", "sess-9", "git_push", "tu_xyz", &input,
     )
-    .await
-    .expect("a different tool-use id opens its own row");
-    assert_ne!(
-        other, first,
-        "a different tool-use id must not collapse onto the first effect"
+    .await;
+    assert!(
+        matches!(&other, EffectDecision::Fresh(id) if id != &first_id),
+        "a different tool-use id must open its own row, got {other:?}"
     );
+}
+
+/// A key reused for a different tool or different arguments is a collision,
+/// not a replay, and must be refused BEFORE the effect runs (#213).
+#[tokio::test]
+async fn a_key_reused_with_different_tool_or_args_is_rejected() {
+    use crate::brain::agent::service::effect_ledger::{
+        EffectDecision, open_effect_with, should_execute,
+    };
+    use crate::db::repository::ToolExecutionRepository;
+
+    let db = make_db().await;
+    let repo = ToolExecutionRepository::new(db.pool().clone());
+
+    let first = open_effect_with(
+        &repo,
+        "turn-7",
+        "msg-7",
+        "sess-7",
+        "git_push",
+        "tu_1",
+        &serde_json::json!({ "cmd": "git push" }),
+    )
+    .await;
+    assert!(matches!(first, EffectDecision::Fresh(_)));
+
+    // Same key, different arguments.
+    let other_args = open_effect_with(
+        &repo,
+        "turn-7",
+        "msg-7",
+        "sess-7",
+        "git_push",
+        "tu_1",
+        &serde_json::json!({ "cmd": "git push --force" }),
+    )
+    .await;
+    assert!(
+        matches!(
+            other_args,
+            EffectDecision::Rejected {
+                tool_differs: false,
+                args_differ: true,
+                ..
+            }
+        ),
+        "same tool with different args must be rejected, got {other_args:?}"
+    );
+    assert!(
+        !should_execute(&other_args),
+        "a colliding key must never execute"
+    );
+
+    // Same key, different tool.
+    let other_tool = open_effect_with(
+        &repo,
+        "turn-7",
+        "msg-7",
+        "sess-7",
+        "git_reset",
+        "tu_1",
+        &serde_json::json!({ "cmd": "git push" }),
+    )
+    .await;
+    assert!(
+        matches!(
+            other_tool,
+            EffectDecision::Rejected {
+                tool_differs: true,
+                ..
+            }
+        ),
+        "a different tool on the same key must be rejected, got {other_tool:?}"
+    );
+    assert!(!should_execute(&other_tool));
+}
+
+/// Every execution site must consult the decision, not just open the ledger.
+///
+/// This is the #213 invariant in source form: `open_effect` alone counted as
+/// "protected" while the caller executed unconditionally, so the class could
+/// return by adding a site that opens the row and ignores the verdict.
+#[test]
+fn every_execution_site_consults_the_ledger_decision() {
+    for name in [LOOP_FILE, PARALLEL_FILE] {
+        let src = flat_source(name);
+        let execs = src.matches(EXECUTE_NEEDLE).count();
+        let gates = src.matches("effect_ledger::should_execute(").count();
+        assert!(
+            gates >= execs,
+            "{name}: {execs} execution site(s) but only {gates} should_execute gate(s); a tool \
+             could run without asking the ledger whether the effect already landed"
+        );
+    }
 }
