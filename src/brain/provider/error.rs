@@ -5,8 +5,10 @@ use thiserror::Error;
 /// Provider error types
 #[derive(Debug, Error)]
 pub enum ProviderError {
-    /// HTTP request failed
-    #[error("HTTP request failed: {0}")]
+    /// HTTP request failed. The message carries reqwest's source chain, so
+    /// the retry log names the real cause (for example a DNS failure) and
+    /// not only "error sending request for url (...)".
+    #[error("HTTP request failed: {}", reqwest_error_chain(.0))]
     HttpError(#[from] reqwest::Error),
 
     /// API returned an error
@@ -660,6 +662,21 @@ pub fn user_facing_reason(err: &ProviderError) -> String {
         ProviderError::HttpError(e) => describe_reqwest_error(e),
         other => other.to_string(),
     }
+}
+
+/// Render a reqwest error with its whole source chain, joined by ": ". The
+/// top level says only "error sending request for url (...)"; the deeper
+/// entries carry the OS or resolver cause ("dns error: failed to lookup
+/// address information", "Connection refused").
+pub(crate) fn reqwest_error_chain(e: &reqwest::Error) -> String {
+    let mut out = e.to_string();
+    let mut src: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(e);
+    while let Some(s) = src {
+        out.push_str(": ");
+        out.push_str(&s.to_string());
+        src = s.source();
+    }
+    out
 }
 
 /// Classify a reqwest error into a short, specific phrase by walking its source

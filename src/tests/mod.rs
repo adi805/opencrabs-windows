@@ -94,6 +94,7 @@ pub mod brain_provider_codex_oauth_test;
 pub mod brain_provider_copilot_test;
 pub mod brain_provider_error_test;
 pub mod brain_provider_factory_test;
+pub mod brain_provider_http_error_chain_test;
 pub mod brain_provider_identity_test;
 pub mod brain_provider_json_repair_test;
 pub mod brain_provider_opencrabs_acquire_test;
