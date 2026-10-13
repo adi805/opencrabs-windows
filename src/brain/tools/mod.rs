@@ -38,6 +38,7 @@ pub mod doc_parser;
 pub mod exa_search;
 pub mod notebook;
 pub mod pdf_to_images;
+pub mod response_bounds;
 pub mod serper_search;
 pub mod sources_footer;
 pub mod vba_modules;
