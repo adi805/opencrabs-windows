@@ -1,6 +1,19 @@
 use crate::brain::provider::opencrabs_install::*;
 
 #[test]
+fn debug_output_of_issued_token_hides_the_token() {
+    let token = "0123456789abcdef".repeat(4);
+    let issued = IssuedToken {
+        token: token.clone(),
+        label: "install-label".to_string(),
+    };
+    let shown = format!("{issued:?}");
+    assert!(!shown.contains(&token), "token leaked into Debug: {shown}");
+    assert!(shown.contains("<redacted>"), "no redaction marker: {shown}");
+    assert!(shown.contains("install-label"), "label dropped: {shown}");
+}
+
+#[test]
 fn generated_install_id_is_valid_and_32_hex_chars() {
     let id = new_install_id();
     assert_eq!(id.len(), 32);

@@ -15,10 +15,20 @@ use crate::config::{keys_path, write_secret_keys};
 const SECTION: &str = "providers.opencrabs";
 
 /// An install that has a token the proxy issued for its ID.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct StoredInstall {
     pub install_id: String,
     pub token: String,
+}
+
+/// The token is a bearer secret, so `Debug` never prints it.
+impl std::fmt::Debug for StoredInstall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredInstall")
+            .field("install_id", &self.install_id)
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Only the part of keys.toml this module reads. Other sections are ignored.

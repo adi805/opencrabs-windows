@@ -20,6 +20,22 @@ fn install() -> StoredInstall {
 }
 
 #[test]
+fn debug_output_of_stored_install_hides_the_token() {
+    let token = "fedcba9876543210".repeat(4);
+    let stored = StoredInstall {
+        install_id: "0123456789abcdef0123456789abcdef".to_string(),
+        token: token.clone(),
+    };
+    let shown = format!("{stored:?}");
+    assert!(!shown.contains(&token), "token leaked into Debug: {shown}");
+    assert!(shown.contains("<redacted>"), "no redaction marker: {shown}");
+    assert!(
+        shown.contains("0123456789abcdef0123456789abcdef"),
+        "install ID dropped: {shown}"
+    );
+}
+
+#[test]
 fn fresh_home_has_no_stored_install() {
     in_temp_home(|| {
         assert_eq!(load(), None);

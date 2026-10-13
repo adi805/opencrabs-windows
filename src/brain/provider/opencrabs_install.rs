@@ -18,10 +18,20 @@ pub const INSTALL_PATH: &str = "/install";
 const INSTALL_ID_LEN: usize = 32;
 
 /// A caller token the proxy issued for one install.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct IssuedToken {
     pub token: String,
     pub label: String,
+}
+
+/// The token is a bearer secret, so `Debug` never prints it.
+impl std::fmt::Debug for IssuedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IssuedToken")
+            .field("token", &"<redacted>")
+            .field("label", &self.label)
+            .finish()
+    }
 }
 
 /// Why the proxy did not issue a token. Each variant maps to its own message.
