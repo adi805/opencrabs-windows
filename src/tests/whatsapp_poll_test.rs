@@ -113,24 +113,115 @@ async fn re_remembering_a_poll_replaces_its_options() {
 #[tokio::test]
 async fn a_voter_changing_their_answer_replaces_it() {
     let votes = VoteTally::default();
-    votes.record("p", "Ana", vec!["Rust".to_string()]).await;
-    votes.record("p", "Ana", vec!["Zig".to_string()]).await;
+    votes
+        .record("p", "111@s.whatsapp.net", "Ana", vec!["Rust".to_string()])
+        .await;
+    votes
+        .record("p", "111@s.whatsapp.net", "Ana", vec!["Zig".to_string()])
+        .await;
     let tally = votes.for_poll("p").await;
     assert_eq!(tally.len(), 1);
     assert_eq!(tally[0].1, vec!["Zig".to_string()]);
 }
 
-/// A vote that resolves to no option is a voter CLEARING their answer, not an
-/// answer, so it must not be counted as one.
+/// A voter is keyed on their resolved JID, never their display name: two
+/// people who both call themselves "Adi" are two voters.
 #[tokio::test]
-async fn a_cleared_vote_is_not_recorded() {
+async fn two_voters_sharing_a_display_name_stay_two_voters() {
     let votes = VoteTally::default();
-    votes.record("p", "Ana", vec!["Rust".to_string()]).await;
-    votes.record("p", "Ana", Vec::new()).await;
-    assert_eq!(votes.for_poll("p").await.len(), 1);
-    let empty = VoteTally::default();
-    empty.record("p", "Ana", Vec::new()).await;
-    assert!(empty.for_poll("p").await.is_empty());
+    votes
+        .record("p", "111@s.whatsapp.net", "Adi", vec!["Rust".to_string()])
+        .await;
+    votes
+        .record("p", "222@s.whatsapp.net", "Adi", vec!["Zig".to_string()])
+        .await;
+    let tally = votes.for_poll("p").await;
+    assert_eq!(
+        tally.len(),
+        2,
+        "a shared display name must not collapse two voters into one"
+    );
+}
+
+/// The other half of the same bug: one voter who renames themselves is still
+/// one voter, and the newest name is the one rendered.
+#[tokio::test]
+async fn one_voter_renaming_stays_one_voter() {
+    let votes = VoteTally::default();
+    votes
+        .record("p", "111@s.whatsapp.net", "Adi", vec!["Rust".to_string()])
+        .await;
+    votes
+        .record("p", "111@s.whatsapp.net", "Adi Jr", vec!["Zig".to_string()])
+        .await;
+    let tally = votes.for_poll("p").await;
+    assert_eq!(tally.len(), 1, "a rename must not create a second voter");
+    assert_eq!(tally[0].0, "Adi Jr");
+    assert_eq!(tally[0].1, vec!["Zig".to_string()]);
+}
+
+/// A withdrawal REMOVES the voter's entry. Leaving it behind would keep
+/// counting a vote the voter has taken back.
+#[tokio::test]
+async fn a_withdrawn_vote_is_removed() {
+    let votes = VoteTally::default();
+    votes
+        .record("p", "111@s.whatsapp.net", "Ana", vec!["Rust".to_string()])
+        .await;
+    votes
+        .record("p", "111@s.whatsapp.net", "Ana", Vec::new())
+        .await;
+    assert!(
+        votes.for_poll("p").await.is_empty(),
+        "clearing an answer must stop it being counted"
+    );
+}
+
+/// A withdrawal touches only the voter who withdrew.
+#[tokio::test]
+async fn a_withdrawal_leaves_other_voters_alone() {
+    let votes = VoteTally::default();
+    votes
+        .record("p", "111@s.whatsapp.net", "Ana", vec!["Rust".to_string()])
+        .await;
+    votes
+        .record("p", "222@s.whatsapp.net", "Budi", vec!["Zig".to_string()])
+        .await;
+    votes
+        .record("p", "111@s.whatsapp.net", "Ana", Vec::new())
+        .await;
+    let tally = votes.for_poll("p").await;
+    assert_eq!(tally.len(), 1);
+    assert_eq!(tally[0].0, "Budi");
+}
+
+/// Withdrawing without ever voting is a no-op, not an entry with no answer.
+#[tokio::test]
+async fn a_withdrawal_with_no_prior_vote_records_nothing() {
+    let votes = VoteTally::default();
+    votes
+        .record("p", "111@s.whatsapp.net", "Ana", Vec::new())
+        .await;
+    assert!(votes.for_poll("p").await.is_empty());
+}
+
+/// A poll emptied by withdrawal leaves the tracked set, and answering it again
+/// afterwards must not file the poll twice.
+#[tokio::test]
+async fn a_poll_emptied_by_withdrawal_can_be_answered_again() {
+    let votes = VoteTally::default();
+    votes
+        .record("p", "111@s.whatsapp.net", "Ana", vec!["Rust".to_string()])
+        .await;
+    votes
+        .record("p", "111@s.whatsapp.net", "Ana", Vec::new())
+        .await;
+    votes
+        .record("p", "111@s.whatsapp.net", "Ana", vec!["Zig".to_string()])
+        .await;
+    let tally = votes.for_poll("p").await;
+    assert_eq!(tally.len(), 1);
+    assert_eq!(tally[0].1, vec!["Zig".to_string()]);
 }
 
 /// The tally is bounded like the option window: a long-lived account cannot
@@ -141,7 +232,12 @@ async fn the_tally_keeps_only_the_newest_polls() {
     let votes = VoteTally::default();
     for i in 0..=VOTE_TALLY_CAPACITY {
         votes
-            .record(&format!("poll-{i}"), "Ana", vec!["Rust".to_string()])
+            .record(
+                &format!("poll-{i}"),
+                "111@s.whatsapp.net",
+                "Ana",
+                vec!["Rust".to_string()],
+            )
             .await;
     }
     assert!(votes.for_poll("poll-0").await.is_empty());
@@ -158,8 +254,12 @@ async fn the_tally_keeps_only_the_newest_polls() {
 #[tokio::test]
 async fn the_tally_is_per_poll() {
     let votes = VoteTally::default();
-    votes.record("a", "Ana", vec!["Rust".to_string()]).await;
-    votes.record("b", "Budi", vec!["Zig".to_string()]).await;
+    votes
+        .record("a", "111@s.whatsapp.net", "Ana", vec!["Rust".to_string()])
+        .await;
+    votes
+        .record("b", "222@s.whatsapp.net", "Budi", vec!["Zig".to_string()])
+        .await;
     assert_eq!(votes.for_poll("a").await.len(), 1);
     assert_eq!(votes.for_poll("b").await[0].0, "Budi");
 }
