@@ -143,10 +143,10 @@ fn parse_asset_digests(script: &str) -> Vec<(String, String)> {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("asset=\"") {
             pending_asset = rest.strip_suffix('"').map(str::to_string);
-        } else if let Some(rest) = line.strip_prefix("sha256=\"") {
-            if let (Some(asset), Some(sha)) = (pending_asset.take(), rest.strip_suffix('"')) {
-                pairs.push((asset, sha.to_string()));
-            }
+        } else if let Some(rest) = line.strip_prefix("sha256=\"")
+            && let (Some(asset), Some(sha)) = (pending_asset.take(), rest.strip_suffix('"'))
+        {
+            pairs.push((asset, sha.to_string()));
         }
     }
     pairs
