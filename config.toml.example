@@ -33,7 +33,7 @@ default_model = "deepseek-v4.1-flash"
 models = ["deepseek-v4.1-flash"]
 context_window = 200000
 vision_model = "deepseek-v4.1-flash"  # Multimodal: attached images work on day 0
-generation_model = "cb/gemini-3.1-flash-image"  # Image generation on day 0, served only on /v1/images/*
+generation_model = "gemini-3.1-flash-image"  # Image generation on day 0, served only on /v1/images/*
 
 # ========================================
 # Xiaomi MiMo

@@ -286,7 +286,7 @@ https://github.com/user-attachments/assets/7f45c5f8-acdf-48d5-b6a4-0e4811a9ee23
 | **Voice (STT)** | Voice notes transcribed via **Groq Whisper API** (`whisper-large-v3-turbo`), any **OpenAI-compatible STT endpoint** (set `base_url` + `model` under `[providers.stt.openai_compatible]` — works with self-hosted Whisper, Deepgram-compatible proxies, etc.), **Voicebox STT** (self-hosted open-source voice stack — point the `base_url` of `[providers.stt.voicebox]` at your instance; 2s liveness probe runs before each request so a dead voicebox fails fast), or **Local** whisper.cpp via `whisper-rs` (runs on-device, Tiny 75 MB / Base 142 MB / Small 466 MB / Medium 1.5 GB, zero API cost). All dispatched through a single entry point so every channel gets the same provider priority chain — and an optional `[providers.stt].fallback_chain` lets the user codify "if my local voicebox is down, try Groq, then OpenAI" so transient outages auto-route to the next provider with zero user action. Choose mode in `/voice`. Included by default |
 | **Voice (TTS)** | Agent replies to voice notes with audio via **OpenAI TTS API** (`gpt-4o-mini-tts`), any **OpenAI-compatible TTS endpoint** (set `base_url` + `model` + `voice` under `[providers.tts.openai_compatible]` — works with self-hosted Coqui/Bark, ElevenLabs-compatible proxies, etc.), **Voicebox TTS** (async `/generate` → poll `/generate/{id}/status` → fetch audio; set the `base_url` + `profile_id` of `[providers.tts.voicebox]`), or **Local** Piper TTS (runs on-device via Python venv, Ryan / Amy / Lessac / Kristin / Joe / Cori, zero API cost). All outputs normalised to OGG/Opus via `ensure_opus` before delivery — consistent format across every channel regardless of backend. `[providers.tts].fallback_chain` provides the same auto-failover behaviour as the STT side. Falls back to text if disabled |
 | **Attachment Indicator** | Attached images show as `[IMG1:filename.png]` in the input title bar |
-| **Image Generation** | Agent generates images with the `generate_image` tool. The default route is Google Gemini (`gemini-3.1-flash-image-preview` "Nano Banana"), enabled via `/image`. The built-in OpenCrabs provider serves it out of the box on fresh installs (`cb/gemini-3.1-flash-image`). Returned as native images/attachments in all channels |
+| **Image Generation** | Agent generates images with the `generate_image` tool. The default route is Google Gemini (`gemini-3.1-flash-image-preview` "Nano Banana"), enabled via `/image`. The built-in OpenCrabs provider serves it out of the box on fresh installs (`gemini-3.1-flash-image`). Returned as native images/attachments in all channels |
 
 #### Vision setup — two paths, pick one
 
@@ -1322,7 +1322,7 @@ OpenCrabs ships its own provider, so a new install can chat without creating an 
 **What you get on a fresh install**
 - **Chat model:** `deepseek-v4.1-flash`, 200k context window.
 - **Vision:** `vision_model` is set to the same model, so attached images work on day 0.
-- **Image generation:** on by default for fresh installs through `cb/gemini-3.1-flash-image`, which is image-only and never offered as a chat model. Existing installs set `generation_model` on `[providers.opencrabs]` to get it (see [Image Generation & Vision](#-image-generation--vision)).
+- **Image generation:** on by default for fresh installs through `gemini-3.1-flash-image`, which is image-only and never offered as a chat model. Existing installs set `generation_model` on `[providers.opencrabs]` to get it (see [Image Generation & Vision](#-image-generation--vision)).
 
 **How the key works.** On first use, the install asks `inference.opencrabs.com` for its own token once and saves it in `keys.toml` under `[providers.opencrabs]`. The binary holds no shared upstream key, and the server keeps only a hash of each token. If `keys.toml` is lost, the install requests a new token automatically.
 
@@ -1777,7 +1777,7 @@ MiniMax auto-configures this on first run. Works with any provider — just set 
 
 ## 🖼️ Image Generation & Vision
 
-OpenCrabs supports image generation and vision analysis via Google Gemini by default, independent of the main chat provider, so you can use Claude for chat and Gemini for images. The built-in OpenCrabs provider also serves `generate_image` out of the box on fresh installs, using `cb/gemini-3.1-flash-image`. The `generate_image` tool can be routed at any OpenAI-compatible images endpoint (OpenAI, OpenRouter, Together, etc.) via the per-provider `generation_model` override; see [Picking a different generation model](#picking-a-different-generation-model) below.
+OpenCrabs supports image generation and vision analysis via Google Gemini by default, independent of the main chat provider, so you can use Claude for chat and Gemini for images. The built-in OpenCrabs provider also serves `generate_image` out of the box on fresh installs, using `gemini-3.1-flash-image`. The `generate_image` tool can be routed at any OpenAI-compatible images endpoint (OpenAI, OpenRouter, Together, etc.) via the per-provider `generation_model` override; see [Picking a different generation model](#picking-a-different-generation-model) below.
 
 ### Setup
 

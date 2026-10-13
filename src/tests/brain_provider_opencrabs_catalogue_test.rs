@@ -33,13 +33,10 @@ fn example_config_sets_the_built_in_image_model() {
 
     assert_eq!(
         section.generation_model.as_deref(),
-        Some("cb/gemini-3.1-flash-image")
+        Some("gemini-3.1-flash-image")
     );
     assert!(
-        !section
-            .models
-            .iter()
-            .any(|m| m == "cb/gemini-3.1-flash-image"),
+        !section.models.iter().any(|m| m == "gemini-3.1-flash-image"),
         "image model must not appear in the chat model list"
     );
 }
