@@ -204,6 +204,16 @@ fn redacts_64_char_hex_install_token() {
     assert!(!out.contains(&token), "64-char install token leaked: {out}");
 }
 
+#[test]
+fn redacts_ocp_prefixed_install_token() {
+    // Shape of a token issued now: `ocp_` plus 64 hex digits. The hex rule
+    // cannot match it, so the `ocp_` prefix entry is what redacts it.
+    let token = format!("ocp_{}", "0123456789abcdef".repeat(4));
+    let input = format!("saw {token} in the log");
+    let out = redact_secrets(&input);
+    assert!(!out.contains(&token), "ocp_ install token leaked: {out}");
+}
+
 // ── Combined patterns ──────────────────────────────────────────────
 
 #[test]
