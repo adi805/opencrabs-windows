@@ -2470,6 +2470,15 @@ pub struct MemoryConfig {
     #[serde(default)]
     pub internal_allowed_in_shared: bool,
 
+    /// Allow `channel_search` to read chats OTHER than the one the calling
+    /// session is bound to, from a shared/guest session (#215). Default-deny,
+    /// mirroring the two flags above: the captured message store holds DMs and
+    /// unrelated group history, so a guest turn must not be able to enumerate
+    /// or read them just because it can call a tool. Opt in when the shared
+    /// session legitimately needs cross-chat history.
+    #[serde(default)]
+    pub channel_cross_chat_allowed_in_shared: bool,
+
     /// Seconds between external-path freshness sweeps (#1051). The sweep
     /// discovers added/removed files and reconciles config changes; modified
     /// files are caught lazily at search time regardless.
@@ -2570,6 +2579,7 @@ impl Default for MemoryConfig {
             exclude: default_external_excludes(),
             external_allowed_in_shared: false,
             internal_allowed_in_shared: false,
+            channel_cross_chat_allowed_in_shared: false,
             sweep_interval_secs: default_sweep_interval_secs(),
             backfill_interval_secs: default_backfill_interval_secs(),
         }

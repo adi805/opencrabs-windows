@@ -58,8 +58,8 @@ pub use settings::internal_content_blocked;
 // into `internal_content_blocked`, which is the only consumer, so re-exporting
 // the raw flag would be an unused import.
 pub(crate) use settings::{
-    external_allowed_in_shared, external_excludes, extra_paths_config, read_memory_config,
-    sweep_interval_secs, vector_enabled,
+    channel_cross_chat_allowed_in_shared, external_allowed_in_shared, external_excludes,
+    extra_paths_config, read_memory_config, sweep_interval_secs, vector_enabled,
 };
 pub use shared_sessions::{
     SessionSharing, is_personal_brain_file, is_session_shared, mark_session_personal,
