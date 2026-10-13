@@ -180,19 +180,52 @@ fn every_channel_handler_classifies_both_branches() {
     }
 }
 
-/// The gates must read the durable classification before deciding, or a
-/// resumed turn falls through to the in-memory set that ingress never filled.
+/// Every gate that consults `internal_content_blocked` must read the durable
+/// classification first, or a resumed turn falls through to the in-memory set
+/// that ingress never filled.
+///
+/// The gate list is ENUMERATED from the tree, not written by hand. A hand
+/// list is how the first version of this test passed while `load_brain_file`
+/// stayed ungated: it named two gates and the third one was invisible.
 #[test]
 fn every_personal_content_gate_restores_before_deciding() {
-    const GATES: [(&str, &str); 2] = [
-        ("src/brain/agent/service", "context.rs"),
-        ("src/brain/tools", "memory_search.rs"),
+    use crate::tests::source_shape::sources_in;
+
+    // The definition itself, and the tests that call it directly, are not
+    // gates: the first IS the decision, the second has no turn to restore.
+    const NOT_GATES: [&str; 2] = ["src/memory/settings.rs", "src/tests/"];
+
+    let mut checked = 0usize;
+    // `sources_in` is non-recursive, so each directory that holds a gate is
+    // listed explicitly; a gate added under a new directory means adding it
+    // here, which is visible in the diff rather than silently skipped.
+    const GATE_DIRS: [&str; 4] = [
+        "src/brain/tools",
+        "src/brain/agent/service",
+        "src/channels",
+        "src/cli",
     ];
-    for (dir, name) in GATES {
-        let src = flatten(read_in(dir, name));
-        assert!(
-            src.contains("restore_sharing("),
-            "{name}: must restore the durable classification before deciding"
-        );
+    for dir in GATE_DIRS {
+        for (name, body) in sources_in(dir) {
+            let path = format!("{dir}/{name}");
+            if NOT_GATES.iter().any(|n| path.starts_with(n)) {
+                continue;
+            }
+            if !body.contains("internal_content_blocked(") {
+                continue;
+            }
+            assert!(
+                body.contains("restore_sharing("),
+                "{path}: consults `internal_content_blocked` without restoring the \
+                 durable classification first (#217), so a resumed or cold-start \
+                 turn decides on an empty in-memory set"
+            );
+            checked += 1;
+        }
     }
+    assert!(
+        checked >= 3,
+        "expected at least three gates (context recall, memory_search, \
+         load_brain_file), found {checked}; the sweep may be measuring nothing"
+    );
 }
