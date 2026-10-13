@@ -119,6 +119,20 @@ pub(crate) fn redact_command(cmd: &str) -> String {
         }
     }
 
+    // Redact a whole `Authorization: <scheme> <credential>` header, scheme
+    // included (#OC-A5). The prefix loop below redacts one whitespace-delimited
+    // token, so for `Authorization: Basic <base64>` it redacted the word
+    // "Basic" and left the payload — a literal `user:password` — in the clear.
+    result = AUTH_HEADER_RE
+        .replace_all(&result, |caps: &regex::Captures| {
+            format!(
+                "{}{} [REDACTED]",
+                caps.get(1).unwrap().as_str(),
+                caps.get(2).unwrap().as_str()
+            )
+        })
+        .into_owned();
+
     // Redact inline header values and query params (case-insensitive).
     //
     // All COMMAND_SENSITIVE_PATTERNS are pure ASCII. We use find_case_insensitive
@@ -452,6 +466,33 @@ static MIXED_ALNUM_TOKEN_RE: Lazy<Regex> =
 static COLON_TOKEN_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b").unwrap());
 
+/// Regex for base64-shaped tokens over the standard base64 alphabet,
+/// INCLUDING `+` and `/` (#OC-A5).
+///
+/// `MIXED_ALNUM_TOKEN_RE` needs one contiguous alphanumeric run, so the two
+/// characters that make base64 base64 defeated it: a 40-char AWS secret access
+/// key containing a `/` (the common case) matched no length-based pass and went
+/// to the channel verbatim. Only `+`/`/` are new here — a pure-alnum run is
+/// already pass 3's job, and trailing `=` padding is covered because pass 3
+/// matches the alnum run in front of it. Anchored on alphanumerics at both
+/// ends so `\b` works on either side.
+static BASE64_TOKEN_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b[A-Za-z0-9][A-Za-z0-9+/]{26,}[A-Za-z0-9]\b={0,2}").unwrap());
+
+/// Regex for `Authorization: <scheme> <credential>` headers, the base64
+/// payload of Basic auth included (#OC-A5).
+///
+/// `Authorization: Basic dXNlcjpwYXNzd29yZA==` is a literal `user:password`
+/// in base64, and it is short enough that no length-based pass sees it. The
+/// Bearer loop only knew `bearer`, and the bash redactor's prefix list redacts
+/// just the scheme word, leaving the payload in the clear.
+static AUTH_HEADER_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)\b(authorization\s*:\s*)(basic|bearer|digest|token)\s+([A-Za-z0-9+/=._~-]{4,})",
+    )
+    .unwrap()
+});
+
 /// Regex for environment variable assignments with sensitive suffixes.
 /// Matches UPPERCASE_VAR_NAME="value" or UPPERCASE_VAR_NAME=value where the
 /// name ends in _PASS, _SECRET, _TOKEN, _KEY, _APIKEY, _API_KEY, _CREDENTIAL,
@@ -701,6 +742,37 @@ fn redact_secrets_core(text: &str) -> String {
         })
         .into_owned();
 
+    // 3b. Redact base64-shaped tokens (#OC-A5). Pass 3 needs one contiguous
+    //     alphanumeric run, so a token containing `+` or `/` was invisible to
+    //     every length-based pass. Two guards keep this from eating links: the
+    //     token must be STANDALONE (a URL path is one long whitespace-delimited
+    //     word, so an embedded match is part of an address, not a credential),
+    //     and `is_url_path_segment` still wins for a bare path identifier.
+    result = BASE64_TOKEN_RE
+        .replace_all(&result, |caps: &regex::Captures| {
+            let m = caps.get(0).unwrap();
+            let token = m.as_str();
+            let has_base64_punct = token.contains('+') || token.contains('/');
+            if !has_base64_punct {
+                // No `+`/`/`: plain pass-3 territory, leave it alone.
+                return token.to_string();
+            }
+            let before = &result[..m.start()];
+            let after = &result[m.end()..];
+            let standalone = (before.is_empty()
+                || before.ends_with(char::is_whitespace)
+                || before.ends_with(['"', '\'', '=', ':', ',']))
+                && (after.is_empty()
+                    || after.starts_with(char::is_whitespace)
+                    || after.starts_with(['"', '\'', ',', ';', ')', '}']));
+            if standalone && !is_url_path_segment(&result, m.start()) {
+                "[REDACTED_TOKEN]".to_string()
+            } else {
+                token.to_string()
+            }
+        })
+        .into_owned();
+
     // 4. Redact inline "Bearer <token>" patterns (ASCII-only, same fix as redact_command)
     for pattern in &["bearer ", "authorization: bearer "] {
         let mut search_start = 0;
@@ -725,6 +797,20 @@ fn redact_secrets_core(text: &str) -> String {
             }
         }
     }
+
+    // 4b. Redact `Authorization: <scheme> <credential>` headers (#OC-A5). The
+    //     loop above only knew `bearer`, and a Basic payload is a literal
+    //     `user:password` in base64, short enough that no length-based pass
+    //     sees it.
+    result = AUTH_HEADER_RE
+        .replace_all(&result, |caps: &regex::Captures| {
+            format!(
+                "{}{} [REDACTED]",
+                caps.get(1).unwrap().as_str(),
+                caps.get(2).unwrap().as_str()
+            )
+        })
+        .into_owned();
 
     // 5. Redact environment variable assignments with sensitive suffixes
     result = ENV_SECRET_RE
