@@ -938,18 +938,14 @@ async fn create_fallback(config: &Config, fallback_type: &str) -> Result<Arc<dyn
     ))
 }
 
-/// Returns `(api_key, base_url, vision_model)` for the first enabled provider
-/// that has a `vision_model` configured.
+/// Returns `(api_key, base_url, vision_model)` for the first vision candidate
+/// that `any_provider_vision` finds, or `None` when no provider can see.
 ///
-/// Resolution order:
-/// 1. User-configured `[providers.fallback] vision = [...]` chain (first
-///    enabled match with a `vision_model` wins).
-/// 2. All enabled built-in providers in REGISTRATIONS priority order.
-/// 3. All enabled custom providers.
-///
-/// The fallback chain lets the user pin a specific provider for vision
-/// without affecting the active chat provider.  An empty chain is a
-/// no-op and falls straight through to the scan-all path.
+/// The order is `any_provider_vision`'s: built-in providers in REGISTRATIONS
+/// priority order, then custom providers, then the `[providers.fallback]
+/// vision` chain. This is a capability lookup, not the request-time
+/// roll-through. The roll-through is `vision_candidates_for`, which tries the
+/// session's own provider first.
 ///
 /// Used to register the provider-native `analyze_image` tool when Gemini
 /// vision isn't set up.  See issue #253.
@@ -1005,41 +1001,31 @@ pub fn any_provider_vision(config: &Config) -> Vec<(String, String, String)> {
     out
 }
 
-/// Ordered vision candidates `(api_key, base_url, vision_model)`, walked at
-/// REQUEST time by `ProviderVisionTool` (#430): if one candidate's call
-/// fails, the next is tried, and Gemini `[image.vision]` is the FINAL
-/// fallback only — never the primary when any provider can serve vision.
+/// Ordered vision candidates `(api_key, base_url, vision_model)` for a
+/// session, walked at REQUEST time by `ProviderVisionTool` (#430, #1318). If
+/// one candidate's call fails, the next is tried. Gemini `[image.vision]` is
+/// the FINAL fallback, applied by the caller after every candidate fails.
 ///
-/// Order (owner contract, whole app lifetime):
-/// 1. Every provider with a `vision_model` AND a usable key, in
-///    REGISTRATIONS priority order, then customs. `enabled` is the CHAT
-///    gate and is never consulted (#401). "Usable key" = non-empty, or a
-///    local endpoint that needs none.
-/// 2. The `[providers.fallback] vision` chain, minus entries already
-///    collected by the scan.
+/// Order:
 ///
-/// Candidates whose endpoint cannot be derived (no explicit `base_url`, no
-/// known per-provider default) are SKIPPED: guessing OpenAI sent a Xiaomi
-/// token-plan key to api.openai.com and 401'd every call (#430).
-/// Ordered vision candidates for a session: current provider, then chain.
-///
-/// Order is the whole contract (#1318):
-///
-/// 1. the session's CURRENT provider, when it carries a `vision_model`
+/// 1. the session's CURRENT provider, when it carries a `vision_model` and a
+///    usable key
 /// 2. `[providers.fallback] vision`, in the order written
-/// 3. Gemini, applied by the caller after every candidate fails
+/// 3. Gemini, applied by the caller
 ///
-/// What this deliberately does NOT do is scan every provider that happens to
-/// carry a `vision_model`. That scan used to run FIRST and, because dedup
-/// keeps the first occurrence, a provider it found held its scan position and
-/// the configured chain could never reorder anything — the chain only ever
-/// contributed entries the scan had missed. Measured cost: four candidates
-/// tried and failed before the working one, ~2.5 s on every image, with
-/// providers in the chain never reached.
+/// Providers that carry a `vision_model` but are neither the session's
+/// provider nor in the chain are NOT tried. A global scan of every such
+/// provider used to run first. Dedup kept its position, so the configured
+/// chain could never reorder anything. It also cost four failed attempts
+/// before the working one, about 2.5 s on every image.
 ///
 /// `enabled = false` is NOT a filter here. That flag governs whether a
 /// provider serves CHAT; a vision candidate needs only a reachable endpoint
 /// and a `vision_model`.
+///
+/// Candidates whose endpoint cannot be derived (no explicit `base_url`, no
+/// known per-provider default) are SKIPPED: guessing OpenAI sent a Xiaomi
+/// token-plan key to api.openai.com and 401'd every call (#430).
 ///
 /// Takes `config` per call rather than being computed once at startup: the
 /// list must follow a `config.toml` edit without a restart, the same way the
