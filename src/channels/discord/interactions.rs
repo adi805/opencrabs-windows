@@ -134,6 +134,107 @@ pub(crate) async fn route_interaction_turn(
 /// that very message in place with the turn's answer (FR-002 / AC-004), and an
 /// ephemeral defer can only ever be edited into another ephemeral message.
 #[allow(clippy::too_many_arguments)]
+/// The three-part admission verdict for one interaction (#212).
+///
+/// Slash commands already applied all three; followup buttons, `sel:`
+/// selections and `formsub:` modal submissions consumed pending state and
+/// routed a turn without asking. One function now answers for every entry
+/// point, so a new interaction kind cannot quietly skip part of the gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InteractionAdmission {
+    /// Deny-by-default identity check: owner, allow list, allowed role, or an
+    /// open channel. False on an unconfigured channel.
+    pub admitted: bool,
+    /// Channel scope, with the thread/forum parent fallback.
+    pub channel_ok: bool,
+    /// The operator's `dm_only` policy: false means the bot was told not to
+    /// speak in guild channels at all.
+    pub inside_dm_policy: bool,
+    /// Whether the actor is the configured owner. Carried out of the gate so
+    /// callers do not recompute it (and drift from the gate's own reading).
+    pub owner: bool,
+}
+
+impl InteractionAdmission {
+    /// Whether the interaction may proceed.
+    pub(crate) fn allowed(&self) -> bool {
+        self.admitted && self.channel_ok && self.inside_dm_policy
+    }
+}
+
+/// Apply the Discord admission gate to any interaction (#212).
+///
+/// Read at TAP time from the live config, so a component created before an ACL
+/// change is judged by the policy in force when it is pressed. `role_ids` is
+/// empty in a DM: roles only exist in a guild, mirroring `handle_message`.
+pub(crate) async fn admit_interaction(
+    http: &serenity::http::Http,
+    dc: &crate::config::types::DiscordConfig,
+    user_id: u64,
+    is_dm: bool,
+    channel_id: u64,
+    role_ids: &[u64],
+) -> InteractionAdmission {
+    let user = user_id.to_string();
+    let owner = crate::config::owner::is_owner(&dc.allowed_users, &dc.bot_owner, &user);
+    let in_allowlist = dc
+        .allowed_users
+        .iter()
+        .filter_map(|s| s.parse::<i64>().ok())
+        .any(|u| u == user_id as i64);
+    let channel_str = channel_id.to_string();
+    // A thread or forum post resolves its settings through its parent (#384,
+    // #2014). The lookup runs only when the operator configured something a
+    // parent can carry, so a default install costs nothing.
+    let needs_parent = !is_dm && (!dc.allowed_channels.is_empty() || !dc.channels.is_empty());
+    let parent = if needs_parent {
+        super::commands::parent_channel_id(http, serenity::model::id::ChannelId::new(channel_id))
+            .await
+    } else {
+        None
+    };
+    let open_here = !is_dm && dc.channel_open(&channel_str, parent.as_deref());
+    let admitted = super::commands::identity_admitted(
+        dc.allowed_users.is_empty() && dc.allowed_roles.is_empty() && dc.bot_owner.is_empty(),
+        owner,
+        in_allowlist,
+        !is_dm && super::commands::holds_allowed_role(&dc.allowed_roles, role_ids),
+        open_here,
+    );
+
+    let mut channel_ok =
+        dc.allowed_channels.is_empty() || dc.allowed_channels.iter().any(|c| c == &channel_str);
+    if !channel_ok && !is_dm {
+        channel_ok = parent
+            .as_deref()
+            .is_some_and(|p| dc.allowed_channels.iter().any(|c| c == p));
+    }
+    // `respond_to` filters unsolicited messages; an invoked interaction is
+    // solicited by definition, so only `dm_only` applies, and it means the
+    // operator told this bot not to speak in guild channels.
+    let inside_dm_policy = is_dm
+        || !matches!(
+            dc.respond_to_for(&channel_str, parent.as_deref()),
+            crate::config::RespondTo::DmOnly
+        );
+
+    InteractionAdmission {
+        admitted,
+        channel_ok,
+        inside_dm_policy,
+        owner,
+    }
+}
+
+/// Extract the guild role ids an interaction carries (#212). Empty in a DM and
+/// when Discord omits the member payload, which is the safe reading: a missing
+/// member cannot grant a role.
+pub(crate) fn interaction_role_ids(member: Option<&serenity::model::guild::Member>) -> Vec<u64> {
+    member
+        .map(|m| m.roles.iter().map(|r| r.get()).collect())
+        .unwrap_or_default()
+}
+
 pub(crate) async fn handle_invoked_request(
     ctx: &Context,
     command: &CommandInteraction,
@@ -155,60 +256,18 @@ pub(crate) async fn handle_invoked_request(
     // same check for both.
     let cfg = config_rx.borrow().clone();
     let dc = &cfg.channels.discord;
-    let role_ids: Vec<u64> = if is_dm {
-        Vec::new()
-    } else {
-        command
-            .member
-            .as_ref()
-            .map(|m| m.roles.iter().map(|r| r.get()).collect())
-            .unwrap_or_default()
-    };
-    let owner = crate::config::owner::is_owner(&dc.allowed_users, &dc.bot_owner, &user.to_string());
-    let in_allowlist = dc
-        .allowed_users
-        .iter()
-        .filter_map(|s| s.parse::<i64>().ok())
-        .any(|u| u == user as i64);
-    // A thread or forum post resolves its settings through its parent (#384,
-    // #2014). The lookup runs only when the operator configured something a
-    // parent can carry, so a default install costs nothing.
-    let channel_str = channel_id.to_string();
-    let needs_parent = !is_dm && (!dc.allowed_channels.is_empty() || !dc.channels.is_empty());
-    let parent = if needs_parent {
-        super::commands::parent_channel_id(&ctx.http, command.channel_id).await
-    } else {
-        None
-    };
-    let open_here = !is_dm && dc.channel_open(&channel_str, parent.as_deref());
-    let admitted = super::commands::identity_admitted(
-        dc.allowed_users.is_empty() && dc.allowed_roles.is_empty() && dc.bot_owner.is_empty(),
+    let role_ids = interaction_role_ids(command.member.as_deref());
+    // One shared gate for every interaction kind (#212); the command path used
+    // to own this logic and the component/modal paths had none.
+    let verdict = admit_interaction(&ctx.http, dc, user, is_dm, channel_id, &role_ids).await;
+    let InteractionAdmission {
+        admitted,
+        channel_ok,
+        inside_dm_policy,
         owner,
-        in_allowlist,
-        !is_dm && super::commands::holds_allowed_role(&dc.allowed_roles, &role_ids),
-        open_here,
-    );
+    } = verdict;
 
-    // Channel scope, with the parent fallback: a thread or forum post carries
-    // its own id, so allow-listing a forum admits its posts.
-    let mut channel_ok =
-        dc.allowed_channels.is_empty() || dc.allowed_channels.iter().any(|c| c == &channel_str);
-    if !channel_ok && !is_dm {
-        channel_ok = parent
-            .as_deref()
-            .is_some_and(|p| dc.allowed_channels.iter().any(|c| c == p));
-    }
-    // `respond_to` filters unsolicited messages; an invoked command is
-    // solicited by definition, so only `dm_only` applies, and it means the
-    // operator told this bot not to speak in guild channels. The mode is the
-    // channel's own, with the parent and global fallbacks.
-    let inside_dm_policy = is_dm
-        || !matches!(
-            dc.respond_to_for(&channel_str, parent.as_deref()),
-            crate::config::RespondTo::DmOnly
-        );
-
-    if !admitted || !channel_ok || !inside_dm_policy {
+    if !verdict.allowed() {
         tracing::warn!(
             "Discord: refused {:?} from user {} (allowed={}, channel={}, dm_only={})",
             command.data.name,
