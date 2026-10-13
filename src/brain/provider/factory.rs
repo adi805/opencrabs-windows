@@ -1105,6 +1105,7 @@ fn vision_base_url(session_id: &str, cfg: &ProviderConfig) -> Option<String> {
         "minimax" => Some("https://api.minimax.io/v1".to_string()),
         "qwen" => Some(QWEN_DEFAULT_DASHSCOPE_URL.to_string()),
         "ollama" => Some("http://localhost:11434/v1".to_string()),
+        "opencrabs" => Some(super::opencrabs_install::OPENCRABS_BASE_URL.to_string()),
         // CLI wrappers, native protocols, and anything else without an
         // explicit base_url: no OpenAI-compatible endpoint to call.
         _ => None,
