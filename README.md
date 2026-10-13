@@ -1893,10 +1893,12 @@ The agent has a built-in `a2a_send` tool to communicate with remote A2A agents:
 
 | Action | Description |
 |--------|-------------|
-| `discover` | Fetch a remote agent's Agent Card (no approval needed) |
+| `discover` | Fetch a remote agent's Agent Card |
 | `send` | Send a task message to a remote agent |
 | `get` | Check status of a remote task |
 | `cancel` | Cancel a running remote task |
+
+Every action requires approval, `discover` included: it returns a response body to the model from a URL the model chose. The target is SSRF-guarded like `http_request` and `web_scrape`, so a URL that is, or resolves to, a private / link-local / cloud-metadata / CGNAT address is refused before a byte goes out, and every redirect hop is re-checked. A wildcard `[a2a] bind` (`0.0.0.0` or `::`) in a resolved profile URL is rewritten to loopback, since a bind address is a listen address and connecting to it reaches the same box.
 
 The tool supports optional `api_key` for authenticated endpoints and `context_id` for multi-turn conversations.
 

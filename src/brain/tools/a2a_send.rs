@@ -7,6 +7,7 @@ use super::error::Result;
 use super::r#trait::{Tool, ToolCapability, ToolExecutionContext, ToolHints, ToolResult};
 use async_trait::async_trait;
 use serde_json::Value;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Tool for communicating with remote A2A agents.
 #[derive(Default)]
@@ -89,10 +90,14 @@ impl Tool for A2aSendTool {
         true
     }
 
-    fn requires_approval_for_input(&self, input: &Value) -> bool {
-        // Discovery is read-only, no approval needed
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        action != "discover"
+    fn requires_approval_for_input(&self, _input: &Value) -> bool {
+        // Every action is gated, `discover` included (OC-A1). Discovery is a GET
+        // that hands the response body back to the model from a model-supplied
+        // URL, so it is a read primitive, not a free peek: the SSRF guard
+        // deliberately allows loopback, which would otherwise leave an
+        // unapproved `discover` able to read any local HTTP surface. The sibling
+        // read tools (`http_request`, `web_scrape`) gate every call the same way.
+        true
     }
 
     async fn execute(&self, input: Value, _context: &ToolExecutionContext) -> Result<ToolResult> {
@@ -124,8 +129,20 @@ impl Tool for A2aSendTool {
                 ));
             }
         };
+        // A bind address is a listen address, not a connect address (OC-A1).
+        let base_url = connectable_base(&base_url);
         let base_url: &str = &base_url;
         let api_key = input.get("api_key").and_then(|v| v.as_str());
+
+        // SSRF guard (OC-A1): `a2a_send` had none while `http_request` and
+        // `web_scrape` both validate. The target is caller-supplied and the
+        // response body goes back to the model, so it is a read SSRF: refuse any
+        // URL that is, or resolves to, a private / link-local / metadata /
+        // CGNAT address before a single byte goes out. Redirect hops are
+        // re-validated by the shared client every request is built on.
+        if let Err(reason) = super::ssrf::validate_url_resolved(base_url).await {
+            return Ok(ToolResult::error(format!("a2a_send refused: {reason}")));
+        }
 
         match action {
             "discover" => discover(base_url, api_key).await,
@@ -180,10 +197,51 @@ pub(crate) fn auth_headers(api_key: Option<&str>) -> reqwest::header::HeaderMap 
     headers
 }
 
+/// A reqwest client carrying the shared SSRF guard (OC-A1).
+///
+/// [`super::ssrf::guard_client`] installs the validating DNS resolver plus the
+/// per-hop redirect policy, the same pair `http_request` and `web_scrape` ride
+/// on. Redirects stay enabled, which is what these calls did before the guard
+/// was wired in: reqwest's default policy already followed up to ten, so a peer
+/// that redirects keeps working and every hop is re-checked.
+fn guarded_client() -> Result<reqwest::Client> {
+    super::ssrf::guard_client(reqwest::Client::builder(), true)
+        .build()
+        .map_err(|e| super::error::ToolError::Execution(format!("A2A client build failed: {e}")))
+}
+
+/// Rewrite a wildcard listen address to loopback.
+///
+/// `[a2a] bind` is a *listen* address, and an operator reaching a same-box peer
+/// commonly writes `0.0.0.0` (or `::`). The base URL derived from it then names
+/// an unspecified address, which the SSRF guard refuses, so a target that
+/// worked before the guard was wired in would start failing. Connecting to
+/// `0.0.0.0` reaches loopback on Linux anyway, so rewriting the host keeps the
+/// behaviour and stays inside the guard's rules. A URL that does not parse is
+/// returned unchanged and left for the guard to reject.
+pub(crate) fn connectable_base(base_url: &str) -> String {
+    let Ok(mut parsed) = url::Url::parse(base_url) else {
+        return base_url.to_string();
+    };
+    // Map each wildcard to its OWN loopback. `set_ip_host` takes the address
+    // directly, so no host string is re-parsed and `::` never lands on a v4
+    // address (which `set_host(Some("::1"))` would not have handled either: the
+    // host parser wants an IPv6 literal bracketed).
+    let loopback = match parsed.host() {
+        Some(url::Host::Ipv4(v4)) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        Some(url::Host::Ipv6(v6)) if v6.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        _ => return base_url.to_string(),
+    };
+    if parsed.set_ip_host(loopback).is_err() {
+        return base_url.to_string();
+    }
+    parsed.to_string().trim_end_matches('/').to_string()
+}
+
 /// Discover a remote agent's capabilities via their Agent Card.
 async fn discover(base_url: &str, api_key: Option<&str>) -> Result<ToolResult> {
     let url = format!("{}/.well-known/agent.json", base_url);
-    let client = reqwest::Client::new();
+    let client = guarded_client()?;
     let resp = client
         .get(&url)
         .headers(auth_headers(api_key))
@@ -237,7 +295,7 @@ async fn send_message(
         "id": 1
     });
 
-    let client = reqwest::Client::new();
+    let client = guarded_client()?;
     let resp = client
         .post(&url)
         .headers(auth_headers(api_key))
@@ -301,7 +359,7 @@ async fn get_task(base_url: &str, api_key: Option<&str>, task_id: &str) -> Resul
         "id": 1
     });
 
-    let client = reqwest::Client::new();
+    let client = guarded_client()?;
     let resp = client
         .post(&url)
         .headers(auth_headers(api_key))
@@ -357,7 +415,7 @@ async fn cancel_task(base_url: &str, api_key: Option<&str>, task_id: &str) -> Re
         "id": 1
     });
 
-    let client = reqwest::Client::new();
+    let client = guarded_client()?;
     let resp = client
         .post(&url)
         .headers(auth_headers(api_key))
