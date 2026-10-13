@@ -32,6 +32,7 @@ enabled = false
 default_model = "deepseek-v4.1-flash"
 models = ["deepseek-v4.1-flash"]
 context_window = 200000
+vision_model = "deepseek-v4.1-flash"  # Multimodal: attached images work on day 0
 
 # ========================================
 # Xiaomi MiMo
