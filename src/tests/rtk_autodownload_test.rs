@@ -4,7 +4,7 @@
 //! to release-asset mapping, and the pinned RTK version drifting away from the
 //! version the release pipeline bundles through `scripts/fetch-rtk.sh`.
 
-use crate::rtk::rewrite::{RTK_VERSION, rtk_asset_name, rtk_bin_filename};
+use crate::rtk::rewrite::{RTK_VERSION, rtk_asset_name, rtk_asset_sha256, rtk_bin_filename};
 
 #[test]
 fn current_platform_has_a_release_asset() {
@@ -108,4 +108,46 @@ fn workflows_do_not_reinline_the_rtk_version() {
         offenders.is_empty(),
         "workflows re-inline RTK_VERSION instead of calling scripts/fetch-rtk.sh: {offenders:?}"
     );
+}
+
+#[test]
+fn pinned_sha256_table_matches_the_fetch_script() {
+    // OC-A6: the runtime download path writes an executable and chmods it
+    // 0755, so the digests it verifies against must be exactly the ones the
+    // release pipeline trusts. `scripts/fetch-rtk.sh` is that trust anchor;
+    // this asserts the in-source table cannot drift from it.
+    let script =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/fetch-rtk.sh"))
+            .expect("scripts/fetch-rtk.sh should exist at the repo root");
+
+    let pairs = parse_asset_digests(&script);
+    for (asset, sha) in &pairs {
+        assert_eq!(
+            rtk_asset_sha256(asset),
+            Some(sha.as_str()),
+            "rtk_asset_sha256({asset}) drifted from scripts/fetch-rtk.sh"
+        );
+    }
+    assert!(
+        pairs.len() >= 5,
+        "expected at least 5 pinned assets in scripts/fetch-rtk.sh, found {}",
+        pairs.len()
+    );
+}
+
+/// Pull every `asset="..."` / `sha256="..."` pair out of the fetch script.
+fn parse_asset_digests(script: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    let mut pending_asset: Option<String> = None;
+    for line in script.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("asset=\"") {
+            pending_asset = rest.strip_suffix('"').map(str::to_string);
+        } else if let Some(rest) = line.strip_prefix("sha256=\"") {
+            if let (Some(asset), Some(sha)) = (pending_asset.take(), rest.strip_suffix('"')) {
+                pairs.push((asset, sha.to_string()));
+            }
+        }
+    }
+    pairs
 }
