@@ -57,9 +57,16 @@ pub async fn fetch_static(url: &str, timeout_secs: u64) -> Result<String, String
         ));
     }
 
-    resp.text()
-        .await
-        .map_err(|e| format!("Failed to read response body: {e}"))
+    // #216: read under a byte ceiling instead of `resp.text()`, which had to
+    // receive the whole body before any limit could apply. The cap is enforced
+    // during the read, so an oversized or endless chunked response stops here
+    // rather than in memory.
+    let read = crate::brain::tools::response_bounds::read_body_capped(
+        resp,
+        crate::brain::tools::response_bounds::DEFAULT_MAX_RESPONSE_BYTES,
+    )
+    .await?;
+    Ok(read.text)
 }
 
 /// Heuristic: does this HTML look like an unrendered JavaScript shell? True when
@@ -88,9 +95,26 @@ pub async fn fetch_rendered(
         .await
         .map_err(|e| format!("Browser error: {e}"))?;
 
+    // #216: the caller validated the URL we ASKED for. A redirect can land the
+    // browser somewhere the static policy would refuse, so the URL we ENDED UP
+    // at is checked too. This closes the redirect hop; requests the PAGE makes
+    // on its own (subresources, XHR) are not covered here and would need CDP
+    // request interception, which is a larger change than this one.
+    if let Err(reason) = crate::brain::tools::ssrf::validate_url(url) {
+        return Err(format!("web_scrape: refused before rendering: {reason}"));
+    }
     page.goto(url)
         .await
         .map_err(|e| format!("Navigation failed: {e}"))?;
+
+    if let Ok(Some(landed)) = page.url().await
+        && let Err(reason) = crate::brain::tools::ssrf::validate_url(&landed)
+    {
+        return Err(format!(
+            "web_scrape: rendering was redirected to a refused destination ({reason}); \
+             landed on {landed}"
+        ));
+    }
 
     // Wait for network to settle rather than the bare `load` event, so
     // client-side hydration has a chance to populate the DOM before we read it.

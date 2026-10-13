@@ -260,6 +260,9 @@ impl Tool for RsiProposeTool {
                         .and_then(|v| v.as_str())
                         .map(str::to_string),
                     params,
+
+                    max_response_bytes: None,
+                    allow_private_network: false,
                 };
 
                 // Sanity: shell tools need a command, http tools need a url.

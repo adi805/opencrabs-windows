@@ -246,6 +246,9 @@ impl ToolManageTool {
             timeout_secs: input["timeout_secs"].as_u64().unwrap_or(30),
             requires_approval: input["requires_approval"].as_bool().unwrap_or(true),
             enabled: true,
+
+            max_response_bytes: None,
+            allow_private_network: false,
         };
 
         match DynamicToolLoader::add_tool(&self.tools_path, def, &self.registry) {

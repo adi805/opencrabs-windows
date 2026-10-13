@@ -44,6 +44,9 @@ fn test_add_and_list() {
             coerce_empty_to: Default::default(),
             coerce_null_to: Default::default(),
         }],
+
+        max_response_bytes: None,
+        allow_private_network: false,
     };
     DynamicToolLoader::add_tool(&path, def, &reg).unwrap();
     assert!(reg.has_tool("ping"));
@@ -69,6 +72,9 @@ fn test_remove() {
         timeout_secs: 10,
         command: Some("echo".into()),
         params: vec![],
+
+        max_response_bytes: None,
+        allow_private_network: false,
     };
     DynamicToolLoader::add_tool(&path, def, &reg).unwrap();
     assert!(DynamicToolLoader::remove_tool(&path, "rm_me", &reg).unwrap());
@@ -91,6 +97,9 @@ fn test_enable_disable() {
         timeout_secs: 10,
         command: Some("echo".into()),
         params: vec![],
+
+        max_response_bytes: None,
+        allow_private_network: false,
     };
     DynamicToolLoader::add_tool(&path, def, &reg).unwrap();
     DynamicToolLoader::set_enabled(&path, "tog", false, &reg).unwrap();

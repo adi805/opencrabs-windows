@@ -74,6 +74,9 @@ fn inbox_list_sorts_tool_command_skill_by_creation_time() {
                 timeout_secs: 30,
                 command: Some("gh issue list".to_string()),
                 params: Vec::new(),
+
+                max_response_bytes: None,
+                allow_private_network: false,
             },
         )
         .unwrap();

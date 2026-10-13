@@ -85,6 +85,17 @@ pub struct DynamicToolDef {
     pub command: Option<String>,
     #[serde(default)]
     pub params: Vec<ParamDef>,
+    /// Ceiling on the response body held in memory (#216). Defaults to
+    /// [`crate::brain::tools::response_bounds::DEFAULT_MAX_RESPONSE_BYTES`].
+    #[serde(default)]
+    pub max_response_bytes: Option<usize>,
+    /// Opt in to destinations the SSRF guard rejects (#216). Default false: an
+    /// HTTP tool is a server-side fetch like any other, so a configured URL that
+    /// points at a private address is refused unless the operator says the
+    /// integration is deliberate. This is the explicit policy the issue asks
+    /// for instead of an accidental blanket prohibition.
+    #[serde(default)]
+    pub allow_private_network: bool,
 }
 
 fn default_true() -> bool {
@@ -409,7 +420,29 @@ impl DynamicTool {
             None => return Ok(ToolResult::error("HTTP tool missing 'url' field".into())),
         };
         let method = self.def.method.as_deref().unwrap_or("GET").to_uppercase();
-        let client = reqwest::Client::new();
+
+        // #216: a configured HTTP tool is a server-side fetch, so it gets the
+        // same two halves of the SSRF guard every other fetch tool uses - a
+        // validating resolver and a re-checking redirect policy - unless the
+        // operator explicitly opted this tool into private-network targets.
+        if !self.def.allow_private_network
+            && let Err(reason) = crate::brain::tools::ssrf::validate_url_resolved(&url).await
+        {
+            return Ok(ToolResult::error(format!(
+                "HTTP tool '{}' refused before sending: {reason}. If this target is a deliberate private-network integration, set `allow_private_network = true` on the tool definition (#216).",
+                self.def.name
+            )));
+        }
+        let client = crate::brain::tools::ssrf::guard_client(
+            reqwest::Client::builder(),
+            !self.def.allow_private_network,
+        )
+        .build()
+        .map_err(|e| {
+            crate::brain::tools::error::ToolError::Execution(format!(
+                "Failed to build HTTP client: {e}"
+            ))
+        })?;
         let mut req = match method.as_str() {
             "POST" => client.post(&url),
             "PUT" => client.put(&url),
@@ -425,7 +458,23 @@ impl DynamicTool {
         match req.timeout(timeout).send().await {
             Ok(resp) => {
                 let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
+                // #216: bounded read. `resp.text()` had to buffer the whole
+                // body before the output budget could reject any of it.
+                let limit = self
+                    .def
+                    .max_response_bytes
+                    .unwrap_or(crate::brain::tools::response_bounds::DEFAULT_MAX_RESPONSE_BYTES);
+                let read = match crate::brain::tools::response_bounds::read_body_capped(resp, limit)
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => return Ok(ToolResult::error(format!("HTTP body read failed: {e}"))),
+                };
+                let body = crate::brain::tools::response_bounds::note_truncation(
+                    read.text.clone(),
+                    &read,
+                    limit,
+                );
                 if status.is_success() {
                     Ok(ToolResult::success(body))
                 } else {
