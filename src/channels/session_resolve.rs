@@ -28,6 +28,20 @@ pub fn chat_id_suffix(id: &str) -> String {
     format!("[chat:{id}]")
 }
 
+/// Extract the chat id from a `channel_chat_key` (#1721), accepting both shapes
+/// the tree writes: `[chat:<id>]` and `[chat:<id>:topic:<tid>]`. Returns `None`
+/// when the key is not a chat binding at all, so callers can refuse rather than
+/// guess.
+pub fn chat_id_from_key(key: &str) -> Option<String> {
+    let rest = key.strip_prefix("[chat:")?;
+    let id = rest.split([':', ']']).next()?.trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
 /// True when a session exceeded the configured idle window.
 pub fn session_idle_expired(
     updated_at: chrono::DateTime<chrono::Utc>,
