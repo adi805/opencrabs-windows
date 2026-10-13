@@ -49,7 +49,7 @@ Every tool parameter defined in `[[tools.params]]` becomes available in two ways
 2. **`{{param_name}}`** — Inline template substitution. Replaced with the string value of the parameter:
 
    ```toml
-   command = "curl -s -H \"Authorization: Bearer {{api_key}}\" {{endpoint}}"
+   command = "curl -s -H \"Authorization: Bearer {{api_key}}\" \"{{endpoint}}\""
    ```
 
 ### Conditional Sections
@@ -57,7 +57,7 @@ Every tool parameter defined in `[[tools.params]]` becomes available in two ways
 Wrap template content with `{{#param_name}}...{{/param_name}}` to include only when the parameter is non-null and non-empty:
 
 ```toml
-command = """curl -s {{#query}}-G --data-urlencode "q={{query}}"{{/query}} {{url}}"""
+command = """curl -s {{#query}}-G --data-urlencode "q={{query}}"{{/query}} \"{{url}}\""""
 ```
 
 ## Coercion Rules

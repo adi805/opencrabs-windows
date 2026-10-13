@@ -3151,7 +3151,7 @@ required = true
 name = "deploy_staging"
 description = "Deploy the current branch to staging"
 executor = "shell"
-command = "cd ~/project && ./deploy.sh {{branch}} staging"
+command = "cd ~/project && ./deploy.sh \"{{branch}}\" staging"
 timeout_secs = 120
 requires_approval = true
 
@@ -3344,7 +3344,7 @@ token = "ghp_YOUR_GITHUB_PAT"
 Reference them via shell variables in the `command`:
 
 ```toml
-command = "GH_TOKEN={{env:github_mcp.token}} mcp github search_repositories '{"query":"{{query}}","limit":{{limit}}}'"
+command = "GH_TOKEN=\"{{env:github_mcp.token}}\" mcp github search_repositories '{"query":"{{query}}","limit":{{limit}}}'"
 ```
 
 For testing, you can put the token directly in the command — but don't commit that.
