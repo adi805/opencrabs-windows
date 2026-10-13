@@ -183,14 +183,28 @@ impl Tool for GrepTool {
 
         let mut matches = Vec::new();
         let mut total_matches = 0;
+        // Confidential files the search refused to read (OC-08). Counted and
+        // named so an empty result cannot be mistaken for "the file is clean".
+        let mut skipped_confidential: Vec<String> = Vec::new();
 
         if search_path.is_file() {
+            // An explicitly named confidential file is refused outright, the
+            // way read_file refuses it: reporting "no matches" would read as
+            // "nothing sensitive in there" when the search never ran.
+            if let Some(reason) = super::confidential::is_confidential(&search_path) {
+                return Ok(ToolResult::error(format!(
+                    "grep refused: {} is confidential ({reason}) and is not searchable \
+                     through tools (OC-08).",
+                    search_path.display()
+                )));
+            }
             self.search_file(
                 &search_path,
                 &regex,
                 &input,
                 &mut matches,
                 &mut total_matches,
+                &mut skipped_confidential,
             )
             .await?;
         } else {
@@ -200,14 +214,25 @@ impl Tool for GrepTool {
                 &input,
                 &mut matches,
                 &mut total_matches,
+                &mut skipped_confidential,
             )
             .await?;
         }
 
+        let skipped_note = if skipped_confidential.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\n({} confidential file(s) skipped: {})",
+                skipped_confidential.len(),
+                skipped_confidential.join(", ")
+            )
+        };
+
         if matches.is_empty() {
             return Ok(ToolResult::success(format!(
-                "No matches found for pattern: '{}'",
-                input.pattern
+                "No matches found for pattern: '{}'{}",
+                input.pattern, skipped_note
             )));
         }
 
@@ -226,7 +251,10 @@ impl Tool for GrepTool {
             format!("\n\n({} matches)", total_matches)
         };
 
-        Ok(ToolResult::success(format!("{}{}", output, summary)))
+        Ok(ToolResult::success(format!(
+            "{}{}{}",
+            output, summary, skipped_note
+        )))
     }
 }
 
@@ -238,7 +266,17 @@ impl GrepTool {
         input: &GrepInput,
         matches: &mut Vec<String>,
         total_matches: &mut usize,
+        skipped_confidential: &mut Vec<String>,
     ) -> Result<()> {
+        // Confidential-path deny (OC-08), the same gate read_file applies.
+        // Without it `grep -r 'sk-' ~/.opencrabs/` returned the provider keys
+        // verbatim: grep returns file CONTENTS, so it is a read, and a read
+        // path that skips the deny is the deny not existing.
+        if let Some(reason) = super::confidential::is_confidential(path) {
+            skipped_confidential.push(format!("{} ({reason})", path.display()));
+            return Ok(());
+        }
+
         // Check file pattern filter
         if let Some(ref pattern) = input.file_pattern {
             let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -314,6 +352,7 @@ impl GrepTool {
         input: &'a GrepInput,
         matches: &'a mut Vec<String>,
         total_matches: &'a mut usize,
+        skipped_confidential: &'a mut Vec<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             let mut entries = fs::read_dir(dir).await.map_err(ToolError::Io)?;
@@ -329,8 +368,15 @@ impl GrepTool {
                 }
 
                 if path.is_file() {
-                    self.search_file(&path, regex, input, matches, total_matches)
-                        .await?;
+                    self.search_file(
+                        &path,
+                        regex,
+                        input,
+                        matches,
+                        total_matches,
+                        skipped_confidential,
+                    )
+                    .await?;
                 } else if path.is_dir() {
                     // Skip hidden and heavy directories
                     if let Some(name) = path.file_name().and_then(|n| n.to_str())
@@ -338,8 +384,15 @@ impl GrepTool {
                     {
                         continue;
                     }
-                    self.search_directory(&path, regex, input, matches, total_matches)
-                        .await?;
+                    self.search_directory(
+                        &path,
+                        regex,
+                        input,
+                        matches,
+                        total_matches,
+                        skipped_confidential,
+                    )
+                    .await?;
                 }
             }
 

@@ -38,8 +38,19 @@ pub(crate) fn is_confidential(path: &Path) -> Option<&'static str> {
     {
         return Some("SSH private key");
     }
-    // The agent's own secret store.
-    if name == "keys.toml" {
+    // The agent's own secret store, INCLUDING its backups. A copy of the store
+    // is the same secrets, so matching only the exact basename protects
+    // nothing: real homes carry `keys.toml.bak-<stamp>`,
+    // `keys.toml.pre-<stamp>` and `keys.last_good.toml` beside `keys.toml`.
+    // A shipped TEMPLATE is not a secret, so `keys.toml.example` (empty
+    // placeholders, meant to be read and copied) stays readable.
+    let keys_template =
+        name.ends_with(".example") || name.ends_with(".template") || name.ends_with(".sample");
+    if !keys_template
+        && (name == "keys.toml"
+            || name.starts_with("keys.toml.")
+            || (name.starts_with("keys.") && name.ends_with(".toml")))
+    {
         return Some("keys.toml (provider keys and channel tokens)");
     }
     // Environment files: .env, .env.local, .env.production, …
