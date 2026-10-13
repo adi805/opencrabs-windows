@@ -11,6 +11,33 @@ use std::path::Path;
 #[test]
 fn the_agents_secret_store_is_confidential() {
     assert!(is_confidential(Path::new("/home/u/.opencrabs/keys.toml")).is_some());
+    // A copy of the store is the same secrets. Real homes carry these beside
+    // keys.toml, and matching only the exact basename left every one readable.
+    assert!(is_confidential(Path::new("/home/u/.opencrabs/keys.last_good.toml")).is_some());
+    assert!(is_confidential(Path::new("/home/u/.opencrabs/keys.toml.bak")).is_some());
+    assert!(
+        is_confidential(Path::new(
+            "/home/u/.opencrabs/keys.toml.bak-20261008-042939"
+        ))
+        .is_some()
+    );
+    assert!(
+        is_confidential(Path::new(
+            "/home/u/.opencrabs/keys.toml.pre-capabilities-20261007-172905"
+        ))
+        .is_some()
+    );
+    assert!(is_confidential(Path::new("/home/u/.opencrabs/keys.toml.autofix.bak")).is_some());
+    // The backup-dir copy is caught by the basename rule too.
+    assert!(
+        is_confidential(Path::new(
+            "/home/u/.opencrabs/backups/keys.toml.pre-capabilities-20261007"
+        ))
+        .is_some()
+    );
+    // The shipped template holds empty placeholders and is meant to be read,
+    // so it must NOT be caught by the widened keys rule.
+    assert!(is_confidential(Path::new("/repo/keys.toml.example")).is_none());
 }
 
 #[test]
@@ -49,5 +76,19 @@ fn read_file_wires_the_deny() {
     assert!(
         src.contains("confidential::is_confidential"),
         "read_file must call the confidential deny (OC-08)"
+    );
+}
+
+#[test]
+fn grep_wires_the_deny_on_both_paths() {
+    // grep returns file CONTENTS, so it is a read path: an explicitly named
+    // file is refused, and a directory walk skips what it cannot read. Both
+    // call sites are pinned, so removing either one goes red.
+    let src = std::fs::read_to_string("src/brain/tools/grep.rs").unwrap();
+    let calls = src.matches("confidential::is_confidential").count();
+    assert!(
+        calls >= 2,
+        "grep must apply the confidential deny on both the explicit-file and the \
+         directory-walk path (OC-08); found {calls} call(s)"
     );
 }
