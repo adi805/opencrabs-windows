@@ -34,6 +34,11 @@ fn workflow(name: &str) -> String {
 fn push_paths(yaml: &str) -> Vec<String> {
     let mut paths = Vec::new();
     let mut in_paths = false;
+    // Only the FIRST `paths:` block counts: it is the one under `on.push`,
+    // and a later one (a job's own `paths:`, or a second trigger) must not
+    // leak into the answer. Pinned by
+    // `the_filter_reader_finds_the_push_paths_it_is_given`.
+    let mut found = false;
     let mut paths_indent = 0usize;
     for line in yaml.lines() {
         let trimmed = line.trim();
@@ -50,8 +55,9 @@ fn push_paths(yaml: &str) -> Vec<String> {
             }
             in_paths = false;
         }
-        if trimmed == "paths:" {
+        if !found && trimmed == "paths:" {
             in_paths = true;
+            found = true;
             paths_indent = indent;
         }
     }
