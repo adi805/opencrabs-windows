@@ -194,6 +194,16 @@ fn redacts_long_hex_token() {
     );
 }
 
+#[test]
+fn redacts_64_char_hex_install_token() {
+    // Shape of a token the inference proxy issues: 32 random bytes, hex encoded.
+    let token = "0123456789abcdef".repeat(4);
+    assert_eq!(token.len(), 64);
+    let input = format!("Authorization: Bearer {token}");
+    let out = redact_secrets(&input);
+    assert!(!out.contains(&token), "64-char install token leaked: {out}");
+}
+
 // ── Combined patterns ──────────────────────────────────────────────
 
 #[test]
