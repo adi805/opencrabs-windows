@@ -425,13 +425,13 @@ impl DynamicTool {
         // same two halves of the SSRF guard every other fetch tool uses - a
         // validating resolver and a re-checking redirect policy - unless the
         // operator explicitly opted this tool into private-network targets.
-        if !self.def.allow_private_network {
-            if let Err(reason) = crate::brain::tools::ssrf::validate_url_resolved(&url).await {
-                return Ok(ToolResult::error(format!(
-                    "HTTP tool '{}' refused before sending: {reason}. If this target is a deliberate private-network integration, set `allow_private_network = true` on the tool definition (#216).",
-                    self.def.name
-                )));
-            }
+        if !self.def.allow_private_network
+            && let Err(reason) = crate::brain::tools::ssrf::validate_url_resolved(&url).await
+        {
+            return Ok(ToolResult::error(format!(
+                "HTTP tool '{}' refused before sending: {reason}. If this target is a deliberate private-network integration, set `allow_private_network = true` on the tool definition (#216).",
+                self.def.name
+            )));
         }
         let client = crate::brain::tools::ssrf::guard_client(
             reqwest::Client::builder(),

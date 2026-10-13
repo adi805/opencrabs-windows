@@ -107,13 +107,13 @@ pub async fn fetch_rendered(
         .await
         .map_err(|e| format!("Navigation failed: {e}"))?;
 
-    if let Ok(Some(landed)) = page.url().await {
-        if let Err(reason) = crate::brain::tools::ssrf::validate_url(&landed) {
-            return Err(format!(
-                "web_scrape: rendering was redirected to a refused destination ({reason}); \
-                 landed on {landed}"
-            ));
-        }
+    if let Ok(Some(landed)) = page.url().await
+        && let Err(reason) = crate::brain::tools::ssrf::validate_url(&landed)
+    {
+        return Err(format!(
+            "web_scrape: rendering was redirected to a refused destination ({reason}); \
+             landed on {landed}"
+        ));
     }
 
     // Wait for network to settle rather than the bare `load` event, so

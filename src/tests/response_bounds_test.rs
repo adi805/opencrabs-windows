@@ -65,11 +65,15 @@ fn an_empty_body_is_not_truncated() {
 
 #[test]
 fn the_default_cap_is_finite_and_generous() {
-    assert!(DEFAULT_MAX_RESPONSE_BYTES >= 1024 * 1024);
-    assert!(
-        DEFAULT_MAX_RESPONSE_BYTES <= 64 * 1024 * 1024,
-        "a cap this large would not bound anything useful on a small host"
-    );
+    // Compile-time assertions: the cap is a const, so a bad value should fail
+    // the build rather than a test run (clippy::assertions_on_constants).
+    const {
+        assert!(DEFAULT_MAX_RESPONSE_BYTES >= 1024 * 1024);
+        assert!(
+            DEFAULT_MAX_RESPONSE_BYTES <= 64 * 1024 * 1024,
+            "a cap this large would not bound anything useful on a small host"
+        );
+    }
 }
 
 // ── the truncation notice ───────────────────────────────────────────
