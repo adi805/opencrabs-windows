@@ -227,6 +227,35 @@ pub(crate) fn rtk_asset_name() -> Option<&'static str> {
     }
 }
 
+/// Pinned SHA-256 for each auto-downloadable RTK asset.
+///
+/// This table MUST stay in lockstep with the `sha256=` entries in
+/// `scripts/fetch-rtk.sh`, which is the single trust anchor the release
+/// pipeline verifies against. The runtime download path writes an executable
+/// and chmods it 0755, so without this check a swapped release asset would be
+/// arbitrary code execution (OC-A6). `rtk_auto_download_test` asserts the two
+/// tables agree, so they cannot drift apart silently.
+pub(crate) fn rtk_asset_sha256(asset: &str) -> Option<&'static str> {
+    match asset {
+        "rtk-x86_64-unknown-linux-musl.tar.gz" => {
+            Some("a75d210a445874106bc16da2b4efba01d36d297afa33ec134728f2d5f42ef5af")
+        }
+        "rtk-aarch64-unknown-linux-gnu.tar.gz" => {
+            Some("1d0087ad62a182c0833c2251ac678b5e05356418d91aa57305ac51a126c9b102")
+        }
+        "rtk-x86_64-apple-darwin.tar.gz" => {
+            Some("8eac502fb812056973da2a8c2f0c00e1427ba5f71bd14c01520bc540630cb98a")
+        }
+        "rtk-aarch64-apple-darwin.tar.gz" => {
+            Some("60c2c325b4edf0367cfa9716ac2e2c888abcd065eff45d01510da6561ab82e3c")
+        }
+        "rtk-x86_64-pc-windows-msvc.zip" => {
+            Some("7fc90190f76f55dc170898d0ac755e89f405fc2d1d89f717ad8600640ab0f1ed")
+        }
+        _ => None,
+    }
+}
+
 /// Writable install locations for the RTK binary, in preference order: next to
 /// the OpenCrabs executable first (so `find_rtk_binary` picks it up with zero
 /// PATH dependency), then `~/.local/bin` as a PATH-friendly fallback.
@@ -286,6 +315,31 @@ async fn download_and_install_rtk() -> Option<String> {
             return None;
         }
     };
+
+    // Verify the archive against the pinned digest BEFORE extracting or
+    // writing anything. This path installs an executable and chmods it 0755,
+    // so an unverified download is arbitrary code execution (OC-A6). A missing
+    // entry fails closed rather than trusting the asset.
+    let Some(expected) = rtk_asset_sha256(asset) else {
+        tracing::warn!(
+            asset = asset,
+            "RTK auto-download: no pinned sha256 for this asset; refusing to install an unverified binary"
+        );
+        return None;
+    };
+    let actual = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(&bytes))
+    };
+    if actual != expected {
+        tracing::warn!(
+            asset = asset,
+            expected = expected,
+            actual = %actual,
+            "RTK auto-download: checksum mismatch; refusing to install the archive"
+        );
+        return None;
+    }
 
     let bin = rtk_bin_filename();
     let extracted = if asset.ends_with(".zip") {
