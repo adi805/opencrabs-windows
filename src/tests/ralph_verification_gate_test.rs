@@ -409,3 +409,37 @@ fn verification_directory_is_not_the_process_cwd() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// OC-A2: the verification runner is behind the shared command blocklist.
+///
+/// The commands come from `[verification].task_type_commands` in
+/// `ralph_loop.toml`, and a session can write that file, so this path was a way
+/// around the blocklist: a task completion would shell out to whatever the file
+/// named. Asserted behaviourally with a marker, so a refusal that still spawned
+/// the shell would leave the file behind.
+#[test]
+fn verification_refuses_a_blocklisted_command_without_spawning() {
+    let dir = std::env::temp_dir().join(format!(
+        "opencrabs_ralph_floor_probe-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let marker = dir.join("ran");
+    std::fs::remove_file(&marker).ok();
+
+    let (code, output) =
+        run_verification_command(&format!("rm -rf / ; touch {}", marker.display()), &dir);
+
+    assert_ne!(code, 0, "a blocklisted command must not report success");
+    assert!(
+        output.contains("command blocklist"),
+        "refusal must name the blocklist, was: {output}"
+    );
+    assert!(
+        !marker.exists(),
+        "the verification shell ran despite the refusal: {} exists",
+        marker.display()
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

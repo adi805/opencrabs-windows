@@ -190,6 +190,52 @@ async fn test_trigger_runner_exit_code() {
     assert_eq!(res.exit_code, 42);
 }
 
+/// OC-A2: the trigger path runs the same command blocklist as `bash`.
+///
+/// `trigger_cmd` is authored through `cron_manage`, and this path spawned the
+/// platform shell with no floor, so a blocklisted command executed on schedule
+/// while `bash` refused the identical string. Asserted behaviourally: the
+/// command carries a side effect (creating a marker), so a refusal that still
+/// spawned the shell would leave the file behind.
+#[tokio::test]
+async fn test_trigger_runner_refuses_a_blocklisted_command_without_spawning() {
+    let marker = std::env::temp_dir().join(format!(
+        "opencrabs_trigger_floor_probe_{}",
+        std::process::id()
+    ));
+    std::fs::remove_file(&marker).ok();
+
+    let runner = TriggerRunner::default();
+    // `rm -rf /` is on the hard blocklist; the marker would only exist if the
+    // shell ran the whole line.
+    let err = runner
+        .run(&format!("rm -rf / ; touch {}", marker.display()))
+        .await
+        .expect_err("a blocklisted trigger command must not run");
+    assert!(
+        err.contains("command blocklist"),
+        "refusal must name the blocklist, was: {err}"
+    );
+    assert!(
+        !marker.exists(),
+        "the trigger shell ran despite the refusal: {} exists",
+        marker.display()
+    );
+
+    std::fs::remove_file(&marker).ok();
+}
+
+/// The refusal is fail-closed: the scheduler must not run the job's prompt when
+/// the trigger could not be evaluated.
+#[tokio::test]
+async fn test_trigger_runner_still_runs_an_ordinary_command() {
+    // The other half of the gate: a normal trigger is untouched.
+    let runner = TriggerRunner::default();
+    let res = runner.run("echo ok").await.expect("ordinary command runs");
+    assert_eq!(res.exit_code, 0);
+    assert_eq!(res.stdout.trim(), "ok");
+}
+
 #[tokio::test]
 async fn test_pipeline_evaluate_no_trigger() {
     let job = CronJob::new(

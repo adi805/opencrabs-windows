@@ -970,7 +970,21 @@ pub(crate) fn ralph_loop_config(working_dir: &Path) -> Option<std::sync::Arc<Ral
 }
 
 /// Run a shell command and return (exit_code, stdout+stderr).
+///
+/// The command is filtered through the shared command blocklist first, the same
+/// floor `bash`, `execute_code` and the dynamic shell executor use (OC-A2). It
+/// arrives from `[verification].task_type_commands` in `ralph_loop.toml`, and a
+/// session can write that file (the project-level one is authoritative), so
+/// without this the verification gate was a way around the blocklist: a task
+/// completion would shell out to whatever the file named. A refusal is reported
+/// as exit code -1 with the reason, which the gate already treats as a failure.
 pub(crate) fn run_verification_command(cmd: &str, working_dir: &std::path::Path) -> (i32, String) {
+    if let Some(reason) = super::bash::assert_command_allowed(cmd) {
+        return (
+            -1,
+            format!("Verification command refused by the command blocklist: {reason} (OC-A2)."),
+        );
+    }
     // Without an explicit directory the child inherits the OpenCrabs process
     // cwd, i.e. wherever the binary was launched, so a plan in one repo was
     // gated on build results from another (#921). Every other tool resolves

@@ -105,7 +105,28 @@ impl TriggerRunner {
     /// fails at runtime on every trigger -- exactly the "starts vs ships"
     /// class the footgun gate exists to catch. The POSIX-vs-cmd dialect
     /// gap for trigger snippets is tracked as #7.
+    ///
+    /// The command is run through the shared command blocklist first, so this
+    /// path cannot do what `bash` refuses (OC-A2).
     pub async fn run(&self, cmd: &str) -> Result<TriggerResult, String> {
+        // The bash hard blocklist is the immovable floor for every execution
+        // path (OC-06 / OC-A2). A `trigger_cmd` is authored through
+        // `cron_manage`, and this path ran it through the platform shell with
+        // no floor at all, so `trigger_cmd = "rm -rf ~"` executed on schedule
+        // while `bash` refused the identical string. Checked here, at run time,
+        // rather than only at create time, so a job stored before this gate
+        // existed cannot fire unguarded either.
+        //
+        // Refused as an Err, not a non-firing result: the scheduler treats a
+        // trigger error as "do not run this job" and records the refusal, which
+        // is the fail-closed outcome. A silent skip would report the job as
+        // having decided not to fire.
+        if let Some(reason) = crate::brain::tools::bash::assert_command_allowed(cmd) {
+            return Err(format!(
+                "Trigger command refused by the command blocklist: {reason} (OC-A2)."
+            ));
+        }
+
         use crate::utils::shell::PushShellCommand;
         let (shell, shell_arg) = crate::utils::shell::shell_pair();
         let child = Command::new(shell)
