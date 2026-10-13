@@ -1678,7 +1678,7 @@ default_model = "moonshotai/kimi-k2.5"
 api_key = "nvapi-..."
 ```
 
-**Provider priority:** Claude CLI > OpenCode CLI > Codex CLI > OpenCode > Qwen > Anthropic > OpenAI > GitHub Copilot > Gemini > OpenRouter > MiniMax > z.ai GLM > Moonshot Kimi > Ollama > Custom. The first provider with `enabled = true` is used on new sessions. Each provider has its own API key in `keys.toml` — no sharing or confusion.
+**Provider priority:** Xiaomi > Claude CLI > OpenCode CLI > Codex CLI > Command Code CLI > Codex > OpenCode > Qwen > Anthropic > OpenAI > GitHub Copilot > Gemini > OpenRouter > MiniMax > z.ai GLM > Moonshot Kimi > Ollama > OpenCrabs > Custom. The first provider with `enabled = true` is used on new sessions. OpenCrabs sits near the end, so it is used only when no provider above it is enabled. Each provider has its own API key in `keys.toml`, no sharing or confusion.
 
 **Per-session provider:** Each session remembers which provider and model it was using. Switch to Claude in one session, Kimi in another — when you `/sessions` switch between them, the provider restores automatically. No need to `/models` every time. New sessions inherit the current provider.
 
@@ -2223,11 +2223,11 @@ Use `/cd` inside OpenCrabs to switch working directory at runtime without restar
 
 ## 🧙 Onboarding Wizard
 
-First-time users are guided through a 9-step setup wizard that appears automatically after the splash screen.
+A 10-step setup wizard covers the rest of the setup. On a fresh install it does not open first: the screen goes straight to chat (see First Run below).
 
 ### How It Triggers
 
-- **Automatic:** When no `~/.opencrabs/config.toml` exists and no API keys are set in `keys.toml`
+- **Automatic:** On the first launch while onboarding has not been completed. A fresh install goes to chat instead of the wizard, and the wizard is reached through `/onboard`.
 - **CLI:** `cargo run --bin opencrabs -- onboard` (or `opencrabs onboard` after install)
 - **Chat flag:** `cargo run --bin opencrabs -- chat --onboard` to force the wizard before chat
 - **Slash command:** Type `/onboard` in the chat to re-run it anytime
@@ -2239,22 +2239,22 @@ On a fresh install there is no setup step for the LLM. The session runs on the b
 - The welcome names what is already set (provider, model, vision) and asks only about what is still missing: your profile in `USER.md`, speech to text, text to speech, and image generation. Answer what you want and skip the rest.
 - To use another provider, type `/models`, or run `/onboard` and choose Advanced. On a first run, Advanced preselects OpenCrabs with its key and model already filled in, and you can pick any other provider instead.
 
-### The 9 Steps
+### The 10 Steps
 
 | Step | Title | What It Does |
 |------|-------|-------------|
 | 1 | **Mode Selection** | QuickStart (sensible defaults) vs Advanced (full control) |
-| 2 | **Model & Auth** | Pick provider (Anthropic, OpenAI, GitHub Copilot, Gemini, OpenRouter, Minimax, z.ai GLM, Custom) → enter token/key or sign in via OAuth → model list fetched live from API → select model. Auto-detects existing keys from `keys.toml` |
+| 2 | **Model & Auth** | Pick provider (OpenCrabs (built in, preselected on a first run), Anthropic, OpenAI, GitHub Copilot, Gemini, OpenRouter, Minimax, z.ai GLM, Custom) → enter token/key or sign in via OAuth → model list fetched live from API → select model. Auto-detects existing keys from `keys.toml` |
 | 3 | **Workspace** | Set brain workspace path (default `~/.opencrabs/`) → seed template files (SOUL.md, etc.) |
 | 4 | **Gateway** | Configure HTTP API gateway: port, bind address, auth mode |
 | 5 | **Channels** | Toggle messaging integrations (Telegram, Discord, WhatsApp, Slack, Trello) |
 | 6 | **Voice** | Choose STT provider: **Off** / **Groq Whisper (API)** / **OpenAI-compatible (API)** / **Voicebox (self-hosted)** / **Local whisper.cpp**. Choose TTS provider: **Off** / **OpenAI TTS (API)** / **OpenAI-compatible (API)** / **Voicebox (self-hosted)** / **Local Piper**. Local modes show model/voice picker with download progress. OpenAI-compatible modes take base URL + model + key. Voicebox modes take base URL + profile_id (TTS) / base URL (STT) |
-| 7 | **Image Handling** | Enable Gemini image generation and/or vision analysis — uses a separate Google AI key |
+| 7 | **Image Handling** | On a fresh install, OpenCrabs already serves vision and image generation with no key. Gemini stays optional for image generation and vision and uses a separate Google AI key |
 | 8 | **Daemon** | Install background service (systemd on Linux, LaunchAgent on macOS) |
 | 9 | **Health Check** | Verify API key, config, workspace — shows pass/fail summary |
 | 10 | **Brain Personalization** | Tell the agent about yourself and how you want it to behave → AI generates personalized brain files (SOUL.md, USER.md, etc.) |
 
-**QuickStart mode** skips steps 4-8 with sensible defaults. **Advanced mode** lets you configure everything.
+A fresh install skips the wizard entirely and needs no answers to reach chat. **Advanced mode** walks the steps above so you can configure each one.
 
 Type `/voice` or `/image` in chat to jump directly to Voice or Image setup anytime. These work from any channel (Telegram, Discord, Slack, WhatsApp) via text-driven handlers — not just the TUI. From a channel, the agent walks you through each step interactively. You can also pass arguments directly: `/channels telegram <BOT_TOKEN> <YOUR_NUMERIC_ID>` to set up Telegram in one line, or `/image gemini <API_KEY>` to configure vision with Google.
 
