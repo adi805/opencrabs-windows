@@ -98,3 +98,57 @@ fn split_realistic_long_response() {
         assert!(!chunk.trim().is_empty(), "empty chunk");
     }
 }
+
+// ── COR-04: the byte-budget cut must land on a char boundary ──────
+
+#[test]
+fn split_does_not_panic_when_a_multibyte_char_straddles_the_limit() {
+    // 1499 ASCII bytes, then a 4-byte emoji whose bytes straddle index 1500.
+    // A raw `&remaining[..1500]` panics here: byte 1500 is inside the emoji.
+    let mut text = "a".repeat(1499);
+    text.push('🎧');
+    text.push_str(&"b".repeat(50));
+    assert_eq!(text.len(), 1553);
+
+    let chunks = split_for_tts(&text, 1500);
+    assert!(chunks.len() >= 2, "expected a split, got {}", chunks.len());
+    // Nothing is lost and nothing is corrupted by the cut.
+    assert_eq!(chunks.concat(), text);
+    assert!(chunks.iter().all(|c| !c.is_empty()));
+    assert_eq!(chunks.iter().filter(|c| c.contains('🎧')).count(), 1);
+}
+
+#[test]
+fn split_handles_a_multibyte_whitespace_word_break() {
+    // U+00A0 is a 2-byte whitespace, so `pos + 1` from the last whitespace
+    // lands INSIDE it: the word-break path must use the char's length.
+    let mut text = "a".repeat(90);
+    text.push('\u{00A0}');
+    text.push_str(&"b".repeat(90));
+
+    let chunks = split_for_tts(&text, 100);
+    assert!(chunks.len() >= 2, "expected a split, got {}", chunks.len());
+    assert!(chunks.iter().all(|c| !c.trim().is_empty()));
+    assert_eq!(chunks.concat().chars().filter(|c| *c == 'a').count(), 90);
+    assert_eq!(chunks.concat().chars().filter(|c| *c == 'b').count(), 90);
+}
+
+#[test]
+fn split_chunks_emoji_dense_text_without_loss() {
+    // Every character is 4 bytes: the safe bound must still make progress.
+    let text = "👋".repeat(200);
+    let chunks = split_for_tts(&text, 300);
+    assert!(chunks.len() > 1);
+    assert!(chunks.iter().all(|c| !c.is_empty()));
+    assert_eq!(chunks.concat(), text);
+}
+
+#[test]
+fn split_makes_progress_when_the_budget_is_smaller_than_one_char() {
+    // A budget of 1 byte cannot hold a 4-byte emoji: the splitter must take
+    // the character whole rather than loop forever on a zero-width split.
+    let text = "🎧🎧🎧";
+    let chunks = split_for_tts(text, 1);
+    assert_eq!(chunks.concat(), text);
+    assert!(chunks.iter().all(|c| !c.is_empty()));
+}
