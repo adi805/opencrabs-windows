@@ -439,7 +439,9 @@ impl DynamicTool {
         )
         .build()
         .map_err(|e| {
-            super::error::ToolError::Execution(format!("Failed to build HTTP client: {e}"))
+            crate::brain::tools::error::ToolError::Execution(format!(
+                "Failed to build HTTP client: {e}"
+            ))
         })?;
         let mut req = match method.as_str() {
             "POST" => client.post(&url),
