@@ -5,7 +5,7 @@
 //! known key prefixes, hex tokens, and mixed alphanumeric tokens.
 
 use crate::utils::redact_tool_input;
-use crate::utils::sanitize::redact_secrets;
+use crate::utils::sanitize::{redact_command, redact_secrets};
 
 // ── Environment variable assignments ───────────────────────────────
 
@@ -380,4 +380,68 @@ fn redacts_email_in_sensitive_key_json() {
     let out = redact_tool_input(&input);
     assert_eq!(out["email"], "[REDACTED]");
     assert_eq!(out["name"], "John");
+}
+
+// ── Base64-shaped credentials (#OC-A5) ─────────────────────────────
+//
+// `MIXED_ALNUM_TOKEN_RE` needs one contiguous alphanumeric run, so the `+`
+// and `/` that make base64 base64 made these invisible to every
+// length-based pass.
+
+#[test]
+fn redacts_aws_secret_access_key() {
+    // The canonical AWS credentials line. The secret is 40 chars over the
+    // base64 alphabet and contains `/`, so no contiguous 28+ alnum run exists.
+    let input = "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+    let out = redact_secrets(input);
+    assert!(
+        !out.contains("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+        "AWS secret access key leaked: {out}"
+    );
+    assert!(
+        out.contains("[REDACTED"),
+        "expected a redaction marker: {out}"
+    );
+}
+
+#[test]
+fn redacts_authorization_basic_header() {
+    // `Basic <base64>` is a literal `user:password`, and at 20 chars it is far
+    // too short for any length-based pass to see.
+    let input = "Authorization: Basic dXNlcjpwYXNzd29yZA==";
+    let out = redact_secrets(input);
+    assert!(
+        !out.contains("dXNlcjpwYXNzd29yZA=="),
+        "Basic payload leaked: {out}"
+    );
+    assert!(
+        out.contains("Basic [REDACTED]"),
+        "scheme should survive with the payload redacted: {out}"
+    );
+}
+
+#[test]
+fn redacts_authorization_basic_inside_a_command() {
+    // The bash redactor's prefix list redacts one whitespace-delimited token,
+    // so for `Authorization: Basic <b64>` it used to redact the word "Basic"
+    // and leave the payload in the clear.
+    let cmd = r#"curl -H "Authorization: Basic dXNlcjpwYXNzd29yZA==" https://api.example.com"#;
+    let out = redact_command(cmd);
+    assert!(
+        !out.contains("dXNlcjpwYXNzd29yZA=="),
+        "Basic payload leaked from a command: {out}"
+    );
+}
+
+#[test]
+fn a_long_url_path_segment_is_not_redacted_as_base64() {
+    // A public identifier after `/` is a link the user needs, not a secret.
+    // This one carries a `+`, so it is exactly the shape the new base64 pass
+    // matches — the url-path guard is what has to save it.
+    let input = "https://example.com/d/1AbCdEfGhIjKlMnOpQrStUvWx+yZ0123456/view";
+    let out = redact_secrets(input);
+    assert!(
+        out.contains("1AbCdEfGhIjKlMnOpQrStUvWx+yZ0123456"),
+        "a URL path identifier must survive: {out}"
+    );
 }
