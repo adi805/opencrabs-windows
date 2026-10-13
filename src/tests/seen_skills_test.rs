@@ -13,7 +13,13 @@ use std::path::Path;
 use uuid::Uuid;
 
 fn ctx() -> ToolExecutionContext {
-    ToolExecutionContext::new(Uuid::new_v4())
+    // A local session: production marks these `sharing = 'personal'` at
+    // creation, and a test binary has no database pool to read that back from
+    // (#217). Without the explicit mark the session is `Unknown`, which the
+    // gate fails closed on.
+    let id = Uuid::new_v4();
+    crate::memory::mark_session_personal(id);
+    ToolExecutionContext::new(id)
 }
 
 fn tool() -> LoadBrainFileTool {

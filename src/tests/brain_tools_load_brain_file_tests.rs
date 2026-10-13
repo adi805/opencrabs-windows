@@ -15,7 +15,15 @@ use uuid::Uuid;
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 fn ctx() -> ToolExecutionContext {
-    ToolExecutionContext::new(Uuid::new_v4())
+    // A local session. Production creates these with `sharing = 'personal'`
+    // (services/session.rs), which is what keeps the owner's own brain files
+    // reachable; a test binary has no database pool, so `restore_sharing`
+    // cannot read that column back and the session would land in the
+    // fail-closed `Unknown` bucket (#217). Mark it explicitly - the same
+    // in-process path the channel handlers use.
+    let id = Uuid::new_v4();
+    crate::memory::mark_session_personal(id);
+    ToolExecutionContext::new(id)
 }
 
 fn tool() -> LoadBrainFileTool {
