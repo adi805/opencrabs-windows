@@ -852,6 +852,12 @@ pub enum WizardAction {
     Complete,
     /// Trigger async AI generation of brain files
     GenerateBrain,
+    /// Request this install's built-in OpenCrabs token, then advance the
+    /// LLM step. The app runs the request (#2047).
+    AcquireBuiltinToken,
+    /// Quick start on a first run: prepare the files, request the built-in
+    /// token, then finish straight into chat (#2048).
+    QuickStartBuiltin,
     /// Trigger async model list fetch from provider API
     FetchModels,
     /// Trigger async WhatsApp QR code pairing

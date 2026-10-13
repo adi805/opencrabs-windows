@@ -472,6 +472,11 @@ impl OnboardingWizard {
                 self.mode = WizardMode::Advanced;
             }
             KeyCode::Enter => {
+                // A first run in quick start goes straight to chat on the built-in
+                // provider, so it skips the steps below (#2048).
+                if self.mode == WizardMode::QuickStart && self.is_first_time {
+                    return WizardAction::QuickStartBuiltin;
+                }
                 self.next_step();
                 // If entering ProviderAuth with existing key detected, pre-fetch models
                 if self.step == OnboardingStep::ProviderAuth
@@ -692,6 +697,13 @@ impl OnboardingWizard {
                             self.ps.selected_model = idx;
                         }
                         self.ps.model_filter.clear();
+                    }
+                    // The built-in provider has no key to type. Its install token is
+                    // requested first, and the app advances once it is stored (#2047).
+                    if self.ps.provider_id() == "opencrabs"
+                        && crate::brain::provider::opencrabs_store::load().is_none()
+                    {
+                        return WizardAction::AcquireBuiltinToken;
                     }
                     self.next_step();
                 }

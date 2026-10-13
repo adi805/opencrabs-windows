@@ -63,6 +63,25 @@ impl App {
         self.should_quit = true;
     }
 
+    /// Request this install's built-in OpenCrabs token. On failure the cause is
+    /// shown on the wizard and nothing is saved, so the user can pick another
+    /// provider (#2047).
+    async fn request_builtin_token(&mut self) -> bool {
+        match crate::brain::provider::opencrabs_acquire::ensure_install().await {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!("Built-in provider token request failed: {e:?}");
+                if let Some(ref mut wizard) = self.onboarding {
+                    wizard.error_message = Some(
+                        crate::brain::provider::opencrabs_install::install_error_message(&e)
+                            .to_string(),
+                    );
+                }
+                false
+            }
+        }
+    }
+
     /// Save the wizard's config, enter chat, and greet the user. Shared by a
     /// finished wizard and the quick start that skips its steps (#2048).
     pub(crate) async fn finish_onboarding(&mut self) -> Result<()> {
@@ -326,6 +345,31 @@ impl App {
                 }
                 WizardAction::Complete => {
                     self.finish_onboarding().await?;
+                }
+                WizardAction::AcquireBuiltinToken => {
+                    if self.request_builtin_token().await
+                        && let Some(ref mut wizard) = self.onboarding
+                    {
+                        wizard.next_step();
+                    }
+                }
+                WizardAction::QuickStartBuiltin => {
+                    let prepared = match self.onboarding.as_mut() {
+                        Some(wizard) => wizard.prepare_quick_start(),
+                        None => Ok(()),
+                    };
+                    match prepared {
+                        Err(e) => {
+                            if let Some(ref mut wizard) = self.onboarding {
+                                wizard.error_message = Some(e);
+                            }
+                        }
+                        Ok(()) => {
+                            if self.request_builtin_token().await {
+                                self.finish_onboarding().await?;
+                            }
+                        }
+                    }
                 }
                 WizardAction::FetchModels => {
                     let provider_idx = wizard.ps.selected_provider;
