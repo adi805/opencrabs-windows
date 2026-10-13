@@ -334,7 +334,26 @@ async fn run_submission(
         tracing::warn!("submission {request_id}: failed to mark running: {e}");
     }
 
-    match agent.send_message(session_id, input, model).await {
+    // Route through the tool loop, not the single-completion `send_message`.
+    // The bare call answered with one provider response and never executed a
+    // tool, so a client could ask the agent to read a file or run a command
+    // and get tool-call syntax back as text (finding 2 of #238). Every other
+    // surface runs the loop; this one was the exception, and the module doc
+    // above already promised "a surface that can run the agent with tools".
+    //
+    // The surface owns its own `AgentService` and the factory wires no
+    // approval callback into it, so the `None` overrides leave approval on the
+    // configured policy: under `ask` the gated tools are denied rather than
+    // silently granted (#769). No cancel token is passed either, because the
+    // caller is an HTTP client that may disconnect at any moment and a
+    // half-cancelled turn is worse than one that runs to its terminal state.
+    let result = agent
+        .send_message_with_tools_and_callback(
+            session_id, input, model, None, None, None, "surface", None, None,
+        )
+        .await;
+
+    match result {
         Ok(response) => {
             let message_id = response.message_id.to_string();
             if let Err(e) = repo

@@ -8,6 +8,7 @@
 //! start silently open.
 
 use crate::session::surface::*;
+use crate::tests::source_shape::{flatten, read};
 use axum::body::Body;
 use axum::http::Request;
 use axum::http::StatusCode;
@@ -452,5 +453,38 @@ async fn two_parallel_submits_of_one_request_id_produce_exactly_one_row() {
         submission_rows(pool, &session).await,
         1,
         "two parallel submits of one requestId is still one row"
+    );
+}
+
+// ── the tool-loop wiring ────────────────────────────────────────────────────
+
+/// Finding 2 of #238: the surface must drive the tool loop, never the bare
+/// single-completion `send_message`.
+///
+/// The bare call sent one provider request and executed no tool, so a client
+/// could ask the agent to read a file or run a command and be handed tool-call
+/// syntax as text. It is the same regression the headless CLI had (#492), in
+/// the one remaining surface that had not been routed, and the module doc at
+/// the top of `surface.rs` already promised "a surface that can run the agent
+/// with tools", so the code was the half that had drifted.
+///
+/// The decision is unreachable from a unit test: `run_submission` needs a live
+/// provider and is driven from a spawned task. Reading the source is the only
+/// way to pin the call shape.
+#[test]
+fn the_surface_drives_the_tool_loop_not_a_bare_completion() {
+    let src = flatten(read("src/session/surface.rs"));
+
+    assert!(
+        src.contains(
+            "send_message_with_tools_and_callback(session_id,input,model,None,None,None,\"surface\",None,None)"
+        ),
+        "run_submission must route through the tool-loop entry point with the \
+         surface's own channel label (finding 2 of #238)"
+    );
+    assert!(
+        !src.contains(".send_message("),
+        "the bare single-completion send_message must not be called: it never \
+         executes a tool (finding 2 of #238)"
     );
 }
