@@ -1326,7 +1326,7 @@ OpenCrabs ships its own provider, so a new install can chat without creating an 
 
 **How the key works.** On first use, the install asks `inference.opencrabs.com` for its own token once and saves it in `keys.toml` under `[providers.opencrabs]`. The binary holds no shared upstream key, and the server keeps only a hash of each token. If `keys.toml` is lost, the install requests a new token automatically.
 
-**Cost and limits.** No charge and no usage caps during the experimental phase. If limits are added later, this section will say so before they apply.
+**Cost and limits.** The built-in provider is free and has no usage caps during the experimental phase, so every install gets unlimited tokens. To keep it that way for everyone, we protect it against abuse: requests that flood the service, or a single source that mints installs in bulk, can be rate limited or blocked. Normal use will not hit these protections. If we change the limits later, this section will say so before they apply.
 
 **Where your data goes.** Chat and image requests are sent to `inference.opencrabs.com`, which forwards them to the upstream model host. If that is not acceptable for a conversation, switch providers.
 
