@@ -446,7 +446,7 @@ async fn every_menu_builtin_is_answered_by_the_shared_parser() {
     for (name, _description) in MENU_PARSER_BUILTINS {
         // Owner on: most entries are owner-gated, and a non-owner refusal is
         // still an answer, so the owner verdict cannot mask a missing arm.
-        let parsed = handle_command(*name, sid, &agent, &svc, true, None).await;
+        let parsed = handle_command(name, sid, &agent, &svc, true, None).await;
         // `UnknownCommand` also carries text, so an unrecognised entry would
         // look answered to a bare `is_text_answered` check. It is the failure
         // mode this test exists for, so it is rejected explicitly.
