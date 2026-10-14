@@ -1052,6 +1052,7 @@ pub mod discord_plan_card_persist_test;
 pub mod discord_plan_card_restick_test;
 pub mod discord_plan_card_test;
 pub mod discord_presence_test;
+pub mod discord_progress_media_test;
 pub mod discord_resume_chunk_test;
 pub mod discord_scheduled_events_test;
 pub mod discord_settle_outcome_test;

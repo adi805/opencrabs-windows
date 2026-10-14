@@ -1594,8 +1594,46 @@ pub(crate) async fn handle_message(
                     // the same way the final-response path does.
                     let clean = crate::utils::sanitize::strip_llm_artifacts(&text);
                     let clean = redact_secrets(&clean);
-                    let (clean, _) = crate::utils::extract_img_markers(&clean);
-                    let (clean, _) = crate::utils::extract_vid_markers(&clean);
+                    let (clean, img_paths) = crate::utils::extract_img_markers(&clean);
+                    let (clean, vid_paths) = crate::utils::extract_vid_markers(&clean);
+                    // Progress-attached media (#248): a tool that streams a
+                    // file through a progress event (whatsapp_connect's
+                    // pairing QR) used to have its marker discarded here, so
+                    // the file never reached Discord and only the unicode
+                    // fallback survived. The final-response path already
+                    // ships these; mirror it. Delivered before the empty-body
+                    // return below, so a body that strips to nothing cannot
+                    // swallow the attachment.
+                    if !img_paths.is_empty() || !vid_paths.is_empty() {
+                        let http = http.clone();
+                        let channel = channel;
+                        let paths: Vec<String> = img_paths.into_iter().chain(vid_paths).collect();
+                        tokio::spawn(async move {
+                            for path in paths {
+                                let bytes = match tokio::fs::read(&path).await {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Discord: failed to read progress media {path}: {e}"
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let fname = std::path::Path::new(&path)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("attachment")
+                                    .to_string();
+                                let message = CreateMessage::new()
+                                    .add_file(CreateAttachment::bytes(bytes, fname));
+                                if let Err(e) =
+                                    writes::send(&http, channel, message, Class::Create).await
+                                {
+                                    tracing::warn!("Discord: progress media send failed: {e}");
+                                }
+                            }
+                        });
+                    }
                     // Same table conversion as the final path — keys must
                     // match for the dedup below.
                     let clean = super::table_convert::tables_to_discord(&clean);
