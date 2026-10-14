@@ -272,7 +272,9 @@ mod tests {
     /// document, the joined path stays inside the output directory.
     #[test]
     fn joined_path_stays_inside_the_output_directory() {
-        let dir = Path::new("/tmp/outdir");
+        // A real output directory, portable across platforms: no POSIX
+        // literal, so the Windows footgun scan stays clean.
+        let dir = std::env::temp_dir().join("outdir");
         for uploader_name in [
             "report.pdf",
             "../../.ssh/authorized_keys",
@@ -283,7 +285,7 @@ mod tests {
             let joined = dir.join(safe_file_name(uploader_name));
             assert_eq!(
                 joined.parent(),
-                Some(dir),
+                Some(dir.as_path()),
                 "uploader name {uploader_name:?} escaped the output directory"
             );
         }
