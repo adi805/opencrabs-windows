@@ -48,7 +48,33 @@ public class CoreService extends Service {
     /** App-private file holding the generated bearer token. */
     private static final String SURFACE_TOKEN_FILE = "surface_token";
 
+    /** How many consecutive core deaths are restarted before giving up. */
+    private static final int MAX_RESTARTS = 5;
+    /** First restart delay; doubled per consecutive failure. */
+    private static final long RESTART_BACKOFF_MS = 1000L;
+    /** Backoff ceiling, so a crash loop that outlives a long run still retries. */
+    private static final long MAX_BACKOFF_MS = 60_000L;
+    /**
+     * Uptime that counts as a working spawn. Past it the restart counter resets,
+     * so a core that runs for hours and then dies once does not inherit an old
+     * failure count and give up on the first crash.
+     */
+    private static final long HEALTHY_UPTIME_MS = 60_000L;
+    /** How long the exit paths wait for the child to be reaped. */
+    private static final long REAP_WAIT_MS = 5_000L;
+
     private Process core;
+    /** Set by onDestroy: a stop the operator asked for must not be restarted. */
+    private volatile boolean stopping;
+    /** Consecutive restarts since the last spawn that outlived HEALTHY_UPTIME_MS. */
+    private int restarts;
+    /**
+     * Wall clock of the current spawn, for the HEALTHY_UPTIME_MS test. Written
+     * by the spawn thread and read by the pump thread, so it is volatile: a
+     * stale read here only costs an extra backoff step, but a torn long is not
+     * something to leave to the memory model.
+     */
+    private volatile long spawnedAt;
 
     /** The directory the package manager extracted our native libs into. */
     public static String nativeDir(Context ctx) {
@@ -68,7 +94,10 @@ public class CoreService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        startForeground(NOTIFICATION_ID, buildNotification());
+        // A fresh start clears a stop left by a previous instance, otherwise a
+        // sticky restart comes up believing it is shutting down and never spawns.
+        stopping = false;
+        startForeground(NOTIFICATION_ID, buildNotification("starting"));
         // Before the spawn, so the config the core reads already carries the
         // token. The surface starts listening during daemon boot.
         ensureSurfaceToken(this);
@@ -79,7 +108,7 @@ public class CoreService extends Service {
         return START_STICKY;
     }
 
-    private Notification buildNotification() {
+    private Notification buildNotification(String state) {
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager != null) {
             NotificationChannel channel =
@@ -92,13 +121,30 @@ public class CoreService extends Service {
                 : new Notification.Builder(this);
         return builder
                 .setContentTitle("OpenCrabs core")
-                .setContentText("running")
+                .setContentText(state)
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
                 .setOngoing(true)
                 .build();
     }
 
-    private void spawnCore() {
+    /**
+     * Republish the ongoing notification so it names the core's actual state.
+     *
+     * <p>The notification used to be built once with the literal text
+     * "running" and never touched again, so a core that had exited was still
+     * advertised as running: an operator had no way to tell a live core from a
+     * corpse without reading logcat.
+     */
+    private void setState(String state) {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) {
+            Log.w(TAG, "no notification manager, state not published: " + state);
+            return;
+        }
+        manager.notify(NOTIFICATION_ID, buildNotification(state));
+    }
+
+    private synchronized void spawnCore() {
         Log.i(TAG, "runtime sdk=" + Build.VERSION.SDK_INT
                 + " processPidMethod=" + hasProcessPid());
         if (isAlive(core)) {
@@ -108,6 +154,7 @@ public class CoreService extends Service {
         File exe = coreBinary(this);
         if (!exe.exists()) {
             Log.e(TAG, "core binary missing at " + exe.getAbsolutePath());
+            setState("core binary missing");
             return;
         }
 
@@ -144,30 +191,159 @@ public class CoreService extends Service {
 
         try {
             core = builder.start();
+            spawnedAt = System.currentTimeMillis();
+            final Process spawned = core;
             final InputStream out = core.getInputStream();
-            Thread pump = new Thread(() -> {
-                byte[] buffer = new byte[4096];
-                try {
-                    int read;
-                    while ((read = out.read(buffer)) > 0) {
-                        Log.i(TAG, new String(buffer, 0, read));
-                    }
-                } catch (Exception e) {
-                    Log.w(TAG, "output pump ended", e);
-                }
-            }, "core-output");
+            Thread pump = new Thread(() -> drain(spawned, out), "core-output");
             pump.setDaemon(true);
             pump.start();
             Log.i(TAG, "core started, pid=" + pidText(core));
+            setState("running, pid " + pidText(core));
         } catch (Exception e) {
             Log.e(TAG, "spawn failed", e);
+            setState("spawn failed: " + e.getClass().getSimpleName());
+            scheduleRestart();
+        }
+    }
+
+    /**
+     * Drain the child's stdout until EOF, then treat that EOF as the core's
+     * exit signal.
+     *
+     * <p>EOF is the only exit notification this process gets for free: a read
+     * returning -1 means every writer end of the pipe is gone, so the child is
+     * dead. The previous version logged that and returned, which left a dead
+     * core behind a notification still reading "running" and nothing left to
+     * bring it back.
+     */
+    private void drain(Process spawned, InputStream out) {
+        byte[] buffer = new byte[4096];
+        try {
+            int read;
+            while ((read = out.read(buffer)) > 0) {
+                Log.i(TAG, new String(buffer, 0, read));
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "output pump ended", e);
+        }
+        if (stopping || spawned != core) {
+            // An intentional stop, or a newer core already took over: this exit
+            // is expected and must not be answered with a restart.
+            Log.i(TAG, "output pump ended after stop, pid=" + pidText(spawned));
+            return;
+        }
+        if (System.currentTimeMillis() - spawnedAt >= HEALTHY_UPTIME_MS) {
+            // It ran long enough to count as a working spawn, so the next crash
+            // starts the backoff over instead of inheriting an old failure count.
+            restarts = 0;
+        }
+        int code = reapExitCode(spawned);
+        Log.w(TAG, "core exited, code=" + code);
+        scheduleRestart();
+    }
+
+    /**
+     * Restart the core after a bounded backoff, unless it is stopping or has
+     * already spent its attempts.
+     */
+    private void scheduleRestart() {
+        if (stopping) {
+            return;
+        }
+        if (restarts >= MAX_RESTARTS) {
+            Log.e(TAG, "core died " + restarts + " times, giving up");
+            setState("stopped after " + restarts + " restarts");
+            return;
+        }
+        long delay = backoffMs(restarts);
+        restarts++;
+        Log.w(TAG, "restarting core in " + delay + "ms, attempt "
+                + restarts + "/" + MAX_RESTARTS);
+        setState("restarting in " + (delay / 1000L) + "s, attempt "
+                + restarts + "/" + MAX_RESTARTS);
+        Thread waiter = new Thread(() -> {
+            try {
+                Thread.sleep(delay);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (!stopping) {
+                spawnCore();
+            }
+        }, "core-restart");
+        waiter.setDaemon(true);
+        waiter.start();
+    }
+
+    /**
+     * Exponential backoff, capped at {@link #MAX_BACKOFF_MS}. Attempt 0 waits
+     * {@link #RESTART_BACKOFF_MS}.
+     *
+     * <p>Doubling rather than a fixed delay because the two failure shapes want
+     * opposite things: a core that died on something transient (a port still in
+     * TIME_WAIT from the previous run) wants the retry soon, while a core that
+     * dies instantly every time is a config error that should not spin.
+     */
+    static long backoffMs(int attempt) {
+        long delay = RESTART_BACKOFF_MS;
+        for (int i = 0; i < attempt; i++) {
+            delay = delay * 2L;
+            if (delay >= MAX_BACKOFF_MS) {
+                return MAX_BACKOFF_MS;
+            }
+        }
+        return delay;
+    }
+
+    /**
+     * Wait briefly for the child to be reaped, then report its exit code.
+     *
+     * <p>The pipe closes before the process table entry is necessarily reaped,
+     * so exitValue() right after EOF can still throw IllegalThreadStateException.
+     * This polls rather than calling the waitFor(timeout) overload: that one is
+     * API 26, and this file has already been bitten once by a java.lang method
+     * that javac resolved from the JDK and the device did not have.
+     */
+    private static int reapExitCode(Process p) {
+        long deadline = System.currentTimeMillis() + REAP_WAIT_MS;
+        while (System.currentTimeMillis() < deadline) {
+            int code = exitCode(p);
+            if (code >= 0) {
+                return code;
+            }
+            try {
+                Thread.sleep(50L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        return exitCode(p);
+    }
+
+    /** The child's exit status, or -1 while it is still running. */
+    private static int exitCode(Process p) {
+        try {
+            return p.exitValue();
+        } catch (IllegalThreadStateException stillRunning) {
+            return -1;
+        } catch (Throwable t) {
+            return -1;
         }
     }
 
     @Override
     public void onDestroy() {
-        if (core != null) {
-            core.destroy();
+        // Before destroy(), because the pump thread reads it: a stop the
+        // operator asked for must not come back as a restart.
+        stopping = true;
+        Process dying = core;
+        if (dying != null) {
+            dying.destroy();
+            // destroy() only asks. Nothing used to confirm the child left, so a
+            // core that ignored the signal outlived the service that owned it.
+            Log.i(TAG, "core destroyed, exit=" + reapExitCode(dying));
         }
         super.onDestroy();
     }
