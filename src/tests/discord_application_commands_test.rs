@@ -417,3 +417,129 @@ fn a_guild_less_bot_still_registers_its_commands() {
          empty: the global set is what a DM reads (AC-003). Body was:\n{body}"
     );
 }
+
+// ── Menu entries must be executable (#246) ──────────────────────────────────
+//
+// A built-in in the `/` menu is picked as an interaction, and the interaction
+// path answers it by running the shared parser (`handle_command` +
+// `try_execute_text_command`). An entry the parser does not answer falls
+// through to `route_followup_turn`, where the MODEL answers the invocation as
+// prose: a picked `/evolve` came back as "I cannot update my own binary". That
+// is worse than not being in the menu, so every entry is checked here.
+//
+// This enumerates `MENU_PARSER_BUILTINS` rather than naming commands one by
+// one. The
+// bug being guarded against is a menu that drifts from the handler, and a test
+// that lists the same names by hand drifts with it: the previous gate in this
+// area named two of three gates and missed the third.
+
+use crate::channels::commands::{
+    ChannelCommand, handle_command, is_text_answered, match_user_command_inner,
+};
+use crate::channels::discord::commands::{MENU_PARSER_BUILTINS, MENU_SCOPE_BUILTINS};
+use crate::tests::agent_service_mocks::create_test_service_full;
+
+#[tokio::test]
+async fn every_menu_builtin_is_answered_by_the_shared_parser() {
+    let (agent, svc, sid) = create_test_service_full().await;
+    let mut unresolved: Vec<String> = Vec::new();
+    for (name, _description) in MENU_PARSER_BUILTINS {
+        // Owner on: most entries are owner-gated, and a non-owner refusal is
+        // still an answer, so the owner verdict cannot mask a missing arm.
+        let parsed = handle_command(name, sid, &agent, &svc, true, None).await;
+        // `UnknownCommand` also carries text, so an unrecognised entry would
+        // look answered to a bare `is_text_answered` check. It is the failure
+        // mode this test exists for, so it is rejected explicitly.
+        let answered =
+            !matches!(parsed, ChannelCommand::UnknownCommand(_)) && is_text_answered(&parsed);
+        if !answered {
+            // No `Debug` on `ChannelCommand`, and adding one would drag every
+            // payload type into it, so the reason is described instead.
+            let why = if matches!(parsed, ChannelCommand::UnknownCommand(_)) {
+                "not recognised by the parser"
+            } else {
+                "recognised but has no text answer"
+            };
+            unresolved.push(format!("{name}: {why}"));
+        }
+    }
+    assert!(
+        unresolved.is_empty(),
+        "these menu entries resolve to no answer and would be answered by the \
+         model as prose instead (add a `try_execute_text_command` arm or take \
+         the entry out of MENU_BUILTINS): {unresolved:?}"
+    );
+}
+
+#[test]
+fn the_original_two_entries_are_still_offered() {
+    // #2013 put these two in the menu and `agent.rs` answers them with the
+    // channel id. Expanding the list must not drop them, and they stay in their
+    // own list because the parser never sees them.
+    for name in ["/respond_to", "/cowork"] {
+        assert!(
+            MENU_SCOPE_BUILTINS.iter().any(|(n, _)| *n == name),
+            "{name} must stay in the menu"
+        );
+    }
+}
+
+#[test]
+fn the_menu_keeps_the_entries_that_can_take_the_bot_down_or_strand_a_plan() {
+    // Two entries are deliberately NOT offered, and both are safety decisions
+    // rather than oversights: a click surface for `/exit` is one misclick from
+    // an outage, and `/plan` enters a mode whose exit is a button flow that
+    // only exists in a channel message.
+    for name in ["/exit", "/plan", "/execute", "/discard"] {
+        assert!(
+            !MENU_PARSER_BUILTINS.iter().any(|(n, _)| *n == name)
+                && !MENU_SCOPE_BUILTINS.iter().any(|(n, _)| *n == name),
+            "{name} must not be in the menu"
+        );
+    }
+}
+
+#[test]
+fn a_catalog_command_still_routes_to_the_model() {
+    // The interaction path runs the shared parser before the model, so a
+    // `commands.toml` entry must survive it: it resolves to `UserPrompt`, which
+    // the text executor does not answer, and therefore still reaches the agent
+    // with its prompt body.
+    let user_command = UserCommand {
+        name: "/mycheck".to_string(),
+        description: "mine".to_string(),
+        action: "prompt".to_string(),
+        prompt: "run my check".to_string(),
+    };
+    let parsed = match_user_command_inner("/mycheck", std::slice::from_ref(&user_command), &[]);
+    match parsed {
+        ChannelCommand::UserPrompt(prompt) => assert_eq!(prompt, "run my check"),
+        ChannelCommand::UnknownCommand(msg) => {
+            panic!("a catalog command must not be unknown: {msg}")
+        }
+        _ => panic!(
+            "a catalog command must stay a model prompt, not become a text answer the \
+             parser consumes before the model sees it"
+        ),
+    }
+    assert!(
+        !is_text_answered(&ChannelCommand::UserPrompt("x".to_string())),
+        "UserPrompt must not be text-answered, or the parser would swallow \
+         every catalog command and skill before the model saw it"
+    );
+}
+
+#[test]
+fn the_safety_exclusions_have_no_answer_either() {
+    // `/exit` IS text-answered (it schedules the shutdown), which is why it is
+    // kept out of the menu by hand rather than by the answered-set check. This
+    // pins that asymmetry so the exclusion above is not read as a mistake.
+    assert!(is_text_answered(&ChannelCommand::Exit));
+    assert!(
+        !is_text_answered(&ChannelCommand::ExecutePlan),
+        "ExecutePlan needs the channel button flow, so a menu pick would do \
+         nothing"
+    );
+    assert!(!is_text_answered(&ChannelCommand::DiscardPlan));
+    assert!(!is_text_answered(&ChannelCommand::NotACommand));
+}

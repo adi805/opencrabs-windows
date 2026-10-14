@@ -325,6 +325,48 @@ pub(crate) async fn handle_invoked_request(
             command.data.name
         );
     }
+
+    // Built-ins picked from the `/` menu are answered by the SAME parser typed
+    // text goes through (#246). Before this, only `/respond_to` and `/cowork`
+    // were special-cased (in `agent.rs`, because they need the channel id), so
+    // every other menu entry fell through to `route_followup_turn` and the
+    // model answered the invocation as prose: a picked `/evolve` came back as
+    // "I cannot update my own binary". A command that answers nothing is worse
+    // than one that is not in the menu at all.
+    //
+    // The shared parser is the right seam rather than a second list of names:
+    // it already owns the catalog, the owner gate and the skill lookup, and it
+    // maps a `commands.toml` entry or a skill to `UserPrompt`, which
+    // `try_execute_text_command` answers with `None`, so catalog commands and
+    // skills keep routing to the model exactly as they did.
+    //
+    // Only a `ChatInput` command is considered: a context-menu invocation is a
+    // sentence about the clicked target, not a command line.
+    //
+    // The ack is deferred BEFORE this runs, so a slow built-in (`/evolve`
+    // downloads a release) cannot blow the 3-second interaction window.
+    if matches!(
+        command.data.kind,
+        serenity::model::application::CommandType::ChatInput
+    ) && invocation.starts_with('/')
+        && let Some(session_id) =
+            resolve_interaction_session(&session_svc, is_dm, user, channel_id, idle).await
+    {
+        let parsed = crate::channels::commands::handle_command(
+            &invocation,
+            session_id,
+            &agent,
+            &session_svc,
+            owner,
+            None,
+        )
+        .await;
+        if let Some(reply) = crate::channels::commands::try_execute_text_command(&parsed).await {
+            deliver_command_reply(&ctx.http, &command.token, channel_id, reply).await;
+            return;
+        }
+    }
+
     // FR-002: hand the turn the token so its answer can replace the deferred
     // message instead of arriving as a second reply.
     let interaction_token = Some(command.token.clone());
@@ -345,6 +387,53 @@ pub(crate) async fn handle_invoked_request(
         )
         .await;
     });
+}
+
+/// Deliver a built-in's reply to the deferred interaction ack (#246).
+///
+/// The first chunk edits the deferred message in place, so a menu pick and its
+/// result read as one message instead of two: the same FR-002 contract
+/// `route_followup_turn` honours for a model turn. Discord's interaction token
+/// is good for 15 minutes, so past that the edit fails and the reply falls back
+/// to an ordinary channel message tagged as a continuation rather than being
+/// dropped.
+async fn deliver_command_reply(
+    http: &serenity::http::Http,
+    token: &str,
+    channel_id: u64,
+    reply: String,
+) {
+    let channel = serenity::model::id::ChannelId::new(channel_id);
+    let chunks = super::handler::split_message(&reply, 2000);
+    let mut delivered_via_token = false;
+    for (idx, chunk) in chunks.iter().enumerate() {
+        if idx == 0 {
+            let edit = serenity::builder::EditInteractionResponse::new().content(chunk.clone());
+            match http
+                .edit_original_interaction_response(token, &edit, Vec::new())
+                .await
+            {
+                Ok(_) => {
+                    delivered_via_token = true;
+                    continue;
+                }
+                Err(e) => tracing::warn!(
+                    "Discord: deferred ack edit failed for a built-in reply (token expired?), \
+                     falling back to a plain message: {e}"
+                ),
+            }
+        }
+        // A continuation marker covers both the overflow chunks of a token
+        // delivery and the first chunk of a fallback.
+        let payload = if idx > 0 || !delivered_via_token {
+            format!("\u{2026}{chunk}")
+        } else {
+            chunk.clone()
+        };
+        if let Err(e) = writes::say(http, channel, &payload, Class::Final).await {
+            tracing::error!("Discord: built-in reply delivery failed: {e}");
+        }
+    }
 }
 
 /// Run a tapped follow-up suggestion as an agent turn through the SAME

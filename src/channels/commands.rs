@@ -2669,11 +2669,52 @@ pub(crate) fn render_audit_rows(
     out.trim_end().to_string()
 }
 
+/// Whether [`try_execute_text_command`] answers this variant with text.
+///
+/// Split out from the executor because the executor has side effects: `/evolve`
+/// downloads and installs a release and `/restart` schedules a shutdown. A
+/// caller that only needs the answer to "would this be answered?" cannot run
+/// it, and the Discord `/` menu projection (#246) needs exactly that question:
+/// an entry with no answer falls through to `route_followup_turn` and the model
+/// answers the invocation as prose.
+///
+/// The executor gates on this predicate, so the answered set lives in one place
+/// and cannot drift from the menu's expectation.
+pub fn is_text_answered(cmd: &ChannelCommand) -> bool {
+    matches!(
+        cmd,
+        ChannelCommand::Help(_)
+            | ChannelCommand::Usage(_)
+            | ChannelCommand::MissionControl(_)
+            | ChannelCommand::UserSystem(_)
+            | ChannelCommand::Rtk(_)
+            | ChannelCommand::Doctor
+            | ChannelCommand::Architecture(_)
+            | ChannelCommand::Attach(_)
+            | ChannelCommand::Audit(_)
+            | ChannelCommand::Evolve
+            | ChannelCommand::Restart
+            | ChannelCommand::Exit
+            | ChannelCommand::UnknownCommand(_)
+            | ChannelCommand::ModelSwitched(_)
+            | ChannelCommand::RespondTo(_)
+            | ChannelCommand::Redact(_)
+            | ChannelCommand::PlanMode(_)
+            | ChannelCommand::ShowPlan(_)
+    )
+}
+
 /// Try to execute a command that returns a simple text response (no platform-specific UI).
 /// Returns `Some(text)` for commands handled here, `None` for commands that need
 /// platform-specific rendering (Models, Sessions, NewSession) or agent passthrough.
-/// Channels call this first — if it returns Some, send the text and return.
+/// Channels call this first: if it returns Some, send the text and return.
 pub async fn try_execute_text_command(cmd: &ChannelCommand) -> Option<String> {
+    // One gate for the whole set: `is_text_answered` is the same list the menu
+    // projection reads (#246), so a variant added to one without the other is
+    // visible in a single place rather than two match arms drifting apart.
+    if !is_text_answered(cmd) {
+        return None;
+    }
     match cmd {
         ChannelCommand::Help(body)
         | ChannelCommand::Usage(body)
