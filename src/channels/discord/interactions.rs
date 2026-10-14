@@ -345,8 +345,10 @@ pub(crate) async fn handle_invoked_request(
     //
     // The ack is deferred BEFORE this runs, so a slow built-in (`/evolve`
     // downloads a release) cannot blow the 3-second interaction window.
-    if command.data.kind == serenity::model::application::CommandType::ChatInput
-        && invocation.starts_with('/')
+    if matches!(
+        command.data.kind,
+        serenity::model::application::CommandType::ChatInput
+    ) && invocation.starts_with('/')
         && let Some(session_id) =
             resolve_interaction_session(&session_svc, is_dm, user, channel_id, idle).await
     {
