@@ -69,3 +69,65 @@ fn onboarding_unit_survives_child_oom_kill() {
     assert!(unit.contains("ExecStart=/usr/local/bin/opencrabs daemon"));
     assert!(unit.contains("WantedBy=default.target"));
 }
+
+/// The pre-write guard the wizard consults before it writes a user unit.
+///
+/// On a box that already has a system unit for the same daemon, writing a
+/// second one leaves both enabled and both fighting over the profile instance
+/// lock: the loser exits on every start, and a supervisor that restarts it
+/// loops until its budget is gone, which is how the bot stayed down.
+mod system_unit_guard {
+    use crate::tui::onboarding::system_unit_for_profile;
+
+    #[test]
+    fn finds_the_canonical_system_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        let unit = dir.path().join("opencrabs.service");
+        std::fs::write(&unit, "[Unit]\n").unwrap();
+
+        assert_eq!(system_unit_for_profile(dir.path()), Some(unit));
+    }
+
+    /// A hand-tuned unit under a different name is still the same daemon. This
+    /// is the shape seen in the field (`opencrabs-tui.service`), and exactly
+    /// what a bare `exists("opencrabs.service")` check would miss.
+    #[test]
+    fn finds_a_differently_named_daemon_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        let unit = dir.path().join("opencrabs-tui.service");
+        std::fs::write(&unit, "[Unit]\n").unwrap();
+
+        assert_eq!(system_unit_for_profile(dir.path()), Some(unit));
+    }
+
+    /// The canonical name wins when both are present, so the refusal names the
+    /// most obvious unit rather than an arbitrary one.
+    #[test]
+    fn prefers_the_canonical_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dir.path().join("opencrabs.service");
+        std::fs::write(&canonical, "[Unit]\n").unwrap();
+        std::fs::write(dir.path().join("opencrabs-tui.service"), "[Unit]\n").unwrap();
+
+        assert_eq!(system_unit_for_profile(dir.path()), Some(canonical));
+    }
+
+    /// No daemon unit means no refusal: unrelated units and stray files must
+    /// not trip the guard.
+    #[test]
+    fn ignores_unrelated_units() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("caddy.service"), "[Unit]\n").unwrap();
+        std::fs::write(dir.path().join("opencrabs-notes.txt"), "x").unwrap();
+
+        assert_eq!(system_unit_for_profile(dir.path()), None);
+    }
+
+    /// A missing directory is not an existing unit.
+    #[test]
+    fn returns_none_for_empty_and_missing_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(system_unit_for_profile(dir.path()), None);
+        assert_eq!(system_unit_for_profile(&dir.path().join("nope")), None);
+    }
+}
