@@ -34,6 +34,8 @@ models = ["deepseek-v4.1-flash"]
 context_window = 200000
 vision_model = "deepseek-v4.1-flash"  # Multimodal: attached images work on day 0
 generation_model = "gemini-3.1-flash-image"  # Image generation on day 0, served only on /v1/images/*
+stt_model = "qwen3.8-omni-flash"  # Speech-to-text on day 0, served on /v1/audio/transcriptions
+tts_model = "qwen3.8-omni-flash"  # Text-to-speech on day 0, served on /v1/audio/speech
 
 # ========================================
 # Xiaomi MiMo
@@ -121,6 +123,8 @@ enabled = false
 default_model = "gpt-5-nano"  # Optional: override default model
 # vision_model = "gpt-5-nano"  # Optional: describes images for the chat model when it lacks vision
 # generation_model = "gpt-image-1"  # Optional: routes generate_image to OpenAI /v1/images/generations
+# stt_model = "whisper-1"  # Optional: transcribe voice notes via this provider's /v1/audio/transcriptions
+# tts_model = "gpt-4o-mini-tts"  # Optional: speak replies via this provider's /v1/audio/speech
 
 # ========================================
 # Anthropic Provider (Claude)
@@ -543,6 +547,15 @@ model = "gemini-3.1-flash-image-preview"   # Gemini image-gen model ("Nano Banan
 # anything else → `/v1/images/generations` with Bearer auth). This
 # `enabled` flag gates ONLY the global Gemini fallback below — a provider
 # route registers generate_image even with it off (#1672).
+#
+# Voice works the same way: set `stt_model` and `tts_model` on your active
+# [providers.<name>] block and voice notes transcribe and replies speak on
+# that provider's own endpoint. Works for every built-in and custom
+# provider, not only the built-in one — any [OI]-compatible provider that
+# exposes `/v1/audio/transcriptions` and `/v1/audio/speech`. `stt_model`
+# drives `transcribe`, `tts_model` drives `synthesize`; no
+# `[providers.stt.*]` / `[providers.tts.*]` block is needed when the active
+# provider carries them.
 
 # ========================================
 # Vision setup — two paths, pick one

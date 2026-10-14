@@ -38,6 +38,15 @@ impl Config {
         let stt = self.providers.stt.as_ref();
         let tts = self.providers.tts.as_ref();
 
+        // The session's active provider can carry the audio models itself
+        // (`stt_model` / `tts_model`), exactly as it carries `vision_model`
+        // and `generation_model`. When it does, transcription and speech work
+        // with no `[providers.stt.*]` block written by hand, which is what
+        // makes voice available out of the box on an install whose provider
+        // ships the models.
+        let provider_stt = crate::brain::provider::factory::active_provider_stt(self);
+        let provider_tts = crate::brain::provider::factory::active_provider_tts(self);
+
         // STT: detect all modes
         let groq_enabled = stt.and_then(|s| s.groq.as_ref()).is_some_and(|g| g.enabled);
         let local_stt_enabled = stt
@@ -53,7 +62,8 @@ impl Config {
         let stt_enabled = groq_enabled
             || local_stt_enabled
             || openai_compatible_stt_enabled
-            || voicebox_stt_enabled;
+            || voicebox_stt_enabled
+            || provider_stt.is_some();
         let stt_mode = if local_stt_enabled {
             SttMode::Local
         } else {
@@ -71,15 +81,30 @@ impl Config {
         let stt_compat = stt
             .and_then(|s| s.openai_compatible.as_ref())
             .filter(|c| c.enabled);
-        let stt_base_url = stt_compat.and_then(|c| c.base_url.clone());
-        let stt_model = stt_compat
-            .and_then(|c| c.model.clone())
+        // The active provider's own audio route wins over the standalone
+        // `[providers.stt.openai_compatible]` block, the same precedence
+        // `generation_model` has over the global `image.generation.model`.
+        // The #1399 rule is untouched: a DISABLED block still contributes
+        // nothing, and this is an additional source, not a re-enable.
+        let stt_base_url = provider_stt
+            .as_ref()
+            .map(|(_, url, _)| url.clone())
+            .or_else(|| stt_compat.and_then(|c| c.base_url.clone()));
+        let stt_model = provider_stt
+            .as_ref()
+            .map(|(_, _, m)| m.clone())
+            .or_else(|| stt_compat.and_then(|c| c.model.clone()))
             .or_else(|| Some("whisper-large-v3-turbo".to_string()));
-        let stt_api_key = stt_compat.and_then(|c| c.api_key.clone()).or_else(|| {
-            stt.and_then(|s| s.groq.as_ref())
-                .filter(|g| g.enabled)
-                .and_then(|g| g.api_key.clone())
-        });
+        let stt_api_key = provider_stt
+            .as_ref()
+            .map(|(key, _, _)| key.clone())
+            .filter(|k| !k.is_empty())
+            .or_else(|| stt_compat.and_then(|c| c.api_key.clone()))
+            .or_else(|| {
+                stt.and_then(|s| s.groq.as_ref())
+                    .filter(|g| g.enabled)
+                    .and_then(|g| g.api_key.clone())
+            });
 
         // TTS: detect all modes
         let openai_tts_enabled = tts
@@ -98,7 +123,8 @@ impl Config {
         let tts_enabled = openai_tts_enabled
             || local_tts_enabled
             || openai_compatible_tts_enabled
-            || voicebox_tts_enabled;
+            || voicebox_tts_enabled
+            || provider_tts.is_some();
         let tts_mode = if local_tts_enabled {
             TtsMode::Local
         } else {
@@ -112,9 +138,15 @@ impl Config {
                     .and_then(|c| c.voice.clone())
             })
             .unwrap_or_else(default_tts_voice);
-        let tts_model = tts
-            .and_then(|t| t.openai.as_ref())
-            .and_then(|o| o.model.clone().or_else(|| o.default_model.clone()))
+        // The active provider's `tts_model` is the primary synthesis route,
+        // mirroring the STT precedence above.
+        let tts_model = provider_tts
+            .as_ref()
+            .map(|(_, _, m)| m.clone())
+            .or_else(|| {
+                tts.and_then(|t| t.openai.as_ref())
+                    .and_then(|o| o.model.clone().or_else(|| o.default_model.clone()))
+            })
             .or_else(|| {
                 tts.and_then(|t| t.openai_compatible.as_ref())
                     .and_then(|c| c.model.clone())
@@ -128,12 +160,20 @@ impl Config {
         let tts_compat = tts
             .and_then(|t| t.openai_compatible.as_ref())
             .filter(|c| c.enabled);
-        let tts_base_url = tts_compat.and_then(|c| c.base_url.clone());
-        let tts_api_key = tts_compat.and_then(|c| c.api_key.clone()).or_else(|| {
-            tts.and_then(|t| t.openai.as_ref())
-                .filter(|o| o.enabled)
-                .and_then(|o| o.api_key.clone())
-        });
+        let tts_base_url = provider_tts
+            .as_ref()
+            .map(|(_, url, _)| url.clone())
+            .or_else(|| tts_compat.and_then(|c| c.base_url.clone()));
+        let tts_api_key = provider_tts
+            .as_ref()
+            .map(|(key, _, _)| key.clone())
+            .filter(|k| !k.is_empty())
+            .or_else(|| tts_compat.and_then(|c| c.api_key.clone()))
+            .or_else(|| {
+                tts.and_then(|t| t.openai.as_ref())
+                    .filter(|o| o.enabled)
+                    .and_then(|o| o.api_key.clone())
+            });
         let local_tts_voice = tts
             .and_then(|t| t.local.as_ref())
             .map(|l| l.voice.clone())

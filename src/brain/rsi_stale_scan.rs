@@ -580,6 +580,8 @@ fn full_provider_sentinel() -> serde_json::Value {
         force_default: false,
         vision_model: Some("v".into()),
         generation_model: Some("g".into()),
+        stt_model: Some("stt-m".into()),
+        tts_model: Some("tts-m2".into()),
         context_window: Some(1),
         endpoint_type: Some("api".into()),
         plan: Some("moderato".into()),

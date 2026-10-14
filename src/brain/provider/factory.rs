@@ -1263,6 +1263,85 @@ pub fn active_provider_generation(config: &Config) -> Option<(String, String, St
     None
 }
 
+/// `(api_key, base_url, model)` for the active provider's `stt_model`, when
+/// it declares one.
+///
+/// Mirrors [`active_provider_generation`]: the active provider's own audio
+/// endpoint wins, so enabling a provider that carries `stt_model` gives
+/// transcription out of the box, with no `[providers.stt.*]` block to write.
+pub fn active_provider_stt(config: &Config) -> Option<(String, String, String)> {
+    active_provider_audio(config, |c| c.stt_model.as_deref())
+}
+
+/// `(api_key, base_url, model)` for the active provider's `tts_model`, when
+/// it declares one. The synthesis twin of [`active_provider_stt`].
+pub fn active_provider_tts(config: &Config) -> Option<(String, String, String)> {
+    active_provider_audio(config, |c| c.tts_model.as_deref())
+}
+
+/// Shared resolution behind [`active_provider_stt`] and [`active_provider_tts`]:
+/// look up the active provider, then hand back its `(api_key, base_url, model)`
+/// for whichever audio model it declares.
+fn active_provider_audio(
+    config: &Config,
+    pick: impl Fn(&ProviderConfig) -> Option<&str>,
+) -> Option<(String, String, String)> {
+    let (name, _) = config.providers.active_provider_and_model();
+    if name == "none" {
+        return None;
+    }
+
+    // Customs take precedence (same convention as `vision_by_name`).
+    let bare = name.strip_prefix("custom:").unwrap_or(name.as_str());
+    if let Some(cfg) = config.providers.custom.as_ref().and_then(|m| m.get(bare)) {
+        return audio_candidate(cfg.base_url.clone()?, cfg.api_key.clone(), pick(cfg)?);
+    }
+
+    for reg in REGISTRATIONS.iter() {
+        if reg.session_id == name.as_str() || reg.aliases.contains(&name.as_str()) {
+            let cfg = (reg.config_field)(config)?;
+            let base_url = vision_base_url(reg.session_id, cfg)?;
+            return audio_candidate(base_url, cfg.api_key.clone(), pick(cfg)?);
+        }
+    }
+    None
+}
+
+/// Build an audio candidate from a raw endpoint plus the model name.
+///
+/// The endpoint is reduced to the host root because the [OI] audio clients
+/// join `v1/audio/...` onto it themselves (`openai_tts::build_endpoint_url`),
+/// so a `.../v1` base would produce `.../v1/v1/audio/speech`. The credential
+/// gate matches the vision candidates (#1792): a remote endpoint we hold no
+/// key for is not a candidate, it is a guaranteed 401.
+fn audio_candidate(
+    base_url: String,
+    api_key: Option<String>,
+    model: &str,
+) -> Option<(String, String, String)> {
+    let root = voice_root_url(&base_url);
+    let api_key = api_key.filter(|k| !k.is_empty());
+    if api_key.is_none() && !is_local_base_url(&root) {
+        tracing::debug!(
+            base_url = %root,
+            model = %model,
+            "voice: skipping active-provider audio candidate, no API key for a remote endpoint"
+        );
+        return None;
+    }
+    Some((api_key.unwrap_or_default(), root, model.to_string()))
+}
+
+/// Host root of an [OI]-compatible endpoint: strip a chat suffix, a trailing
+/// slash, and a trailing `/v1`, so callers can join `v1/audio/...` onto it.
+fn voice_root_url(url: &str) -> String {
+    url.trim_end_matches("/chat/completions")
+        .trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .trim_end_matches('/')
+        .to_string()
+}
+
 /// Final model name to hand to `GenerateImageTool` — first resolved
 /// generation candidate (session provider's `generation_model`, then the
 /// `[providers.fallback] generation` chain) wins, otherwise fall back to the

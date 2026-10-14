@@ -3158,6 +3158,21 @@ pub struct ProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation_model: Option<String>,
 
+    /// Speech-to-text model for this provider's [OI]-compatible
+    /// `/v1/audio/transcriptions` route. Set it and voice notes transcribe
+    /// through the active provider, the same way `vision_model` drives image
+    /// understanding and `generation_model` drives image creation. The
+    /// endpoint is the provider's own (`base_url`, or its known default), so
+    /// any [OI]-compatible provider can serve transcription, not only the
+    /// built-in one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_model: Option<String>,
+
+    /// Text-to-speech model for this provider's [OI]-compatible
+    /// `/v1/audio/speech` route. See `stt_model`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tts_model: Option<String>,
+
     /// Context window size in tokens for this provider's model.
     /// Used by auto-compaction to know when to summarize history.
     /// Essential for custom/local providers whose models aren't recognized by name.
