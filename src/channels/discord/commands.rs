@@ -356,14 +356,77 @@ pub(crate) fn sync_signature(parts: &[u64]) -> u64 {
 /// (`application-commands.mdx:206`) is what a chatty watcher would hit, not the
 /// 200-per-day create budget, which bulk overwrite does not touch.
 /// Built-ins offered in the Discord `/` menu beside `commands.toml` (#2013).
+///
 /// Each is answered by the interaction path, never routed to the model, so an
-/// entry here has to be handled there too.
+/// entry here has to be handled there too. Two mechanisms answer them:
+///
+/// * `interactions::handle_invoked_request` runs the shared parser
+///   (`channels::commands::handle_command` + `try_execute_text_command`)
+///   before falling back to `route_followup_turn` (#246).
+/// * `/respond_to` and `/cowork` are answered earlier, in `agent.rs`, because
+///   they need this channel's id and thread parent.
+///
+/// The set is deliberately narrow. An entry belongs here only when a menu pick
+/// produces a real answer:
+///
+/// * `/exit` is out: a click surface that shuts the bot down is one misclick
+///   from an outage.
+/// * `/plan` is out: it enters a mode whose way out (`/execute`, `/discard`) is
+///   a button flow, and the shared parser returns no text for
+///   `ExecutePlan`/`DiscardPlan`, so a pick could enter plan mode with no way
+///   to approve the design from the menu.
+/// * `/models`, `/new`, `/cd`, `/sessions`, `/stop`, `/clear`, `/compact`,
+///   `/goal`, `/profiles`, `/rename` are interactive (buttons, selects or a
+///   modal) and have no `try_execute_text_command` arm.
+///
+/// `menu_builtins_are_executable` in
+/// `src/tests/discord_application_commands_test.rs` enumerates this list and
+/// fails if an entry stops resolving to a real answer.
+pub(crate) const MENU_PARSER_BUILTINS: &[(&str, &str)] = &[
+    (
+        "/architecture",
+        "Directory tree of a path (mechanical, no API cost)",
+    ),
+    ("/attach", "Attach docs file(s) to the session (owner only)"),
+    (
+        "/audit",
+        "Audit trail viewer: ACTION + READ + OUTCOME rows (owner only)",
+    ),
+    ("/doctor", "Run the health check"),
+    (
+        "/evolve",
+        "Download the latest release and restart (owner only)",
+    ),
+    ("/help", "Show this message"),
+    (
+        "/mission-control",
+        "Mission control: analytics, activity, inbox & schedule",
+    ),
+    (
+        "/redact",
+        "Show/switch scoped secret redaction (owner only)",
+    ),
+    ("/restart", "Restart OpenCrabs (owner only)"),
+    ("/rtk", "Show RTK token savings statistics (owner only)"),
+    ("/show-plan", "Show the current plan state"),
+    ("/usage", "Token & cost stats"),
+];
+
+/// Built-ins answered earlier in the interaction path, before the parser runs.
+///
+/// `/respond_to` and `/cowork` need this channel's id and, for a thread, its
+/// parent, so `agent.rs` resolves them itself and returns before
+/// `handle_invoked_request` is reached. `/cowork` in particular has no
+/// `handle_command` arm at all, which is why the two lists are separate: the
+/// parser enumeration in the test must not be pointed at an entry the parser
+/// never sees.
+pub(crate) const MENU_SCOPE_BUILTINS: &[(&str, &str)] = &[
+    ("/cowork", "Open this channel to its members (owner only)"),
+    ("/respond_to", "Show/switch auto-mention mode (owner only)"),
+];
+
 pub(crate) fn with_menu_builtins(mut catalog: Vec<UserCommand>) -> Vec<UserCommand> {
-    const MENU_BUILTINS: &[(&str, &str)] = &[
-        ("/respond_to", "Show this bot's respond mode (owner only)"),
-        ("/cowork", "Open this channel to its members (owner only)"),
-    ];
-    for (name, description) in MENU_BUILTINS {
+    for (name, description) in MENU_PARSER_BUILTINS.iter().chain(MENU_SCOPE_BUILTINS) {
         if !catalog.iter().any(|c| c.name == *name) {
             catalog.push(UserCommand {
                 name: (*name).to_string(),
