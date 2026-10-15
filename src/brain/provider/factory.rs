@@ -2190,7 +2190,16 @@ fn configure_openai_compatible(
         tracing::info!("Vision model configured: {}", vm);
         provider = provider.with_vision_model(vm.clone());
     }
-    if let Some(cw) = config.context_window {
+    // The built-in inference endpoint is free and fixed at 200k. Match on the
+    // host rather than the provider name, so a `[providers.custom.*]` section
+    // that copies the install token cannot raise the budget either (#2067).
+    if super::opencrabs_install::is_opencrabs_endpoint(provider.base_url()) {
+        tracing::info!(
+            "Built-in OpenCrabs endpoint: context window fixed at {} tokens",
+            super::opencrabs_install::OPENCRABS_CONTEXT_WINDOW
+        );
+        provider = provider.with_context_window(super::opencrabs_install::OPENCRABS_CONTEXT_WINDOW);
+    } else if let Some(cw) = config.context_window {
         tracing::info!("Context window configured: {} tokens", cw);
         provider = provider.with_context_window(cw);
     } else if let Some(plan) = &config.plan

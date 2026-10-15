@@ -18,6 +18,23 @@ pub const OPENCRABS_BASE_URL: &str = "https://inference.opencrabs.com/v1";
 /// it, so it is inert in both directions rather than clamped (#2066).
 pub const OPENCRABS_CONTEXT_WINDOW: u32 = 200_000;
 
+/// Host of the built-in inference endpoint. Used to recognise the endpoint
+/// when it is reached under a provider name other than `opencrabs`.
+const OPENCRABS_HOST: &str = "inference.opencrabs.com";
+
+/// True when `base_url` points at the built-in inference endpoint.
+///
+/// Deliberately a host check and not a provider-name check, mirroring
+/// `is_official_host` in `crate::config::wire_dialect`: a `[providers.custom.*]`
+/// section that copies the install token reaches the same endpoint under a
+/// different name, and the fixed window has to hold for it too (#2067).
+pub fn is_opencrabs_endpoint(base_url: Option<&str>) -> bool {
+    base_url
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_some_and(|url| url.to_ascii_lowercase().contains(OPENCRABS_HOST))
+}
+
 /// Path of the install route, relative to [`OPENCRABS_BASE_URL`].
 pub const INSTALL_PATH: &str = "/install";
 
