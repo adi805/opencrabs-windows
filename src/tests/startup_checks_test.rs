@@ -4,7 +4,9 @@
 //! the escape-hatch hint.
 
 use crate::config::startup_checks::startup_warnings;
-use crate::config::{Config, ProviderConfig, ProviderConfigs};
+use crate::config::{
+    ChannelsConfig, Config, GoogleChatConfig, IMessageConfig, ProviderConfig, ProviderConfigs,
+};
 
 fn config_with_default(dp: Option<&str>, force: bool) -> Config {
     Config {
@@ -153,4 +155,53 @@ fn an_unrelated_name_is_reported_without_a_guess() {
         .find(|w| w.contains("something-else-entirely"))
         .expect("the dangling entry must still be reported");
     assert!(!hit.contains("did you mean"), "must not guess, got {hit}");
+}
+
+/// A channel section that is enabled but has no implementation must say so.
+///
+/// `GoogleChatConfig` and `IMessageConfig` live in the schema and are
+/// documented as placeholders, but no module reads them, so `enabled = true`
+/// is a silent no-op. Turning a channel on and seeing no traffic is
+/// indistinguishable from a bad token, which is the archaeology this
+/// function exists to end.
+#[test]
+fn an_enabled_unimplemented_channel_is_reported() {
+    let cfg = Config {
+        channels: ChannelsConfig {
+            google_chat: GoogleChatConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let warns = startup_warnings(&cfg, None);
+    let hit = warns
+        .iter()
+        .find(|w| w.contains("[channels.google_chat]"))
+        .unwrap_or_else(|| panic!("an enabled placeholder channel must warn, got {warns:?}"));
+    assert!(
+        hit.contains("NO effect"),
+        "the warning must state the effect is nil, got {hit}"
+    );
+}
+
+#[test]
+fn a_disabled_unimplemented_channel_is_not_reported() {
+    let cfg = Config {
+        channels: ChannelsConfig {
+            google_chat: GoogleChatConfig::default(),
+            imessage: IMessageConfig::default(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let warns = startup_warnings(&cfg, None);
+    assert!(
+        !warns
+            .iter()
+            .any(|w| w.contains("google_chat") || w.contains("imessage")),
+        "a channel left disabled must stay quiet, got {warns:?}"
+    );
 }
