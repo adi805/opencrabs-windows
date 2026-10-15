@@ -142,6 +142,9 @@ fn verification(enabled: bool, pairs: &[(&str, &[&str])]) -> RalphVerification {
         // Added by #870 after these tests were written. Default keeps them
         // testing the command-mapping behaviour they were written for.
         criteria_policy: Default::default(),
+        // Added by #1904: the per-task spec check policy. These tests pin the
+        // per-type command mapping, which the spec-check path does not touch.
+        spec_checks: Default::default(),
         task_type_commands: pairs
             .iter()
             .map(|(t, c)| TaskTypeCommands {

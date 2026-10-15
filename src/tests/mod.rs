@@ -689,6 +689,7 @@ pub mod plan_gate_test;
 pub mod plan_mode_command_test;
 pub mod plan_mode_provider_test;
 pub mod plan_reminder_test;
+pub mod plan_spec_checks_test;
 pub mod plan_stale_marker_test;
 pub mod plan_title_echo_test;
 pub mod plan_tool_contract_test;
