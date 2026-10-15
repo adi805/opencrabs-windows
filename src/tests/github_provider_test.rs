@@ -51,7 +51,8 @@ fn provider_order_after_github_insertion() {
     assert_eq!(PROVIDERS[14].name, "Qwen");
     assert_eq!(PROVIDERS[15].name, "Ollama");
     assert_eq!(PROVIDERS[16].name, "Xiaomi");
-    assert_eq!(PROVIDERS[17].name, "Custom OpenAI-Compatible");
+    assert_eq!(PROVIDERS[17].name, "OpenCrabs");
+    assert_eq!(PROVIDERS[18].name, "Custom OpenAI-Compatible");
 }
 
 // ── Config struct ───────────────────────────────────────────────

@@ -130,3 +130,90 @@ fallback_chain = ["local", "groq"]
     assert_eq!(vc.tts_voice, "echo");
     assert_eq!(vc.tts_model, "gpt-4o-mini-tts");
 }
+
+#[test]
+fn active_provider_audio_models_turn_voice_on_with_no_stt_blocks() {
+    // Out of the box: the session's provider carries `stt_model` /
+    // `tts_model`, exactly as it carries `vision_model` and
+    // `generation_model`. No `[providers.stt.*]` block is written, and
+    // voice still works.
+    let vc = cfg(r#"
+[providers.opencrabs]
+enabled = true
+api_key = "ocp_test_token"
+default_model = "deepseek-v4.1-flash"
+stt_model = "qwen3.8-omni-flash"
+tts_model = "qwen3.8-omni-flash"
+"#)
+    .voice_config();
+    assert!(
+        vc.stt_enabled,
+        "provider stt_model must enable transcription"
+    );
+    assert!(vc.tts_enabled, "provider tts_model must enable synthesis");
+    // Host root: the [OI] audio clients append `v1/audio/...` themselves.
+    assert_eq!(
+        vc.stt_base_url.as_deref(),
+        Some("https://inference.opencrabs.com")
+    );
+    assert_eq!(
+        vc.tts_base_url.as_deref(),
+        Some("https://inference.opencrabs.com")
+    );
+    assert_eq!(vc.stt_model.as_deref(), Some("qwen3.8-omni-flash"));
+    assert_eq!(vc.tts_model, "qwen3.8-omni-flash");
+    assert_eq!(vc.stt_api_key.as_deref(), Some("ocp_test_token"));
+    assert_eq!(vc.tts_api_key.as_deref(), Some("ocp_test_token"));
+}
+
+#[test]
+fn provider_audio_models_win_over_a_user_fallback_chain() {
+    // The active provider's own route is the primary one even when the
+    // user set a chain: `generation_model` has the same precedence over
+    // the global `image.generation.model`. The chain itself survives, so
+    // the dispatcher can still fall back to it.
+    let vc = cfg(r#"
+[providers.opencrabs]
+enabled = true
+api_key = "ocp_test_token"
+default_model = "deepseek-v4.1-flash"
+stt_model = "qwen3.8-omni-flash"
+tts_model = "qwen3.8-omni-flash"
+[providers.stt]
+fallback_chain = ["groq"]
+[providers.tts]
+fallback_chain = ["openai"]
+"#)
+    .voice_config();
+    assert_eq!(
+        vc.stt_base_url.as_deref(),
+        Some("https://inference.opencrabs.com")
+    );
+    assert_eq!(
+        vc.tts_base_url.as_deref(),
+        Some("https://inference.opencrabs.com")
+    );
+    assert_eq!(vc.stt_fallback_chain, vec!["groq"]);
+    assert_eq!(vc.tts_fallback_chain, vec!["openai"]);
+}
+
+#[test]
+fn keyless_provider_audio_models_do_not_enable_voice() {
+    // Same #1792 gate as the vision candidates: a remote endpoint we hold
+    // no key for is a guaranteed 401, not a working out-of-the-box path.
+    let vc = cfg(r#"
+[providers.opencrabs]
+enabled = true
+default_model = "deepseek-v4.1-flash"
+stt_model = "qwen3.8-omni-flash"
+tts_model = "qwen3.8-omni-flash"
+"#)
+    .voice_config();
+    assert!(
+        !vc.stt_enabled,
+        "keyless remote must not enable transcription"
+    );
+    assert!(!vc.tts_enabled, "keyless remote must not enable synthesis");
+    assert_eq!(vc.stt_base_url, None);
+    assert_eq!(vc.tts_base_url, None);
+}

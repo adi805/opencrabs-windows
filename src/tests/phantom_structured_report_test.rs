@@ -14,13 +14,12 @@
 //! (2) `is_structured_report` exempts the genre from the discard wholesale,
 //! with the fired branches logged for forensics.
 //!
-//! Deliberate trade-off, owner-ruled: #1423's fabricated table report would
-//! now be delivered instead of discarded, with a WARN trail instead of
-//! silence. The zero-tool turn-end verdict (#752) now honors the same
-//! exemption (#1541): a structured deliverable is never stripped at turn-end
-//! either, so the in-loop exemption and the turn-end verdict cannot disagree.
-//! Every prose-shaped detector keeps full authority over non-structured
-//! narration.
+//! Branch-class gate (#2039): the exemption covers the phrase matchers only.
+//! A structured report that trips a fact check (an unbacked sha, tally or
+//! quoted result) is killed in-loop and at turn end, with or without tools,
+//! because a table does not make a fabricated fact true. The fact check is
+//! the one detector a report cannot talk its way past. Every prose-shaped
+//! detector keeps full authority over non-structured narration.
 //!
 //! Fixtures are synthetic and carry no user identifiers.
 
@@ -178,7 +177,7 @@ fn the_exempt_path_is_suppression_not_a_branch_of_the_kill() {
     // The suppression branch must fire BEFORE the kill body: a structured
     // report takes the log-and-deliver path, never the discard path.
     let gate = TOOL_LOOP_SRC
-        .split("if kill && structured_report")
+        .split("structured_report_exempts(structured_report, &fired_branches)")
         .nth(1)
         .expect("suppression branch not found");
     let gate = gate
@@ -218,7 +217,7 @@ fn the_suppressed_report_logs_its_branches_for_forensics() {
     // The #1423 trade-off is visible, not silent: a fabricated table report
     // ships with a WARN naming what would have fired.
     let gate = TOOL_LOOP_SRC
-        .split("if kill && structured_report")
+        .split("structured_report_exempts(structured_report, &fired_branches)")
         .nth(1)
         .expect("suppression branch not found");
     let gate = gate.split("} else if kill {").next().unwrap();
@@ -232,16 +231,14 @@ fn the_suppressed_report_logs_its_branches_for_forensics() {
     );
 }
 
-// ─── wiring sentinel: the turn-end verdict honors the exemption (#1541) ───
+// ─── wiring sentinel: the turn-end verdict is branch-class gated (#2039) ───
 
 #[test]
-fn the_turn_end_verdict_honors_the_structured_exemption() {
-    // #1541: the #752 turn-end verdict must consult is_structured_report, or a
-    // structured deliverable exempted by the #1506 in-loop kill is stripped
-    // here anyway and swapped for the prose note. Zero tools means no retry
-    // fired (the exemption spent no budget), so the work is lost and the user
-    // sees a dead-end. The in-loop exemption and the turn-end verdict must
-    // agree: a structured report ships untouched from both.
+fn the_turn_end_verdict_exempts_structured_reports_from_phrases_only() {
+    // The #752 verdict keeps the structured exemption for the phrase matchers
+    // (report prose false-positives there), but a zero-tool answer whose facts
+    // the conversation cannot back is killed whatever its shape. A table with
+    // invented shas is still fabricated (#2039).
     let verdict = TOOL_LOOP_SRC
         .split("Turn-end phantom verdict (#752)")
         .nth(1)
@@ -251,8 +248,19 @@ fn the_turn_end_verdict_honors_the_structured_exemption() {
         .next()
         .expect("#752 note assignment not found");
     assert!(
-        verdict.contains("!super::phantom::is_structured_report(&final_text)"),
-        "the #752 turn-end verdict strips structured reports (the #1541 bug)"
+        verdict.contains("let turn_end_fabricated"),
+        "the #752 verdict never runs the fact check at turn end"
+    );
+    assert!(
+        verdict.contains("turn_end_fabricated\n")
+            && verdict.contains("|| (!super::phantom::is_structured_report(&final_text)"),
+        "the structured exemption must cover only the phrase matchers"
+    );
+    // The in-loop exemption is branch-class gated: phrase matchers yield to a
+    // structured report, fact checks never do (#2039).
+    assert!(
+        TOOL_LOOP_SRC.contains("structured_report_exempts(structured_report, &fired_branches)"),
+        "the #1506 in-loop exemption must route through the branch-class gate"
     );
 }
 
