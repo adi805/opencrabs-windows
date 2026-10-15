@@ -819,6 +819,35 @@ pub struct TaskScope {
 // a sha256, so a criterion loosened after the work began cannot execute as
 // if it were the one the plan approver read.
 
+/// Where a locked spec check's commands came from (#2063).
+///
+/// The provenance decides whether the check is allowed to REJECT a
+/// completion. A command read out of the criteria is what the plan approver
+/// read, so it may block. A command a model wrote is not, so it may only
+/// advise until a human confirms it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpecCheckSource {
+    /// Read out of the task's own acceptance criteria by
+    /// `extract_check_commands`. The default, so every plan written before
+    /// #2063 reads as criteria-derived and keeps the behaviour it had.
+    #[default]
+    Criteria,
+    /// Written by a model at `start`, from the task's title, description and
+    /// criteria. Advisory until confirmed.
+    Generated,
+}
+
+impl SpecCheckSource {
+    /// Render-ready name for a message.
+    pub fn label(&self) -> &'static str {
+        match self {
+            SpecCheckSource::Criteria => "criteria",
+            SpecCheckSource::Generated => "generated",
+        }
+    }
+}
+
 /// A per-task spec check, locked at `start` and run at `complete` (#1904).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpecCheck {
@@ -826,18 +855,59 @@ pub struct SpecCheck {
     pub commands: Vec<String>,
     /// sha256 (hex) over `commands`, written when the check was locked.
     pub sha256: String,
+    /// Where the commands came from (#2063). Defaults to `Criteria` for
+    /// plans written before this field existed.
+    #[serde(default)]
+    pub source: SpecCheckSource,
+    /// Whether a generated check has been confirmed (#2063). Always `false`
+    /// for a criteria-derived check, which needs no confirmation: the plan
+    /// approver already read it.
+    #[serde(default)]
+    pub confirmed: bool,
 }
 
 impl SpecCheck {
-    /// Freeze a command list: the commands plus the hash that locks them.
+    /// Freeze a command list read out of the criteria: the commands plus the
+    /// hash that locks them.
     pub fn lock(commands: Vec<String>) -> Self {
         let sha256 = spec_check_hash(&commands);
-        Self { commands, sha256 }
+        Self {
+            commands,
+            sha256,
+            source: SpecCheckSource::Criteria,
+            confirmed: false,
+        }
+    }
+
+    /// Freeze a command list a model wrote (#2063).
+    pub fn lock_generated(commands: Vec<String>) -> Self {
+        Self {
+            source: SpecCheckSource::Generated,
+            ..Self::lock(commands)
+        }
     }
 
     /// Whether this lock still matches the commands now on the task.
+    ///
+    /// Deliberately independent of `source` and `confirmed`: the hash covers
+    /// `commands` only, so confirming a generated check does NOT move it. A
+    /// confirmation that voids the lock it just approved would be worse than
+    /// no lock at all.
     pub fn matches(&self, commands: &[String]) -> bool {
         !self.sha256.is_empty() && self.sha256 == spec_check_hash(commands)
+    }
+
+    /// Whether this check may REJECT a completion (#2063).
+    ///
+    /// A criteria-derived check may: the approver read it. A generated check
+    /// may not until a human confirms it, because a model asked for a command
+    /// will invent one for "update the docs", and a gate that rejects correct
+    /// work on invented criteria is worse than no gate.
+    pub fn may_block(&self) -> bool {
+        match self.source {
+            SpecCheckSource::Criteria => true,
+            SpecCheckSource::Generated => self.confirmed,
+        }
     }
 }
 
@@ -1284,6 +1354,17 @@ fn accept_candidate(candidate: &str) -> Option<String> {
         return None;
     }
     Some(candidate.to_string())
+}
+
+/// Public face of the final gate, for callers outside this module (#2063).
+///
+/// A generated command must be held to the SAME rule a criteria-derived one
+/// is: the gate runs the text either way, so a pipe or a compound line is
+/// refused no matter who wrote it. Reusing this also keeps the runner
+/// vocabulary in one place, so a model cannot introduce a runner the criteria
+/// path would never have accepted.
+pub fn is_acceptable_check_command(candidate: &str) -> bool {
+    accept_candidate(candidate.trim()).is_some()
 }
 
 /// The single glyph a task has earned, or `None` when nothing is missing.

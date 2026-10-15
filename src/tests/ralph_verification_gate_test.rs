@@ -143,6 +143,9 @@ fn verification(enabled: bool, pairs: &[(&str, &[&str])]) -> RalphVerification {
         // testing the command-mapping behaviour they were written for.
         criteria_policy: Default::default(),
         spec_checks: Default::default(),
+        // Added by #2063: model-written checks. Off here, so these tests keep
+        // pinning the command mapping and never ask a model for anything.
+        spec_check_generation: false,
         task_type_commands: pairs
             .iter()
             .map(|(t, c)| TaskTypeCommands {
