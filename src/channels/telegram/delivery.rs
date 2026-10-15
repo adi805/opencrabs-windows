@@ -1296,16 +1296,20 @@ pub(crate) fn file_message_link(
 /// that does not exist, and it never disappears: the label is the reader's
 /// anchor either way.
 ///
-/// `text` is the buffer being rewritten, which STARTS as a copy of
-/// `scan.text` and is then run through the artifact strip, the secret
-/// redaction and the dedup ladder, any of which can move a marker. `scan`
-/// therefore travels with the call, and a span is cut only while the bytes
-/// it names still match the ones the scanner wrote there: a rewrite that
-/// moved the text degrades to the plain marker instead of splicing a link
-/// over unrelated words.
+/// `text` is the buffer being rewritten, which STARTS as a copy of `scan.text`.
+/// The artifact strip and the secret redaction have already run by the time the
+/// scan does, so what they left is what the recorded spans index; the rewrites
+/// that can move a marker are the ones AFTER it — `strip_echoed_plan_title`
+/// drops an echoed leading line and shifts every following span left (#837),
+/// `extract_react_marker` cuts a trailing directive, and the dedup ladder and
+/// the folded reclaim each rewrite the text again. The recorded span is
+/// therefore a record of WHAT the scanner wrote, never of WHERE it sits: it is
+/// tried first, and a marker that moved is then found by its own bytes. A
+/// marker that vanished, or that the model also wrote itself (#2001), keeps the
+/// plain form rather than splicing a link over unrelated words.
 ///
-/// Spans are cut from the LAST to the FIRST, so a link's extra bytes can
-/// never invalidate a span that has not been cut yet.
+/// Spans are cut from the LAST to the FIRST, so a link's extra bytes can never
+/// invalidate a span that has not been cut yet.
 pub(crate) fn link_file_markers(
     text: &str,
     scan: &crate::utils::image::LocalFileScan,
@@ -1320,21 +1324,22 @@ pub(crate) fn link_file_markers(
             // Not from a scan: nothing to cut.
             continue;
         };
-        let (start, end) = (span.start, span.end);
-        let Some(marker) = text.get(start..end) else {
+        // The span indexes `scan.text`, the scanner's own output, so it still
+        // names the marker the scanner wrote there. Read the marker FROM it
+        // rather than from `text`, whose bytes have since moved.
+        let Some(marker) = scan.text.get(span.start..span.end) else {
             continue;
         };
-        if scan.text.get(start..end) != Some(marker) {
-            // The text moved under the span: the marker stays plain.
+        let Some(start) = locate_marker(text, marker, Some(span.clone())) else {
             continue;
-        }
+        };
         let Some((_, link)) = links
             .iter()
             .find(|(path, _)| path.as_path() == file.path.as_path())
         else {
             continue;
         };
-        spans.push((start, end, marker, link.as_str()));
+        spans.push((start, start + marker.len(), marker, link.as_str()));
     }
     if spans.is_empty() {
         return text.to_string();
@@ -1348,6 +1353,41 @@ pub(crate) fn link_file_markers(
         linked.replace_range(*start..*end, &format!("[{marker}]({link})"));
     }
     linked
+}
+
+/// Find where `marker` sits in `text`.
+///
+/// The recorded `span` is tried FIRST. It indexes `scan.text`, and when the
+/// bytes it names still equal `marker` at that same offset in `text` the buffer
+/// has not moved, so that is unambiguously the occurrence the scanner wrote —
+/// even when the model wrote the same marker again elsewhere. A file named
+/// twice in one reply produces two attachments, two identical markers and two
+/// valid spans, and each must link at its own offset.
+///
+/// When the span is stale the marker's own bytes are searched for, and the
+/// result is accepted only on EXACTLY one occurrence: two are ambiguous, since
+/// the scanner wrote one and the model may have written the other itself
+/// (#2001), and a stale span no longer says which. Zero means the text was
+/// rewritten beyond recognition. Both fall back to the plain marker.
+fn locate_marker(
+    text: &str,
+    marker: &str,
+    span: Option<std::ops::Range<usize>>,
+) -> Option<usize> {
+    if marker.is_empty() {
+        return None;
+    }
+    if let Some(span) = span {
+        let start = span.start;
+        if text.get(span) == Some(marker) {
+            return Some(start);
+        }
+    }
+    let first = text.find(marker)?;
+    if text[first + marker.len()..].contains(marker) {
+        return None;
+    }
+    Some(first)
 }
 
 /// The filename Telegram should display for a document read from `path`.

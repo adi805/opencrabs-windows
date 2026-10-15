@@ -27,9 +27,13 @@
 //!    marker becomes a `t.me` link to the document bubble, so a channel
 //!    reader can tap the marker and land on the file. Links exist only for
 //!    public supergroup and channel chats; a private chat keeps the plain
-//!    marker. A link is spliced only where the recorded span still matches
-//!    the buffer; a moved span degrades to the plain marker rather than
-//!    link unrelated words.
+//!    marker. The recorded span is a record of WHAT the scanner wrote, never
+//!    of WHERE it sits — the rewrites that run AFTER the scan
+//!    (`strip_echoed_plan_title`, `extract_react_marker`, the dedup ladder)
+//!    shift it — so the span is tried first and the marker's own bytes are
+//!    searched for when it has moved. A marker that vanished, or that the
+//!    model also wrote itself (#2001), stays plain rather than splicing a
+//!    link over unrelated words.
 //! 4. **The rich rewrite** (`mod rich`, #1918). On the rich plane the file
 //!    goes one better than a marker: each resolvable reference is rewritten
 //!    IN PLACE into a `tg://document?id=` reference and the document rides
@@ -751,8 +755,10 @@ mod floor {
 // ---------------------------------------------------------------------------
 
 mod links {
-    use crate::channels::telegram::delivery::{file_message_link, link_file_markers};
-    use crate::utils::image::extract_local_files;
+    use crate::channels::telegram::delivery::{
+        file_message_link, link_file_markers, strip_echoed_plan_title,
+    };
+    use crate::utils::image::{extract_local_files, LocalFile, LocalFileScan};
     use std::path::Path;
 
     const PDF_BYTES: &[u8] = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n";
@@ -856,20 +862,165 @@ mod links {
     }
 
     #[test]
-    fn a_moved_span_degrades_to_the_plain_marker() {
+    fn a_marker_that_moved_still_links() {
+        // The recorded span is a record of WHAT the scanner wrote, not of WHERE
+        // it now sits. `text` starts as a copy of `scan.text` and the rewrites
+        // after the scan — the echoed-title strip, the react directive, the
+        // dedup ladder — can each move a marker. Comparing the span against the
+        // marker's bytes reads that mismatch as "the marker is gone" and leaves
+        // it plain; searching for the marker's own bytes finds it where it
+        // actually is.
         let dir = tempfile::tempdir().expect("tempdir");
         let pdf = write_fixture(dir.path(), "q3.pdf");
-        let scan = extract_local_files("Here is [Q3 report](q3.pdf).", Some(dir.path()));
-        // The buffer moved under the span (a prefix landed): cutting the
-        // recorded range would splice a link over unrelated words, so the
-        // rewrite must decline and the marker stays plain.
-        let shifted = format!(">> {}", scan.text);
+        let scan = extract_local_files("Report [Q3 report](q3.pdf).", Some(dir.path()));
+        assert_eq!(scan.text, "Report 📎 Q3 report.");
+
+        let moved = format!("(redacted) {}", scan.text);
         let linked = link_file_markers(
-            &shifted,
+            &moved,
             &scan,
             &[(pdf, "https://t.me/c/1/701".to_string())],
         );
-        assert_eq!(linked, shifted, "a moved span is never spliced");
+        assert_eq!(
+            linked, "(redacted) Report [📎 Q3 report](https://t.me/c/1/701).",
+            "the span is stale but the marker is still there exactly once, so it \
+             links to the bubble that holds the file"
+        );
+    }
+
+    #[test]
+    fn a_marker_after_a_real_rewrite_still_links() {
+        // The live path, in the order production actually runs it: the scan
+        // happens FIRST, and the rewrites that can move a marker come AFTER it.
+        // `strip_echoed_plan_title` drops the plan title the model echoed back
+        // (#837), which shifts every following byte left, so the span the
+        // scanner recorded no longer names the marker.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pdf = write_fixture(dir.path(), "q3.pdf");
+        let scan = extract_local_files(
+            "Q3 numbers\n\nReport [Q3 report](q3.pdf).",
+            Some(dir.path()),
+        );
+        assert_eq!(scan.text, "Q3 numbers\n\nReport 📎 Q3 report.");
+        let rewritten = strip_echoed_plan_title(&scan.text, "Q3 numbers");
+
+        assert_ne!(rewritten, scan.text, "the transform has to actually fire");
+        assert_eq!(
+            rewritten, "Report 📎 Q3 report.",
+            "the echoed title line is gone, and everything after it moved"
+        );
+        // The span the scanner recorded no longer names the marker — the exact
+        // condition the old guard refused on, so this test fails on the pre-fix
+        // code instead of passing for the wrong reason.
+        let span = scan.attachments[0]
+            .marker_span
+            .clone()
+            .expect("the scan records the span it emitted the marker at");
+        let real = rewritten
+            .find("📎 Q3 report")
+            .expect("the marker itself survives the rewrite");
+        assert!(
+            real < span.start,
+            "the rewrite moved the marker to {real}, left of the recorded span {span:?}"
+        );
+
+        let linked = link_file_markers(
+            &rewritten,
+            &scan,
+            &[(pdf, "https://t.me/c/1/701".to_string())],
+        );
+        assert_eq!(
+            linked, "Report [📎 Q3 report](https://t.me/c/1/701).",
+            "the marker links even though the transform moved it out from under \
+             its own span"
+        );
+    }
+
+    #[test]
+    fn a_marker_whose_text_vanished_stays_plain() {
+        // The other half of the same rule: a rewrite that does not merely move
+        // the marker but REMOVES it — the redaction pass, the dedup ladder —
+        // leaves no bytes to find, and nothing may be spliced over whatever
+        // took their place. The refusal the old guard made for the wrong
+        // reason is still the right answer here.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pdf = write_fixture(dir.path(), "q3.pdf");
+        let scan = extract_local_files("Report [Q3 report](q3.pdf).", Some(dir.path()));
+        let rewritten = "Report attached.".to_string();
+        let linked = link_file_markers(
+            &rewritten,
+            &scan,
+            &[(pdf, "https://t.me/c/1/701".to_string())],
+        );
+        assert_eq!(
+            linked, rewritten,
+            "no marker bytes survive the rewrite, so there is nothing to link"
+        );
+    }
+
+    #[test]
+    fn the_scanner_marker_links_even_when_the_model_echoed_it() {
+        // #2001: the model can write the marker's own bytes into its prose —
+        // the very `📎 <label>` the scanner emits for the file it attached. The
+        // recorded span still names the occurrence the SCANNER wrote, so that
+        // one links and the model's own copy keeps its bytes exactly as
+        // written: the link never lands on the model's words.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pdf = write_fixture(dir.path(), "q3.pdf");
+        let body = "I wrote 📎 Q3 report in the draft. Attached: 📎 Q3 report";
+        let marker = "📎 Q3 report";
+        // The span names the marker the SCANNER emitted — the second one; the
+        // model's copy sits earlier in the prose.
+        let emitted_at = body.rfind(marker).expect("the body carries it twice");
+        let scan = LocalFileScan {
+            text: body.to_string(),
+            attachments: vec![LocalFile {
+                path: pdf.clone(),
+                caption: Some("Q3 report".to_string()),
+                marker_span: Some(emitted_at..emitted_at + marker.len()),
+            }],
+            failures: Vec::new(),
+        };
+        assert_eq!(
+            link_file_markers(
+                body,
+                &scan,
+                &[(pdf, "https://t.me/c/1/701".to_string())]
+            ),
+            "I wrote 📎 Q3 report in the draft. Attached: \
+             [📎 Q3 report](https://t.me/c/1/701)",
+            "only the scanner's own occurrence is cut, so the model's copy keeps \
+             its bytes"
+        );
+    }
+
+    #[test]
+    fn two_references_to_one_file_both_link() {
+        // The same file named twice is two attachments carrying two identical
+        // markers and two valid spans. Each links at its own offset; a search
+        // that refuses "two occurrences" as ambiguous would turn two working
+        // links into none, even though nothing moved.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pdf = write_fixture(dir.path(), "q3.pdf");
+        let scan = extract_local_files(
+            "First [Q3 report](q3.pdf), then [Q3 report](q3.pdf) again.",
+            Some(dir.path()),
+        );
+        assert_eq!(
+            scan.attachments.len(),
+            2,
+            "one attachment per markdown reference, no path dedup"
+        );
+        let linked = link_file_markers(
+            &scan.text,
+            &scan,
+            &[(pdf, "https://t.me/c/1/701".to_string())],
+        );
+        assert_eq!(
+            linked.matches("[📎 Q3 report](https://t.me/c/1/701)").count(),
+            2,
+            "both markers link, each at its own recorded span: {linked:?}"
+        );
     }
 
     #[test]
