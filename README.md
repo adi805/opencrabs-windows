@@ -1685,6 +1685,29 @@ api_key = "nvapi-..."
 
 **What `enabled = false` actually means:** it only removes the provider from the default-selection scan above. It does NOT disable the provider. By-name usage ignores the flag entirely: per-session provider restoration, `/models` switching, the `[fallback]` chain, and the `[providers.fallback] vision` list can all still reach a provider marked `enabled = false`. Such a provider works perfectly fine when it has an API key, or when its CLI is authenticated and working on the same machine. Think of `enabled = false` as "not the default", not "dead" (#270).
 
+### Wire Dialect (Chat Completions vs Responses)
+
+An OpenAI-compatible endpoint can serve a request two ways: the classic Chat Completions route (`POST {base}/chat/completions`) or the newer Responses route (`POST {base}/responses`). The two are not interchangeable. Each takes a different request body, returns a different response shape and streams a different event vocabulary, so the route is a property of the endpoint, not of the caller. Reasoning models are the usual reason to care: when a model's reasoning tools are only reachable over Responses, sending it to Chat Completions is what makes a tool call come back as plain text.
+
+`wire_dialect` picks the route per provider:
+
+```toml
+[providers.openai]
+enabled = true
+default_model = "gpt-6"
+wire_dialect = "auto"   # "auto", "chat" or "responses"
+```
+
+| Value | Behavior |
+|-------|----------|
+| `auto` | Chat Completions first, switch to Responses when the endpoint refuses the model on the chat route. This is the default for the official OpenAI host. |
+| `chat` | Always `POST {base}/chat/completions`. |
+| `responses` | Always `POST {base}/responses`. |
+
+Leaving the key unset means `auto`, and `auto` resolves by provider kind. The official host (`api.openai.com`) keeps `auto`, so the official endpoint is still probed on Chat first and only moved to Responses when a model is refused there. Every other OpenAI-compatible endpoint is pinned to `chat`, because a third-party gateway almost never implements `/responses` at all and sending one there would only produce a 404.
+
+Set it explicitly when a gateway does implement `/responses` and its reasoning models need it, or when you want to pin the official host to one route and skip the probe. The value is validated at parse time: anything other than `auto`, `chat` or `responses` is a config error naming the valid values, so a typo never silently pins a provider to Chat.
+
 ### Per-Provider Timeouts
 
 Every `[providers.*]` section accepts two independent timeouts, on two different clocks:

@@ -9,9 +9,11 @@
 
 use super::error::{ProviderError, Result};
 use super::rate_limiter::RateLimiter;
+use super::responses_routing::{is_dialect_rejection_error, responses_url};
 use super::r#trait::{Provider, ProviderStream};
 use super::types::*;
 use crate::brain::tokenizer::{count_message_tokens, count_tokens};
+use crate::config::WireDialect;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use reqwest::Client;
@@ -2241,6 +2243,13 @@ pub struct OpenAIProvider {
     cache_enabled: bool,
     /// OpenRouter cache TTL in seconds (1-86400, default 300).
     cache_ttl: Option<u32>,
+    /// Which route this provider speaks (#2059). `Chat` (the default here, and
+    /// for every OpenAI-compatible endpoint) posts to
+    /// `{base}/chat/completions`; `Responses` posts to `{base}/responses`;
+    /// `Auto` starts on Chat and only moves to Responses when the endpoint
+    /// refuses the model there. `configure_openai_compatible` resolves the
+    /// configured `wire_dialect` into this field.
+    wire_dialect: WireDialect,
     /// Kimi reasoning setting (e.g. `max`, `on`, `off`). Applied to each
     /// request when the active model accepts it; see `kimi_reasoning`.
     reasoning_setting: Option<String>,
@@ -2313,6 +2322,7 @@ impl OpenAIProvider {
             stream_client,
             custom_default_model: None,
             name: "openai".to_string(),
+            wire_dialect: WireDialect::Chat,
             vision_model: None,
             extra_headers: vec![],
             configured_context_window: None,
@@ -2342,6 +2352,7 @@ impl OpenAIProvider {
 
         Self {
             api_key: "not-needed".to_string(),
+            wire_dialect: WireDialect::Chat,
             base_url,
             client,
             stream_client,
@@ -2378,6 +2389,7 @@ impl OpenAIProvider {
             api_key,
             base_url,
             client,
+            wire_dialect: WireDialect::Chat,
             stream_client,
             custom_default_model: None,
             name: "openai-compatible".to_string(),
@@ -2413,6 +2425,20 @@ impl OpenAIProvider {
     pub fn with_context_window(mut self, size: u32) -> Self {
         self.configured_context_window = Some(size);
         self
+    }
+
+    /// Set the wire dialect (#2059). `configure_openai_compatible` calls this
+    /// with the value resolved from the provider section's `wire_dialect` and
+    /// the provider's own base URL. Anything that builds a provider directly
+    /// keeps the struct default, `Chat`.
+    pub fn with_wire_dialect(mut self, dialect: WireDialect) -> Self {
+        self.wire_dialect = dialect;
+        self
+    }
+
+    /// The route this provider speaks (#2059), resolved once at construction.
+    pub fn wire_dialect(&self) -> WireDialect {
+        self.wire_dialect
     }
 
     /// Set the list of models this provider advertises. Populated from the
@@ -2573,6 +2599,217 @@ impl OpenAIProvider {
             }
         }
         self.base_url.clone()
+    }
+
+    /// The Responses endpoint for this provider, when its configured URL has
+    /// a shape this client can translate. `None` means the endpoint was left
+    /// unrecognised, so the caller must stay on Chat rather than guess a URL
+    /// (#2059).
+    fn responses_endpoint(&self) -> Option<String> {
+        responses_url(&self.send_url())
+    }
+
+    /// True when the resolved dialect is an outright Responses route.
+    fn dialect_is_responses(&self) -> bool {
+        self.wire_dialect == WireDialect::Responses
+    }
+
+    /// Error raised when `wire_dialect=responses` was configured but the
+    /// base URL has no shape this client knows how to translate.
+    fn responses_endpoint_error(&self) -> ProviderError {
+        ProviderError::InvalidRequest(format!(
+            "wire_dialect=responses needs a recognisable chat completions base_url, got '{}'",
+            self.send_url()
+        ))
+    }
+
+    /// Non-streaming POST to the Responses endpoint (#2059).
+    ///
+    /// Mirrors the chat path's retry/notice behaviour so a 429 or 5xx on a
+    /// native Responses route retries exactly like it does on Chat.
+    async fn complete_responses(&self, request: LLMRequest) -> Result<LLMResponse> {
+        let endpoint = self
+            .responses_endpoint()
+            .ok_or_else(|| self.responses_endpoint_error())?;
+        let requested_model = request.model.clone();
+        let session = request.session_id;
+        let body = super::responses_request::build_responses_request(
+            request,
+            self.reasoning_setting.as_deref(),
+        );
+        let retry_config = self.retry_config(&requested_model);
+        let notices = self.retry_notices.clone();
+        let pname = self.name().to_string();
+        let notice_model = requested_model.clone();
+        let response = crate::utils::retry::retry_with_notify(
+            || async {
+                let encoded = self.encode_body(&body)?;
+                let response = self
+                    .send_bounded(
+                        &self.client,
+                        &endpoint,
+                        self.headers_for(session)?,
+                        &encoded,
+                    )
+                    .await?;
+                if !response.status().is_success() {
+                    return Err(self.handle_error(response).await);
+                }
+                Ok(response)
+            },
+            &retry_config,
+            |attempt, max, err| {
+                if let Ok(mut v) = notices.lock() {
+                    v.push((
+                        attempt,
+                        max,
+                        format!("{}/{} - {}", pname, notice_model, retry_reason(err)),
+                    ));
+                }
+            },
+        )
+        .await?;
+
+        tracing::info!(
+            "Responses request: model={}, url={}",
+            requested_model,
+            endpoint
+        );
+        let value: serde_json::Value = response.json().await.map_err(|e| {
+            ProviderError::StreamError(format!("Responses body decode failed: {e}"))
+        })?;
+        Ok(super::responses_response::parse_responses_json(
+            value,
+            &requested_model,
+        )?)
+    }
+
+    /// Streaming POST to the Responses endpoint (#2059).
+    ///
+    /// The Responses API is a typed event stream, so framing keeps the
+    /// `event:` name alongside the `data:` body and hands both to the pure
+    /// adapter in [`super::responses_stream`].
+    async fn stream_responses(&self, request: LLMRequest) -> Result<ProviderStream> {
+        let endpoint = self
+            .responses_endpoint()
+            .ok_or_else(|| self.responses_endpoint_error())?;
+        let requested_model = request.model.clone();
+        let session = request.session_id;
+        let mut body = super::responses_request::build_responses_request(
+            request,
+            self.reasoning_setting.as_deref(),
+        );
+        body.stream = Some(true);
+        let retry_config = self.retry_config(&requested_model);
+        let notices = self.retry_notices.clone();
+        let pname = self.name().to_string();
+        let notice_model = requested_model.clone();
+        let response = crate::utils::retry::retry_with_notify(
+            || async {
+                let encoded = self.encode_body(&body)?;
+                let response = self
+                    .send_bounded(
+                        &self.stream_client,
+                        &endpoint,
+                        self.headers_for(session)?,
+                        &encoded,
+                    )
+                    .await?;
+                if !response.status().is_success() {
+                    return Err(self.handle_error(response).await);
+                }
+                Ok(response)
+            },
+            &retry_config,
+            |attempt, max, err| {
+                if let Ok(mut v) = notices.lock() {
+                    v.push((
+                        attempt,
+                        max,
+                        format!("{}/{} - {}", pname, notice_model, retry_reason(err)),
+                    ));
+                }
+            },
+        )
+        .await?;
+        tracing::info!(
+            "Responses streaming request: model={}, url={}",
+            requested_model,
+            endpoint
+        );
+
+        let byte_stream = response.bytes_stream();
+        let buffer = Arc::new(std::sync::Mutex::new(String::new()));
+        let pending_event: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let mut utf8_carry = Utf8Carry::new();
+        let event_stream = byte_stream
+            .map(
+                move |chunk_result| -> Vec<std::result::Result<StreamEvent, ProviderError>> {
+                    let chunk = match chunk_result {
+                        Ok(c) => c,
+                        Err(e) => return vec![Err(ProviderError::StreamError(e.to_string()))],
+                    };
+                    let raw = utf8_carry.push(&chunk);
+                    let mut buf = buffer.lock().expect("responses SSE buffer lock poisoned");
+                    buf.push_str(&raw);
+                    let mut out: Vec<std::result::Result<StreamEvent, ProviderError>> = Vec::new();
+                    let mut pending = pending_event
+                        .lock()
+                        .expect("responses SSE event lock poisoned");
+                    while let Some(pos) = buf.find('\n') {
+                        let line = buf[..pos].trim_end_matches('\r').to_string();
+                        buf.drain(..=pos);
+                        if let Some(rest) = line.strip_prefix("event:") {
+                            *pending = Some(rest.trim().to_string());
+                            continue;
+                        }
+                        let Some(json_str) = line.strip_prefix("data:") else {
+                            continue;
+                        };
+                        let json_str = json_str.trim();
+                        if json_str.is_empty() {
+                            continue;
+                        }
+                        if json_str == "[DONE]" {
+                            out.push(Ok(StreamEvent::MessageStop));
+                            continue;
+                        }
+                        match serde_json::from_str::<serde_json::Value>(json_str) {
+                            Ok(value) => {
+                                // The frame's own `type` is the fallback when a
+                                // gateway omits the `event:` line.
+                                let name = pending.take().unwrap_or_else(|| {
+                                    value
+                                        .get("type")
+                                        .and_then(|t| t.as_str())
+                                        .unwrap_or("")
+                                        .to_string()
+                                });
+                                out.extend(
+                                    super::responses_stream::effects_for_event(&name, &value)
+                                        .into_iter()
+                                        .map(Ok),
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "[RESPONSES_STREAM] bad JSON frame: {} | {}",
+                                    e,
+                                    json_str.chars().take(300).collect::<String>()
+                                );
+                            }
+                        }
+                    }
+                    if out.is_empty() {
+                        vec![Ok(StreamEvent::Ping)]
+                    } else {
+                        out
+                    }
+                },
+            )
+            .flat_map(futures::stream::iter);
+        Ok(Box::pin(event_stream))
     }
 
     /// POST `url` with `headers` and a pre-encoded `body`, bounding **one
@@ -3012,7 +3249,7 @@ impl OpenAIProvider {
                 .collect()
         });
 
-        // Newer OpenAI models (gpt-4.1-*, gpt-5-*, o1-*, o3-*) require
+        // Newer OpenAI models (gpt-4.1-*, gpt-5-*, gpt-6-*, o1-*, o3-*) require
         // max_completion_tokens instead of max_tokens. Use the new field
         // for these models and fall back to max_tokens for everything else.
         let uses_completion_tokens = uses_max_completion_tokens(&request.model);
@@ -3520,6 +3757,16 @@ impl Provider for OpenAIProvider {
         // OpenCode session header is keyed on it.
         let session = request.session_id;
 
+        // #2059: an outright Responses route never builds a chat body.
+        if self.dialect_is_responses() {
+            return self.complete_responses(request).await;
+        }
+        // Auto keeps a copy for one fallback attempt when the chat endpoint
+        // refuses the request and this base URL has a Responses route.
+        let responses_fallback = (self.wire_dialect == WireDialect::Auto
+            && self.responses_endpoint().is_some())
+        .then(|| request.clone());
+
         let mut openai_request = self.to_openai_request(request);
 
         let tool_count = openai_request.tools.as_ref().map(|t| t.len()).unwrap_or(0);
@@ -3710,6 +3957,19 @@ impl Provider for OpenAIProvider {
             tracing::error!("OpenAI API request failed: {}", e);
         }
 
+        // #2059 Auto: the endpoint refused the chat dialect, so try the
+        // Responses route once before surfacing the failure.
+        if let (Err(e), Some(fallback_request)) = (&result, responses_fallback)
+            && is_dialect_rejection_error(e)
+        {
+            tracing::warn!(
+                "{}: chat endpoint rejected the request ({}); retrying on the Responses API",
+                self.name(),
+                e
+            );
+            return self.complete_responses(fallback_request).await;
+        }
+
         result
     }
 
@@ -3741,6 +4001,16 @@ impl Provider for OpenAIProvider {
             message_count,
             self.base_url
         );
+
+        // #2059: an outright Responses route never builds a chat body.
+        if self.dialect_is_responses() {
+            return self.stream_responses(request).await;
+        }
+        // Auto keeps a copy for one fallback attempt when the chat endpoint
+        // refuses the request and this base URL has a Responses route.
+        let responses_fallback = (self.wire_dialect == WireDialect::Auto
+            && self.responses_endpoint().is_some())
+        .then(|| request.clone());
 
         let mut openai_request = self.to_openai_request(request);
         openai_request.stream = Some(true);
@@ -3871,7 +4141,24 @@ impl Provider for OpenAIProvider {
                 }
             }
         }
-        let response = response?;
+        let response = match response {
+            Ok(r) => r,
+            Err(e) => {
+                // #2059 Auto: the chat endpoint refused the stream, so try the
+                // Responses route once before surfacing the failure.
+                if is_dialect_rejection_error(&e)
+                    && let Some(fallback_request) = responses_fallback
+                {
+                    tracing::warn!(
+                        "{}: chat endpoint rejected the stream ({}); retrying on the Responses API",
+                        self.name(),
+                        e
+                    );
+                    return self.stream_responses(fallback_request).await;
+                }
+                return Err(e);
+            }
+        };
         let tools_count = openai_request.tools.as_ref().map(|t| t.len()).unwrap_or(0);
 
         // Input-token estimate, computed AFTER the send (#681). It has two
@@ -5188,6 +5475,10 @@ impl Provider for OpenAIProvider {
         if m.starts_with("gpt-5") {
             return Some(1_047_576); // 1M tokens
         }
+        // gpt-6 family
+        if m.starts_with("gpt-6") {
+            return Some(1_047_576); // 1M tokens
+        }
         // gpt-4.1 family
         if m.starts_with("gpt-4.1") {
             return Some(1_047_576); // 1M tokens
@@ -5221,7 +5512,7 @@ impl Provider for OpenAIProvider {
 }
 
 /// Returns true if this model requires `max_completion_tokens` instead of `max_tokens`.
-/// Newer OpenAI models (gpt-4.1-*, gpt-5-*, o1-*, o3-*) reject `max_tokens`.
+/// Newer OpenAI models (gpt-4.1-*, gpt-5-*, gpt-6-*, o1-*, o3-*) reject `max_tokens`.
 /// Qwen thinking models also need this — when `max_tokens` is sent, DashScope
 /// treats it as a text-only cap and reasoning tokens eat from a separate (tiny)
 /// default budget, causing the model to stop after a handful of output tokens.
@@ -5229,6 +5520,7 @@ pub(crate) fn uses_max_completion_tokens(model: &str) -> bool {
     let m = model.to_lowercase();
     m.starts_with("gpt-4.1")
         || m.starts_with("gpt-5")
+        || m.starts_with("gpt-6")
         || m.starts_with("o1")
         || m.starts_with("o3")
         || m.starts_with("o4")

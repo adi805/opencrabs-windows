@@ -83,6 +83,8 @@ base_url = "http://localhost:11434/v1/chat/completions"
 # Use this for LM Studio, Ollama, LocalAI, etc.
 # Every custom provider needs a name — the label after "custom." (e.g. lm_studio, nvidia, groq).
 # You can define as many as you need and switch between them via /models.
+# A custom endpoint defaults to the Chat Completions route; set wire_dialect = "responses"
+# if the gateway serves /responses, or "auto" to probe Chat first and fall back on refusal.
 [providers.custom.lm_studio]
 enabled = false
 base_url = "http://localhost:1234/v1/chat/completions"  # LM Studio default
@@ -121,6 +123,7 @@ default_model = "gpt-4o"
 [providers.openai]
 enabled = false
 default_model = "gpt-5-nano"  # Optional: override default model
+# wire_dialect = "auto"  # Optional: "auto" (Chat first, fall back to Responses when the model is refused), "chat" (always /chat/completions) or "responses" (always /responses). This host defaults to "auto".
 # vision_model = "gpt-5-nano"  # Optional: describes images for the chat model when it lacks vision
 # generation_model = "gpt-image-1"  # Optional: routes generate_image to OpenAI /v1/images/generations
 # stt_model = "whisper-1"  # Optional: transcribe voice notes via this provider's /v1/audio/transcriptions

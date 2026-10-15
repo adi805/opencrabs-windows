@@ -584,6 +584,7 @@ fn full_provider_sentinel() -> serde_json::Value {
         tts_model: Some("tts-m2".into()),
         context_window: Some(1),
         endpoint_type: Some("api".into()),
+        wire_dialect: Some(crate::config::WireDialect::Auto),
         plan: Some("moderato".into()),
         reasoning_effort: Some("max".into()),
         voice: Some("voice".into()),

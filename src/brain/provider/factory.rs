@@ -27,7 +27,8 @@ use super::{
     opencode_cli::OpenCodeCliProvider,
 };
 use crate::config::timeout::{resolve_thinking_loop, resolve_timeout};
-use crate::config::{AgentConfig, Config, ProviderConfig};
+use crate::config::wire_dialect::is_official_host;
+use crate::config::{AgentConfig, Config, ProviderConfig, WireDialect};
 use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
@@ -2167,6 +2168,14 @@ fn configure_openai_compatible(
         "configure_openai_compatible: default_model = {:?}",
         config.default_model
     );
+    // #2059: which route this endpoint speaks. An explicit `wire_dialect` in
+    // the provider section wins; otherwise the official OpenAI host resolves
+    // to `Auto` (start on Chat, move to Responses only when the endpoint
+    // refuses the model there) and every other endpoint stays on Chat, which
+    // is the behaviour every existing OpenAI-compatible provider expects.
+    let dialect = WireDialect::resolve(config.wire_dialect, is_official_host(provider.base_url()));
+    tracing::debug!("Wire dialect resolved to {:?}", dialect);
+    provider = provider.with_wire_dialect(dialect);
     if let Some(model) = &config.default_model {
         tracing::info!("Using custom default model: {}", model);
         provider = provider.with_default_model(model.clone());

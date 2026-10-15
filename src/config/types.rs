@@ -1,6 +1,7 @@
 //! Configuration types, defaults, loading, and validation.
 
 use super::provider_registry::ProviderRegistryConfig;
+use super::wire_dialect::WireDialect;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -3190,6 +3191,13 @@ pub struct ProviderConfig {
     /// Endpoint type for providers with multiple API modes (e.g. zhipu: "api" or "coding")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint_type: Option<String>,
+
+    /// Which route an [OI]-compatible provider speaks: `auto`, `chat`, or
+    /// `responses`. Unset means `auto`, which resolves by provider kind (the
+    /// official host stays `auto`, every other compatible endpoint is pinned
+    /// to `chat`). See `crate::config::wire_dialect` (#2059).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wire_dialect: Option<WireDialect>,
 
     /// Kimi Code subscription-plan tier (`moderato`, `allegretto`, `allegro`,
     /// `vivace`). Only meaningful for a provider pointed at the Kimi Coding
