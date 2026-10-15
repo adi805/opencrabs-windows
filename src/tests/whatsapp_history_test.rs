@@ -89,3 +89,72 @@ fn search_knobs_clamp_to_the_feature_bounds() {
     assert_eq!(history::clamp_search(0, 0), (1, 1));
     assert_eq!(history::clamp_search(7, 50), (7, 50));
 }
+
+// ── Empty-result message for the `whatsapp_history` tool ────────────────
+//
+// Separate concern from the sync decisions above: this is the answer a search
+// gives when it matched nothing. The store keeps whichever JID WhatsApp sent
+// (often `<lid>@lid`), so a search for the phone-number form of an active chat
+// can miss — and a bare "no history" leaves the caller with no way to tell a
+// LID mismatch from a genuinely empty chat.
+
+use crate::brain::tools::whatsapp_history::empty_history_hint;
+
+fn known(ids: &[(&str, i64)]) -> Vec<(String, i64)> {
+    ids.iter().map(|(id, n)| ((*id).to_string(), *n)).collect()
+}
+
+#[test]
+fn a_miss_names_the_stored_chat_ids_instead_of_dead_ending() {
+    let ids = known(&[("210122852823201@lid", 29)]);
+    let msg = empty_history_hint("6285270679623@s.whatsapp.net", 90, "", Some(&ids));
+    assert!(
+        msg.contains("210122852823201@lid (29)"),
+        "the stored id must be named so the caller can retry, got {msg}"
+    );
+    assert!(
+        msg.contains("@lid"),
+        "the message must explain that LID-form ids exist, got {msg}"
+    );
+}
+
+#[test]
+fn a_genuinely_empty_store_says_so() {
+    let msg = empty_history_hint("5511999999999@s.whatsapp.net", 30, "", Some(&[]));
+    assert!(
+        msg.contains("No WhatsApp chat has any stored messages yet"),
+        "an empty store must be stated plainly, got {msg}"
+    );
+}
+
+/// A failed chat listing must not be reported as "nothing is stored": that is
+/// the same class of silent-wrong-answer this hint exists to remove.
+#[test]
+fn an_unreadable_store_does_not_claim_the_chat_is_empty() {
+    let msg = empty_history_hint("5511999999999@s.whatsapp.net", 90, "", None);
+    assert!(
+        msg.contains("could not be read") && msg.contains("not proof"),
+        "an unreadable list must be admitted, not read as empty, got {msg}"
+    );
+    assert!(
+        !msg.contains("No WhatsApp chat has any stored messages yet"),
+        "an unreadable list must not claim the store is empty, got {msg}"
+    );
+}
+
+#[test]
+fn the_query_and_window_are_echoed_back() {
+    let msg = empty_history_hint("x@lid", 7, "invoice", Some(&[]));
+    assert!(msg.contains("'invoice'"), "got {msg}");
+    assert!(msg.contains("7 day(s)"), "got {msg}");
+}
+
+#[test]
+fn the_listed_ids_are_capped() {
+    let many: Vec<(String, i64)> = (0..25).map(|i| (format!("{i}@lid"), i as i64)).collect();
+    let msg = empty_history_hint("x@s.whatsapp.net", 90, "", Some(&many));
+    assert!(
+        !msg.contains("24@lid"),
+        "the hint must not echo an unbounded list, got {msg}"
+    );
+}
