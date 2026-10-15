@@ -835,11 +835,14 @@ impl App {
                 let _ = sender.send(TuiEvent::CommandSubmitted(prompt));
                 true
             }
-            // `/models <provider/model>` — direct switch for the current
-            // session, no picker (#467). Same switch path as the keyboard
-            // flow (per-session swap + manual pin + DB persist).
-            s if s.starts_with("/models ") || s.starts_with("/model ") => {
-                let arg = input.split_once(' ').map(|x| x.1.trim()).unwrap_or("");
+            // `/models <provider/model>`: direct switch for the current session,
+            // no picker (#467, #2064). Matched on the full input, because `cmd`
+            // is only the first word. The arm sits before the setup-dialog arm,
+            // which also claims `/models`. Same switch path as the keyboard flow
+            // (per-session swap + manual pin + DB persist).
+            "/models" if crate::cli::session_set_model::direct_switch_arg(input).is_some() => {
+                let arg =
+                    crate::cli::session_set_model::direct_switch_arg(input).unwrap_or_default();
                 let Some(sid) = self.current_session.as_ref().map(|cs| cs.id) else {
                     self.push_system_message("No active session to switch.".to_string());
                     return true;
@@ -849,8 +852,9 @@ impl App {
                         .await;
                 // Reflect the switch in the in-memory session so the footer
                 // updates immediately instead of on the next session load.
+                let pair = arg.strip_suffix(" all").unwrap_or(arg);
                 if !reply.starts_with('⚠')
-                    && let Ok((provider, model)) = crate::utils::provider_pair::parse_pair(arg)
+                    && let Ok((provider, model)) = crate::utils::provider_pair::parse_pair(pair)
                     && let Some(cs) = self.current_session.as_mut()
                 {
                     cs.provider_name = Some(provider);
