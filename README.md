@@ -264,7 +264,7 @@ https://github.com/user-attachments/assets/7f45c5f8-acdf-48d5-b6a4-0e4811a9ee23
 | **Per-Provider Timeouts** | `timeout_secs` caps a non-streaming request (one that buffers a whole body); it never caps a stream. `stream_idle_timeout_secs` is the only stream timer; it caps inter-chunk silence before the stream is treated as dropped and retried, so a long turn that keeps delivering is never cut. Defaults when unset: 3600s for CLI and local providers, 120s for every OpenAI-compatible remote provider (z.ai included), 20s for the native Anthropic and Gemini families |
 | **Per-Provider Vision** | Set `vision_model` per provider — the LLM calls `analyze_image` as a tool, which uses the vision model on the same provider API to describe images. The chat model stays the same and gets vision capability via tool call. Gemini vision takes priority when configured. Auto-configured for known providers (e.g. MiniMax) on first run |
 | **Prompt Caching** | Caches the stable context prefix (system prompt, brain files, earlier turns) on every caching-capable provider — Anthropic native (default), OpenAI/OpenRouter (`cache_enabled`), Qwen/Alibaba (zero-config auto), Xiaomi (server-side). Averaging ~87% cache efficiency in real use; watch it live in the Cache Efficiency card of `/usage`. Big reason a larger context window stays affordable |
-| **Context Window & Auto-Compaction** | Per-provider `context_window` override (default 200k, works on every provider); transparent auto-compaction at 65% (soft, background) / 90% (hard) of the window gives effectively unlimited session memory with no manual clearing |
+| **Context Window & Auto-Compaction** | Per-provider `context_window` override (default 200k, works on every provider except the built-in one, whose window is fixed at 200k); transparent auto-compaction at 65% (soft, background) / 90% (hard) of the window gives effectively unlimited session memory with no manual clearing |
 | **Real-time Streaming** | Character-by-character response streaming with animated spinner showing model name and live text |
 | **Local LLM Support** | Run with LM Studio, Ollama, or any OpenAI-compatible endpoint — 100% private, zero-cost |
 | **Usage Dashboard** | Per-message token count and cost displayed in header; `/usage` opens an interactive dashboard with daily activity charts, cost breakdowns by project/provider/model/activity, core tool usage stats, a `N% cache` column on the per-model rows showing the share of that model's recorded tokens that came from cache, and period filtering (Today/Week/Month/All-Time). Sessions are auto-categorized on startup (Development, Bug Fixes, Features, Refactoring, Testing, Documentation, CI/Deploy, etc.). Estimated costs for historical sessions shown as `~$X.XX` |
@@ -347,7 +347,7 @@ context_window = 1000000   # raise the budget; compaction still triggers at 65% 
 context_window = 1000000   # native providers too — Anthropic, Gemini, and the CLI providers
 ```
 
-This override works for **every provider** — OpenAI-compatible (custom, xiaomi, qwen, openrouter, minimax, …) and the native Anthropic, Gemini, and CLI providers. A provider with no override inherits the 200k default.
+This override works for **every provider** — OpenAI-compatible (custom, xiaomi, qwen, openrouter, minimax, …) and the native Anthropic, Gemini, and CLI providers. A provider with no override inherits the 200k default. The one exception is the **built-in OpenCrabs provider**, whose window is fixed at 200k: it is free and serves one model, so `context_window` is ignored there, both under `[providers.opencrabs]` and in any `[providers.custom.*]` section pointed at `inference.opencrabs.com`.
 
 > **Sizing guidance.** 200k is the battle-tested sweet spot for essentially **every cloud model**. Going bigger has two real downsides — **cost** and **context loss**:
 >
@@ -1337,7 +1337,7 @@ Model list is **fetched live** from the OpenRouter API during onboarding and via
 OpenCrabs ships its own provider, so a new install can chat without creating an account or pasting a key.
 
 **What you get on a fresh install**
-- **Chat model:** `deepseek-v4.1-flash`, 200k context window.
+- **Chat model:** `deepseek-v4.1-flash`, 200k context window. The window is fixed at 200k on this provider: the endpoint is free and serves one model, so `context_window` is not honoured here.
 - **Vision:** `vision_model` is set to the same model, so attached images work on day 0.
 - **Image generation:** on by default for fresh installs through `gemini-3.1-flash-image`, which is image-only and never offered as a chat model. Existing installs set `generation_model` on `[providers.opencrabs]` to get it (see [Image Generation & Vision](#-image-generation--vision)).
 - **Voice (STT + TTS):** on by default for fresh installs through `qwen3.8-omni-flash`, which serves both `/v1/audio/transcriptions` and `/v1/audio/speech`. Voice notes transcribe and replies speak on day 0. Existing installs set `stt_model` and `tts_model` on `[providers.opencrabs]` to get it (see [Core Features](#-core-features)).
@@ -1355,7 +1355,8 @@ OpenCrabs ships its own provider, so a new install can chat without creating an 
 enabled = false                       # chosen through onboarding, not by hand
 default_model = "deepseek-v4.1-flash"
 models = ["deepseek-v4.1-flash"]
-context_window = 200000
+# context_window is not honoured here: the built-in endpoint is free and fixed
+# at 200k, so any value set in this section is ignored.
 vision_model = "deepseek-v4.1-flash"
 ```
 
