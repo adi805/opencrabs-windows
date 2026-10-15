@@ -5,7 +5,8 @@
 //! `sender_alt`" gets every LID case right and every PN case backwards, which
 //! is why it survived review.
 
-use crate::channels::whatsapp::identity::canonical_user;
+use crate::channels::whatsapp::identity::{canonical_chat_jid, canonical_chat_key, canonical_user};
+use wacore::types::message::MessageSource;
 use wacore_binary::jid::Jid;
 
 fn jid(s: &str) -> Jid {
@@ -110,4 +111,114 @@ fn a_group_jid_is_left_alone() {
     // Group, broadcast and newsletter servers are in neither identity family:
     // they are not a person with two names, so there is nothing to canonicalize.
     assert_eq!(canonical_user(&jid("120363001@g.us"), None), "120363001");
+}
+
+// --- chat keys (#F2) -------------------------------------------------------
+//
+// `channel_messages.channel_chat_id` is the key `whatsapp_history` looks up by,
+// so it has to agree with what a human -- and the session label -- calls the
+// chat. These pin the LID-addressed case that produced the bug: every captured
+// DM landed under `…@lid` while the session for the same conversation was
+// `wa-<phone>`, so querying the phone form matched nothing.
+
+#[test]
+fn a_lid_addressed_dm_keys_on_the_phone_number_the_stanza_carried() {
+    assert_eq!(
+        canonical_chat_jid(
+            &jid("210122852823201@lid"),
+            Some(&jid("210122852823201@lid")),
+            Some(&jid("6282361295343@s.whatsapp.net")),
+        ),
+        "6282361295343@s.whatsapp.net"
+    );
+}
+
+#[test]
+fn a_lid_addressed_dm_with_no_pn_twin_keeps_the_lid() {
+    // Nothing better to key on: the stanza named only the LID, so inventing a
+    // phone number would be worse than keeping the address that arrived.
+    assert_eq!(
+        canonical_chat_jid(
+            &jid("210122852823201@lid"),
+            Some(&jid("210122852823201@lid")),
+            None
+        ),
+        "210122852823201@lid"
+    );
+}
+
+#[test]
+fn a_pn_addressed_dm_keeps_the_phone_form() {
+    assert_eq!(
+        canonical_chat_jid(&jid("6282361295343@s.whatsapp.net"), None, None),
+        "6282361295343@s.whatsapp.net"
+    );
+}
+
+#[test]
+fn a_group_keeps_its_own_address_even_with_a_phone_twin_in_hand() {
+    // A group is not a person with two names. Keying it on a member's number
+    // would merge the room into that member's DM thread.
+    assert_eq!(
+        canonical_chat_jid(
+            &jid("120363001@g.us"),
+            Some(&jid("6282361295343@s.whatsapp.net")),
+            Some(&jid("6282361295343@s.whatsapp.net")),
+        ),
+        "120363001@g.us"
+    );
+}
+
+#[test]
+fn both_directions_of_the_owner_chat_produce_one_key() {
+    // THE bug. Inbound carries the peer in `sender`, our own echo carries it in
+    // `recipient`; if the two paths disagree the transcript splits in half and
+    // a history query sees only one side of it.
+    let inbound = canonical_chat_key(&MessageSource {
+        chat: jid("210122852823201@lid"),
+        sender: jid("210122852823201@lid"),
+        sender_alt: Some(jid("6282361295343@s.whatsapp.net")),
+        ..Default::default()
+    });
+    let outbound = canonical_chat_key(&MessageSource {
+        chat: jid("210122852823201@lid"),
+        sender: jid("6285270679623@s.whatsapp.net"),
+        is_from_me: true,
+        recipient: Some(jid("210122852823201@lid")),
+        recipient_alt: Some(jid("6282361295343@s.whatsapp.net")),
+        ..Default::default()
+    });
+    assert_eq!(inbound, "6282361295343@s.whatsapp.net");
+    assert_eq!(inbound, outbound);
+}
+
+#[test]
+fn our_own_echo_never_keys_the_chat_on_our_own_number() {
+    // `is_from_me` means `sender` is US. A shared code path that read
+    // `sender_alt` regardless would file the owner's chat under the bot's own
+    // number: a different, plausible-looking, completely wrong thread.
+    let key = canonical_chat_key(&MessageSource {
+        chat: jid("210122852823201@lid"),
+        sender: jid("6285270679623@s.whatsapp.net"),
+        sender_alt: Some(jid("83911178752119@lid")),
+        is_from_me: true,
+        recipient: None,
+        recipient_alt: None,
+        ..Default::default()
+    });
+    assert_eq!(key, "210122852823201@lid");
+}
+
+#[test]
+fn a_hosted_phone_twin_folds_to_the_plain_pn_form() {
+    // `is_pn_family` spans Pn and Hosted. Both name the same person, and the
+    // session label is the plain form, so the key is too.
+    assert_eq!(
+        canonical_chat_jid(
+            &jid("210122852823201@lid"),
+            Some(&jid("210122852823201@lid")),
+            Some(&jid("6282361295343@hosted")),
+        ),
+        "6282361295343@s.whatsapp.net"
+    );
 }

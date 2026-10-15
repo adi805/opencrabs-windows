@@ -715,7 +715,7 @@ pub(crate) async fn handle_message(
     if let Some(ref t) = text
         && !t.is_empty()
     {
-        let chat_id = format!("{}", info.source.chat);
+        let chat_id = super::identity::canonical_chat_key(&info.source);
         let is_group = info.source.is_group;
         let push_name = info.push_name.clone();
         let cm = DbChannelMessage::new(
@@ -2286,7 +2286,7 @@ pub(crate) async fn handle_message(
             // and Discord. Applies to both group and DM threads — WhatsApp
             // stores user messages for both, so we stay symmetric.
             if !text_content.trim().is_empty() {
-                let chat_id = format!("{}", info.source.chat);
+                let chat_id = super::identity::canonical_chat_key(&info.source);
                 let is_group = info.source.is_group;
                 let cm = DbChannelMessage::new(
                     "whatsapp".into(),

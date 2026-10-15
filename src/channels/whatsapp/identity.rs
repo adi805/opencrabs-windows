@@ -24,7 +24,8 @@
 //! photo album that never batches. The rule below keys on the server family
 //! rather than on which field the value arrived in.
 
-use wacore_binary::jid::Jid;
+use wacore::types::message::MessageSource;
+use wacore_binary::jid::{Jid, Server};
 
 /// The sender's phone-number identity when the pair has one, else the sender.
 ///
@@ -55,4 +56,54 @@ pub(crate) fn canonical_user(sender: &Jid, sender_alt: Option<&Jid>) -> String {
         return alt.user.to_string();
     }
     sender.user.to_string()
+}
+
+/// The stored chat key for one message: [`canonical_chat_jid`] with the peer
+/// picked off the stanza for us.
+///
+/// The peer is whoever is on the other side of a DM. Inbound, that is the
+/// sender. On our own echo (`is_from_me`), the sender is US, so reading
+/// `sender_alt` there would key the owner's chat on the bot's own number --
+/// which is why the two cases are not collapsed.
+pub(crate) fn canonical_chat_key(source: &MessageSource) -> String {
+    let (peer, peer_alt) = if source.is_from_me {
+        (source.recipient.as_ref(), source.recipient_alt.as_ref())
+    } else {
+        (Some(&source.sender), source.sender_alt.as_ref())
+    };
+    canonical_chat_jid(&source.chat, peer, peer_alt)
+}
+
+/// The stored chat key for one conversation, in one address family.
+///
+/// `channel_messages.channel_chat_id` is what `whatsapp_history` looks up by and
+/// what the recent-context query feeds the model, so the same conversation has
+/// to land under the same key every time. WhatsApp addresses a DM by phone
+/// number on some stanzas and by LID on others, and `source.chat` keeps
+/// whichever arrived: this account captured every DM under `…@lid` while the
+/// session for the very same conversation was keyed `wa-<phone>`, so querying
+/// the phone form the tool documents matched nothing.
+///
+/// The rule is [`canonical_user`]'s, one level up: prefer the phone number,
+/// because that is the family the rest of the channel is written in
+/// (`allowed_phones`, `bot_owner`, the blocklist, the session label a human
+/// reads). A hosted PN twin is folded to `@s.whatsapp.net` for the same reason
+/// `canonical_user` takes only the user part -- one person, one key.
+///
+/// Chats that are not an identity pair at all -- groups, broadcasts,
+/// newsletters -- keep their own address, which is also what makes this a no-op
+/// for every previously stored group key. A LID chat whose stanza carried no PN
+/// twin falls back to the LID form: the input this function cannot improve on.
+pub(crate) fn canonical_chat_jid(chat: &Jid, peer: Option<&Jid>, peer_alt: Option<&Jid>) -> String {
+    if !chat.server.is_lid_family() {
+        return chat.to_non_ad_string();
+    }
+    for candidate in [peer_alt, peer].into_iter().flatten() {
+        if candidate.server.is_pn_family() && !candidate.user.is_empty() {
+            let mut pn = candidate.clone();
+            pn.server = Server::Pn;
+            return pn.to_non_ad_string();
+        }
+    }
+    chat.to_non_ad_string()
 }
