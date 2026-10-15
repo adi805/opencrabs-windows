@@ -1224,6 +1224,7 @@ pub mod whatsapp_newsletter_actions_test;
 pub mod whatsapp_newsletter_test;
 pub mod whatsapp_outbox_test;
 pub mod whatsapp_owner_alert_test;
+pub mod whatsapp_owner_derivation_test;
 pub mod whatsapp_owner_filter_test;
 pub mod whatsapp_photo_batching_test;
 pub mod whatsapp_poll_actions_test;

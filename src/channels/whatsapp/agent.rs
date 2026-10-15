@@ -293,6 +293,47 @@ async fn decline_incoming_call(client: &Client, alert: OwnerAlert, call: &Incomi
 }
 
 /// WhatsApp agent that forwards messages to the AgentService
+/// Owner JID used for proactive messaging and the `whatsapp_send` default target.
+///
+/// An explicit `channels.whatsapp.bot_owner` entry wins; otherwise this falls
+/// back to the first `allowed_phones` entry. Reading only `allowed_phones`
+/// made `bot_owner` a silent no-op: setting it changed nothing, and
+/// `config_manager reload` could not help because the owner was fixed at
+/// channel start.
+///
+/// Returns `None` when neither list has an entry (then there is no configured
+/// owner to send to until pairing sets one).
+pub(crate) fn derive_owner_jid(bot_owner: &[String], allowed_phones: &[String]) -> Option<String> {
+    bot_owner
+        .first()
+        .or_else(|| allowed_phones.first())
+        .map(|p| format!("{}@s.whatsapp.net", p.trim_start_matches('+')))
+}
+
+/// The owner JID to publish after a config reload, or `None` when nothing
+/// changed.
+///
+/// The owner is seeded once at channel start and `config_manager reload` does
+/// not touch it, so editing `bot_owner` (or the first `allowed_phones` entry)
+/// and reloading was a silent no-op. Returning `Option` rather than the value
+/// keeps the caller honest: `None` means "already current", `Some` means
+/// "publish this and log it". Never silently drops a real change.
+///
+/// Re-deriving after pairing is safe: `PairSuccess` pins the paired number and
+/// persists it into `bot_owner`, so the derived JID matches what is already
+/// published and the helper reports no change.
+pub(crate) fn owner_after_reload(
+    bot_owner: &[String],
+    allowed_phones: &[String],
+    current: Option<&str>,
+) -> Option<String> {
+    let derived = derive_owner_jid(bot_owner, allowed_phones)?;
+    if current == Some(derived.as_str()) {
+        return None;
+    }
+    Some(derived)
+}
+
 pub struct WhatsAppAgent {
     agent_service: Arc<AgentService>,
     session_service: SessionService,
@@ -371,13 +412,48 @@ impl WhatsAppAgent {
                 cfg.voice_config().tts_enabled,
             );
 
-            // Derive owner JID from first allowed phone (for proactive messaging)
-            let owner_jid = cfg
-                .channels
-                .whatsapp
-                .allowed_phones
-                .first()
-                .map(|p| format!("{}@s.whatsapp.net", p.trim_start_matches('+')));
+            // Derive owner JID for proactive messaging (see `derive_owner_jid`:
+            // explicit `bot_owner` wins, else first `allowed_phones` entry).
+            let wa = &cfg.channels.whatsapp;
+            let owner_jid = derive_owner_jid(&wa.bot_owner, &wa.allowed_phones);
+
+            // A config edit that changes `bot_owner` (or the first
+            // `allowed_phones` entry) must not need a restart. The owner is
+            // seeded once above, so `config_manager reload` used to be a silent
+            // no-op for it (2026-10-15). Re-derive on every reload; the helper
+            // returns `None` when the published JID is already current, so a
+            // real change is never dropped and an unchanged one never logs.
+            {
+                let mut rx = self.config_rx.clone();
+                let watcher_state = self.whatsapp_state.clone();
+                let starting_owner = owner_jid.clone();
+                tokio::spawn(async move {
+                    loop {
+                        if rx.changed().await.is_err() {
+                            break; // sender dropped: shutdown
+                        }
+                        // `(*guard).clone()`, not `guard.clone()`: a bare
+                        // `.clone()` on a watch guard returns another guard,
+                        // which would then be held across the await below.
+                        let cfg = {
+                            let guard = rx.borrow_and_update();
+                            (*guard).clone()
+                        };
+                        let wa = &cfg.channels.whatsapp;
+                        let live = watcher_state.owner_jid().await;
+                        let current = live.as_deref().or(starting_owner.as_deref());
+                        if let Some(new_owner) =
+                            owner_after_reload(&wa.bot_owner, &wa.allowed_phones, current)
+                        {
+                            tracing::info!(
+                                "WhatsApp: owner JID updated to {} after config reload",
+                                new_owner
+                            );
+                            watcher_state.set_owner_jid(new_owner).await;
+                        }
+                    }
+                });
+            }
 
             let agent = self.agent_service.clone();
             let session_svc = self.session_service.clone();

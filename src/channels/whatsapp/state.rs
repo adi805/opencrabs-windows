@@ -22,7 +22,8 @@ use super::WaApproval;
 /// Read by the `whatsapp_send` tool to send messages on demand.
 pub struct WhatsAppState {
     pub(super) client: Mutex<Option<Arc<Client>>>,
-    /// Owner's JID (phone@s.whatsapp.net) — first in allowed_phones list
+    /// Owner's JID (phone@s.whatsapp.net): explicit `channels.whatsapp.bot_owner`
+    /// wins, else the first `allowed_phones` entry. Re-derived on config reload.
     pub(super) owner_jid: Mutex<Option<String>>,
     /// Pending tool approvals: phone → oneshot sender of WaApproval.
     /// When a tool approval is in flight, the next message from that phone
