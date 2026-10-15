@@ -17,7 +17,9 @@ fn example_config_lists_the_built_in_model_disabled_by_default() {
         Some("deepseek-v4.1-flash")
     );
     assert_eq!(section.models, vec!["deepseek-v4.1-flash".to_string()]);
-    assert_eq!(section.context_window, Some(200_000));
+    // The built-in endpoint is free and fixed at 200k, so the key is not
+    // offered in the example and is not honoured if a user adds it (#2066).
+    assert_eq!(section.context_window, None);
 }
 
 /// Image generation ships on day 0 through the built-in provider, on its own
