@@ -333,7 +333,12 @@ pub mod desktop_policy_test;
 pub mod desktop_tool_test;
 pub mod desktop_windows_test;
 pub mod directive_discovery_test;
-pub mod discord_dm_channel_history_test;
+// Deferred: asserts the Discord handler records the reply's platform message id
+// (`reply_msg_id`), which this fork's handler does not do
+// (`grep -c reply_msg_id src/channels/discord/handler.rs` = 0). The upstream
+// #2025 mechanism is absent here, so wiring this module would pin an
+// implementation the tree does not have.
+//pub mod discord_dm_channel_history_test;
 pub mod discord_interaction_admission_test;
 pub mod discord_tool_group_test;
 pub mod discord_turn_start_group_test;
@@ -418,7 +423,11 @@ pub mod model_match_test;
 pub mod model_menu_test;
 pub mod model_order_test;
 pub mod model_refresh_test;
-pub mod models_session_pair_test;
+// Deferred: asserts `OnboardingWizard::from_config` opens on an enabled
+// `providers.opencrabs` entry (upstream #2060). This fork's wizard chain has no
+// such arm (`grep -c providers.opencrabs src/tui/onboarding/wizard.rs` = 0), so
+// the assertion pins a branch that does not exist here.
+//pub mod models_session_pair_test;
 pub mod native_provider_timeout_test;
 pub mod new_session_pane_binding_test;
 pub mod nudge_text_test;

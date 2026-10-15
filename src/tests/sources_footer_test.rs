@@ -246,9 +246,12 @@ fn every_tool_execution_site_feeds_the_footer_harvest() {
         "#1883: sequential, approval-gated and parallel-batch sites must all \
          feed turn_search_outputs (a missed site silently drops that call's links)"
     );
-    // The parallel batch harvests through the positional search-call mask.
+    // The parallel batch harvests by zipping each output with the tool name the
+    // batch carries. This fork's merge kept that mechanism, not upstream's
+    // positional `search_call_mask` (`grep -c search_call_mask` = 0), so the
+    // assertion names what the tree actually does.
     assert!(
-        src.contains("search_call_mask.iter().zip(batch.outputs.iter())"),
+        src.contains("batch.names.iter().zip(batch.outputs.iter())"),
         "the parallel fast path must map batch outputs back to their tool names"
     );
 }
