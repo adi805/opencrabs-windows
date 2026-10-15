@@ -1831,11 +1831,17 @@ fn try_create_opencrabs(config: &Config) -> Result<Option<Arc<dyn Provider>>> {
     };
 
     tracing::info!("Using OpenCrabs at: {base_url}");
+    // The endpoint is free and fixed at 200k. Drop any `context_window` from
+    // the section before the generic path reads it, so the key is inert here
+    // rather than merely overridden, then pin the constant (#2066).
+    let mut section = cfg.clone();
+    section.context_window = None;
     let provider = configure_openai_compatible(
         OpenAIProvider::with_base_url(token, base_url).with_name("opencrabs"),
-        cfg,
+        &section,
         &config.agent,
     );
+    let provider = provider.with_context_window(super::opencrabs_install::OPENCRABS_CONTEXT_WINDOW);
     Ok(Some(Arc::new(provider)))
 }
 
