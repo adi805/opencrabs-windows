@@ -143,6 +143,14 @@ pub struct ToolExecutionContext {
     /// `[agent] session_notify_enabled`. Stamped per execution by the same
     /// surfaces that stamp `headless`.
     pub session_notify_enabled: bool,
+
+    /// Test seam for tools that make their own one-shot model call (#2063).
+    ///
+    /// Production leaves this `None`, so the call resolves through the live
+    /// provider chain (`session_provider`, then the configured default) and
+    /// hot reload keeps working. Tests inject a stub so a suite never reaches
+    /// the network. Same shape `DecideCachedTool::provider_override` uses.
+    pub provider_override: Option<Arc<dyn crate::brain::provider::Provider>>,
 }
 
 impl std::fmt::Debug for ToolExecutionContext {
@@ -181,7 +189,17 @@ impl ToolExecutionContext {
             parent_tool_registry: None,
             headless: false,
             session_notify_enabled: false,
+            provider_override: None,
         }
+    }
+
+    /// Inject a provider for a one-shot model call (#2063). Tests only.
+    pub fn with_provider_override(
+        mut self,
+        provider: Arc<dyn crate::brain::provider::Provider>,
+    ) -> Self {
+        self.provider_override = Some(provider);
+        self
     }
 
     /// Set the session_notify kill switch (issue #1802).

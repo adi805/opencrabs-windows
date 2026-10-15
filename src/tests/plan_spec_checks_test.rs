@@ -14,8 +14,8 @@ use crate::brain::tools::plan_tool::{PlanTool, lock_spec_check_if_absent, run_lo
 use crate::brain::tools::{Tool, ToolExecutionContext};
 use crate::config::profile::{home_for_profile, with_profile_home_async};
 use crate::tui::plan::{
-    ApprovalSource, PlanDocument, PlanTask, SpecCheck, TaskStatus, TaskType,
-    extract_check_commands, is_verifiable, spec_check_hash,
+    ApprovalSource, PlanDocument, PlanTask, SpecCheck, SpecCheckSource, TaskStatus, TaskType,
+    extract_check_commands, is_acceptable_check_command, is_verifiable, spec_check_hash,
 };
 use crate::utils::plan_files::{load_plan, save_plan};
 use serde_json::json;
@@ -171,6 +171,8 @@ fn plan_spec_check_with_an_empty_hash_never_matches() {
     let forged = SpecCheck {
         commands: vec!["cargo test".to_string()],
         sha256: String::new(),
+        source: SpecCheckSource::Criteria,
+        confirmed: false,
     };
     assert!(!forged.matches(&["cargo test".to_string()]));
 }
@@ -201,6 +203,88 @@ fn plan_spec_check_is_absent_from_json_when_not_locked() {
     );
     let back: PlanTask = serde_json::from_str(&json).unwrap();
     assert!(back.spec_check.is_none());
+}
+
+// ── provenance: who may block a completion (#2063) ───────────────────
+//
+// A criteria-derived check is what the plan approver read, so it may reject.
+// A generated one is a model's guess, so it advises until a human confirms
+// it. These pin that split, and pin that confirming does not void the lock.
+
+#[test]
+fn plan_spec_check_defaults_to_criteria_for_a_pre_2063_lock() {
+    // A plan written before #2063 carries neither key. Reading it must give
+    // the behaviour it already had, not an error and not a downgrade.
+    let legacy: SpecCheck =
+        serde_json::from_str(r#"{"commands":["ls ."],"sha256":"deadbeef"}"#).unwrap();
+    assert_eq!(legacy.source, SpecCheckSource::Criteria);
+    assert!(!legacy.confirmed);
+    assert!(legacy.may_block(), "a criteria check kept its teeth");
+}
+
+#[test]
+fn plan_spec_check_criteria_check_may_block_without_confirmation() {
+    let locked = SpecCheck::lock(vec!["ls .".to_string()]);
+    assert_eq!(locked.source, SpecCheckSource::Criteria);
+    assert!(!locked.confirmed, "criteria checks need no confirmation");
+    assert!(locked.may_block());
+}
+
+#[test]
+fn plan_spec_check_generated_check_is_advisory_until_confirmed() {
+    let mut generated = SpecCheck::lock_generated(vec!["ls .".to_string()]);
+    assert_eq!(generated.source, SpecCheckSource::Generated);
+    assert!(!generated.confirmed);
+    assert!(
+        !generated.may_block(),
+        "a model-written check must never reject a completion on its own"
+    );
+
+    generated.confirmed = true;
+    assert!(
+        generated.may_block(),
+        "confirmation is what grants it teeth"
+    );
+}
+
+#[test]
+fn plan_spec_check_confirming_a_generated_check_does_not_move_its_hash() {
+    let commands = vec!["cargo test --lib pricing".to_string()];
+    let mut generated = SpecCheck::lock_generated(commands.clone());
+    let before = generated.sha256.clone();
+
+    generated.confirmed = true;
+
+    assert_eq!(generated.sha256, before, "confirmation must not rehash");
+    assert!(
+        generated.matches(&commands),
+        "a confirmation that voids the lock it just approved is worse than no lock"
+    );
+}
+
+#[test]
+fn plan_spec_check_generated_and_criteria_hash_the_same_commands_alike() {
+    // Provenance is not part of the hash. Same commands, same lock, whichever
+    // path wrote them, so the run-at-complete comparison stays a comparison of
+    // commands and nothing else.
+    let commands = vec!["ls .".to_string()];
+    assert_eq!(
+        SpecCheck::lock(commands.clone()).sha256,
+        SpecCheck::lock_generated(commands).sha256
+    );
+}
+
+#[test]
+fn plan_spec_check_generated_commands_pass_the_same_refusal_as_criteria_ones() {
+    // The gate runs the text, so the rule has to hold whoever wrote it.
+    assert!(is_acceptable_check_command("cargo test --lib pricing"));
+    assert!(is_acceptable_check_command("ls ."));
+    assert!(is_acceptable_check_command("pytest"));
+    assert!(!is_acceptable_check_command("cargo test && git push"));
+    assert!(!is_acceptable_check_command("cargo test | tail -5"));
+    assert!(!is_acceptable_check_command("cargo"), "bare runner");
+    assert!(!is_acceptable_check_command("the documentation reads well"));
+    assert!(!is_acceptable_check_command(""));
 }
 
 /// Test-local wrapper: the module keeps `command_start_index` private, so
@@ -579,6 +663,610 @@ async fn plan_spec_check_tool_advisory_downgrades_a_criterion_rewritten_after_st
             out.contains("no longer matches") && out.contains("UNCERTAIN"),
             "the downgrade must name the criterion that moved: {out}"
         );
+    })
+    .await;
+}
+
+#[test]
+fn plan_spec_check_a_generated_lock_is_not_stale_against_prose_criteria() {
+    // The bug this pins: a generated lock was never derived from the criteria,
+    // so re-deriving them yields nothing and a naive comparison would fail
+    // every time, reading as "the criterion moved" when it never did.
+    let dir = policy_dir("gen_not_stale", "advisory");
+    let mut plan = plan_with_one_task(criteria(&["the loader reads a config without panicking"]));
+    plan.get_task_by_order_mut(1).unwrap().spec_check =
+        Some(SpecCheck::lock_generated(vec!["ls .".to_string()]));
+
+    let result = run_locked_spec_check(&plan, 1, dir.path());
+    assert!(
+        result.passed,
+        "a generated check must actually run, not read as stale"
+    );
+    assert!(result.note.is_none());
+    assert!(!result.rejected);
+}
+
+#[test]
+fn plan_spec_check_a_failing_generated_check_does_not_read_as_stale() {
+    let dir = policy_dir("gen_not_stale_fail", "block");
+    let mut plan = plan_with_one_task(criteria(&["the loader reads a config without panicking"]));
+    plan.get_task_by_order_mut(1).unwrap().spec_check = Some(SpecCheck::lock_generated(vec![
+        "git log --oneline".to_string(),
+    ]));
+
+    let result = run_locked_spec_check(&plan, 1, dir.path());
+    assert!(!result.passed);
+    assert!(
+        !result.rejected,
+        "an unconfirmed generated check cannot reject"
+    );
+    let note = result.note.expect("must explain");
+    assert!(
+        note.contains("failed"),
+        "the note must name the real cause: {note}"
+    );
+    assert!(
+        !note.contains("no longer matches"),
+        "a generated check is not stale: {note}"
+    );
+    assert!(
+        note.contains("not been confirmed"),
+        "the note must name the provenance reason: {note}"
+    );
+}
+
+// ── generation: the model writes a check (#2063) ─────────────────────
+//
+// The model is asked only when the criteria name no runnable command, and
+// what it writes is held to the same rule a criteria-derived command is.
+// Every refusal below is the difference between a useful suggestion and a
+// gate that rejects work that was done correctly.
+
+/// Provider stub: counts every `complete` and replays a canned reply, or
+/// errors. Mirrors `decide_cached_test`'s stub so a suite never reaches the
+/// network.
+struct SpecStub {
+    calls: std::sync::atomic::AtomicUsize,
+    reply: Option<String>,
+}
+
+impl SpecStub {
+    fn answering(reply: &str) -> Self {
+        Self {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            reply: Some(reply.to_string()),
+        }
+    }
+
+    fn failing() -> Self {
+        Self {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            reply: None,
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::brain::provider::Provider for SpecStub {
+    async fn complete(
+        &self,
+        _request: crate::brain::provider::LLMRequest,
+    ) -> crate::brain::provider::Result<crate::brain::provider::LLMResponse> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let Some(reply) = &self.reply else {
+            return Err(crate::brain::provider::ProviderError::ApiError {
+                status: 503,
+                message: "stub provider is down".to_string(),
+                error_type: None,
+            });
+        };
+        Ok(crate::brain::provider::LLMResponse {
+            id: "spec-stub".to_string(),
+            model: "spec-stub-model".to_string(),
+            content: vec![crate::brain::provider::ContentBlock::Text {
+                text: reply.clone(),
+            }],
+            stop_reason: Some(crate::brain::provider::StopReason::EndTurn),
+            usage: crate::brain::provider::TokenUsage {
+                input_tokens: 5,
+                output_tokens: 10,
+                ..Default::default()
+            },
+            streaming_active_secs: None,
+            tool_text_leak: false,
+        })
+    }
+
+    async fn stream(
+        &self,
+        _request: crate::brain::provider::LLMRequest,
+    ) -> crate::brain::provider::Result<crate::brain::provider::ProviderStream> {
+        Err(crate::brain::provider::ProviderError::ApiError {
+            status: 501,
+            message: "stub does not stream".to_string(),
+            error_type: None,
+        })
+    }
+
+    fn name(&self) -> &str {
+        "spec-stub"
+    }
+
+    fn default_model(&self) -> &str {
+        "spec-stub-model"
+    }
+
+    fn supported_models(&self) -> Vec<String> {
+        vec!["spec-stub-model".to_string()]
+    }
+
+    fn context_window(&self, _model: &str) -> Option<u32> {
+        Some(8192)
+    }
+
+    fn calculate_cost(&self, _model: &str, _input: u32, _output: u32) -> f64 {
+        0.0
+    }
+}
+
+/// A prose task: criteria that name no runner, which is the only case that
+/// asks the model for anything.
+fn prose_task() -> PlanTask {
+    let mut task = PlanTask::new(
+        1,
+        "Refactor the loader".to_string(),
+        "d".to_string(),
+        TaskType::Edit,
+    );
+    task.acceptance_criteria = criteria(&["the loader reads a config without panicking"]);
+    task
+}
+
+async fn generate_with(stub: std::sync::Arc<SpecStub>) -> Vec<String> {
+    let ctx = ToolExecutionContext::new(Uuid::new_v4()).with_provider_override(stub);
+    crate::brain::tools::plan_tool::generate_spec_check_commands(&ctx, &prose_task()).await
+}
+
+#[test]
+fn plan_spec_check_parses_a_plain_line_of_commands() {
+    let commands = crate::brain::tools::plan_tool::parse_generated_commands(
+        "cargo test --lib pricing\ncargo clippy --all-features -- -D warnings",
+    );
+    assert_eq!(
+        commands,
+        vec![
+            "cargo test --lib pricing".to_string(),
+            "cargo clippy --all-features -- -D warnings".to_string()
+        ]
+    );
+}
+
+#[test]
+fn plan_spec_check_parses_through_bullets_numbers_and_fences() {
+    // The answer is text, so the model formats it. Refusing a good command
+    // for its bullet would waste the call.
+    let commands = crate::brain::tools::plan_tool::parse_generated_commands(
+        "```\n- `cargo test --lib pricing`\n1. cargo fmt --all -- --check\n```",
+    );
+    assert_eq!(
+        commands,
+        vec![
+            "cargo test --lib pricing".to_string(),
+            "cargo fmt --all -- --check".to_string()
+        ]
+    );
+}
+
+#[test]
+fn plan_spec_check_parses_none_as_no_command() {
+    assert!(crate::brain::tools::plan_tool::parse_generated_commands("NONE").is_empty());
+    assert!(crate::brain::tools::plan_tool::parse_generated_commands("none").is_empty());
+    assert!(
+        crate::brain::tools::plan_tool::parse_generated_commands("  None\n\n").is_empty(),
+        "an explicit none locks nothing"
+    );
+}
+
+#[test]
+fn plan_spec_check_parses_prose_as_no_command() {
+    let commands = crate::brain::tools::plan_tool::parse_generated_commands(
+        "I could not find a runnable command for this task, since the criterion is \
+         about documentation quality.",
+    );
+    assert!(
+        commands.is_empty(),
+        "prose must not become a locked command, got {commands:?}"
+    );
+}
+
+#[test]
+fn plan_spec_check_parses_a_compound_reply_as_no_command() {
+    // The same refusal the criteria path applies, applied to model text.
+    let commands = crate::brain::tools::plan_tool::parse_generated_commands(
+        "cargo test --lib pricing && git push\ncargo test --lib pricing | tail -5",
+    );
+    assert!(
+        commands.is_empty(),
+        "a compound line is refused whoever wrote it, got {commands:?}"
+    );
+}
+
+#[test]
+fn plan_spec_check_parses_a_bare_runner_as_no_command() {
+    let commands = crate::brain::tools::plan_tool::parse_generated_commands("cargo\nls");
+    assert!(
+        commands.is_empty(),
+        "a bare runner prints help and exits 0, got {commands:?}"
+    );
+}
+
+#[test]
+fn plan_spec_check_parses_duplicates_once() {
+    let commands = crate::brain::tools::plan_tool::parse_generated_commands(
+        "cargo test --lib pricing\ncargo test --lib pricing",
+    );
+    assert_eq!(commands, vec!["cargo test --lib pricing".to_string()]);
+}
+
+#[test]
+fn plan_spec_check_prompt_carries_the_task_and_nothing_else() {
+    let mut task = prose_task();
+    task.acceptance_criteria = criteria(&["the loader reads a config without panicking"]);
+    let prompt = crate::brain::tools::plan_tool::build_spec_check_prompt(&task);
+
+    assert!(prompt.contains("Refactor the loader"), "title must be sent");
+    assert!(
+        prompt.contains("the loader reads a config without panicking"),
+        "criteria must be sent"
+    );
+    // The way out has to be stated, or the model invents a command for prose.
+    assert!(
+        prompt.contains("NONE"),
+        "the prompt must allow a none answer: {prompt}"
+    );
+    // The input is the task text, not the repository. A prompt that carried
+    // the diff would be asking the model to grade work it can already see.
+    assert!(
+        !prompt.contains("diff") && !prompt.contains("git status"),
+        "the prompt must not carry the work: {prompt}"
+    );
+}
+
+#[tokio::test]
+async fn plan_spec_check_generates_a_command_from_a_stub_provider() {
+    let stub = std::sync::Arc::new(SpecStub::answering("cargo test --lib pricing"));
+    let commands = generate_with(std::sync::Arc::clone(&stub)).await;
+
+    assert_eq!(commands, vec!["cargo test --lib pricing".to_string()]);
+    assert_eq!(stub.calls(), 1, "one call per task, not a conversation");
+}
+
+#[tokio::test]
+async fn plan_spec_check_generation_returns_nothing_when_the_stub_says_none() {
+    let stub = std::sync::Arc::new(SpecStub::answering("NONE"));
+    assert!(generate_with(stub).await.is_empty());
+}
+
+#[tokio::test]
+async fn plan_spec_check_generation_survives_a_provider_error() {
+    // A failed model call is not a failed start. It locks nothing and the
+    // task behaves exactly as it did before generation existed.
+    let stub = std::sync::Arc::new(SpecStub::failing());
+    let commands = generate_with(std::sync::Arc::clone(&stub)).await;
+
+    assert!(commands.is_empty(), "an error yields no check");
+    assert_eq!(stub.calls(), 1, "the failure was a real call, not a skip");
+}
+
+#[tokio::test]
+async fn plan_spec_check_generation_refuses_a_stub_compound_reply() {
+    let stub = std::sync::Arc::new(SpecStub::answering("cargo test && git push"));
+    assert!(
+        generate_with(stub).await.is_empty(),
+        "the refusal holds through the whole generation path"
+    );
+}
+
+// ── generation through the tool: `start` locks, confirm grants teeth ──
+
+/// Like `tool_with_one_task`, but with a stub provider on the context so the
+/// generation path never reaches the network.
+async fn tool_with_stub(
+    dir: &tempfile::TempDir,
+    tool: &PlanTool,
+    criterion: &str,
+    stub: std::sync::Arc<SpecStub>,
+) -> ToolExecutionContext {
+    let mut ctx = tool_with_one_task(dir, tool, criterion).await;
+    ctx.provider_override = Some(stub);
+    ctx
+}
+
+#[tokio::test]
+async fn plan_spec_check_tool_generates_a_check_when_the_criteria_are_prose() {
+    in_temp_home(async {
+        let dir = policy_dir("tool_gen", "advisory");
+        let tool = PlanTool;
+        let stub = std::sync::Arc::new(SpecStub::answering("`ls .`"));
+        let ctx = tool_with_stub(
+            &dir,
+            &tool,
+            "the loader reads a config without panicking",
+            std::sync::Arc::clone(&stub),
+        )
+        .await;
+
+        let (ok, out) = run_tool(&tool, &ctx, json!({ "operation": "start" })).await;
+        assert!(ok, "start must succeed: {out}");
+        assert_eq!(stub.calls(), 1, "one model call for a prose task");
+        assert!(
+            out.contains("MODEL-WRITTEN spec check"),
+            "the start result must say the check was written by a model: {out}"
+        );
+        assert!(
+            out.contains("advisory only until you confirm"),
+            "the result must state what an unconfirmed check may do: {out}"
+        );
+
+        let plan = load_plan(ctx.session_id).await.unwrap();
+        let lock = plan
+            .get_task_by_order(1)
+            .unwrap()
+            .spec_check
+            .clone()
+            .expect("generated check was locked");
+        assert_eq!(lock.source, SpecCheckSource::Generated);
+        assert!(!lock.confirmed, "generation does not confirm itself");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn plan_spec_check_tool_makes_no_model_call_when_the_criteria_name_a_command() {
+    in_temp_home(async {
+        let dir = policy_dir("tool_gen_skip", "advisory");
+        let tool = PlanTool;
+        let stub = std::sync::Arc::new(SpecStub::answering("`git log --oneline`"));
+        let ctx = tool_with_stub(&dir, &tool, "`ls .` exits 0", std::sync::Arc::clone(&stub)).await;
+
+        let (ok, out) = run_tool(&tool, &ctx, json!({ "operation": "start" })).await;
+        assert!(ok, "start must succeed: {out}");
+        assert_eq!(
+            stub.calls(),
+            0,
+            "criteria that already name a command must cost nothing"
+        );
+        assert!(
+            !out.contains("MODEL-WRITTEN"),
+            "a criteria check must not be labelled generated: {out}"
+        );
+
+        let plan = load_plan(ctx.session_id).await.unwrap();
+        assert_eq!(
+            plan.get_task_by_order(1)
+                .unwrap()
+                .spec_check
+                .clone()
+                .unwrap()
+                .source,
+            SpecCheckSource::Criteria
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn plan_spec_check_tool_recovery_start_does_not_regenerate_the_check() {
+    in_temp_home(async {
+        let dir = policy_dir("tool_gen_recover", "advisory");
+        let tool = PlanTool;
+        let stub = std::sync::Arc::new(SpecStub::answering("`ls .`"));
+        let ctx = tool_with_stub(
+            &dir,
+            &tool,
+            "the loader reads a config without panicking",
+            std::sync::Arc::clone(&stub),
+        )
+        .await;
+
+        run_tool(&tool, &ctx, json!({ "operation": "start" })).await;
+        let first = load_plan(ctx.session_id)
+            .await
+            .unwrap()
+            .get_task_by_order(1)
+            .unwrap()
+            .spec_check
+            .clone()
+            .expect("locked");
+
+        // The post-compaction recovery call: a bare `start` while InProgress.
+        let (ok, out) = run_tool(&tool, &ctx, json!({ "operation": "start" })).await;
+        assert!(ok, "recovery start must succeed: {out}");
+        assert_eq!(
+            stub.calls(),
+            1,
+            "a recovery start must not regenerate the check and void its hash"
+        );
+        assert_eq!(
+            load_plan(ctx.session_id)
+                .await
+                .unwrap()
+                .get_task_by_order(1)
+                .unwrap()
+                .spec_check
+                .clone(),
+            Some(first),
+            "the lock must survive the recovery call unchanged"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn plan_spec_check_tool_generated_check_never_blocks_unconfirmed() {
+    in_temp_home(async {
+        // `block` policy is the strongest setting there is, and it still must
+        // not let a model-written check reject a completion nobody confirmed.
+        let dir = policy_dir("tool_gen_block", "block");
+        let tool = PlanTool;
+        let stub = std::sync::Arc::new(SpecStub::answering("`git log --oneline`"));
+        let ctx = tool_with_stub(
+            &dir,
+            &tool,
+            "the loader reads a config without panicking",
+            stub,
+        )
+        .await;
+
+        run_tool(&tool, &ctx, json!({ "operation": "start" })).await;
+        let (ok, out) = run_tool(
+            &tool,
+            &ctx,
+            json!({ "operation": "complete", "task_order": 1, "action": "success" }),
+        )
+        .await;
+
+        assert!(
+            ok,
+            "an unconfirmed generated check must not reject, even under block: {out}"
+        );
+        assert!(
+            out.contains("UNCERTAIN") && out.contains("locked spec check failed"),
+            "it still records the failure as Uncertain: {out}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn plan_spec_check_tool_confirming_grants_the_generated_check_its_teeth() {
+    in_temp_home(async {
+        let dir = policy_dir("tool_gen_confirm", "block");
+        let tool = PlanTool;
+        let stub = std::sync::Arc::new(SpecStub::answering("`git log --oneline`"));
+        let ctx = tool_with_stub(
+            &dir,
+            &tool,
+            "the loader reads a config without panicking",
+            stub,
+        )
+        .await;
+
+        run_tool(&tool, &ctx, json!({ "operation": "start" })).await;
+
+        // Confirmation is explicit, and it is the only thing that changes the
+        // check's power.
+        let (ok, out) = run_tool(
+            &tool,
+            &ctx,
+            json!({ "operation": "start", "confirm_spec_check": true }),
+        )
+        .await;
+        assert!(ok, "confirming must succeed: {out}");
+        assert!(out.contains("Confirmed"), "the result must say so: {out}");
+
+        let lock = load_plan(ctx.session_id)
+            .await
+            .unwrap()
+            .get_task_by_order(1)
+            .unwrap()
+            .spec_check
+            .clone()
+            .unwrap();
+        assert!(lock.confirmed, "the lock records the confirmation");
+        assert!(
+            lock.matches(&lock.commands.clone()),
+            "confirmation must not void the lock it just approved"
+        );
+
+        let (ok, out) = run_tool(
+            &tool,
+            &ctx,
+            json!({ "operation": "complete", "task_order": 1, "action": "success" }),
+        )
+        .await;
+        assert!(!ok, "a confirmed failing check now rejects: {out}");
+        assert!(out.contains("spec check REJECTED"), "got: {out}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn plan_spec_check_tool_locks_nothing_when_generation_is_disabled() {
+    in_temp_home(async {
+        let dir = tempfile::Builder::new()
+            .prefix("spec2063_off_")
+            .tempdir()
+            .expect("tempdir");
+        fs::write(
+            dir.path().join("ralph_loop.toml"),
+            "[verification]\nenabled = true\nspec_checks = \"advisory\"\nspec_check_generation = false\n",
+        )
+        .expect("write config");
+        let tool = PlanTool;
+        let stub = std::sync::Arc::new(SpecStub::answering("`ls .`"));
+        let ctx = tool_with_stub(
+            &dir,
+            &tool,
+            "the loader reads a config without panicking",
+            std::sync::Arc::clone(&stub),
+        )
+        .await;
+
+        let (ok, out) = run_tool(&tool, &ctx, json!({ "operation": "start" })).await;
+        assert!(ok, "start must succeed: {out}");
+        assert_eq!(stub.calls(), 0, "the key is off, so no call is made");
+        assert!(
+            load_plan(ctx.session_id)
+                .await
+                .unwrap()
+                .get_task_by_order(1)
+                .unwrap()
+                .spec_check
+                .is_none(),
+            "nothing is locked"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn plan_spec_check_tool_survives_a_provider_error_at_start() {
+    in_temp_home(async {
+        let dir = policy_dir("tool_gen_err", "block");
+        let tool = PlanTool;
+        let ctx = tool_with_stub(
+            &dir,
+            &tool,
+            "the loader reads a config without panicking",
+            std::sync::Arc::new(SpecStub::failing()),
+        )
+        .await;
+
+        let (ok, out) = run_tool(&tool, &ctx, json!({ "operation": "start" })).await;
+        assert!(ok, "a failed model call is not a failed start: {out}");
+        assert!(
+            load_plan(ctx.session_id)
+                .await
+                .unwrap()
+                .get_task_by_order(1)
+                .unwrap()
+                .spec_check
+                .is_none(),
+            "nothing is locked, so the task behaves as it did before"
+        );
+
+        let (ok, out) = run_tool(
+            &tool,
+            &ctx,
+            json!({ "operation": "complete", "task_order": 1, "action": "success" }),
+        )
+        .await;
+        assert!(ok, "no check means no check to fail: {out}");
     })
     .await;
 }

@@ -29,6 +29,26 @@ criteria_policy = "downgrade"
 # off                = no per-task checks run; criteria stay advisory
 spec_checks = "advisory"
 
+# Generate a spec check when the criteria name no runnable command (#2063).
+# When a task starts with acceptance criteria that are prose only, the model is
+# asked once for a command that would prove the task, and the answer is locked
+# exactly like a criteria-derived one.
+#
+# Cost: at most one small model call per task, and only for tasks whose criteria
+# carry no runnable command. Tasks that already name their command are never
+# sent to the model.
+#
+# The model may answer none, and none is the expected answer for a task it
+# cannot test. A failed or unparseable call is not a failed start: the task
+# starts as it always did, with no check locked.
+#
+# A generated check is advisory-only until you confirm it. Until then it can
+# never reject a completion, not even under spec_checks = "block": it runs,
+# reports, and the completion is downgraded at most. Confirm it by starting the
+# task again with confirm_spec_check = true, or replace the prose criteria with
+# the command you actually want.
+spec_check_generation = true
+
 # Commands per task type. A type with no entry verifies nothing (policy
 # above decides how that is graded). Add commands that RUN AND PASS in this
 # project: a command that cannot execute here blocks every completion of
