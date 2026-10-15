@@ -36,8 +36,11 @@ fn an_enabled_builtin_opencrabs_provider_is_the_one_opened() {
 fn a_disabled_custom_provider_is_never_selected_by_fallback() {
     let mut config = Config::default();
     let mut customs = HashMap::new();
-    customs.insert("baidu-ernie".to_string(), custom("https://qianfan.example/v2", false));
-    config.providers.custom = Some(customs);
+    customs.insert(
+        "baidu-ernie".to_string(),
+        custom("https://qianfan.example/v2", false),
+    );
+    config.providers.custom = Some(customs.into_iter().collect());
     let wizard = OnboardingWizard::from_config(&config);
     assert!(
         wizard.ps.selected_provider < CUSTOM_INSTANCES_START,
@@ -52,7 +55,7 @@ fn the_session_custom_provider_is_selected_by_name() {
     customs.insert("alpha".to_string(), custom("https://a.example/v1", true));
     customs.insert("beta".to_string(), custom("https://b.example/v1", true));
     let mut config = Config::default();
-    config.providers.custom = Some(customs);
+    config.providers.custom = Some(customs.into_iter().collect());
 
     let mut wizard = OnboardingWizard::from_config(&config);
     let found = wizard.select_session_pair("custom:beta", "gpt-x", &config);
@@ -77,7 +80,10 @@ fn the_session_builtin_model_is_the_one_selected_even_when_unlisted() {
     let mut wizard = OnboardingWizard::from_config(&config);
     let found = wizard.select_session_pair("zai", "glm-session-only", &config);
     assert!(found);
-    assert_eq!(wizard.ps.selected_provider, index_of_provider("zai").unwrap());
+    assert_eq!(
+        wizard.ps.selected_provider,
+        index_of_provider("zai").unwrap()
+    );
     let all = wizard.ps.all_model_names();
     assert_eq!(all[wizard.ps.selected_model], "glm-session-only");
 }

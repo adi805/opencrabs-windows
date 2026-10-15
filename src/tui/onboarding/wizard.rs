@@ -636,7 +636,17 @@ impl OnboardingWizard {
             }
         };
 
+        // The custom names the index above points into come from this config,
+        // and the key/fields probe runs first: it overwrites the custom fields
+        // from the live config, so the session's own values are set after it.
+        self.ps.custom_names = config
+            .providers
+            .custom
+            .as_ref()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
         self.ps.selected_provider = idx;
+        self.ps.detect_existing_key();
         if let Some(name) = custom_name {
             self.ps.custom_name = name.to_string();
             self.ps.base_url = config
@@ -647,7 +657,6 @@ impl OnboardingWizard {
                 .and_then(|c| c.base_url.clone())
                 .unwrap_or_default();
         }
-        self.ps.detect_existing_key();
         self.ps.reload_config_models();
 
         // A model the provider does not list is still the session's model, so it
