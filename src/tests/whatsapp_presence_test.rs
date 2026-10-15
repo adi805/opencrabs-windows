@@ -130,3 +130,61 @@ fn presence_is_not_charged_to_the_send_budget() {
         );
     }
 }
+
+// ── Availability publish retry ──────────────────────────────────────────
+
+use crate::channels::whatsapp::agent::{MAX_PRESENCE_ATTEMPTS, presence_retry_worthwhile};
+
+const AGENT: &str = include_str!("../channels/whatsapp/agent.rs");
+
+/// A missing push name is the one retryable failure.
+///
+/// The publish needs the account's push name, which lands with the device
+/// snapshot just after connect. Observed 2026-10-14 at the pairing moment:
+/// a single attempt failed with "cannot send presence without a push name
+/// set" and the account stayed invisible to every contact for the whole
+/// session. The retry turns a startup race into a delay; anything else is a
+/// real error and must surface immediately rather than burn the budget.
+#[test]
+fn only_a_missing_push_name_is_retried() {
+    assert!(
+        presence_retry_worthwhile(true, 1),
+        "a missing push name on the first attempt must be retried"
+    );
+    assert!(
+        !presence_retry_worthwhile(false, 1),
+        "any other failure must surface on the first attempt, not be retried"
+    );
+}
+
+#[test]
+fn the_retry_budget_is_finite_and_spent() {
+    assert!(
+        presence_retry_worthwhile(true, MAX_PRESENCE_ATTEMPTS - 1),
+        "the last attempt inside the budget must still retry"
+    );
+    assert!(
+        !presence_retry_worthwhile(true, MAX_PRESENCE_ATTEMPTS),
+        "the budget must run out: an unbounded retry would hide a permanent failure"
+    );
+}
+
+/// The wiring, not just the helper: the connect path must call the retrying
+/// publisher, and the publisher must keep the warning operators grep for.
+#[test]
+fn the_connect_path_publishes_through_the_retrying_helper() {
+    assert!(
+        AGENT.contains("publish_availability(&client).await"),
+        "the connect path must publish availability through publish_availability"
+    );
+    let squashed = squash(AGENT);
+    assert!(
+        !squashed.contains("ifletErr(e)=client.presence().set_available().await"),
+        "the old one-shot publish must be gone: a single attempt is what made the \
+         missing push name permanent"
+    );
+    assert!(
+        AGENT.contains("could not publish availability; the account will"),
+        "the operator-facing warning must keep its wording"
+    );
+}
