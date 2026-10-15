@@ -537,6 +537,19 @@ jobs:
       - name: Scan for duplicate top-level declarations
         run: python3 scripts/check-duplicate-decls.py --root src
 
+      # A config key nothing reads is worse than a missing feature: it parses,
+      # it defaults, it validates, and it does nothing, which looks exactly like
+      # quiet traffic. `channels.whatsapp.bot_owner` and
+      # `telegram.silence_group_start` both shipped that way, the second one
+      # with 13 passing assertions pinning its VALUE and none pinning that
+      # anything consulted it. Same job as the other cheap linters: seconds
+      # here instead of a bug report from an operator who set the key.
+      - name: Dead-config-knob linter proves its own teeth
+        run: python3 scripts/check-dead-config-knobs.py --self-test
+
+      - name: Scan for config knobs nothing reads
+        run: python3 scripts/check-dead-config-knobs.py --root src
+
   # ── Workflow policy (governance.toml) ─────────────────────────────────────
   # #1934: rules that live only in prose get violated and then counted in the
   # ledger. This job reads governance.toml and fails on the ones a machine can
