@@ -894,6 +894,16 @@ impl App {
                 };
                 let mut wizard = OnboardingWizard::from_config(&config);
                 wizard.step = step;
+                // `/models` opens on the provider and model this session is using
+                // (#2060), not on whatever config happens to list first.
+                if step == OnboardingStep::ProviderAuth
+                    && let Some(session) = self.current_session.as_ref()
+                {
+                    let provider = self.agent_service.provider_name_for_session(session.id);
+                    if let Some(model) = session.model.as_deref().filter(|m| !m.is_empty()) {
+                        wizard.select_session_pair(&provider, model, &config);
+                    }
+                }
                 // Deep-link a named channel directly to its setup dialog. Seeds
                 // the channel's fields just like selecting it in the menu; on an
                 // unknown name `open_channel_setup` leaves the menu step intact.

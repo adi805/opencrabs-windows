@@ -333,6 +333,19 @@ impl OnboardingWizard {
                         String::new(),
                         String::new(),
                     )
+                } else if config
+                    .providers
+                    .opencrabs
+                    .as_ref()
+                    .is_some_and(|p| p.enabled)
+                {
+                    // The built-in provider is enabled: open on it (#2060).
+                    (
+                        crate::tui::provider_selector::index_of_provider("opencrabs").unwrap_or(0),
+                        EXISTING_KEY_SENTINEL.to_string(),
+                        String::new(),
+                        String::new(),
+                    )
                 } else if config.providers.qwen.as_ref().is_some_and(|p| p.enabled) {
                     (
                         crate::tui::provider_selector::index_of_provider("qwen").unwrap_or(0),
@@ -340,14 +353,9 @@ impl OnboardingWizard {
                         String::new(),
                         String::new(),
                     )
-                } else if let Some((name, c)) = config.providers.active_custom().or_else(|| {
-                    config
-                        .providers
-                        .custom
-                        .as_ref()
-                        .and_then(|m| m.iter().next())
-                        .map(|(n, c)| (n.as_str(), c))
-                }) {
+                } else if let Some((name, c)) = config.providers.active_custom() {
+                    // Only an enabled custom provider is selected. A disabled
+                    // one used to win here as the first entry in the map (#2060).
                     let base = c.base_url.clone().unwrap_or_default();
                     let model = c.default_model.clone().unwrap_or_default();
                     custom_provider_name_init = Some(name.to_string());
@@ -600,6 +608,57 @@ impl OnboardingWizard {
             remaining.len()
         );
         wizard
+    }
+
+    /// Put the provider and model a session is using into the dialog (#2060).
+    ///
+    /// Returns false, leaving the dialog as it was, when the provider cannot be
+    /// found: a session can outlive the provider entry it was created with.
+    pub fn select_session_pair(
+        &mut self,
+        provider_name: &str,
+        model: &str,
+        config: &crate::config::Config,
+    ) -> bool {
+        use crate::tui::provider_selector::{CUSTOM_INSTANCES_START, index_of_provider};
+
+        let custom_name = provider_name.strip_prefix("custom:");
+        let idx = if let Some(name) = custom_name {
+            let customs = config.providers.custom.as_ref();
+            let Some(pos) = customs.and_then(|m| m.keys().position(|k| k == name)) else {
+                return false;
+            };
+            CUSTOM_INSTANCES_START + pos
+        } else {
+            match index_of_provider(provider_name) {
+                Some(i) => i,
+                None => return false,
+            }
+        };
+
+        self.ps.selected_provider = idx;
+        if let Some(name) = custom_name {
+            self.ps.custom_name = name.to_string();
+            self.ps.base_url = config
+                .providers
+                .custom
+                .as_ref()
+                .and_then(|m| m.get(name))
+                .and_then(|c| c.base_url.clone())
+                .unwrap_or_default();
+        }
+        self.ps.detect_existing_key();
+        self.ps.reload_config_models();
+
+        // A model the provider does not list is still the session's model, so it
+        // is added to the list rather than silently replaced by the first entry.
+        let listed = self.ps.all_model_names().contains(&model);
+        if !listed {
+            self.ps.config_models.push(model.to_string());
+        }
+        self.ps.custom_model = model.to_string();
+        self.ps.resolve_selected_model_index();
+        true
     }
 
     /// Create a wizard with existing config.toml values as defaults
