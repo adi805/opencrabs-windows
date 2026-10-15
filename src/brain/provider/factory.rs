@@ -27,7 +27,8 @@ use super::{
     opencode_cli::OpenCodeCliProvider,
 };
 use crate::config::timeout::{resolve_thinking_loop, resolve_timeout};
-use crate::config::{AgentConfig, Config, ProviderConfig};
+use crate::config::wire_dialect::is_official_host;
+use crate::config::{AgentConfig, Config, ProviderConfig, WireDialect};
 use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
@@ -218,6 +219,14 @@ static REGISTRATIONS: LazyLock<Vec<ProviderRegistration>> = LazyLock::new(|| {
             config_field: |c| c.providers.ollama.as_ref(),
         },
         ProviderRegistration {
+            display_name: "OpenCrabs",
+            session_id: "opencrabs",
+            aliases: &[],
+            is_enabled: |c| c.providers.opencrabs.as_ref().is_some_and(|p| p.enabled),
+            factory: sync_factory(try_create_opencrabs),
+            config_field: |c| c.providers.opencrabs.as_ref(),
+        },
+        ProviderRegistration {
             display_name: "Custom",
             session_id: "custom",
             aliases: &[],
@@ -277,6 +286,7 @@ pub const PROVIDER_NAMES: &[&str] = &[
     "z.ai",
     "Moonshot AI",
     "Ollama",
+    "OpenCrabs",
     "Custom",
 ];
 
@@ -608,6 +618,7 @@ pub(crate) fn force_enable_section(config: &mut Config, session_id: &str) -> boo
     let p = &mut config.providers;
     let slot: Option<&mut Option<ProviderConfig>> = match session_id {
         "xiaomi" => Some(&mut p.xiaomi),
+        "opencrabs" => Some(&mut p.opencrabs),
         "claude-cli" => Some(&mut p.claude_cli),
         "opencode-cli" => Some(&mut p.opencode_cli),
         "codex-cli" => Some(&mut p.codex_cli),
@@ -928,18 +939,14 @@ async fn create_fallback(config: &Config, fallback_type: &str) -> Result<Arc<dyn
     ))
 }
 
-/// Returns `(api_key, base_url, vision_model)` for the first enabled provider
-/// that has a `vision_model` configured.
+/// Returns `(api_key, base_url, vision_model)` for the first vision candidate
+/// that `any_provider_vision` finds, or `None` when no provider can see.
 ///
-/// Resolution order:
-/// 1. User-configured `[providers.fallback] vision = [...]` chain (first
-///    enabled match with a `vision_model` wins).
-/// 2. All enabled built-in providers in REGISTRATIONS priority order.
-/// 3. All enabled custom providers.
-///
-/// The fallback chain lets the user pin a specific provider for vision
-/// without affecting the active chat provider.  An empty chain is a
-/// no-op and falls straight through to the scan-all path.
+/// The order is `any_provider_vision`'s: built-in providers in REGISTRATIONS
+/// priority order, then custom providers, then the `[providers.fallback]
+/// vision` chain. This is a capability lookup, not the request-time
+/// roll-through. The roll-through is `vision_candidates_for`, which tries the
+/// session's own provider first.
 ///
 /// Used to register the provider-native `analyze_image` tool when Gemini
 /// vision isn't set up.  See issue #253.
@@ -995,41 +1002,31 @@ pub fn any_provider_vision(config: &Config) -> Vec<(String, String, String)> {
     out
 }
 
-/// Ordered vision candidates `(api_key, base_url, vision_model)`, walked at
-/// REQUEST time by `ProviderVisionTool` (#430): if one candidate's call
-/// fails, the next is tried, and Gemini `[image.vision]` is the FINAL
-/// fallback only — never the primary when any provider can serve vision.
+/// Ordered vision candidates `(api_key, base_url, vision_model)` for a
+/// session, walked at REQUEST time by `ProviderVisionTool` (#430, #1318). If
+/// one candidate's call fails, the next is tried. Gemini `[image.vision]` is
+/// the FINAL fallback, applied by the caller after every candidate fails.
 ///
-/// Order (owner contract, whole app lifetime):
-/// 1. Every provider with a `vision_model` AND a usable key, in
-///    REGISTRATIONS priority order, then customs. `enabled` is the CHAT
-///    gate and is never consulted (#401). "Usable key" = non-empty, or a
-///    local endpoint that needs none.
-/// 2. The `[providers.fallback] vision` chain, minus entries already
-///    collected by the scan.
+/// Order:
 ///
-/// Candidates whose endpoint cannot be derived (no explicit `base_url`, no
-/// known per-provider default) are SKIPPED: guessing OpenAI sent a Xiaomi
-/// token-plan key to api.openai.com and 401'd every call (#430).
-/// Ordered vision candidates for a session: current provider, then chain.
-///
-/// Order is the whole contract (#1318):
-///
-/// 1. the session's CURRENT provider, when it carries a `vision_model`
+/// 1. the session's CURRENT provider, when it carries a `vision_model` and a
+///    usable key
 /// 2. `[providers.fallback] vision`, in the order written
-/// 3. Gemini, applied by the caller after every candidate fails
+/// 3. Gemini, applied by the caller
 ///
-/// What this deliberately does NOT do is scan every provider that happens to
-/// carry a `vision_model`. That scan used to run FIRST and, because dedup
-/// keeps the first occurrence, a provider it found held its scan position and
-/// the configured chain could never reorder anything — the chain only ever
-/// contributed entries the scan had missed. Measured cost: four candidates
-/// tried and failed before the working one, ~2.5 s on every image, with
-/// providers in the chain never reached.
+/// Providers that carry a `vision_model` but are neither the session's
+/// provider nor in the chain are NOT tried. A global scan of every such
+/// provider used to run first. Dedup kept its position, so the configured
+/// chain could never reorder anything. It also cost four failed attempts
+/// before the working one, about 2.5 s on every image.
 ///
 /// `enabled = false` is NOT a filter here. That flag governs whether a
 /// provider serves CHAT; a vision candidate needs only a reachable endpoint
 /// and a `vision_model`.
+///
+/// Candidates whose endpoint cannot be derived (no explicit `base_url`, no
+/// known per-provider default) are SKIPPED: guessing OpenAI sent a Xiaomi
+/// token-plan key to api.openai.com and 401'd every call (#430).
 ///
 /// Takes `config` per call rather than being computed once at startup: the
 /// list must follow a `config.toml` edit without a restart, the same way the
@@ -1095,6 +1092,7 @@ fn vision_base_url(session_id: &str, cfg: &ProviderConfig) -> Option<String> {
         "minimax" => Some("https://api.minimax.io/v1".to_string()),
         "qwen" => Some(QWEN_DEFAULT_DASHSCOPE_URL.to_string()),
         "ollama" => Some("http://localhost:11434/v1".to_string()),
+        "opencrabs" => Some(super::opencrabs_install::OPENCRABS_BASE_URL.to_string()),
         // CLI wrappers, native protocols, and anything else without an
         // explicit base_url: no OpenAI-compatible endpoint to call.
         _ => None,
@@ -1266,6 +1264,85 @@ pub fn active_provider_generation(config: &Config) -> Option<(String, String, St
     None
 }
 
+/// `(api_key, base_url, model)` for the active provider's `stt_model`, when
+/// it declares one.
+///
+/// Mirrors [`active_provider_generation`]: the active provider's own audio
+/// endpoint wins, so enabling a provider that carries `stt_model` gives
+/// transcription out of the box, with no `[providers.stt.*]` block to write.
+pub fn active_provider_stt(config: &Config) -> Option<(String, String, String)> {
+    active_provider_audio(config, |c| c.stt_model.as_deref())
+}
+
+/// `(api_key, base_url, model)` for the active provider's `tts_model`, when
+/// it declares one. The synthesis twin of [`active_provider_stt`].
+pub fn active_provider_tts(config: &Config) -> Option<(String, String, String)> {
+    active_provider_audio(config, |c| c.tts_model.as_deref())
+}
+
+/// Shared resolution behind [`active_provider_stt`] and [`active_provider_tts`]:
+/// look up the active provider, then hand back its `(api_key, base_url, model)`
+/// for whichever audio model it declares.
+fn active_provider_audio(
+    config: &Config,
+    pick: impl Fn(&ProviderConfig) -> Option<&str>,
+) -> Option<(String, String, String)> {
+    let (name, _) = config.providers.active_provider_and_model();
+    if name == "none" {
+        return None;
+    }
+
+    // Customs take precedence (same convention as `vision_by_name`).
+    let bare = name.strip_prefix("custom:").unwrap_or(name.as_str());
+    if let Some(cfg) = config.providers.custom.as_ref().and_then(|m| m.get(bare)) {
+        return audio_candidate(cfg.base_url.clone()?, cfg.api_key.clone(), pick(cfg)?);
+    }
+
+    for reg in REGISTRATIONS.iter() {
+        if reg.session_id == name.as_str() || reg.aliases.contains(&name.as_str()) {
+            let cfg = (reg.config_field)(config)?;
+            let base_url = vision_base_url(reg.session_id, cfg)?;
+            return audio_candidate(base_url, cfg.api_key.clone(), pick(cfg)?);
+        }
+    }
+    None
+}
+
+/// Build an audio candidate from a raw endpoint plus the model name.
+///
+/// The endpoint is reduced to the host root because the [OI] audio clients
+/// join `v1/audio/...` onto it themselves (`openai_tts::build_endpoint_url`),
+/// so a `.../v1` base would produce `.../v1/v1/audio/speech`. The credential
+/// gate matches the vision candidates (#1792): a remote endpoint we hold no
+/// key for is not a candidate, it is a guaranteed 401.
+fn audio_candidate(
+    base_url: String,
+    api_key: Option<String>,
+    model: &str,
+) -> Option<(String, String, String)> {
+    let root = voice_root_url(&base_url);
+    let api_key = api_key.filter(|k| !k.is_empty());
+    if api_key.is_none() && !is_local_base_url(&root) {
+        tracing::debug!(
+            base_url = %root,
+            model = %model,
+            "voice: skipping active-provider audio candidate, no API key for a remote endpoint"
+        );
+        return None;
+    }
+    Some((api_key.unwrap_or_default(), root, model.to_string()))
+}
+
+/// Host root of an [OI]-compatible endpoint: strip a chat suffix, a trailing
+/// slash, and a trailing `/v1`, so callers can join `v1/audio/...` onto it.
+fn voice_root_url(url: &str) -> String {
+    url.trim_end_matches("/chat/completions")
+        .trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .trim_end_matches('/')
+        .to_string()
+}
+
 /// Final model name to hand to `GenerateImageTool` — first resolved
 /// generation candidate (session provider's `generation_model`, then the
 /// `[providers.fallback] generation` chain) wins, otherwise fall back to the
@@ -1312,6 +1389,7 @@ fn generation_base_url(session_id: &str, cfg: &ProviderConfig) -> Option<String>
             "qwen" => QWEN_DEFAULT_DASHSCOPE_URL.to_string(),
             "ollama" => "http://localhost:11434/v1".to_string(),
             "gemini" => GEMINI_GENERATION_MARKER_URL.to_string(),
+            "opencrabs" => super::opencrabs_install::OPENCRABS_BASE_URL.to_string(),
             // CLI wrappers, native protocols, and anything else without an
             // explicit base_url: no derivable images endpoint.
             _ => return None,
@@ -1724,6 +1802,43 @@ fn try_create_xiaomi(config: &Config) -> Result<Option<Arc<dyn Provider>>> {
     Ok(Some(Arc::new(provider)))
 }
 
+/// Built-in OpenCrabs provider (#2047). The user never types its key: the
+/// install token came from the inference proxy and is merged in from keys.toml
+/// as `providers.opencrabs.api_key`. With no token yet the provider stays
+/// uncreatable rather than calling the proxy with no credentials.
+fn try_create_opencrabs(config: &Config) -> Result<Option<Arc<dyn Provider>>> {
+    let cfg = match &config.providers.opencrabs {
+        Some(cfg) => cfg,
+        None => return Ok(None),
+    };
+
+    let token = match cfg.api_key.clone().filter(|k| !k.is_empty()) {
+        Some(token) => token,
+        None => {
+            tracing::debug!("OpenCrabs has no install token yet; onboarding requests one");
+            return Ok(None);
+        }
+    };
+
+    let base_url = cfg
+        .base_url
+        .clone()
+        .unwrap_or_else(|| super::opencrabs_install::OPENCRABS_BASE_URL.to_string());
+    let base_url = if base_url.contains("/chat/completions") {
+        base_url
+    } else {
+        format!("{}/chat/completions", base_url.trim_end_matches('/'))
+    };
+
+    tracing::info!("Using OpenCrabs at: {base_url}");
+    let provider = configure_openai_compatible(
+        OpenAIProvider::with_base_url(token, base_url).with_name("opencrabs"),
+        cfg,
+        &config.agent,
+    );
+    Ok(Some(Arc::new(provider)))
+}
+
 fn try_create_minimax(config: &Config) -> Result<Option<Arc<dyn Provider>>> {
     let minimax_config = match &config.providers.minimax {
         Some(cfg) => {
@@ -1798,36 +1913,11 @@ fn try_create_zhipu(config: &Config) -> Result<Option<Arc<dyn Provider>>> {
         zhipu_config.endpoint_type,
         zhipu_config.base_url.is_some()
     );
-    let mut provider = configure_openai_compatible(
+    let provider = configure_openai_compatible(
         OpenAIProvider::with_base_url(api_key.clone(), base_url).with_name("zai"),
         zhipu_config,
         &config.agent,
     );
-    // Neither tier configured an idle timeout, so the host-aware default is the
-    // only thing standing between z.ai and the generic 20s remote default, which
-    // would cut a host the code documents as holding an idle stream to ~30s and
-    // blame the connection for our own timer (#1666). Resolved across BOTH tiers
-    // (#1688): reading only the per-provider key here would let this default
-    // overwrite an explicit `[agent] stream_idle_timeout_secs`.
-    let idle_cfg = resolve_timeout(
-        zhipu_config.stream_idle_timeout_secs,
-        config.agent.stream_idle_timeout_secs,
-        None,
-    );
-    let host_aware_idle = idle_cfg
-        .effective
-        .is_none()
-        .then(|| {
-            super::zhipu_endpoint::default_idle_timeout_secs(
-                zhipu_config.base_url.as_deref(),
-                zhipu_config.endpoint_type.as_deref(),
-            )
-        })
-        .flatten();
-    if let Some(secs) = host_aware_idle {
-        provider = provider.with_stream_idle_timeout(std::time::Duration::from_secs(secs));
-        tracing::info!("z.ai host-aware stream idle timeout: {}s", secs);
-    }
     Ok(Some(Arc::new(provider)))
 }
 
@@ -1976,10 +2066,11 @@ fn try_create_custom(config: &Config) -> Result<Option<Arc<dyn Provider>>> {
 /// accessors ([`crate::config::timeout::TimeoutResolution::override_duration`]).
 ///
 /// `compiled_default` is `None` for a flag whose default is picked at runtime
-/// rather than baked into a family: `stream_idle_timeout_secs` is resolved in
-/// `brain/agent/service/helpers.rs` (3600s local/CLI, 45s z.ai, 20s remote), so
-/// a value unset at both tiers must defer to that table instead of overriding
-/// it with a number from the transport layer.
+/// rather than baked into a family: `stream_idle_timeout_secs` on a native family
+/// is resolved in `brain/agent/service/helpers.rs` (3600s local/CLI, 20s remote),
+/// so a value unset at both tiers must defer to that table instead of overriding
+/// it with a number from the transport layer. OpenAI-compatible providers carry
+/// their own compiled idle default, [`COMPAT_STREAM_IDLE_SECS`].
 ///
 /// A `0` at either tier is skipped, never honoured: a zero-second reqwest
 /// timeout is an instant deadline, and a zero-second idle timer fires before
@@ -1990,11 +2081,19 @@ fn resolve_and_report(
     provider_value: Option<u64>,
     agent_value: Option<u64>,
     compiled_default: Option<u64>,
+    compiled_is_override: bool,
     flag: &str,
     label: &str,
 ) -> Option<Duration> {
     let resolution = resolve_timeout(provider_value, agent_value, compiled_default);
-    let duration = resolution.override_duration();
+    // A family that bakes in its own floor (#2021) has chosen that value, so it
+    // is an override, not an absent one. Otherwise the floor stays internal and
+    // the provider keeps reporting "no override" to the trait accessors.
+    let duration = if compiled_is_override {
+        resolution.duration()
+    } else {
+        resolution.override_duration()
+    };
     if let Some(dur) = duration {
         tracing::info!("{label}: {}s (from {})", dur.as_secs(), resolution.tier);
     }
@@ -2021,18 +2120,21 @@ fn report_timeout_chain(
     config: &ProviderConfig,
     agent: &AgentConfig,
     compiled_request_secs: u64,
+    compiled_idle_secs: Option<u64>,
 ) -> (Option<Duration>, Option<Duration>, u64) {
     let request = resolve_and_report(
         config.timeout_secs,
         agent.timeout_secs,
         Some(compiled_request_secs),
+        false,
         "timeout_secs",
         "Non-streaming request ceiling",
     );
     let idle = resolve_and_report(
         config.stream_idle_timeout_secs,
         agent.stream_idle_timeout_secs,
-        None,
+        compiled_idle_secs,
+        compiled_idle_secs.is_some(),
         "stream_idle_timeout_secs",
         "Stream idle timeout",
     );
@@ -2041,6 +2143,19 @@ fn report_timeout_chain(
         agent.thinking_loop_timeout_secs,
     );
     (request, idle, thinking_loop)
+}
+
+/// Stream idle tolerance, in seconds, for every OpenAI-compatible provider that
+/// names no `stream_idle_timeout_secs` at either tier. One value for the whole
+/// family, so a host that queues a request before its first byte gets the same
+/// grace whichever compat provider it is.
+pub(crate) const COMPAT_STREAM_IDLE_SECS: u64 = 120;
+
+/// The compiled idle default for an OpenAI-compatible provider. Local base URLs
+/// return `None` and keep the runtime default in `helpers.rs` (3600s), because
+/// local prefill can legitimately stall for minutes.
+pub(crate) fn compat_idle_default(is_local: bool) -> Option<u64> {
+    (!is_local).then_some(COMPAT_STREAM_IDLE_SECS)
 }
 
 /// Configure OpenAI-compatible provider with custom model
@@ -2053,6 +2168,14 @@ fn configure_openai_compatible(
         "configure_openai_compatible: default_model = {:?}",
         config.default_model
     );
+    // #2059: which route this endpoint speaks. An explicit `wire_dialect` in
+    // the provider section wins; otherwise the official OpenAI host resolves
+    // to `Auto` (start on Chat, move to Responses only when the endpoint
+    // refuses the model there) and every other endpoint stays on Chat, which
+    // is the behaviour every existing OpenAI-compatible provider expects.
+    let dialect = WireDialect::resolve(config.wire_dialect, is_official_host(provider.base_url()));
+    tracing::debug!("Wire dialect resolved to {:?}", dialect);
+    provider = provider.with_wire_dialect(dialect);
     if let Some(model) = &config.default_model {
         tracing::info!("Using custom default model: {}", model);
         provider = provider.with_default_model(model.clone());
@@ -2106,10 +2229,12 @@ fn configure_openai_compatible(
     // read anywhere in the tree, so `[agent] timeout_secs = 120` was parsed,
     // stored, and then quietly ignored. #1689 put the same chain behind
     // `report_timeout_chain` so anthropic and gemini read it too.
+    let is_local = provider.base_url().is_some_and(is_local_base_url);
     let (request, idle, thinking_loop) = report_timeout_chain(
         config,
         agent,
         super::custom_openai_compatible::DEFAULT_TIMEOUT.as_secs(),
+        compat_idle_default(is_local),
     );
     if let Some(dur) = request {
         provider = provider.with_timeout(dur);
@@ -2189,6 +2314,7 @@ fn try_create_gemini(config: &Config) -> Result<Option<Arc<dyn Provider>>> {
         gemini_config,
         &config.agent,
         super::gemini::DEFAULT_TIMEOUT.as_secs(),
+        None,
     );
     if let Some(dur) = request {
         provider = provider.with_timeout(dur);
@@ -2392,6 +2518,7 @@ fn try_create_anthropic(config: &Config) -> Result<Option<Arc<dyn Provider>>> {
         anthropic_config,
         &config.agent,
         super::anthropic::DEFAULT_TIMEOUT.as_secs(),
+        None,
     );
     if let Some(dur) = request {
         provider = provider.with_timeout(dur);

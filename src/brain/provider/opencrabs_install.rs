@@ -1,0 +1,149 @@
+//! Install-token client for the built-in OpenCrabs provider (#2047).
+//!
+//! Each install generates a random ID once and asks the inference proxy for
+//! its own caller token. This module is pure: it builds the request, reads the
+//! answer, and names each refusal. The HTTP call and the storage live
+//! elsewhere, so every branch here is testable without a network.
+
+use serde_json::{Value, json};
+
+/// Proxy base URL. The install route and the chat route both live under it.
+pub const OPENCRABS_BASE_URL: &str = "https://inference.opencrabs.com/v1";
+
+/// Path of the install route, relative to [`OPENCRABS_BASE_URL`].
+pub const INSTALL_PATH: &str = "/install";
+
+/// Length of a generated install ID, in hex characters. The proxy accepts 8 to
+/// 64 characters of `[A-Za-z0-9_-]`, so 32 hex characters sit well inside it.
+const INSTALL_ID_LEN: usize = 32;
+
+/// A caller token the proxy issued for one install.
+#[derive(Clone, PartialEq, Eq)]
+pub struct IssuedToken {
+    pub token: String,
+    pub label: String,
+}
+
+/// The token is a bearer secret, so `Debug` never prints it.
+impl std::fmt::Debug for IssuedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IssuedToken")
+            .field("token", &"<redacted>")
+            .field("label", &self.label)
+            .finish()
+    }
+}
+
+/// Why the proxy did not issue a token. Each variant maps to its own message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallError {
+    /// The ID is malformed. Our own generator never produces one, so this is a bug.
+    IdRejected,
+    /// A token already exists for this ID. The stored token was lost, so the
+    /// caller must generate a new ID and ask again.
+    AlreadyIssued,
+    /// The proxy has turned issuance off.
+    IssuanceOff,
+    /// The proxy is rate limiting this address.
+    RateLimited,
+    /// The proxy failed while issuing.
+    ProxyFailed,
+    /// The proxy answered with a status we do not expect.
+    Unexpected(u16),
+    /// The success body did not carry a token.
+    MalformedReply,
+    /// The proxy could not be reached at all: DNS, connection or timeout.
+    Unreachable,
+    /// The token was issued but could not be written to keys.toml.
+    StorageFailed,
+}
+
+/// Generate a fresh install ID: 32 random hex characters.
+pub fn new_install_id() -> String {
+    let mut id = String::with_capacity(INSTALL_ID_LEN);
+    while id.len() < INSTALL_ID_LEN {
+        id.push_str(&format!("{:016x}", rand::random::<u64>()));
+    }
+    id.truncate(INSTALL_ID_LEN);
+    id
+}
+
+/// Whether an ID has the shape the proxy accepts: 8 to 64 characters of
+/// `[A-Za-z0-9_-]`. Checked before a request so a bad stored ID is caught early.
+pub fn is_valid_install_id(id: &str) -> bool {
+    (8..=64).contains(&id.len())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// The JSON body for the install route.
+pub fn install_request_body(install_id: &str) -> Value {
+    json!({ "install_id": install_id })
+}
+
+/// Read the proxy's answer to the install route.
+///
+/// A `200` must carry a non-empty `token`. Every other status maps to an
+/// [`InstallError`], so the caller never has to read status codes itself.
+pub fn parse_install_response(status: u16, body: &str) -> Result<IssuedToken, InstallError> {
+    match status {
+        200 => {
+            let value: Value =
+                serde_json::from_str(body).map_err(|_| InstallError::MalformedReply)?;
+            let token = value
+                .get("token")
+                .and_then(Value::as_str)
+                .filter(|t| !t.is_empty())
+                .ok_or(InstallError::MalformedReply)?;
+            let label = value
+                .get("label")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            Ok(IssuedToken {
+                token: token.to_string(),
+                label: label.to_string(),
+            })
+        }
+        400 => Err(InstallError::IdRejected),
+        403 | 404 => Err(InstallError::IssuanceOff),
+        409 => Err(InstallError::AlreadyIssued),
+        429 => Err(InstallError::RateLimited),
+        500..=599 => Err(InstallError::ProxyFailed),
+        other => Err(InstallError::Unexpected(other)),
+    }
+}
+
+/// The message shown to the user for a refusal. Each cause gets its own text,
+/// so a user can tell a dead proxy from a refused token from a closed route.
+pub fn install_error_message(err: &InstallError) -> &'static str {
+    match err {
+        InstallError::IdRejected => {
+            "The built-in OpenCrabs provider could not register this install: the install ID was rejected. Please report this."
+        }
+        InstallError::AlreadyIssued => {
+            "The built-in OpenCrabs provider already issued a token for this install. Generating a new install ID."
+        }
+        InstallError::IssuanceOff => {
+            "The built-in OpenCrabs provider is not issuing tokens right now. Choose another provider in Advanced setup."
+        }
+        InstallError::RateLimited => {
+            "The built-in OpenCrabs provider is rate limiting this connection. Wait a minute and try again."
+        }
+        InstallError::ProxyFailed => {
+            "The built-in OpenCrabs provider failed while issuing a token. Try again later or choose another provider."
+        }
+        InstallError::Unexpected(_) => {
+            "The built-in OpenCrabs provider gave an unexpected answer. Try again later or choose another provider."
+        }
+        InstallError::MalformedReply => {
+            "The built-in OpenCrabs provider sent a reply without a token. Try again later or choose another provider."
+        }
+        InstallError::Unreachable => {
+            "Could not reach the built-in OpenCrabs provider. Check your connection, or choose another provider."
+        }
+        InstallError::StorageFailed => {
+            "The built-in OpenCrabs provider issued a token, but it could not be saved to keys.toml. Check the file permissions and try again."
+        }
+    }
+}

@@ -1,43 +1,66 @@
 #!/usr/bin/env python3
-"""policy-lint: enforce the machine-readable workflow rules (#1934).
+"""policy-lint: machine-readable workflow policy for this repo.
 
-`governance.toml` at the repo root is the source of truth; this script is the
-only thing that reads it. It runs as the `policy-lint` job in
-`.github/workflows/ci.yml`, on pull requests.
+Reads `governance.toml` at the repo root and enforces the four checks
+issue #1934 fenced as machine-visible. Everything outside that fence
+(tone, scope creep, "is this one problem?") stays in human review by
+design; the schema's informational keys are deliberately not enforced
+here so the gate can never grow teeth nobody approved.
 
-Two modes:
+Checks (PR context):
+  1. workflow.child_issues_not_child_prs: if the PR body carries
+     follow-up phrasing, it must also reference child issue numbers
+     (#NNN). Deliberately narrow: false negatives acceptable, false
+     positives not. FAIL.
+  2. prs.max_files_warn: diff touching more than max_files_warn
+     files. WARN only, never FAIL.
+  3. commits.no_coauthor_trailers: any commit carrying a
+     `Co-authored-by:` trailer. FAIL.
+  4. commits.conventional_titles: commit subjects must match
+     `type(scope)!: subject` / `type: subject`. Merge and Revert
+     subjects are exempt: update-on-top leaves Merge commits inside
+     the PR range (house merge flow), and undo keeps its history
+     via revert-style subjects. FAIL.
+  5. commits.no_ai_branding (FORK-ONLY): any commit carrying a tool's
+     generation banner. FAIL. Upstream's #1934 rewrite dropped this check;
+     the fork restores it because AGENTS.md still forbids AI branding.
 
-  policy-lint.py --self-test
-      Prove the checks have teeth, and that the committed policy parses.
-      Runs in CI before the real pass, so a rule that silently stopped
-      matching fails the job instead of passing everything.
+Modes:
+  python3 scripts/policy-lint.py                      # validate config (local run)
+  python3 scripts/policy-lint.py --self-test          # fixtures in scripts/tests/policy-lint/
+  python3 scripts/policy-lint.py --fixture NAME.json  # run one fixture, exit with its verdict
+  python3 scripts/policy-lint.py --body-file B --subjects-file S --messages-file M --files-count N
 
-  policy-lint.py --base <sha> --head <sha>
-      Lint every non-merge commit in `base..head`, and warn on the PR's diff
-      size. Exit 1 on a FAIL rule; warnings never fail.
-
-Scope fence: only what a machine can see without judgement. Tone, scope
-creep, and "is this one problem?" stay in prose review forever.
+Stdlib + tomllib only, zero dependencies. Same rule as
+check-windows-footguns.py. CI wires this in
+.github/workflows/policy-lint.yml.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
-import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-GOVERNANCE = REPO_ROOT / "governance.toml"
+FOLLOW_UP_PHRASES = (
+    "follow up",
+    "follow-up",
+    "followup",
+    "next PR",
+    "part 2",
+    "rest in",
+)
+ISSUE_REF = re.compile(r"#\d+")
+COAUTHOR = re.compile(r"(?im)^\s*co-authored-by\s*:")
 
-# A `Co-authored-by:` trailer — the shape AGENTS.md forbids. Anchored at line
-# start so the phrase in ordinary prose does not trip it.
-COAUTHOR_RE = re.compile(r"^[ \t]*co-authored-by[ \t]*:", re.IGNORECASE | re.MULTILINE)
-
-# Generation banners a tool leaves behind. Narrow on purpose: these match a
-# banner or a bot author, not the words "Claude" / "AI" in ordinary prose.
+# FORK-ONLY, restored by hand on every sync. Upstream's #1934 rewrite dropped
+# the AI-branding check; AGENTS.md (Git Rules) still forbids it here, and
+# governance.toml [commits].no_ai_branding carries the key. Generation banners
+# a tool leaves behind. Narrow on purpose: these match a banner or a bot
+# author, not the words "Claude" / "AI" in ordinary prose.
 AI_BRANDING_RES = (
     re.compile(r"generated\s+with\s+\[?claude", re.IGNORECASE),
     re.compile(r"\U0001f916\s*generated", re.IGNORECASE),
@@ -45,224 +68,216 @@ AI_BRANDING_RES = (
     re.compile(r"generated\s+by\s+(claude|chatgpt|copilot|an?\s+ai\b)", re.IGNORECASE),
 )
 
-# `type(scope)!: subject` / `type: subject`.
-CONVENTIONAL_RE = re.compile(
-    r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
-    r"(\([^()]+\))?!?: \S"
-)
-
-
-# ── pure checks (exercised by --self-test) ───────────────────────────────────
-
-
-def check_coauthor(message: str) -> str | None:
-    """The offending trailer line, or None when `message` has no trailer."""
-    m = COAUTHOR_RE.search(message)
-    if m is None:
-        return None
-    return message[m.start() :].splitlines()[0].strip()
-
-
 def check_ai_branding(message: str) -> str | None:
-    """The matched branding marker, or None."""
+    """The matched branding marker, or None. FORK-ONLY (see AI_BRANDING_RES)."""
     for pattern in AI_BRANDING_RES:
         m = pattern.search(message)
         if m is not None:
             return m.group(0)
     return None
+# Types actually in use on main (receipt: git log --format=%s -40, 2026-10-09).
+CONVENTIONAL = re.compile(
+    r"^(feat|fix|refactor|docs|test|tests|chore|perf|style|build|ci|revert"
+    r"|release|deps)(\([^)]*\))?!?: \S.*$"
+)
+EXEMPT_SUBJECTS = ("Merge ", "Revert ")
+
+EXPECTED_SECTIONS = {
+    "workflow": {
+        "sync_before_commit": bool,
+        "child_issues_not_child_prs": bool,
+        "one_pr_per_problem": bool,
+        "single_sanity_ci": bool,
+        "merge_at_completion": bool,
+    },
+    "prs": {
+        "max_files_warn": int,
+        "no_stub": bool,
+    },
+    "commits": {
+        "no_coauthor_trailers": bool,
+        "conventional_titles": bool,
+    },
+}
 
 
-def check_conventional(subject: str) -> bool:
-    return CONVENTIONAL_RE.match(subject) is not None
+def repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
 
 
-# ── git plumbing ─────────────────────────────────────────────────────────────
-
-
-def git(*args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=REPO_ROOT, check=True, capture_output=True, text=True
-    ).stdout
-
-def merge_base(base: str, head: str) -> str:
-    """The fork point, so `base..head` is the PR's own commits.
-
-    The PR event carries the *current* tip of the base branch, which moves
-    while the PR is open. Diffing against that tip would blame this PR for
-    commits that landed on main after it branched, and `--no-merges` would
-    not hide them: they are ordinary commits. The merge base is stable.
-    """
-    return git("merge-base", base, head).strip()
-
-
-def load_policy(path: Path = GOVERNANCE) -> dict:
-    with path.open("rb") as fh:
-        return tomllib.load(fh)
-
-
-def commits_between(base: str, head: str) -> list[tuple[str, str, str]]:
-    """`(sha, subject, body)` for every non-merge commit in `base..head`."""
-    raw = git("log", "--no-merges", "--format=%H%x1f%s%x1f%b%x1e", f"{base}..{head}")
-    out: list[tuple[str, str, str]] = []
-    for record in raw.split("\x1e"):
-        record = record.strip()
-        if not record:
+def load_config(path: Path) -> dict:
+    """Parse governance.toml and pin its schema. Exit 1 on any drift."""
+    if not path.is_file():
+        return fail_and_exit(f"config: {path} not found")
+    try:
+        cfg = tomllib.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001 - any parse error is a hard fail
+        return fail_and_exit(f"config: {path} does not parse: {e}")
+    problems = []
+    for section, keys in EXPECTED_SECTIONS.items():
+        block = cfg.get(section)
+        if not isinstance(block, dict):
+            problems.append(f"config: missing section [{section}]")
             continue
-        sha, _, rest = record.partition("\x1f")
-        subject, _, body = rest.partition("\x1f")
-        out.append((sha, subject, body))
-    return out
+        for key, typ in keys.items():
+            if key not in block:
+                problems.append(f"config: missing [{section}].{key}")
+            elif not isinstance(block[key], typ) or isinstance(block[key], bool) and typ is int:
+                problems.append(f"config: [{section}].{key} has wrong type")
+    if problems:
+        for p in problems:
+            print(f"FAIL: {p}")
+        sys.exit(1)
+    return cfg
 
 
-def changed_files(base: str, head: str) -> list[str]:
-    return [f for f in git("diff", "--name-only", f"{base}...{head}").splitlines() if f]
+def fail_and_exit(msg: str):
+    print(f"FAIL: {msg}")
+    sys.exit(1)
 
 
-# ── the lint pass ────────────────────────────────────────────────────────────
+def run_checks(cfg: dict, body: str, subjects: list[str], messages: str, files_count: int):
+    """The whole fence. Returns (failures, warnings)."""
+    fails: list[str] = []
+    warns: list[str] = []
 
-
-def lint(policy: dict, base: str, head: str) -> int:
-    commits_cfg = policy.get("commits", {})
-    prs_cfg = policy.get("prs", {})
-    # The PR event carries the base branch's *current* tip, which moves while
-    # the PR is open. Resolve the fork point first so the walk sees this PR's
-    # own commits and not everything that landed on main after it branched.
-    base = merge_base(base, head)
-    commits = commits_between(base, head)
-    failures: list[str] = []
-
-    for sha, subject, body in commits:
-        short = sha[:9]
-        message = f"{subject}\n\n{body}"
-        if commits_cfg.get("no_coauthor_trailers"):
-            if (line := check_coauthor(message)) is not None:
-                failures.append(
-                    f"::error::{short}: commit carries a co-author trailer "
-                    f"(forbidden by governance.toml [commits] no_coauthor_trailers): {line!r}"
-                )
-        if commits_cfg.get("no_ai_branding"):
-            if (hit := check_ai_branding(message)) is not None:
-                failures.append(
-                    f"::error::{short}: commit carries an AI branding marker "
-                    f"(forbidden by governance.toml [commits] no_ai_branding): {hit!r}"
-                )
-        if commits_cfg.get("conventional_titles") and not check_conventional(subject):
-            failures.append(
-                f"::error::{short}: subject is not a conventional commit "
-                f"(governance.toml [commits] conventional_titles): {subject!r}"
+    if cfg["workflow"]["child_issues_not_child_prs"]:
+        lowered = body.lower()
+        hit = [p for p in FOLLOW_UP_PHRASES if p.lower() in lowered]
+        if hit and not ISSUE_REF.search(body):
+            fails.append(
+                "child_issues_not_child_prs: PR body announces follow-up work "
+                f"({', '.join(repr(p) for p in hit)}) with zero issue refs. "
+                "Follow-ups become CHILD ISSUES (#NNN), not sibling PRs."
             )
 
-    files = changed_files(base, head)
-    limit = prs_cfg.get("max_files_warn", 0)
-    if limit and len(files) > limit:
-        print(
-            f"::warning::this PR touches {len(files)} files "
-            f"(governance.toml [prs] max_files_warn = {limit}) — is it one problem?"
+    cap = cfg["prs"]["max_files_warn"]
+    if files_count > cap:
+        warns.append(
+            f"max_files_warn: diff touches {files_count} files (> {cap}). "
+            "One PR = one change. Double-check nothing unrelated rode along."
         )
 
-    for line in failures:
-        print(line)
-    if failures:
-        print(f"\npolicy-lint: {len(failures)} violation(s).", file=sys.stderr)
-        return 1
+    if cfg["commits"]["no_coauthor_trailers"]:
+        hits = COAUTHOR.findall(messages)
+        if hits:
+            fails.append(
+                f"no_coauthor_trailers: {len(hits)} commit(s) carry a "
+                "Co-authored-by trailer. Sole author, no exceptions."
+            )
 
-    print(
-        f"policy-lint: {len(commits)} commit(s), {len(files)} file(s) — no violations."
+    if cfg["commits"].get("no_ai_branding"):
+        hit = check_ai_branding(messages)
+        if hit is not None:
+            fails.append(
+                "no_ai_branding: a commit carries an AI branding marker "
+                f"(forbidden by governance.toml [commits] no_ai_branding): {hit!r}"
+            )
+
+    if cfg["commits"]["conventional_titles"]:
+        for subject in subjects:
+            if not subject or subject.startswith(EXEMPT_SUBJECTS):
+                continue
+            if not CONVENTIONAL.match(subject):
+                fails.append(
+                    f"conventional_titles: subject does not match "
+                    f"type(scope)!: subject  ->  {subject!r}"
+                )
+
+    return fails, warns
+
+
+def verdict(fails: list[str], warns: list[str], label: str = "") -> int:
+    tag = f"[{label}] " if label else ""
+    for w in warns:
+        print(f"WARN: {tag}{w}")
+    if not fails:
+        print(f"PASS: {tag}policy-lint found no drift")
+        return 0
+    for f in fails:
+        print(f"FAIL: {tag}{f}")
+    return 1
+
+
+def fixture_files(tests_dir: Path) -> list[Path]:
+    return sorted(tests_dir.glob("*.json"))
+
+
+def run_fixture(path: Path, cfg: dict) -> int:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    fails, warns = run_checks(
+        cfg,
+        data.get("body", ""),
+        data.get("subjects", []),
+        data.get("messages", ""),
+        int(data.get("files_count", 0)),
     )
-    return 0
+    return verdict(fails, warns, label=data.get("name", path.stem))
 
 
-# ── self-test: the linter proves its own teeth ───────────────────────────────
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--fixture", type=Path, default=None)
+    parser.add_argument("--body-file", type=Path)
+    parser.add_argument("--subjects-file", type=Path)
+    parser.add_argument("--messages-file", type=Path)
+    parser.add_argument("--files-count", type=int, default=0)
+    args = parser.parse_args()
 
-
-def self_test() -> int:
-    cases: list[tuple[str, bool]] = [
-        (
-            "co-author trailer at line start is caught",
-            check_coauthor("fix: a thing\n\nCo-Authored-By: Bot <bot@example.com>")
-            is not None,
-        ),
-        (
-            "indented trailer is caught",
-            check_coauthor("fix: a thing\n\n  co-authored-by: Bot <b@e.c>") is not None,
-        ),
-        (
-            "the phrase in ordinary prose is not a trailer",
-            check_coauthor("docs: explain why we reject co-authored-by: see AGENTS.md")
-            is None,
-        ),
-        (
-            "a clean message has no trailer",
-            check_coauthor("fix(discord): durable plan card\n\nBody only.") is None,
-        ),
-        (
-            "a generation banner is caught",
-            check_ai_branding("feat: x\n\n\U0001f916 Generated with [Claude Code]")
-            is not None,
-        ),
-        (
-            "a bot author address is caught",
-            check_ai_branding("chore: x\n\nnoreply@anthropic.com") is not None,
-        ),
-        (
-            "the word Claude in prose is not branding",
-            check_ai_branding("docs: the Claude model list moved") is None,
-        ),
-        (
-            "conventional subject accepted",
-            check_conventional("fix(compaction): bound the continuation document"),
-        ),
-        (
-            "bang form accepted",
-            check_conventional("feat(discord)!: drop the legacy card path"),
-        ),
-        (
-            "bare subject rejected",
-            check_conventional("updated some stuff") is False,
-        ),
-        (
-            "merge subject rejected",
-            check_conventional("Merge pull request #94 from adi805/x") is False,
-        ),
-    ]
-
-    failed = [name for name, ok in cases if not ok]
-    for name, ok in cases:
-        print(f"{'ok  ' if ok else 'FAIL'} {name}")
-
-    # The committed policy must parse, or the job is enforcing nothing.
-    try:
-        policy = load_policy()
-    except Exception as exc:  # noqa: BLE001 - surfaced as a test failure
-        print(f"FAIL governance.toml does not parse: {exc}")
-        failed.append("governance.toml parses")
-
-    for section in ("commits", "prs"):
-        if section not in policy:
-            print(f"FAIL governance.toml is missing the [{section}] section")
-            failed.append(f"[{section}] present")
-
-    if failed:
-        print(f"\nself-test: {len(failed)} failure(s).", file=sys.stderr)
-        return 1
-    print(f"\nself-test: {len(cases)} checks passed.")
-    return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--self-test", action="store_true", help="prove the checks bite")
-    parser.add_argument("--base", help="base sha (exclusive)")
-    parser.add_argument("--head", help="head sha (inclusive)")
-    args = parser.parse_args(argv)
+    cfg = load_config(args.config or repo_root() / "governance.toml")
 
     if args.self_test:
-        return self_test()
+        tests_dir = repo_root() / "scripts" / "tests" / "policy-lint"
+        fixtures = fixture_files(tests_dir)
+        if not fixtures:
+            print("FAIL: no fixtures under scripts/tests/policy-lint/")
+            return 1
+        bad = 0
+        for path in fixtures:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            got = run_fixture(path, cfg)
+            expected = int(data.get("expected_exit", 0))
+            mark = "ok" if got == expected else "MISMATCH"
+            if got != expected:
+                bad += 1
+            print(f"  fixture {path.name}: exit {got} (expected {expected}) {mark}")
+        if bad:
+            print(f"SELF-TEST FAIL: {bad}/{len(fixtures)} fixtures mismatched")
+            return 1
+        print(f"SELF-TEST PASS: {len(fixtures)}/{len(fixtures)} fixtures match their teeth")
+        return 0
 
-    if not args.base or not args.head:
-        parser.error("--base and --head are required unless --self-test is given")
+    if args.fixture:
+        return run_fixture(args.fixture, cfg)
 
-    return lint(load_policy(), args.base, args.head)
+    if args.body_file or args.subjects_file or args.messages_file:
+        missing = [
+            name
+            for name, val in (
+                ("--body-file", args.body_file),
+                ("--subjects-file", args.subjects_file),
+                ("--messages-file", args.messages_file),
+            )
+            if val is None
+        ]
+        if missing:
+            print(f"FAIL: PR mode needs all inputs; missing {', '.join(missing)}")
+            return 1
+        body = args.body_file.read_text(encoding="utf-8")
+        subjects = [
+            line.strip()
+            for line in args.subjects_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        messages = args.messages_file.read_text(encoding="utf-8")
+        return verdict(*run_checks(cfg, body, subjects, messages, args.files_count))
+
+    # No PR context: a local run still proves governance.toml parses and
+    # carries the full schema. That is the whole point of the exit-0 path.
+    print("PASS: governance.toml schema validated; no PR context, checks skipped")
+    return 0
 
 
 if __name__ == "__main__":

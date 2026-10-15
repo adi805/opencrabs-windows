@@ -5,8 +5,10 @@ use thiserror::Error;
 /// Provider error types
 #[derive(Debug, Error)]
 pub enum ProviderError {
-    /// HTTP request failed
-    #[error("HTTP request failed: {0}")]
+    /// HTTP request failed. The message carries reqwest's source chain, so
+    /// the retry log names the real cause (for example a DNS failure) and
+    /// not only "error sending request for url (...)".
+    #[error("HTTP request failed: {}", reqwest_error_chain(.0))]
     HttpError(#[from] reqwest::Error),
 
     /// API returned an error
@@ -175,13 +177,39 @@ pub fn is_quota_exhausted_message(msg: &str) -> bool {
     QUOTA_EXHAUSTION_PHRASES.iter().any(|p| l.contains(p))
 }
 
+/// A declared wait longer than this is not retried in place: the chain is
+/// consulted instead and the provider is parked for the declared window.
+pub const INLINE_RETRY_CEILING: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl ProviderError {
+    /// The wait the server itself declared, UNCAPPED. `retry_after()` is the
+    /// in-place retry hint (clamped so a turn cannot stall); this is the
+    /// cooldown window: how long the provider said not to come back.
+    pub fn declared_cooldown(&self) -> Option<std::time::Duration> {
+        let msg = match self {
+            ProviderError::RateLimitExceeded(m) => m.as_str(),
+            ProviderError::ApiError {
+                status, message, ..
+            } if *status == 429 => message.as_str(),
+            _ => return None,
+        };
+        parse_retry_seconds(msg).map(std::time::Duration::from_secs)
+    }
+
     /// Check if error is retryable
     pub fn is_retryable(&self) -> bool {
         // Hard quota / billing limits never lift inside a retry window —
         // bail straight to the fallback chain instead of burning the whole
         // backoff budget against a wall (#952).
         if self.is_quota_exhausted() {
+            return false;
+        }
+        // A declared wait past the inline ceiling is not worth retrying in
+        // place: park and fall back, do not burn 4 x 30 s of silence.
+        if self
+            .declared_cooldown()
+            .is_some_and(|d| d > INLINE_RETRY_CEILING)
+        {
             return false;
         }
         match self {
@@ -370,6 +398,14 @@ pub fn should_try_next_provider(err: &ProviderError) -> bool {
     // Hard quota / billing cap. Never retried in place, always worth handing
     // to a provider with its own budget.
     if err.is_quota_exhausted() {
+        return true;
+    }
+    // A 429 naming a long wait: not retryable in place, but the next provider
+    // bills a different account and should answer now.
+    if err
+        .declared_cooldown()
+        .is_some_and(|d| d > INLINE_RETRY_CEILING)
+    {
         return true;
     }
     match err {
@@ -605,14 +641,8 @@ impl crate::utils::retry::RetryableError for ProviderError {
         // to 30s so a pathological "retry after 300s" can't stall a turn.
         // Other error kinds have no hint — the caller falls back to the
         // exponential schedule.
-        let msg = match self {
-            ProviderError::RateLimitExceeded(m) => m.as_str(),
-            ProviderError::ApiError {
-                status, message, ..
-            } if *status == 429 => message.as_str(),
-            _ => return None,
-        };
-        parse_retry_seconds(msg).map(|secs| std::time::Duration::from_secs(secs.min(30)))
+        self.declared_cooldown()
+            .map(|d| d.min(std::time::Duration::from_secs(30)))
     }
 }
 
@@ -632,6 +662,21 @@ pub fn user_facing_reason(err: &ProviderError) -> String {
         ProviderError::HttpError(e) => describe_reqwest_error(e),
         other => other.to_string(),
     }
+}
+
+/// Render a reqwest error with its whole source chain, joined by ": ". The
+/// top level says only "error sending request for url (...)"; the deeper
+/// entries carry the OS or resolver cause ("dns error: failed to lookup
+/// address information", "Connection refused").
+pub(crate) fn reqwest_error_chain(e: &reqwest::Error) -> String {
+    let mut out = e.to_string();
+    let mut src: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(e);
+    while let Some(s) = src {
+        out.push_str(": ");
+        out.push_str(&s.to_string());
+        src = s.source();
+    }
+    out
 }
 
 /// Classify a reqwest error into a short, specific phrase by walking its source

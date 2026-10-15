@@ -1435,7 +1435,19 @@ impl App {
         match self.mode {
             AppMode::Help => Some(DialogScope::Help),
             AppMode::Settings => Some(DialogScope::Settings),
-            AppMode::UsageDashboard => Some(DialogScope::UsageDashboard),
+            AppMode::UsageDashboard => Some(
+                if self
+                    .dashboard_state
+                    .as_ref()
+                    .is_some_and(|d| d.cache_detail_open)
+                {
+                    // The price breakdown sits over the grid, so it is the
+                    // surface holding the keyboard (#2027).
+                    DialogScope::UsageCacheBreakdown
+                } else {
+                    DialogScope::UsageDashboard
+                },
+            ),
             AppMode::FilePicker => Some(DialogScope::FilePicker),
             AppMode::DirectoryPicker => Some(DialogScope::DirectoryPicker),
             AppMode::RestartPending => Some(DialogScope::RestartPending),

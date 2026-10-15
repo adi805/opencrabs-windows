@@ -36,6 +36,11 @@ api_key = ""
 # Get an API key (sk-...) at: platform.xiaomimimo.com
 api_key = ""
 
+# Built-in OpenCrabs provider. Onboarding fills these from the inference proxy;
+# do not type them by hand. install_id and api_key are written together.
+[providers.opencrabs]
+api_key = ""
+
 [providers.gemini]
 # Get from: aistudio.google.com
 api_key = ""

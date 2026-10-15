@@ -18,6 +18,8 @@ pub enum HelpSection {
     Channel,
     Skill,
     Custom,
+    /// Keys that move through a setup screen's fields (#2043).
+    Keys,
 }
 
 impl HelpSection {
@@ -29,17 +31,19 @@ impl HelpSection {
             HelpSection::Channel => "CHANNEL COMMANDS (Telegram/Discord/Slack)",
             HelpSection::Skill => "SKILLS",
             HelpSection::Custom => "CUSTOM COMMANDS",
+            HelpSection::Keys => "KEYS IN SETUP SCREENS",
         }
     }
 
     /// Render order. Fixed rather than derived from the data so a filter
     /// cannot reorder the screen under the reader.
-    pub fn all() -> [HelpSection; 4] {
+    pub fn all() -> [HelpSection; 5] {
         [
             HelpSection::BuiltIn,
             HelpSection::Channel,
             HelpSection::Skill,
             HelpSection::Custom,
+            HelpSection::Keys,
         ]
     }
 }
@@ -78,6 +82,21 @@ impl HelpRow {
 /// help screen rather than per frame.
 pub fn load() -> Vec<HelpRow> {
     let mut rows = Vec::new();
+
+    // The keys a setup screen takes. Shift+Tab goes back a field; it was
+    // reachable but not shown anywhere (#2043).
+    for (name, description) in [
+        ("Tab", "Next field"),
+        ("Shift+Tab", "Back to the previous field"),
+        ("Enter", "Confirm the field or step"),
+        ("Esc", "Back one step, or exit on the first screen"),
+    ] {
+        rows.push(HelpRow {
+            name: name.to_string(),
+            description: description.to_string(),
+            section: HelpSection::Keys,
+        });
+    }
 
     for cmd in super::SLASH_COMMANDS {
         rows.push(HelpRow {

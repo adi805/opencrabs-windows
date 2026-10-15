@@ -32,6 +32,10 @@ pub enum DialogScope {
     Help,
     Settings,
     UsageDashboard,
+    /// The usage dashboard's cache price breakdown, open over the grid
+    /// (#2027). Esc backs out to the dashboard, and that is the only key
+    /// it has.
+    UsageCacheBreakdown,
     SkillsDialog,
     ProfilesDialog,
     MissionControl,
@@ -62,6 +66,7 @@ impl DialogScope {
             DialogScope::Help => "Help",
             DialogScope::Settings => "Settings",
             DialogScope::UsageDashboard => "Usage",
+            DialogScope::UsageCacheBreakdown => "Cache prices",
             DialogScope::SkillsDialog => "Skills",
             DialogScope::ProfilesDialog => "Profiles",
             DialogScope::MissionControl => "Mission Control",
@@ -76,6 +81,10 @@ impl DialogScope {
 }
 
 /// One key binding: the events that fire it, plus how it is displayed.
+///
+/// `Copy` so a surface that shows a state-filtered subset of its table can
+/// hand the footer the entries directly (#2027).
+#[derive(Debug, Clone, Copy)]
 pub struct DialogKey {
     /// Key events the surface's input handler recognizes for this
     /// binding. The drift tests replay each of these into the handler.
@@ -581,6 +590,15 @@ const TABLE_17: &[DialogKey] = &[
     },
 ];
 
+/// The cache price breakdown on the usage dashboard (#2027). The table is a
+/// detail view over the grid: the dashboard's own keys are inert while it is
+/// open, so Esc is the whole keymap.
+const TABLE_18: &[DialogKey] = &[DialogKey {
+    events: &[k(KeyCode::Esc)],
+    label: "Esc",
+    verb: "close",
+}];
+
 pub fn dialog_keys(scope: DialogScope) -> &'static [DialogKey] {
     match scope {
         DialogScope::FilePicker => TABLE_1,
@@ -594,6 +612,7 @@ pub fn dialog_keys(scope: DialogScope) -> &'static [DialogKey] {
         DialogScope::Help => TABLE_6,
         DialogScope::Settings => TABLE_7,
         DialogScope::UsageDashboard => TABLE_8,
+        DialogScope::UsageCacheBreakdown => TABLE_18,
         DialogScope::SkillsDialog => TABLE_9,
         DialogScope::ProfilesDialog => TABLE_10,
         DialogScope::MissionControl => TABLE_11,
@@ -645,6 +664,7 @@ mod tests {
             DialogScope::Help,
             DialogScope::Settings,
             DialogScope::UsageDashboard,
+            DialogScope::UsageCacheBreakdown,
             DialogScope::SkillsDialog,
             DialogScope::ProfilesDialog,
             DialogScope::MissionControl,
@@ -777,5 +797,33 @@ mod tests {
         // NoPlan: only Esc.
         let from_esc = keys.iter().position(|k| k.label == "Esc").unwrap();
         assert!(from_d < from_esc);
+    }
+
+    /// DRIFT TEST for the cache price breakdown scope (#2027): the single key
+    /// it advertises must actually close the breakdown.
+    #[test]
+    fn cache_breakdown_footer_key_closes_the_breakdown() {
+        use crate::usage::dashboard::{CACHE_CARD, DashboardState, UsageKeyOutcome, decide};
+
+        for key in dialog_keys(DialogScope::UsageCacheBreakdown) {
+            for (code, mods) in key.events {
+                let mut state = DashboardState {
+                    focused_card: CACHE_CARD,
+                    cache_detail_open: true,
+                    ..DashboardState::default()
+                };
+                let event = crossterm::event::KeyEvent::new(*code, *mods);
+                assert_eq!(
+                    decide(&mut state, event),
+                    UsageKeyOutcome::Consumed,
+                    "cache breakdown advertises {code:?} ({}) but decide() does not consume it",
+                    key.label
+                );
+                assert!(
+                    !state.cache_detail_open,
+                    "{code:?} is advertised as close but leaves the breakdown open"
+                );
+            }
+        }
     }
 }

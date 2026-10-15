@@ -99,6 +99,13 @@ pub const KNOWN_PROVIDERS: &[ProviderMeta] = &[
         needs_api_key: false,
     },
     ProviderMeta {
+        id: "opencrabs",
+        display_name: "OpenCrabs",
+        config_section: "providers.opencrabs",
+        // Keyed by the install token the proxy issues, which the user never types.
+        needs_api_key: true,
+    },
+    ProviderMeta {
         id: "openrouter",
         display_name: "OpenRouter",
         config_section: "providers.openrouter",
@@ -212,6 +219,7 @@ pub fn config_for<'a>(providers: &'a ProviderConfigs, name: &str) -> Option<&'a 
         Some("opencode-cli") => providers.opencode_cli.as_ref(),
         Some("opencode") => providers.opencode.as_ref(),
         Some("ollama") => providers.ollama.as_ref(),
+        Some("opencrabs") => providers.opencrabs.as_ref(),
         Some("qwen") => providers.qwen.as_ref(),
         _ => {
             let custom_name = name.strip_prefix("custom:")?;

@@ -4,6 +4,8 @@
 
 use super::cards;
 use super::data::{DashboardData, Period};
+use crate::tui::app::dialog_keys::{DialogKey, DialogScope, dialog_keys};
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -13,7 +15,11 @@ use ratatui::{
 };
 
 /// Number of focusable cards
-const CARD_COUNT: usize = 6;
+pub(crate) const CARD_COUNT: usize = 6;
+
+/// Grid index of the Cache Efficiency card: 0=daily, 1=project, 2=model,
+/// 3=tools, 4=activity, 5=cache.
+pub(crate) const CACHE_CARD: usize = 5;
 
 /// Dashboard UI state (lives in App)
 #[derive(Debug, Clone)]
@@ -21,6 +27,8 @@ pub struct DashboardState {
     pub period: Period,
     pub focused_card: usize,
     pub data: DashboardData,
+    /// The cache price breakdown is open over the grid (#2027).
+    pub cache_detail_open: bool,
 }
 
 impl Default for DashboardState {
@@ -29,6 +37,7 @@ impl Default for DashboardState {
             period: Period::AllTime,
             focused_card: 0,
             data: DashboardData::default(),
+            cache_detail_open: false,
         }
     }
 }
@@ -55,6 +64,104 @@ impl DashboardState {
             false
         }
     }
+
+    /// Is the Cache Efficiency card the focused one? Only that card has a
+    /// price breakdown to open (#2027).
+    pub fn cache_card_focused(&self) -> bool {
+        self.focused_card == CACHE_CARD
+    }
+}
+
+/// What the dashboard does with a key press.
+///
+/// The dashboard's own state changes (focus moves, opening and closing the
+/// breakdown) happen inside [`decide`]; the variants carry only what needs
+/// the App: re-fetching after a period change, and leaving the mode. Splitting
+/// it this way makes every key decision testable with no App, no database and
+/// no terminal (#2027).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageKeyOutcome {
+    /// Handled inside the dashboard.
+    Consumed,
+    /// Switch the reporting period and re-fetch.
+    Period(Period),
+    /// Leave the dashboard.
+    Close,
+    /// Not a dashboard key; the caller keeps it.
+    NotConsumed,
+}
+
+/// The dashboard's answer to `event`, applying the state changes that belong
+/// to the decision itself.
+///
+/// The render side asks [`advertises`] which keys are live, so the footer a
+/// user reads and the keys the handler honours come from the same rules and
+/// cannot drift (#2027).
+pub fn decide(state: &mut DashboardState, event: KeyEvent) -> UsageKeyOutcome {
+    if state.cache_detail_open {
+        // The breakdown sits over the grid: Esc backs out of it, and every
+        // other key is deliberately inert so the dashboard behind it cannot
+        // move while the prices are being read.
+        if event.code == KeyCode::Esc {
+            state.cache_detail_open = false;
+        }
+        return UsageKeyOutcome::Consumed;
+    }
+
+    match event.code {
+        KeyCode::Esc => UsageKeyOutcome::Close,
+        KeyCode::Tab => {
+            state.focus_next();
+            UsageKeyOutcome::Consumed
+        }
+        KeyCode::BackTab => {
+            state.focus_prev();
+            UsageKeyOutcome::Consumed
+        }
+        KeyCode::Enter if state.cache_card_focused() => {
+            state.cache_detail_open = true;
+            UsageKeyOutcome::Consumed
+        }
+        KeyCode::Char('t') | KeyCode::Char('T') => UsageKeyOutcome::Period(Period::Today),
+        KeyCode::Char('w') | KeyCode::Char('W') => UsageKeyOutcome::Period(Period::Week),
+        KeyCode::Char('m') | KeyCode::Char('M') => UsageKeyOutcome::Period(Period::Month),
+        KeyCode::Char('a') | KeyCode::Char('A') => UsageKeyOutcome::Period(Period::AllTime),
+        _ => UsageKeyOutcome::NotConsumed,
+    }
+}
+
+/// Does `code` do, in this state, what the footer says it does?
+///
+/// Deliberately narrower than [`decide`]: with the breakdown open every key is
+/// consumed but only Esc performs an action, and a key that performs nothing
+/// must not be advertised.
+pub fn advertises(state: &DashboardState, code: KeyCode) -> bool {
+    if state.cache_detail_open {
+        return code == KeyCode::Esc;
+    }
+    match code {
+        KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab => true,
+        KeyCode::Char('t' | 'T' | 'w' | 'W' | 'm' | 'M' | 'a' | 'A') => true,
+        // Enter opens the breakdown, so it is live only where there is one
+        // to open (#2027).
+        KeyCode::Enter => state.cache_card_focused(),
+        _ => false,
+    }
+}
+
+/// The dashboard's footer entries for this state: the scoped keymap filtered
+/// to the keys that are live.
+///
+/// The rendered footer and the drift tests both come through here, so what a
+/// user is told about and what the handler honours are decided by
+/// [`advertises`] alone (#2027). Entries are handed back by value
+/// ([`DialogKey`] is `Copy`) so the footer takes them as a plain slice.
+pub fn advertised_keys(state: &DashboardState) -> Vec<DialogKey> {
+    dialog_keys(DialogScope::UsageDashboard)
+        .iter()
+        .filter(|key| key.events.iter().any(|(code, _)| advertises(state, *code)))
+        .copied()
+        .collect()
 }
 
 /// Compute a centered rect that takes ~75% of the terminal, clamped to min/max.
@@ -170,8 +277,26 @@ pub fn render(f: &mut Frame, state: &DashboardState, area: Rect) {
         bottom_row[0],
         state.focused_card == 4,
     );
-    cards::render_cache_efficiency(f, &state.data.cache, bottom_row[1], state.focused_card == 5);
+    cards::render_cache_efficiency(
+        f,
+        &state.data.cache,
+        bottom_row[1],
+        state.cache_card_focused(),
+    );
 
-    // Footer
-    cards::render_footer(f, chunks[3]);
+    // Footer: the keys that are live in this state (#2027).
+    cards::render_footer(f, chunks[3], state);
+
+    // The price breakdown, if Enter opened it. Drawn last so it covers the
+    // grid, and sized to stop one row above the footer so the key that
+    // dismisses it stays on screen.
+    if state.cache_detail_open {
+        let overlay = Rect {
+            x: panel.x,
+            y: panel.y,
+            width: panel.width,
+            height: chunks[3].y.saturating_sub(panel.y),
+        };
+        cards::render_cache_breakdown(f, &state.data.cache, overlay);
+    }
 }

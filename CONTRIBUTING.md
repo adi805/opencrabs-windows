@@ -154,7 +154,7 @@ feat core(memory): expose vector index stats to /doctor
 
 ### Prerequisites
 
-- **Rust** 1.94 or later (edition 2024; source of truth: `rust-version` in `Cargo.toml`)
+- **Rust** 1.95 or later (edition 2024; source of truth: `rust-version` in `Cargo.toml`)
 - **SQLite** (bundled via `rusqlite`)
 - **Git**
 
@@ -398,6 +398,16 @@ That's completely fine. You can still contribute meaningfully:
 - **Answer questions** in GitHub Discussions
 
 A well-written bug report or feature request is worth more than a stub PR. Seriously.
+
+## Workflow policy: `governance.toml`
+
+The machine-checkable workflow rules (child issues not sibling PRs, no
+co-author trailers, conventional commit titles, and a diff-size warning)
+live in [`governance.toml`](governance.toml) and are enforced by the
+`Policy lint` CI job (`scripts/policy-lint.py`). That file is the source
+of truth; this page is its human mirror. Everything the fence cannot see
+(tone, scope creep, "is this really one problem?") stays with human review
+by design.
 
 ## License
 

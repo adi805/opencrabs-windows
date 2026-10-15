@@ -38,6 +38,8 @@ opencrabs agents add <name>
 Recommended: set up a Brave Search API key so the agent can use `web_search`
 (`web_fetch` works without a key). Easiest path: `opencrabs configure --section web`
 which stores `tools.web.search.apiKey`. Docs: [Web tools](/tools/web).
+When a turn uses any search engine, the delivered answer also gets a deterministic
+**Sources** footer harvested from that turn's search results, not written by the model.
 </Tip>
 
 ## QuickStart vs Advanced

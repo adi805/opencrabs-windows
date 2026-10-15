@@ -2173,6 +2173,7 @@ impl App {
                                     None,
                                     None,
                                     base_url.as_deref(),
+                                    None,
                                 )
                                 .await;
                                 let _ = sender.send(TuiEvent::OnboardingModelsFetched(models));
@@ -3110,6 +3111,7 @@ impl App {
                             None,
                             None,
                             None,
+                            None,
                         )
                         .await;
                         let _ = sender.send(TuiEvent::OnboardingModelsFetched(models));
@@ -3145,7 +3147,7 @@ impl App {
                     let sender = self.event_sender();
                     tokio::spawn(async move {
                         let models = super::onboarding::fetch_provider_models(
-                            2, None, None, None, None, None,
+                            2, None, None, None, None, None, None,
                         )
                         .await;
                         let _ = sender.send(TuiEvent::OnboardingModelsFetched(models));
@@ -3808,39 +3810,22 @@ impl App {
             AppMode::FilePicker => self.handle_file_picker_key(event).await?,
             AppMode::DirectoryPicker => self.handle_directory_picker_key(event).await?,
             AppMode::UsageDashboard => {
-                use crossterm::event::KeyCode;
-                match event.code {
-                    KeyCode::Esc => {
+                use crate::usage::dashboard::{UsageKeyOutcome, decide};
+                // The dashboard's own keymap decides what is live; this arm
+                // keeps only the effects that need the App: re-fetching after
+                // a period change and leaving the mode (#2027).
+                let outcome = match &mut self.dashboard_state {
+                    Some(ds) => decide(ds, event),
+                    // Mode without state: the only sane move is out.
+                    None => UsageKeyOutcome::Close,
+                };
+                match outcome {
+                    UsageKeyOutcome::Period(period) => self.set_dashboard_period(period).await,
+                    UsageKeyOutcome::Close => {
                         self.dashboard_state = None;
                         self.switch_mode(AppMode::Chat).await?;
                     }
-                    KeyCode::Tab => {
-                        if let Some(ds) = &mut self.dashboard_state {
-                            ds.focus_next();
-                        }
-                    }
-                    KeyCode::BackTab => {
-                        if let Some(ds) = &mut self.dashboard_state {
-                            ds.focus_prev();
-                        }
-                    }
-                    KeyCode::Char('t') | KeyCode::Char('T') => {
-                        self.set_dashboard_period(crate::usage::data::Period::Today)
-                            .await;
-                    }
-                    KeyCode::Char('w') | KeyCode::Char('W') => {
-                        self.set_dashboard_period(crate::usage::data::Period::Week)
-                            .await;
-                    }
-                    KeyCode::Char('m') | KeyCode::Char('M') => {
-                        self.set_dashboard_period(crate::usage::data::Period::Month)
-                            .await;
-                    }
-                    KeyCode::Char('a') | KeyCode::Char('A') => {
-                        self.set_dashboard_period(crate::usage::data::Period::AllTime)
-                            .await;
-                    }
-                    _ => {}
+                    UsageKeyOutcome::Consumed | UsageKeyOutcome::NotConsumed => {}
                 }
             }
             AppMode::RestartPending => {

@@ -560,6 +560,19 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    # FORK POLICY, deliberately different from upstream, and the reason this
+    # job lives inline instead of in .github/workflows/policy-lint.yml.
+    # Upstream runs the policy lint as its own workflow and leaves it advisory
+    # ("not in the required-gate list"). This fork requires it: the job is in
+    # ci-gate.needs, so a policy drift blocks the merge exactly like the
+    # Windows legs do. The fork's copy also runs scripts/check-pinned-actions.py
+    # (upstream ships no such script), and the policy script carries the
+    # fork-only commits.no_ai_branding check that upstream's #1934 rewrite
+    # dropped. Upstream's separate workflow file is removed on sync so the
+    # same policy never runs twice per PR.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -581,11 +594,28 @@ jobs:
       - name: Policy linter proves its own teeth
         run: python3 scripts/policy-lint.py --self-test
 
-      - name: Lint the pull request
+      # PR body and history go to files, never into the shell line, so no
+      # payload can inject into the job (house rule kept from upstream).
+      - name: Collect PR inputs
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 scripts/policy-lint.py --base "$BASE_SHA" --head "$HEAD_SHA"
+        run: |
+          mkdir -p /tmp/policy-lint
+          gh pr view "$PR_NUMBER" --json body --jq '.body' > /tmp/policy-lint/body.md
+          git log --format='%s' "$BASE_SHA..$HEAD_SHA" > /tmp/policy-lint/subjects.txt
+          git log --format='%B%x1e' "$BASE_SHA..$HEAD_SHA" > /tmp/policy-lint/messages.txt
+          git diff --name-only "$BASE_SHA..$HEAD_SHA" | wc -l | tr -d ' ' > /tmp/policy-lint/files_count.txt
+
+      - name: Lint the pull request
+        run: >
+          python3 scripts/policy-lint.py
+          --body-file /tmp/policy-lint/body.md
+          --subjects-file /tmp/policy-lint/subjects.txt
+          --messages-file /tmp/policy-lint/messages.txt
+          --files-count "$(cat /tmp/policy-lint/files_count.txt)"
 
   # ── Stage 3: Test on Linux (gated on lint + audit, parallel with build) ──
   # Tests run on Linux only — macOS gets build verification via

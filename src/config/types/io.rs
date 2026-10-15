@@ -321,18 +321,33 @@ pub fn normalize_toml_key(key: &str) -> String {
 /// # }
 /// ```
 pub fn write_secret_key(section: &str, key: &str, value: &str) -> Result<()> {
+    write_secret_keys(section, &[(key, value)])
+}
+
+/// Write several keys of one keys.toml section in a single atomic write, so a
+/// caller that stores an ID and its token together cannot leave one without
+/// the other. Values go through the same gate as [`write_secret_key`]; if no
+/// value survives it, the file is not touched.
+pub fn write_secret_keys(section: &str, pairs: &[(&str, &str)]) -> Result<()> {
     use toml_edit::DocumentMut;
 
-    // Sanitize: strip carriage returns, take only first token (reject pasted URLs/junk after key)
-    let value = value.split(['\r', '\n']).next().unwrap_or("").trim();
     // The last gate before disk. Callers are supposed to resolve the "a key is
     // already stored" marker themselves, and one of them did not, which is how
     // a real key landed in keys.toml with the marker glued to its front (#1075).
     // Refusing the bare marker keeps a stored key from being overwritten by a
     // placeholder; stripping a prefix keeps the key the user actually typed.
-    let Some(value) = crate::config::stored_key::real_key(value) else {
-        return Ok(()); // Nothing to write: empty, or "leave what is on disk"
-    };
+    let writes: Vec<(&str, &str)> = pairs
+        .iter()
+        .filter_map(|(key, value)| {
+            // Sanitize: strip carriage returns, take only first token (reject pasted URLs/junk after key)
+            let value = value.split(['\r', '\n']).next().unwrap_or("").trim();
+            // Nothing to write: empty, or "leave what is on disk"
+            crate::config::stored_key::real_key(value).map(|value| (*key, value))
+        })
+        .collect();
+    if writes.is_empty() {
+        return Ok(());
+    }
 
     // Hold lock for entire read-modify-write to prevent races
     let _guard = CONFIG_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -370,14 +385,18 @@ pub fn write_secret_key(section: &str, key: &str, value: &str) -> Result<()> {
             .as_table_mut()
             .with_context(|| format!("'{}' is not a table", part))?;
     }
-    current.insert(key, toml_edit::value(value));
+    for (key, value) in &writes {
+        current.insert(key, toml_edit::value(*value));
+    }
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     daily_backup(&path, 7);
     atomic_write(&path, &doc.to_string())?;
-    tracing::info!("Wrote secret key [{section}].{key}");
+    for (key, _) in &writes {
+        tracing::info!("Wrote secret key [{section}].{key}");
+    }
     Ok(())
 }
 
@@ -478,6 +497,13 @@ pub(crate) fn merge_provider_keys(
         && let Some(key) = k.api_key.and_then(real_key)
     {
         let entry = base.xiaomi.get_or_insert_with(ProviderConfig::default);
+        entry.api_key = Some(key);
+    }
+    // Built-in OpenCrabs: the install token from keys.toml, like any key.
+    if let Some(k) = keys.opencrabs
+        && let Some(key) = k.api_key.and_then(real_key)
+    {
+        let entry = base.opencrabs.get_or_insert_with(ProviderConfig::default);
         entry.api_key = Some(key);
     }
     if let Some(k) = keys.gemini

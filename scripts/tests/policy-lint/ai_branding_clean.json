@@ -1,0 +1,8 @@
+{
+  "name": "ai_branding_clean",
+  "body": "Prose that mentions Claude and AI without a banner must not trip the check. Issue-Ref: #1934",
+  "subjects": ["docs(ci): explain why the branding gate exists"],
+  "messages": "docs(ci): explain why the branding gate exists\n\nThe word Claude and the letters AI appear in ordinary prose here, and neither is a generation banner.\n",
+  "files_count": 2,
+  "expected_exit": 0
+}

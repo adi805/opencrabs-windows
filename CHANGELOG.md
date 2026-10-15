@@ -6030,7 +6030,7 @@ provider and context budget.
 - **Anti-code-block nudge for local models** — brain instructions explicitly
   tell the model to use `tool_calls`, not markdown code blocks.
 
-[Unreleased]: https://github.com/adolfousier/opencrabs/compare/v0.3.32...HEAD
+[Unreleased]: https://github.com/opencrabs/opencrabs/compare/v0.5.5...HEAD
 [0.3.32]: https://github.com/adolfousier/opencrabs/compare/v0.3.31...v0.3.32
 [0.3.31]: https://github.com/adolfousier/opencrabs/compare/v0.3.30...v0.3.31
 [0.3.30]: https://github.com/adolfousier/opencrabs/compare/v0.3.29...v0.3.30
@@ -9247,3 +9247,4 @@ fixes.
 [0.5.0]: https://github.com/adolfousier/opencrabs/compare/v0.3.83...v0.5.0
 [0.5.3]: https://github.com/adolfousier/opencrabs/compare/v0.5.2...v0.5.3
 [0.5.4]: https://github.com/adolfousier/opencrabs/compare/v0.5.3...v0.5.4
+[0.5.5]: https://github.com/opencrabs/opencrabs/compare/v0.5.4...v0.5.5

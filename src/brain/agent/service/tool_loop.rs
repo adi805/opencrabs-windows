@@ -1584,9 +1584,9 @@ impl AgentService {
         // checked against what actually ran rather than inferred from its
         // wording (#789).
         let mut turn_tool_input: Vec<String> = Vec::new();
-        // Search-tool outputs this turn, in call order, feeding the
-        // deterministic Sources footer (#1883). Kept separate from
-        // `turn_tool_output` so only search results contribute links.
+        // Raw search-tool outputs this turn, harvested into the delivered
+        // answer's Sources footer at settle (#1883). Kept separate from
+        // `turn_tool_output` so non-search tool text never leaks links.
         let mut turn_search_outputs: Vec<String> = Vec::new();
         // One-shot nudge budget for the empty-analysis case: model ran
         // tool calls (e.g. `gh pr view`) on a user request whose verb
@@ -5074,12 +5074,13 @@ impl AgentService {
                 // fact-based branch here reads a shape that report prose does
                 // not have.
                 //
-                // Post-success only. On a zero-tool turn `phantom_eligible` is
-                // already true, so scanning would add cost without adding
-                // coverage; the exemption is what needs policing. The haystack
-                // is built only once the cheap extraction finds a candidate,
-                // which keeps it off the iterations that assert nothing.
-                let unbacked_facts = if tool_calls_completed_this_turn > 0 {
+                // Runs on zero-tool turns too (#2038). A zero-tool turn that
+                // states facts absent from the conversation is fabricated by
+                // construction, and the structured-report exemption must not
+                // hide it. The haystack is built only once the cheap extraction
+                // finds a candidate, which keeps it off the iterations that
+                // assert nothing.
+                let unbacked_facts = {
                     let asserted = super::phantom::asserted_facts(&iteration_text);
                     if asserted.is_empty() {
                         Vec::new()
@@ -5087,8 +5088,6 @@ impl AgentService {
                         let evidence = Self::conversation_evidence(&context, &turn_tool_output);
                         super::phantom::unbacked_facts(&asserted, &evidence)
                     }
-                } else {
-                    Vec::new()
                 };
                 let phantom_eligible = !is_cli_provider
                     && (tool_calls_completed_this_turn == 0
@@ -5345,12 +5344,19 @@ impl AgentService {
                 // streamed buffer; the would-be branches land in the WARN
                 // for forensics, so #1423's fabricated-table shape trades a
                 // silent discard for a visible delivery with a trail.
+                //
+                // Branch-class gate (#2039). The report exempts the phrase
+                // matchers only. A fired fact check (unbacked facts, uncalled
+                // commands, unbacked evidence) kills the report whatever its
+                // shape, because a fabricated table is still fabricated.
                 let structured_report = super::phantom::is_structured_report(&iteration_text);
                 let kill = phantom_retries_used < MAX_PHANTOM_RETRIES
                     && phantom_detections_total < MAX_PHANTOM_DETECTIONS_TOTAL
                     && phantom_eligible
                     && !fired_branches.is_empty();
-                if kill && structured_report {
+                if kill
+                    && super::phantom::structured_report_exempts(structured_report, &fired_branches)
+                {
                     tracing::warn!(
                         branches = ?fired_branches,
                         text_len = iteration_text.len(),
@@ -6785,7 +6791,9 @@ impl AgentService {
                     tool_calls_completed_this_turn += batch.successes;
                     turn_tool_output.extend(batch.outputs.iter().map(|(_, out)| out.clone()));
                     // Search results feed the deterministic Sources footer
-                    // (#1883); only successful runs contribute links.
+                    // (#1883); only successful runs contribute links. The
+                    // batch carries per-output tool names, so attribution is
+                    // by name and not by a second precomputed mask.
                     for (name, (success, out)) in batch.names.iter().zip(batch.outputs.iter()) {
                         if *success && crate::brain::tools::sources_footer::is_search_tool(name) {
                             turn_search_outputs.push(out.clone());
@@ -7009,6 +7017,16 @@ impl AgentService {
                                             // accumulated earlier in the turn.
                                             phantom_retries_used = 0;
                                             tool_calls_completed_this_turn += 1;
+                                            // Deterministic footer feed
+                                            // (#1883): a search call that was
+                                            // approval-gated still carries its
+                                            // links. On success `content` is
+                                            // the raw tool output verbatim.
+                                            if crate::brain::tools::sources_footer::is_search_tool(
+                                                &tool_name,
+                                            ) {
+                                                turn_search_outputs.push(content.clone());
+                                            }
                                             // Persist the touched path so a later
                                             // session on this project can re-anchor
                                             // on real paths instead of guessing.
@@ -7409,8 +7427,8 @@ impl AgentService {
                             // Keep the real output so a later iteration's
                             // quoted "evidence" can be checked against it.
                             turn_tool_output.push(result_output_for_evidence.clone());
-                            // Search results also feed the deterministic
-                            // Sources footer (#1883).
+                            // Deterministic footer feed (#1883): keep the full
+                            // raw output of every search-engine call this turn.
                             if crate::brain::tools::sources_footer::is_search_tool(&tool_name) {
                                 turn_search_outputs.push(result_output_for_evidence.clone());
                             }
@@ -8159,24 +8177,30 @@ impl AgentService {
         // on empty text), so guard the delivered answer here. Multilingual by
         // construction — reuses the phantom_lang detectors. Replace the lie with
         // a truthful message instead of telling the user it was done.
+        // Branch-class rule at turn end (#2039), mirroring the in-loop gate. A
+        // structured report is exempt from the phrase matchers, never from a
+        // fact check: a zero-tool answer that states facts the conversation
+        // cannot back is fabricated whatever its shape.
+        let turn_end_asserted = super::phantom::asserted_facts(&final_text);
+        let turn_end_fabricated = tool_calls_completed_this_turn == 0
+            && !turn_end_asserted.is_empty()
+            && !super::phantom::unbacked_facts(
+                &turn_end_asserted,
+                &Self::conversation_evidence(&context, &turn_tool_output),
+            )
+            .is_empty();
         if tool_calls_completed_this_turn == 0
             && !final_text.trim().is_empty()
-            // #1541: a structured report ships untouched, the same owner
-            // directive the #1506 in-loop kill enforces ("a report with tables
-            // and structured data is NEVER discarded"). Without this the report
-            // is exempted in-loop, then stripped here and swapped for the prose
-            // note; zero tools means no retry fired (the exemption spent no
-            // budget), so the deliverable is lost. The note is for genuine
-            // prose narration only.
-            && !super::phantom::is_structured_report(&final_text)
-            && (super::phantom::has_phantom_tool_intent_no_tools(&final_text)
-                || super::phantom::claims_unbacked_side_effects(&final_text)
-                || super::phantom::claims_unbacked_media_result(&final_text)
-                // Structural tell (#1194): the answer IS a shell command in a
-                // shell-tagged fence, and no tool ran. Carries no phrase list,
-                // so it holds where the phrase detectors above have their next
-                // gap — and it is what the reported turn actually was.
-                || super::fenced_command::narrates_unrun_shell_block(&final_text))
+            && (turn_end_fabricated
+                || (!super::phantom::is_structured_report(&final_text)
+                    && (super::phantom::has_phantom_tool_intent_no_tools(&final_text)
+                        || super::phantom::claims_unbacked_side_effects(&final_text)
+                        || super::phantom::claims_unbacked_media_result(&final_text)
+                        // Structural tell (#1194): the answer IS a shell command in a
+                        // shell-tagged fence, and no tool ran. Carries no phrase list,
+                        // so it holds where the phrase detectors above have their next
+                        // gap, and it is what the reported turn actually was.
+                        || super::fenced_command::narrates_unrun_shell_block(&final_text))))
         {
             tracing::warn!(
                 "Turn-end phantom verdict: 0 tools ran but the answer narrates action — \
@@ -8415,14 +8439,23 @@ impl AgentService {
             }
         }
 
-        // Deterministic Sources footer (#1883): when this turn ran any search
-        // tool, append the harvested source links to the delivered answer so
-        // the reader can check them even when the model cited nothing. A turn
-        // with no search tool output is returned byte-for-byte unchanged.
-        let final_text = crate::brain::tools::sources_footer::append_sources_footer(
-            &final_text,
-            &turn_search_outputs,
-        );
+        // Deterministic Sources footer (#1883): links harvested from THIS
+        // turn's search-tool outputs, appended to the delivered answer so a
+        // search-backed reply never depends on the model feeling like citing.
+        // No search this turn, or every source already linked in the answer,
+        // leaves final_text byte-for-byte unchanged. The same footer goes to
+        // the DB row so a resumed session shows what was actually delivered.
+        if let Some(footer) =
+            crate::brain::tools::sources_footer::footer_for(&final_text, &turn_search_outputs)
+        {
+            final_text = format!("{}\n\n{}", final_text.trim_end(), footer);
+            if let Err(e) = message_service
+                .append_content(assistant_db_msg.id, &format!("\n\n{footer}"))
+                .await
+            {
+                tracing::warn!("Failed to persist Sources footer to DB: {}", e);
+            }
+        }
 
         Ok(AgentResponse {
             message_id: assistant_db_msg.id,

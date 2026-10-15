@@ -56,9 +56,11 @@ an existing connection when you re-authorize it.
 
 `src/channels/discord/commands.rs` reads the catalog through the same
 `CommandLoader` every channel uses, so entries added at runtime by the agent
-appear on Discord too: the config watcher re-plans on every publish. The scope is
-`commands.toml`; Telegram's menu additionally lists built-ins and skills, and this
-projection does not. Names and descriptions that Discord would reject are
+appear on Discord too: the config watcher re-plans on every publish. Beside the
+catalog, two built-ins are added (`MENU_BUILTINS`, `src/channels/discord/commands.rs`):
+`/respond_to` and `/cowork`, both owner-only. A user command of the same name wins.
+Telegram's menu also lists the other built-ins and skills, and this projection does
+not. Names and descriptions that Discord would reject are
 sanitized rather than dropped:
 
 | Rule | Discord limit | What OpenCrabs does |

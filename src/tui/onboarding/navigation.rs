@@ -65,6 +65,9 @@ impl OnboardingWizard {
                 }
                 self.step = OnboardingStep::ProviderAuth;
                 self.auth_field = AuthField::Provider;
+                if self.is_first_time {
+                    self.preselect_built_in_provider();
+                }
                 self.ps.detect_existing_key();
             }
             OnboardingStep::ProviderAuth => {
@@ -216,5 +219,24 @@ impl OnboardingWizard {
             }
         }
         false
+    }
+}
+
+impl OnboardingWizard {
+    /// Point the LLM step at the built-in OpenCrabs provider and its one model.
+    /// Only a first run gets this; an existing setup keeps its provider (#2047).
+    pub(super) fn preselect_built_in_provider(&mut self) {
+        if let Some(idx) = PROVIDERS.iter().position(|p| p.id == "opencrabs") {
+            self.ps.selected_provider = idx;
+            self.ps.selected_model = 0;
+        }
+    }
+
+    /// Everything a quick start needs before it can enter chat: the config
+    /// files, and the built-in provider selected (#2048).
+    pub fn prepare_quick_start(&mut self) -> Result<(), String> {
+        self.ensure_config_files()?;
+        self.preselect_built_in_provider();
+        Ok(())
     }
 }
