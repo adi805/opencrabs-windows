@@ -4,6 +4,7 @@
 //! Queries hit the DB pool directly — no dependency on repository structs.
 
 use crate::db::{Pool, interact_err};
+use crate::usage::pricing::{CacheCost, CostOrigin, PricingConfig};
 use anyhow::{Context, Result};
 use rusqlite::params;
 
@@ -135,16 +136,45 @@ pub struct CacheStats {
     pub cached_tokens: i64,
     /// Total input tokens (cached + non-cached)
     pub total_input_tokens: i64,
-    /// Per-model cache efficiency, highest hit-rate first.
+    /// Per-model cache efficiency and cache money, highest hit-rate first.
     pub per_model: Vec<ModelCacheStat>,
 }
 
-/// Cache efficiency for a single model (caching-capable requests only).
+impl CacheStats {
+    /// Sum the per-model money for the TOTAL line of the cache breakdown
+    /// (#2027). Every row prices the same quantity (that model's cached read
+    /// and write tokens), so the components add up field by field.
+    pub fn cost_totals(&self) -> CacheCost {
+        self.per_model
+            .iter()
+            .fold(CacheCost::default(), |acc, m| CacheCost {
+                read_cost: acc.read_cost + m.cost.read_cost,
+                write_cost: acc.write_cost + m.cost.write_cost,
+                full_rate_cost: acc.full_rate_cost + m.cost.full_rate_cost,
+                saved: acc.saved + m.cost.saved,
+            })
+    }
+}
+
+/// Cache efficiency and cache money for a single model (caching-capable
+/// requests only).
 #[derive(Debug, Clone)]
 pub struct ModelCacheStat {
     pub model: String,
     pub cache_hit_pct: f64,
     pub cached_tokens: i64,
+    /// Cache-WRITE tokens the provider reported for this model.
+    pub cache_creation_tokens: i64,
+    /// What the cached reads cost, what the writes cost, what the reads would
+    /// have cost at the plain input rate, and the difference (#2027).
+    pub cost: CacheCost,
+    /// The model's plain input rate, so the overlay can price the counterfactual.
+    pub input_per_m: f64,
+    /// The model's cache-read rate, shown next to the read tokens.
+    pub cache_read_per_m: f64,
+    /// True when no pricing entry matched, so the money is the conservative
+    /// default estimate rather than a table price (#1717).
+    pub estimated: bool,
 }
 
 /// All dashboard data, fetched once per period change
@@ -870,6 +900,13 @@ async fn fetch_activities(pool: &Pool, since: Option<i64>) -> Result<Vec<Activit
 pub(crate) const CACHE_STATS_SELECT_COLS: &str = "COALESCE(SUM(cache_read_tokens), 0), \
      COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(cache_creation_tokens, 0) + COALESCE(cache_read_tokens, 0)), 0)";
 
+/// Cache-WRITE token sum, appended to [`CACHE_STATS_SELECT_COLS`] for the
+/// per-model query (#2027). The money breakdown prices reads and writes at
+/// different rates, so it needs the write count; the global efficiency number
+/// does not, which is why this stays a separate column rather than a rewrite of
+/// the shared select. Shared with the regression test.
+pub(crate) const CACHE_COST_SELECT_COLS: &str = "COALESCE(SUM(cache_creation_tokens), 0)";
+
 /// Filter to caching-CAPABLE requests only — the ones where the provider
 /// actually reported cache usage (`cache_read`/`cache_creation` present, even if
 /// the value is 0 on a cache miss). Requests on providers with no caching at all
@@ -888,6 +925,10 @@ pub(crate) const CACHE_MODEL_EXPR: &str =
     "CASE WHEN s.model LIKE '%/%' THEN SUBSTR(s.model, INSTR(s.model, '/') + 1) ELSE s.model END";
 
 async fn fetch_cache_stats(pool: &Pool, since: Option<i64>) -> Result<Option<CacheStats>> {
+    // Loaded once per fetch, like the By Model card does, so every row in one
+    // render prices against the same table. A table that fails to parse falls
+    // back to the empty (all-estimated) default rather than dropping the card.
+    let pricing = PricingConfig::load().unwrap_or_default();
     let conn = pool.get().await.context("pool")?;
     let result = conn
         .interact(move |conn| -> rusqlite::Result<Option<CacheStats>> {
@@ -915,27 +956,28 @@ async fn fetch_cache_stats(pool: &Pool, since: Option<i64>) -> Result<Option<Cac
             }
             let cache_hit_pct = (cached_tokens as f64 / total_input_tokens as f64) * 100.0;
 
-            // ── Per-model efficiency (caching-capable rows only) ─────────────
+            // ── Per-model efficiency + cache money (caching-capable rows) ────
             let per_sql = if since.is_some() {
                 format!(
-                    "SELECT {CACHE_MODEL_EXPR}, {CACHE_STATS_SELECT_COLS} \
+                    "SELECT {CACHE_MODEL_EXPR}, {CACHE_STATS_SELECT_COLS}, {CACHE_COST_SELECT_COLS} \
                      FROM messages m JOIN sessions s ON m.session_id = s.id \
                      WHERE m.created_at >= ?1 AND ({CACHE_CAPABLE_WHERE}) \
                      GROUP BY {CACHE_MODEL_EXPR}"
                 )
             } else {
                 format!(
-                    "SELECT {CACHE_MODEL_EXPR}, {CACHE_STATS_SELECT_COLS} \
+                    "SELECT {CACHE_MODEL_EXPR}, {CACHE_STATS_SELECT_COLS}, {CACHE_COST_SELECT_COLS} \
                      FROM messages m JOIN sessions s ON m.session_id = s.id \
                      WHERE {CACHE_CAPABLE_WHERE} \
                      GROUP BY {CACHE_MODEL_EXPR}"
                 )
             };
-            let map_row = |row: &rusqlite::Row| -> rusqlite::Result<(Option<String>, i64, i64)> {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            };
+            let map_row =
+                |row: &rusqlite::Row| -> rusqlite::Result<(Option<String>, i64, i64, i64)> {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                };
             let mut stmt = conn.prepare(&per_sql)?;
-            let raw: Vec<(Option<String>, i64, i64)> = if let Some(s) = since {
+            let raw: Vec<(Option<String>, i64, i64, i64)> = if let Some(s) = since {
                 stmt.query_map(params![s], map_row)?
                     .collect::<rusqlite::Result<Vec<_>>>()?
             } else {
@@ -944,15 +986,23 @@ async fn fetch_cache_stats(pool: &Pool, since: Option<i64>) -> Result<Option<Cac
             };
             let mut per_model: Vec<ModelCacheStat> = raw
                 .into_iter()
-                .filter_map(|(model, cached, total)| {
+                .filter_map(|(model, cached, total, cache_creation)| {
                     let model = model.unwrap_or_default();
                     if model.is_empty() || total == 0 {
                         return None;
                     }
+                    // Money for this model's cached tokens at its own rates.
+                    let rates = pricing.rates_for(&model);
+                    let cost = CacheCost::compute(cached, cache_creation, &rates);
                     Some(ModelCacheStat {
                         model,
                         cache_hit_pct: cached as f64 / total as f64 * 100.0,
                         cached_tokens: cached,
+                        cache_creation_tokens: cache_creation,
+                        cost,
+                        input_per_m: rates.input_per_m,
+                        cache_read_per_m: rates.cache_read_per_m,
+                        estimated: rates.origin == CostOrigin::Estimated,
                     })
                 })
                 .collect();

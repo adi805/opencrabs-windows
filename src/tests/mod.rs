@@ -957,6 +957,7 @@ pub mod tui_palette_test;
 pub mod tui_remote_upload_test;
 pub mod tui_render_clear_test;
 pub mod usage_activity_columns_test;
+pub mod usage_cache_breakdown_test;
 pub mod usage_cache_test;
 pub mod usage_cached_prefix_netting_test;
 pub mod usage_cosmetic_alias_test;

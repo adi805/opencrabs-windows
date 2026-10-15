@@ -1408,6 +1408,7 @@ impl App {
             period,
             focused_card: 0,
             data,
+            cache_detail_open: false,
         });
     }
 
