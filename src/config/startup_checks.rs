@@ -86,6 +86,26 @@ pub fn startup_warnings(config: &Config, raw_toml: Option<&str>) -> Vec<String> 
         }
     }
 
+    // 4. Channel sections that are enabled but have no implementation.
+    //    `GoogleChatConfig` and `IMessageConfig` are declared in the schema
+    //    (and documented as placeholders) but no channel module reads them:
+    //    `enabled = true` does nothing, silently. A channel that is on and
+    //    simply never receives traffic is indistinguishable from a bad token
+    //    or a wrong allowlist, so name the reason instead of leaving it to be
+    //    discovered by trial.
+    for (section, enabled) in [
+        ("google_chat", config.channels.google_chat.enabled),
+        ("imessage", config.channels.imessage.enabled),
+    ] {
+        if enabled {
+            warns.push(format!(
+                "config: [channels.{section}] enabled = true has NO effect — this channel has \
+                 no implementation in this build (the section is a schema placeholder). No \
+                 messages will be sent or received; disable it or use a supported channel"
+            ));
+        }
+    }
+
     warns
 }
 

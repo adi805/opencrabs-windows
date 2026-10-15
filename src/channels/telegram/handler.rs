@@ -598,7 +598,22 @@ pub(crate) async fn handle_message(
                 }
                 // Genuinely not allowed, in a closed group: never
                 // self-register (secure by default). Hand back the id so the
-                // owner can add them or open the group.
+                // owner can add them or open the group -- unless the operator
+                // asked for silence. `silence_group_start` (default true,
+                // `types.rs`) means exactly this branch: no user-ID reply to
+                // non-allowed users in groups, so the group stays quiet and
+                // anyone who needs their id DMs the bot instead. Read here
+                // because until 2026-10-15 the knob had no production reader
+                // at all -- setting it to false changed nothing.
+                if cfg.channels.telegram.silence_group_start {
+                    tracing::info!(
+                        "Telegram: /start from non-allowed user {} in closed group {} silenced \
+                         (silence_group_start = true)",
+                        user_id,
+                        msg.chat.id.0
+                    );
+                    return Ok(());
+                }
                 let reply = format!(
                     "🦀 Your Telegram ID: {}\n\nThis group isn't open yet. Ask the owner to run \
                      /cowork here, or to add your ID.",

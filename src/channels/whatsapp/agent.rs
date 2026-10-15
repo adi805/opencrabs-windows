@@ -185,6 +185,67 @@ pub(crate) fn missed_call_alert(from: &Jid, reason: &MissedReason) -> String {
 /// Only a 1:1 `<offer>` is a call this device can decline. A group
 /// `offer_notice` is a fan-out telling us a call exists: rejecting it would knock
 /// the call off the owner's other devices, so it is only logged.
+/// Attempts an availability publish, retrying while the push name is missing.
+///
+/// `set_available` needs the account's push name, which the server delivers
+/// with the device snapshot slightly after the connection becomes usable.
+/// Publishing before it lands fails with "cannot send presence without a push
+/// name set" -- observed once, at the pairing moment on 2026-10-14 -- and with
+/// no retry the account stays invisible to every contact for the rest of the
+/// session, while WhatsApp also withholds presence updates from a client that
+/// never publishes its own (#1488). A single attempt made that a permanent
+/// state instead of a startup race.
+///
+/// Retries only while the name is still missing: any other error is real and is
+/// reported on the first attempt rather than burning the whole budget. The
+/// final warning keeps its original wording, so an operator grepping for it
+/// still finds it.
+async fn publish_availability(client: &Client) {
+    for attempt in 1..=MAX_PRESENCE_ATTEMPTS {
+        match client.presence().set_available().await {
+            Ok(()) => {
+                if attempt > 1 {
+                    tracing::info!(
+                        target: "whatsapp",
+                        attempt,
+                        "WhatsApp: availability published once the push name arrived"
+                    );
+                }
+                return;
+            }
+            Err(e) => {
+                let push_name_missing = client.push_name().trim().is_empty();
+                if !presence_retry_worthwhile(push_name_missing, attempt) {
+                    tracing::warn!(
+                        target: "whatsapp",
+                        error = %e,
+                        push_name_missing,
+                        attempts = attempt,
+                        "could not publish availability; the account will \
+                         appear offline and contact presence may not arrive"
+                    );
+                    return;
+                }
+                // 0.5s, 1s, 2s, 4s: long enough for the snapshot to land, short
+                // enough not to hold the connection task.
+                tokio::time::sleep(std::time::Duration::from_millis(500 << (attempt - 1))).await;
+            }
+        }
+    }
+}
+
+/// Attempt budget for [`publish_availability`]: five attempts over ~7.5s.
+pub(crate) const MAX_PRESENCE_ATTEMPTS: u32 = 5;
+
+/// Whether a failed availability publish is worth another attempt.
+///
+/// Only a missing push name is retryable, and only while the budget is
+/// unspent. Kept as a pure function so the policy is unit tested without a
+/// client or a socket.
+pub(crate) fn presence_retry_worthwhile(push_name_missing: bool, attempt: u32) -> bool {
+    push_name_missing && attempt < MAX_PRESENCE_ATTEMPTS
+}
+
 async fn decline_incoming_call(client: &Client, alert: OwnerAlert, call: &IncomingCall) {
     // Logged before the action is inspected, so this line appears for every
     // inbound call event: it is the evidence that call events reach `on_event`
@@ -596,14 +657,7 @@ impl WhatsAppAgent {
                                 // updates from a client that never publishes
                                 // its own. Non-fatal: a failure costs presence,
                                 // not messaging.
-                                if let Err(e) = client.presence().set_available().await {
-                                    tracing::warn!(
-                                        target: "whatsapp",
-                                        error = %e,
-                                        "could not publish availability; the account will \
-                                         appear offline and contact presence may not arrive"
-                                    );
-                                }
+                                publish_availability(&client).await;
                                 match client.blocking().get_blocklist().await {
                                     Ok(entries) => {
                                         let jids: Vec<String> =

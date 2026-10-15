@@ -160,3 +160,21 @@ fn test_config_partial_override_preserves_other_defaults() {
         "silence_group_start must remain true default"
     );
 }
+
+/// `silence_group_start` must have a production reader, not just a default.
+///
+/// The field was declared (`types.rs`), defaulted to `true`, and pinned by 13
+/// assertions in this very file, while **zero** production code read it:
+/// setting `silence_group_start = false` to re-enable the user-ID reply in a
+/// group changed nothing, with no error and no warning. A default-value test
+/// cannot catch that class of bug, because the value was always correct — the
+/// wiring was what went missing. This asserts the reader exists instead.
+#[test]
+fn test_silence_group_start_is_read_by_the_group_start_path() {
+    let handler = include_str!("../channels/telegram/handler.rs");
+    assert!(
+        handler.contains("cfg.channels.telegram.silence_group_start"),
+        "silence_group_start must be read in the Telegram /start group path; \
+         a declared-but-unread knob silently does nothing"
+    );
+}
