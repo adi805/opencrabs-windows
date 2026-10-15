@@ -25,6 +25,52 @@ impl WhatsAppHistoryTool {
     }
 }
 
+/// Message for a search that matched nothing, naming the ids that DO have rows.
+///
+/// A bare "no stored history for X" is a dead end. WhatsApp reports some chats
+/// by LID (`<digits>@lid`) and the store keeps whichever JID the platform sent,
+/// while callers naturally ask for the phone-number form
+/// (`<digits>@s.whatsapp.net`). Observed 2026-10-14: an active chat's rows were
+/// stored under `210122852823201@lid`, so searching for the `@s.whatsapp.net`
+/// form returned empty with nothing to suggest why. Listing the stored ids
+/// turns a dead end into a self-correcting answer.
+///
+/// `known` is `None` when the stored-chat list could not be read, so the message
+/// never claims "nothing is stored" on the strength of a failed query.
+pub(crate) fn empty_history_hint(
+    chat: &str,
+    days: i64,
+    query: &str,
+    known: Option<&[(String, i64)]>,
+) -> String {
+    let qual = if query.is_empty() {
+        String::new()
+    } else {
+        format!(" matching '{query}'")
+    };
+    let mut msg = format!("No stored WhatsApp history for {chat} in the last {days} day(s){qual}.");
+    match known {
+        None => msg.push_str(
+            " (The stored-chat list could not be read, so this is not proof \
+                              that the chat has no messages.)",
+        ),
+        Some([]) => msg.push_str(" No WhatsApp chat has any stored messages yet."),
+        Some(list) => {
+            let ids: Vec<String> = list
+                .iter()
+                .take(10)
+                .map(|(id, count)| format!("{id} ({count})"))
+                .collect();
+            msg.push_str(&format!(
+                " Stored WhatsApp chats (id, message count): {}. WhatsApp reports some chats \
+                 by LID (`...@lid`), so pass the id exactly as stored.",
+                ids.join(", ")
+            ));
+        }
+    }
+    msg
+}
+
 #[async_trait]
 impl Tool for WhatsAppHistoryTool {
     fn name(&self) -> &str {
@@ -34,9 +80,12 @@ impl Tool for WhatsAppHistoryTool {
     fn description(&self) -> &str {
         "Read-only search over a WhatsApp chat's stored history: imported \
          (offline-sync / recovered) and live-captured messages, newest first. \
-         Needs the chat's normalized WhatsApp id (e.g. '5511999999999@s.whatsapp.net' \
-         or a group id ending '@g.us'). Optional substring query, day window \
-         (max 90), and limit (max 100)."
+         Needs the chat's id exactly as stored: a phone JID \
+         ('5511999999999@s.whatsapp.net'), a LID ('210122852823201@lid' — \
+         WhatsApp reports some chats this way), or a group id ending '@g.us'. \
+         An empty result lists the stored chat ids so the right one can be \
+         retried. Optional substring query, day window (max 90), and limit \
+         (max 100)."
     }
 
     fn input_schema(&self) -> Value {
@@ -108,13 +157,25 @@ impl Tool for WhatsAppHistoryTool {
         };
 
         if rows.is_empty() {
-            let qual = if query.is_empty() {
-                String::new()
-            } else {
-                format!(" matching '{query}'")
-            };
-            return Ok(ToolResult::success(format!(
-                "No stored WhatsApp history for {chat} in the last {days} day(s){qual}."
+            // Name the ids that DO have rows instead of dead-ending: WhatsApp
+            // reports some chats by LID, so the phone-number form of an active
+            // chat can legitimately miss (see `empty_history_hint`).
+            let known = self
+                .repo
+                .list_chats(Some("whatsapp"))
+                .await
+                .ok()
+                .map(|chats| {
+                    chats
+                        .into_iter()
+                        .map(|c| (c.channel_chat_id, c.message_count))
+                        .collect::<Vec<(String, i64)>>()
+                });
+            return Ok(ToolResult::success(empty_history_hint(
+                &chat,
+                days,
+                &query,
+                known.as_deref(),
             )));
         }
 
