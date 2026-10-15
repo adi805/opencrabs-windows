@@ -45,6 +45,11 @@ pub(crate) use fetch::{merge_minimax_baseline, xiaomi_baseline_models};
 // bare `use config::…` ambiguous.
 #[cfg(test)]
 pub(crate) use self::config::build_onboarding_systemd_unit;
+// system_unit_for_profile is the pre-write guard the wizard uses to refuse a
+// second unit for a profile the system scope already owns. Same cfg(test)
+// bridge as above: `config` is private.
+#[cfg(test)]
+pub(crate) use self::config::system_unit_for_profile;
 
 /// System prompt sent once after the user completes first-time onboarding.
 /// Starts with `[SYSTEM:` so it's hidden from the user display but processed

@@ -308,6 +308,20 @@ pub(crate) async fn cmd_chat(
     cmd_chat_inner(config, session_id, force_onboard, false, None).await
 }
 
+/// Exit status for a refusal to start because another instance of this profile
+/// already holds the instance lock (the `headless` path of
+/// [`acquire_profile_instance`]).
+///
+/// `75` is `EX_TEMPFAIL` from `sysexits.h`: a transient condition, the request
+/// may succeed if retried later. It exists so a supervisor can tell this apart
+/// from a generic failure. `1` is what a crash, a bad config, or a missing key
+/// all produce, and restarting on those is correct. Restarting a lock-conflict
+/// loser is not: it re-enters the same losing race every few seconds. That was
+/// observed on a box with both a system and a user unit enabled for the same
+/// profile, where a watchdog burned its hourly restart budget on the loser and
+/// then gave up, leaving the bot down.
+pub(crate) const EXIT_LOCK_CONFLICT: i32 = 75;
+
 /// Claim this profile, or refuse to boot (#1072).
 ///
 /// Branches on `headless` because BOOT.md documents that the TUI takes
@@ -347,7 +361,7 @@ async fn acquire_profile_instance(
         );
         eprintln!("Error: OpenCrabs is already running for profile '{profile}' ({who}).");
         eprintln!("Stop it first, or start this one with a different profile: opencrabs -p <name>");
-        std::process::exit(1);
+        std::process::exit(EXIT_LOCK_CONFLICT);
     }
 
     // Interactive: the running daemon loses. Preemption also releases the
@@ -388,7 +402,7 @@ async fn acquire_profile_instance(
         "Error: OpenCrabs is already running for profile '{profile}' ({who}) and did not stop."
     );
     eprintln!("Stop it manually, or start this one with a different profile: opencrabs -p <name>");
-    std::process::exit(1);
+    std::process::exit(EXIT_LOCK_CONFLICT);
 }
 
 async fn cmd_chat_inner(

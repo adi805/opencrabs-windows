@@ -1382,8 +1382,57 @@ WantedBy=default.target
     )
 }
 
+/// The system unit that already runs the OpenCrabs daemon, if one exists.
+///
+/// The wizard writes a *user* unit (`~/.config/systemd/user/opencrabs.service`).
+/// On a box that already carries a *system* unit for the same daemon — written
+/// by `sudo opencrabs service install`, or hand-tuned — both end up enabled and
+/// both try to claim the same per-profile instance lock. The loser exits on
+/// every start, and on a box whose supervisor restarts it that is a loop which
+/// burns the supervisor's restart budget and then leaves the bot down.
+///
+/// Matches `opencrabs.service` exactly first, then any other
+/// `opencrabs*.service`, so a hand-tuned unit under a different name
+/// (`opencrabs-tui.service`) is caught too. Pure — it takes the directory and
+/// probes no OS state — so it is testable off a systemd host.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn system_unit_for_profile(system_dir: &std::path::Path) -> Option<PathBuf> {
+    let exact = system_dir.join("opencrabs.service");
+    if exact.is_file() {
+        return Some(exact);
+    }
+
+    let mut matches: Vec<PathBuf> = std::fs::read_dir(system_dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("opencrabs") && name.ends_with(".service"))
+        })
+        .collect();
+    matches.sort();
+    matches.into_iter().next()
+}
+
 #[cfg(target_os = "linux")]
 fn install_systemd_service() -> Result<(), String> {
+    // Refuse to add a second unit for a daemon the system scope already owns.
+    // Two enabled units for one profile fight over the instance lock: the loser
+    // exits on every start, and a supervisor that restarts it loops until its
+    // budget is gone. Nothing has been written yet at this point.
+    let system_dir = std::path::Path::new("/etc/systemd/system");
+    if let Some(existing) = system_unit_for_profile(system_dir) {
+        return Err(format!(
+            "a system unit already runs this daemon ({}). Installing a user unit \
+             as well would leave two units enabled for the same profile, fighting \
+             over the instance lock. Remove or disable that unit first, or keep \
+             using it and skip this step.",
+            existing.display()
+        ));
+    }
+
     let service_dir = dirs::config_dir()
         .ok_or("Cannot determine config dir")?
         .parent()
