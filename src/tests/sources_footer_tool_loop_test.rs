@@ -15,8 +15,8 @@
 fn tool_loop_appends_the_sources_footer() {
     let loop_src = include_str!("../brain/agent/service/tool_loop.rs");
     assert!(
-        loop_src.contains("sources_footer::append_sources_footer("),
-        "#1883: the delivered answer must run through append_sources_footer"
+        loop_src.contains("sources_footer::footer_for("),
+        "#1883: the delivered answer must run through the footer builder (footer_for)"
     );
 }
 

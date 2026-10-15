@@ -89,7 +89,6 @@ fn tap_turn_opens_live_status_before_dispatching() {
 #[test]
 fn tap_path_renders_chained_suggestions() {
     let handler = include_str!("../channels/slack/handler.rs");
-    let flow = include_str!("../channels/slack/flow_progress.rs");
     let start = handler
         .find("async fn run_followup_turn(")
         .expect("tap-turn helper present");
@@ -99,15 +98,11 @@ fn tap_path_renders_chained_suggestions() {
         .expect("end marker present");
     let body = &rest[..end];
     assert!(
-        body.contains("build_flow_progress("),
-        "the tap turn must take its progress callback from the shared flow builder"
-    );
-    assert!(
-        flow.contains("SuggestedOptions"),
+        body.contains("SuggestedOptions"),
         "the tap progress callback must observe suggestion events"
     );
     assert!(
-        flow.contains("render_suggestions("),
+        body.contains("render_suggestions("),
         "suggestion events must post clickable buttons again"
     );
 }
