@@ -537,6 +537,17 @@ jobs:
       - name: Scan for duplicate top-level declarations
         run: python3 scripts/check-duplicate-decls.py --root src
 
+      # A config field nobody reads is a dead knob: the operator sets it, gets
+      # no error and no effect. `silence_group_start` shipped exactly that way
+      # with 13 test assertions pinning its default, which is what made it look
+      # wired (2026-10-15 audit). Lexical and seconds-fast, so a new knob with
+      # no reader is refused here instead of being found in production.
+      - name: Config-wiring linter proves its own teeth
+        run: python3 scripts/check-config-wiring.py --self-test
+
+      - name: Scan for config fields with no production reader
+        run: python3 scripts/check-config-wiring.py --root src
+
   # ── Workflow policy (governance.toml) ─────────────────────────────────────
   # #1934: rules that live only in prose get violated and then counted in the
   # ledger. This job reads governance.toml and fails on the ones a machine can
