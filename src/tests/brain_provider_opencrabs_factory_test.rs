@@ -63,3 +63,27 @@ api_key = "tok-install-123"
     let section = file.providers.opencrabs.expect("section present");
     assert_eq!(section.api_key.as_deref(), Some("tok-install-123"));
 }
+
+/// The built-in endpoint is free and fixed at 200k, so a `context_window` in
+/// the section is inert: it can neither raise the budget above the window the
+/// endpoint really serves nor lower it below what it offers (#2066).
+#[tokio::test]
+async fn built_in_context_window_is_pinned_to_200k() {
+    for configured in [None, Some(2_000_000), Some(64_000)] {
+        let mut config = opencrabs_config(Some("tok-install-123"));
+        config
+            .providers
+            .opencrabs
+            .as_mut()
+            .expect("section present")
+            .context_window = configured;
+        let provider = create_provider_by_name(&config, "opencrabs")
+            .await
+            .expect("opencrabs should create with an install token");
+        assert_eq!(
+            provider.configured_context_window(),
+            Some(200_000),
+            "context_window = {configured:?} must not move the built-in window"
+        );
+    }
+}
