@@ -1016,6 +1016,14 @@ impl DiscordConfig {
             .unwrap_or(self.respond_to)
     }
 
+    /// Whether `channel_id` or its parent has its own `[channels.discord.channels.<id>]`
+    /// block. Such a block is the owner's scope for that channel, so it admits the
+    /// channel without an entry in the global `allowed_channels` list.
+    pub fn has_channel_block(&self, channel_id: &str, parent_id: Option<&str>) -> bool {
+        self.channels.contains_key(channel_id)
+            || parent_id.is_some_and(|p| self.channels.contains_key(p))
+    }
+
     /// Whether `channel_id` (or its parent) is `open` (#2014). Opening a
     /// channel opens its threads; nothing else is affected.
     pub fn channel_open(&self, channel_id: &str, parent_id: Option<&str>) -> bool {

@@ -472,13 +472,19 @@ pub(crate) async fn handle_message(
         return;
     }
 
+    // The owner's /cowork and /respond_to bypass the allowed_channels scope and
+    // the dm_only policy below: they are how the owner opens or fixes the channel.
+    let owner_scope = !is_dm && super::commands::owner_scope_text(&msg.content, is_owner);
     // respond_to / allowed_channels filtering — DMs always pass
-    if !is_dm {
+    if !is_dm && !owner_scope {
         // Check allowed_channels (empty = all channels allowed). Threads and
         // forum posts (#384) carry their own channel id, so a miss falls back
         // to the PARENT channel: allow-listing a forum allows every post in
         // it, each post keeping its own per-thread session.
-        if !allowed_channels.is_empty() && !allowed_channels.contains(&channel_str) {
+        if !allowed_channels.is_empty()
+            && !allowed_channels.contains(&channel_str)
+            && !dc_cfg.has_channel_block(&channel_str, parent_id.as_deref())
+        {
             let parent_allowed = parent_id
                 .as_deref()
                 .is_some_and(|p| allowed_channels.contains(p));
@@ -493,11 +499,12 @@ pub(crate) async fn handle_message(
         }
 
         match respond_to {
-            RespondTo::DmOnly => {
+            RespondTo::DmOnly if !owner_scope => {
                 tracing::debug!("Discord: respond_to=dm_only, ignoring channel message");
                 store_channel_msg(msg.content.clone()).await;
                 return;
             }
+            RespondTo::DmOnly => {} // owner scope command in a dm_only channel
             RespondTo::Mention => {
                 let bot_id = discord_state.bot_user_id().await;
                 let mentioned =

@@ -608,6 +608,7 @@ pub mod cli_context_window_test;
 pub mod click_to_expand_test;
 pub mod compaction_artifact_claim_test;
 pub mod discord_channel_scope_config_test;
+pub mod discord_cowork_gate_test;
 pub mod discord_cowork_test;
 pub mod discord_dm_channel_history_test;
 pub mod generate_image_multi_input_test;

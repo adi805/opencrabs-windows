@@ -340,21 +340,36 @@ impl EventHandler for Handler {
                     crate::config::RespondTo::DmOnly
                 );
 
-            if !admitted || !channel_ok || !inside_dm_policy {
+            // The owner's /cowork and /respond_to pass the channel scope and the
+            // dm_only policy, so they can open or fix the channel they run in.
+            // DMs never had a channel scope; the interaction path now says so too.
+            let owner_scope = !is_dm
+                && super::commands::owner_scope_text(&format!("/{}", command.data.name), owner);
+            let channel_ok = is_dm
+                || owner_scope
+                || channel_ok
+                || dc.has_channel_block(&channel_str, parent.as_deref());
+            let policy_ok = owner_scope || inside_dm_policy;
+            if !admitted || !channel_ok || !policy_ok {
                 tracing::warn!(
-                    "Discord: refused /{} from user {} (allowed={}, channel={}, dm_only={})",
+                    "Discord: refused /{} from user {} (admitted={}, channel_scope={}, respond_to_policy={})",
                     command.data.name,
                     user,
                     admitted,
                     channel_ok,
-                    inside_dm_policy
+                    policy_ok
                 );
                 let _ = command
                     .create_response(
                         &ctx.http,
                         serenity::builder::CreateInteractionResponse::Message(
                             serenity::builder::CreateInteractionResponseMessage::new()
-                                .content("This bot is not enabled for you or this channel.")
+                                .content(super::commands::refusal_reason(
+                                    admitted,
+                                    channel_ok,
+                                    policy_ok,
+                                    &channel_str,
+                                ))
                                 .ephemeral(true),
                         ),
                     )
