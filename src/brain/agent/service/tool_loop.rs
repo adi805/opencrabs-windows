@@ -8114,7 +8114,8 @@ impl AgentService {
 
         // Update session token usage. The pair is resolved here, not read back
         // off the session row, so a fallback's spend is attributed to the
-        // provider that actually served it (#807).
+        // provider that actually served it (#807). The cache-read count rides
+        // along for the By Model cache share (#2027).
         session_service
             .update_session_usage(
                 session_id,
@@ -8122,6 +8123,7 @@ impl AgentService {
                 cost,
                 &self.provider_name_for_session(session_id),
                 &self.provider_model_for_session(session_id),
+                Some(total_cache_read as i64),
             )
             .await
             .map_err(AgentError::db)?;

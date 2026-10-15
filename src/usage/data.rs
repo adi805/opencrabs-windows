@@ -99,7 +99,27 @@ pub struct ModelEntry {
     pub cost: f64,
     pub calls: i64,
     pub estimated: bool,
+    /// Cache-read tokens the ledger recorded for this model, or `None` when
+    /// none of its rows carried a split (#2027).
+    pub cache_read_tokens: Option<i64>,
+    /// Token total of the ledger rows that DID record a split. The cache share
+    /// divides by this, so rows written before the cache-read column existed
+    /// cannot drag the percentage toward zero.
+    pub cache_split_tokens: i64,
     pub variants: Vec<ModelVariant>,
+}
+
+impl ModelEntry {
+    /// Share (0-100) of the recorded tokens that were served from cache, or
+    /// `None` when the ledger holds no split for this model. `None` renders
+    /// blank, which is a different statement from a measured 0% (#2027).
+    pub fn cache_read_pct(&self) -> Option<f64> {
+        let cached = self.cache_read_tokens?;
+        if self.cache_split_tokens <= 0 {
+            return None;
+        }
+        Some(cached as f64 / self.cache_split_tokens as f64 * 100.0)
+    }
 }
 
 /// A single quantization variant under a grouped model
@@ -578,6 +598,24 @@ pub(crate) fn sql_normalize_model(raw: &str) -> String {
     }
 }
 
+/// One ledger row as the By Model query returns it, before grouping.
+struct RawModelRow {
+    /// The SQL-normalized model name, the grouping key's input.
+    normalized: String,
+    /// The spelling the row was recorded under, kept for display.
+    raw: String,
+    tokens: i64,
+    calls: i64,
+    cost: f64,
+    /// Cache-read tokens this row recorded. `None` when the row predates the
+    /// ledger's cache-read column, i.e. it carries no split at all (#2027).
+    cache_read: Option<i64>,
+    /// This row's tokens, counted only when the row recorded a split. The
+    /// cache share divides by the sum of these, so rows with no split cannot
+    /// drag the percentage toward zero.
+    split_tokens: i64,
+}
+
 async fn fetch_model_entries(pool: &Pool, since: Option<i64>) -> Result<Vec<ModelEntry>> {
     let pricing = crate::usage::pricing::PricingConfig::load().ok();
 
@@ -646,22 +684,31 @@ async fn fetch_model_entries(pool: &Pool, since: Option<i64>) -> Result<Vec<Mode
                m3 AS raw_model, \
                COALESCE(SUM(token_count), 0), \
                COUNT(*), \
-               COALESCE(SUM(cost), 0.0) \
+               COALESCE(SUM(cost), 0.0), \
+               SUM(cache_read_tokens), \
+               COALESCE(SUM(CASE WHEN cache_read_tokens IS NOT NULL THEN token_count ELSE 0 END), 0) \
              FROM spaced \
              GROUP BY normalized_model, m3 \
              ORDER BY SUM(token_count) DESC"
         );
         let mut stmt = conn.prepare(&query)?;
-        let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<(String, String, i64, i64, f64)> {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, f64>(4)?,
-            ))
+        // `SUM(cache_read_tokens)` is NULL for a model whose rows all predate
+        // the cache-read column, which is the honest answer: no split was
+        // recorded. It is 0 only when a row really recorded zero cache reads.
+        // The last column re-counts the tokens of the rows that DID record a
+        // split, so the share is measured against what was actually reported.
+        let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<RawModelRow> {
+            Ok(RawModelRow {
+                normalized: row.get(0)?,
+                raw: row.get(1)?,
+                tokens: row.get(2)?,
+                calls: row.get(3)?,
+                cost: row.get(4)?,
+                cache_read: row.get(5)?,
+                split_tokens: row.get(6)?,
+            })
         };
-        let rows: Vec<(String, String, i64, i64, f64)> = if let Some(s) = since {
+        let rows: Vec<RawModelRow> = if let Some(s) = since {
             stmt.query_map(params![s], map_row)?.collect::<std::result::Result<Vec<_>, _>>()?
         } else {
             stmt.query_map([], map_row)?.collect::<std::result::Result<Vec<_>, _>>()?
@@ -675,16 +722,17 @@ async fn fetch_model_entries(pool: &Pool, since: Option<i64>) -> Result<Vec<Mode
     // Group by base model (normalize away quantization suffixes), keyed on the
     // punctuation-insensitive identity so one model reported with two spellings
     // is one row rather than two smaller ones (#929).
-    let mut groups: std::collections::HashMap<String, Vec<(String, i64, i64, f64)>> =
+    let mut groups: std::collections::HashMap<String, Vec<RawModelRow>> =
         std::collections::HashMap::new();
     // The key is unreadable by design, so each group also remembers the spelling
     // to display: whichever variant carries the most tokens, i.e. the form this
     // model is actually known by rather than the typo that split it.
     let mut display_names: std::collections::HashMap<String, (String, i64)> =
         std::collections::HashMap::new();
-    for (normalized, raw, tokens, calls, cost) in raw {
-        let base = normalize_model_for_grouping(&normalized);
+    for row in raw {
+        let base = normalize_model_for_grouping(&row.normalized);
         let key = canonical_model_key(&base);
+        let tokens = row.tokens;
         display_names
             .entry(key.clone())
             .and_modify(|best| {
@@ -693,10 +741,7 @@ async fn fetch_model_entries(pool: &Pool, since: Option<i64>) -> Result<Vec<Mode
                 }
             })
             .or_insert_with(|| (base.clone(), tokens));
-        groups
-            .entry(key)
-            .or_default()
-            .push((raw, tokens, calls, cost));
+        groups.entry(key).or_default().push(row);
     }
 
     // Build ModelEntry tree, sorted by total tokens descending
@@ -713,10 +758,28 @@ async fn fetch_model_entries(pool: &Pool, since: Option<i64>) -> Result<Vec<Mode
             let mut total_calls: i64 = 0;
             let mut total_cost: f64 = 0.0;
             let mut has_estimate = false;
+            // Cache reads across the group, and the tokens of the rows that
+            // actually recorded a split. `None` until a row records one, so a
+            // model whose rows all predate the column reports no split (#2027).
+            let mut cache_read_tokens: Option<i64> = None;
+            let mut cache_split_tokens: i64 = 0;
             let mut child_rows: Vec<ModelVariant> = Vec::new();
 
-            variants.sort_by_key(|b| std::cmp::Reverse(b.1)); // sort by tokens desc
-            for (full_name, tokens, calls, ledger_cost) in variants {
+            variants.sort_by_key(|b| std::cmp::Reverse(b.tokens)); // sort by tokens desc
+            for v in variants {
+                let RawModelRow {
+                    raw: full_name,
+                    tokens,
+                    calls,
+                    cost: ledger_cost,
+                    cache_read,
+                    split_tokens,
+                    ..
+                } = v;
+                if let Some(cached) = cache_read {
+                    cache_read_tokens = Some(cache_read_tokens.unwrap_or(0) + cached);
+                }
+                cache_split_tokens += split_tokens;
                 // The ledger holds what each call really cost, cache reads
                 // included (#1707), so it is the source of truth. The table
                 // estimate is 80/20 input/output and ignores cache, so it only
@@ -756,6 +819,8 @@ async fn fetch_model_entries(pool: &Pool, since: Option<i64>) -> Result<Vec<Mode
                 cost: total_cost,
                 calls: total_calls,
                 estimated: has_estimate,
+                cache_read_tokens,
+                cache_split_tokens,
                 variants: child_rows,
             }
         })

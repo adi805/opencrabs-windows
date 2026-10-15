@@ -962,6 +962,7 @@ pub mod usage_cache_test;
 pub mod usage_cached_prefix_netting_test;
 pub mod usage_cosmetic_alias_test;
 pub mod usage_grouping_test;
+pub mod usage_ledger_cache_split_test;
 pub mod usage_ledger_test;
 pub mod usage_model_cost_test;
 pub mod user_correction_metadata_test;

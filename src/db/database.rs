@@ -149,6 +149,11 @@ pub(crate) const MIGRATION_SQL: &[&str] = &[
     // heal pass is needed (same shape as the project_repo_remote note above).
     // Appended last per the list invariant.
     include_str!("../migrations/20261009000001_pending_requests_channel_message_id.sql"),
+    // #2027: the per-row cache-read count behind the By Model cache share.
+    // ALTER TABLE ADD COLUMN, NULL by design on every existing row (there is
+    // no split to backfill), so no heal pass is needed. Appended last per the
+    // list invariant above.
+    include_str!("../migrations/20261015000001_add_usage_ledger_cache_read_tokens.sql"),
 ];
 
 pub(crate) fn build_migrations() -> Migrations<'static> {

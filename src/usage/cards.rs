@@ -259,12 +259,30 @@ pub fn render_models(f: &mut Frame, models: &[ModelEntry], area: Rect, focused: 
         .max()
         .unwrap_or(1);
 
+    // Cache column (#2027): of this model's recorded tokens, how many were
+    // cache reads. The column appears only when at least one visible model
+    // carries a split, because a column of blanks on a ledger written before
+    // the cache-read column existed would be pure noise. A model with no
+    // recorded split renders blank there, never a zero it did not measure.
+    let cache_cell = |m: &ModelEntry| m.cache_read_pct().map(|pct| format!("{pct:.0}% cache"));
+    let show_cache = all_models.iter().any(|m| m.cache_read_tokens.is_some());
+    let cache_width = if show_cache {
+        all_models
+            .iter()
+            .filter_map(|m| cache_cell(m).map(|s| s.len()))
+            .max()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
     // Data columns get guaranteed space; name column fills whatever is left
     let spacing = 2;
     let cost_width = max_cost_len;
     let tok_width = max_tok_len;
     let calls_width = max_calls_len;
-    let fixed = cost_width + tok_width + calls_width + spacing * 3 + 1;
+    let cache_cols = if show_cache { cache_width + spacing } else { 0 };
+    let fixed = cost_width + tok_width + calls_width + cache_cols + spacing * 3 + 1;
     let name_width = (inner.width as usize).saturating_sub(fixed).max(4);
 
     let mut lines: Vec<Line> = Vec::new();
@@ -294,7 +312,7 @@ pub fn render_models(f: &mut Frame, models: &[ModelEntry], area: Rect, focused: 
         } else {
             fmt_cost(m.cost)
         };
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled(format!(" {:<width$}", name, width = name_width), BOLD),
             Span::raw("  "),
             Span::styled(
@@ -307,8 +325,25 @@ pub fn render_models(f: &mut Frame, models: &[ModelEntry], area: Rect, focused: 
                 DIM,
             ),
             Span::raw("  "),
-            Span::styled(format!("{:>width$} req", m.calls, width = calls_width), DIM),
-        ]));
+        ];
+        // The cache share, when the model has one recorded (#2027). A row with
+        // no split stays blank rather than reading 0%.
+        if show_cache {
+            let (text, style) = match cache_cell(m) {
+                Some(s) => (s, LABEL),
+                None => (String::new(), DIM),
+            };
+            spans.push(Span::styled(
+                format!("{text:<width$}", width = cache_width),
+                style,
+            ));
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(
+            format!("{:>width$} req", m.calls, width = calls_width),
+            DIM,
+        ));
+        lines.push(Line::from(spans));
 
         // Child rows (variant breakdown) — only show the tree when
         // there's something MEANINGFUL to break down. A variant
@@ -372,6 +407,15 @@ pub fn render_models(f: &mut Frame, models: &[ModelEntry], area: Rect, focused: 
                         DIM,
                     ),
                     Span::raw("  "),
+                    // A variant row carries no cache split of its own (the
+                    // ledger records one per turn, not per spelling), so the
+                    // cell stays blank to keep the columns aligned with the
+                    // parent row.
+                    Span::raw(if show_cache {
+                        format!("{:<width$}", "", width = cache_width + spacing)
+                    } else {
+                        String::new()
+                    }),
                     Span::styled(format!("{:>width$} req", v.calls, width = calls_width), DIM),
                 ]));
             }
