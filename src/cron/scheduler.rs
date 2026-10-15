@@ -429,6 +429,14 @@ impl CronScheduler {
                         let active = crate::config::profile::active_profile().unwrap_or("default");
                         let needs_scope = profile.is_some() && profile != Some(active);
 
+                        // #2065: the trigger gate is NOT part of the profile
+                        // split. It used to live inside the `needs_scope` arm,
+                        // so a job whose `profile_name` equalled the active
+                        // profile took the other arm and never evaluated its
+                        // trigger at all: `trigger_cmd` plus `trigger_on` were
+                        // silently dead, and the job ran a full agent turn on
+                        // every tick instead of the 0-token skip. Both arms now
+                        // call the same body; only the home scope differs.
                         let result = if needs_scope {
                             crate::config::profile::with_profile_home_async(profile, async {
                                 tracing::info!(
@@ -436,102 +444,11 @@ impl CronScheduler {
                                     job.name,
                                     crate::config::opencrabs_home()
                                 );
-
-                                // #526 — the fired trigger's payload, already substituted
-                                // into the prompt in the arm that owns the TriggerResult.
-                                // None for every non-firing outcome keeps the turn message
-                                // byte-identical to pre-fix behaviour.
-                                let mut fired_prompt: Option<String> = None;
-
-                                // Pre-flight trigger evaluation
-                                match crate::cron::PipelineExecutor::evaluate_trigger(&job).await {
-                                    crate::cron::TriggerOutcome::Skipped(ref trig_res) => {
-                                        tracing::info!(
-                                            "Cron job '{}' trigger condition not met — skipping execution",
-                                            job.name
-                                        );
-                                        let _ = crate::cron::PipelineExecutor::record_skipped_run(
-                                            &job,
-                                            trig_res,
-                                            &run_repo,
-                                        )
-                                        .await;
-                                        return Ok(());
-                                    }
-                                    crate::cron::TriggerOutcome::Error(err) => {
-                                        tracing::error!(
-                                            "Cron job '{}' trigger execution error: {err}",
-                                            job.name
-                                        );
-                                        let run = CronJobRun::new_running(
-                                            job.id,
-                                            job.name.clone(),
-                                            job.provider.clone(),
-                                            job.model.clone(),
-                                        );
-                                        let run_id = run.id.to_string();
-                                        let _ = run_repo.insert(&run).await;
-                                        let _ = run_repo.complete_error(&run_id, &format!("Trigger error: {err}")).await;
-                                        return Ok(());
-                                    }
-                                    crate::cron::TriggerOutcome::Fired(ref trig_res) => {
-                                        tracing::info!(
-                                            "Cron job '{}' trigger fired (exit={}, output_bytes={})",
-                                            job.name,
-                                            trig_res.exit_code,
-                                            trig_res.combined_output().len()
-                                        );
-                                        // If prompt is empty or explicitly pass-through, execute direct 0-token delivery
-                                        if job.prompt.trim().is_empty() {
-                                            return execute_direct_trigger_job(
-                                                &job,
-                                                &ctx,
-                                                &run_repo,
-                                                trig_res,
-                                            )
-                                            .await;
-                                        }
-                                        // #526 — only the non-empty-prompt half reaches
-                                        // here; the empty-prompt half returned above.
-                                        fired_prompt = Some(crate::cron::interpolate_template(
-                                            &job.prompt,
-                                            trig_res,
-                                        ));
-                                    }
-                                    crate::cron::TriggerOutcome::NoTrigger => {}
-                                }
-
-                                match resolve_or_create_cron_session(&ctx, &job).await {
-                                    Ok(cron_sid) => {
-                                        execute_job(
-                                            &job,
-                                            &factory,
-                                            &ctx,
-                                            cron_sid,
-                                            &run_repo,
-                                            fired_prompt.as_deref(),
-                                        )
-                                        .await
-                                    }
-                                    Err(e) => Err(e),
-                                }
+                                run_cron_job_body(&job, &factory, &ctx, &run_repo).await
                             })
                             .await
                         } else {
-                            match resolve_or_create_cron_session(&ctx, &job).await {
-                                Ok(cron_sid) => {
-                                    execute_job(
-                                        &job,
-                                        &factory,
-                                        &ctx,
-                                        cron_sid,
-                                        &run_repo,
-                                        None, // #526: the unscoped path evaluates no trigger
-                                    )
-                                    .await
-                                }
-                                Err(e) => Err(e),
-                            }
+                            run_cron_job_body(&job, &factory, &ctx, &run_repo).await
                         };
 
                         if let Err(e) = result {
@@ -819,6 +736,87 @@ async fn open_run_boundary(ctx: &ServiceContext, session_id: Uuid) {
         .await
     {
         tracing::warn!("Failed to insert cron compaction marker: {e:#}");
+    }
+}
+
+/// Run one cron job's body: evaluate the trigger gate, then either skip,
+/// error out, deliver directly, or run the agent turn (#2065).
+///
+/// This is the part of a fire that does NOT depend on profile scoping. The
+/// caller wraps it in `with_profile_home_async` when the job belongs to a
+/// foreign profile, so the trigger command still executes against the job's
+/// own home. Keeping the gate out here is the fix: it used to sit inside the
+/// scoped arm, so every job stamped with the active profile (which is all of
+/// them in a single-profile install) skipped evaluation entirely and burned a
+/// full agent turn on every tick.
+pub(crate) async fn run_cron_job_body(
+    job: &CronJob,
+    factory: &ChannelFactory,
+    ctx: &ServiceContext,
+    run_repo: &CronJobRunRepository,
+) -> anyhow::Result<()> {
+    // #526 — the fired trigger's payload, already substituted into the prompt
+    // in the arm that owns the `TriggerResult`. None for every non-firing
+    // outcome keeps the turn message byte-identical to pre-fix behaviour.
+    let mut fired_prompt: Option<String> = None;
+
+    // Pre-flight trigger evaluation
+    match crate::cron::PipelineExecutor::evaluate_trigger(job).await {
+        crate::cron::TriggerOutcome::Skipped(ref trig_res) => {
+            tracing::info!(
+                "Cron job '{}' trigger condition not met — skipping execution",
+                job.name
+            );
+            let _ =
+                crate::cron::PipelineExecutor::record_skipped_run(job, trig_res, run_repo).await;
+            return Ok(());
+        }
+        crate::cron::TriggerOutcome::Error(err) => {
+            tracing::error!("Cron job '{}' trigger execution error: {err}", job.name);
+            let run = CronJobRun::new_running(
+                job.id,
+                job.name.clone(),
+                job.provider.clone(),
+                job.model.clone(),
+            );
+            let run_id = run.id.to_string();
+            let _ = run_repo.insert(&run).await;
+            let _ = run_repo
+                .complete_error(&run_id, &format!("Trigger error: {err}"))
+                .await;
+            return Ok(());
+        }
+        crate::cron::TriggerOutcome::Fired(ref trig_res) => {
+            tracing::info!(
+                "Cron job '{}' trigger fired (exit={}, output_bytes={})",
+                job.name,
+                trig_res.exit_code,
+                trig_res.combined_output().len()
+            );
+            // If prompt is empty or explicitly pass-through, execute direct 0-token delivery
+            if job.prompt.trim().is_empty() {
+                return execute_direct_trigger_job(job, ctx, run_repo, trig_res).await;
+            }
+            // #526 — only the non-empty-prompt half reaches here; the
+            // empty-prompt half returned above.
+            fired_prompt = Some(crate::cron::interpolate_template(&job.prompt, trig_res));
+        }
+        crate::cron::TriggerOutcome::NoTrigger => {}
+    }
+
+    match resolve_or_create_cron_session(ctx, job).await {
+        Ok(cron_sid) => {
+            execute_job(
+                job,
+                factory,
+                ctx,
+                cron_sid,
+                run_repo,
+                fired_prompt.as_deref(),
+            )
+            .await
+        }
+        Err(e) => Err(e),
     }
 }
 
