@@ -232,6 +232,23 @@ async fn decline_incoming_call(client: &Client, alert: OwnerAlert, call: &Incomi
 }
 
 /// WhatsApp agent that forwards messages to the AgentService
+/// Owner JID used for proactive messaging and the `whatsapp_send` default target.
+///
+/// An explicit `channels.whatsapp.bot_owner` entry wins; otherwise this falls
+/// back to the first `allowed_phones` entry. Reading only `allowed_phones`
+/// made `bot_owner` a silent no-op: setting it changed nothing, and
+/// `config_manager reload` could not help because the owner was fixed at
+/// channel start.
+///
+/// Returns `None` when neither list has an entry (then there is no configured
+/// owner to send to until pairing sets one).
+pub(crate) fn derive_owner_jid(bot_owner: &[String], allowed_phones: &[String]) -> Option<String> {
+    bot_owner
+        .first()
+        .or_else(|| allowed_phones.first())
+        .map(|p| format!("{}@s.whatsapp.net", p.trim_start_matches('+')))
+}
+
 pub struct WhatsAppAgent {
     agent_service: Arc<AgentService>,
     session_service: SessionService,
@@ -310,13 +327,10 @@ impl WhatsAppAgent {
                 cfg.voice_config().tts_enabled,
             );
 
-            // Derive owner JID from first allowed phone (for proactive messaging)
-            let owner_jid = cfg
-                .channels
-                .whatsapp
-                .allowed_phones
-                .first()
-                .map(|p| format!("{}@s.whatsapp.net", p.trim_start_matches('+')));
+            // Derive owner JID for proactive messaging (see `derive_owner_jid`:
+            // explicit `bot_owner` wins, else first `allowed_phones` entry).
+            let wa = &cfg.channels.whatsapp;
+            let owner_jid = derive_owner_jid(&wa.bot_owner, &wa.allowed_phones);
 
             let agent = self.agent_service.clone();
             let session_svc = self.session_service.clone();
