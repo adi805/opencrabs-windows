@@ -404,6 +404,7 @@ fn test_task_complexity_stars() {
         notes: None,
         retry_count: 0,
         verification: None,
+        spec_check: None,
         scope: None,
     };
     assert_eq!(task1.complexity_stars(), "★☆☆☆☆");
