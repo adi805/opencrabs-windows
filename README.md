@@ -112,6 +112,9 @@ The docs and the landing at [opencrabs.com](https://opencrabs.com) are available
 - [HEARTBEAT.md](src/docs/reference/templates/HEARTBEAT.md) — periodic checklist, read on demand or by a cron job
 
 ### Skills
+
+All of these ship inside the binary, available as `/<name>` in every install, nothing to copy:
+
 - [Security Audit](src/docs/reference/templates/skills/security-audit/SKILL.md)
 - [Cost Estimate](src/docs/reference/templates/skills/cost-estimate/SKILL.md)
 - [Repo Audit](src/docs/reference/templates/skills/repo-audit/SKILL.md)
@@ -119,6 +122,12 @@ The docs and the landing at [opencrabs.com](https://opencrabs.com) are available
 - [Browser CDP](src/docs/reference/templates/skills/browser-cdp/SKILL.md)
 - [A2A Gateway](src/docs/reference/templates/skills/a2a-gateway/SKILL.md)
 - [Dynamic Tools](src/docs/reference/templates/skills/dynamic-tools/SKILL.md)
+
+### Opt-in Skills
+
+Not built in, so they do not reach every user. Copy a folder into `~/.opencrabs/skills/<name>/` and it shows up as `/<name>` for you only:
+
+- [Motion Graphics](src/docs/reference/templates/optional-skills/motion-graphics/SKILL.md): tutorial videos with Remotion (storyboard, drawn UI, voice-over, subtitles). Install with `cp -r src/docs/reference/templates/optional-skills/motion-graphics ~/.opencrabs/skills/motion-graphics`.
 
 ### Cron Templates
 - [Cron Jobs Guide](src/docs/reference/templates/cron/README.md)
