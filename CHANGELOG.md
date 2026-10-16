@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.11] - 2026-10-16
+
+4 commits since v0.5.10, 1 contributor. 19 files changed, +1,361 / -349 lines.
+
+Four fixes, each one closing a hole that a shipped release exposed. A first run lands in the chat with the built-in provider already live and the agent greeting the user, instead of on a "New Chat · none / none" screen with no provider, no config.toml and no keys.toml (#2079). The agent's worker threads get a 16 MiB stack, so the first turn can no longer abort the process with a stack overflow on the default 2 MiB one (#2080). The release workflow reads the conclusion of the commit's own CI run before it publishes anything, so a red main can never ship a tag again the way v0.5.10 did (#2078). And the scheduled evolve restart no longer hands `systemctl restart` the discovery glob `opencrabs*.service`: that glob also matched the transient unit the restart runs inside, so systemd stopped its own executor 16 ms in, retried until start-limit-hit, and churned the daemon and its browser sidecar five times inside one second. The restart target is a resolved list of exact unit names now, the unit-list parser no longer drops failed units because of systemd's status glyph, and an unreadable unit list reports `Unresolved` instead of scheduling blind (#2081).
+
+### 🔧 Fixes
+
+- `ba8dc669` **evolve**: restart the resolved units, so the restart cannot stop itself (#2081)
+- `003ee22f` **release**: gate the release tag on a green CI run for the same commit (#2078)
+- `305d1944` **tui**: provision the built-in provider and greet on a fresh install (#2079)
+- `e203d124` **runtime**: give the agent worker threads a 16 MiB stack (#2080)
+
+### 👥 Contributors
+
+1 contributor this release:
+
+- @adi805 (Syafriadi)
+
+### 📊 Stats
+
+- 4 commits since v0.5.10
+- 19 files changed, +1,361 / -349 lines
+- 10,782 tests (10,744 passed, 0 failed, 38 ignored)
+
 ## [0.5.10] - 2026-10-16
 
 99 commits since v0.5.5, 4 contributors. 213 files changed, +17,230 / -1,738 lines.
@@ -9431,3 +9456,4 @@ fixes.
 [0.5.4]: https://github.com/adolfousier/opencrabs/compare/v0.5.3...v0.5.4
 [0.5.5]: https://github.com/opencrabs/opencrabs/compare/v0.5.4...v0.5.5
 [0.5.10]: https://github.com/opencrabs/opencrabs/compare/v0.5.5...v0.5.10
+[0.5.11]: https://github.com/opencrabs/opencrabs/compare/v0.5.10...v0.5.11
