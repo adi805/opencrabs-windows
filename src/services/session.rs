@@ -98,7 +98,14 @@ impl SessionService {
             auto_title_attempted: false,
             project_id: None,
             channel_chat_key: None,
-            sharing: Some("personal".to_string()),
+            // Unclassified, NOT 'personal'. A channel session can be read by
+            // everyone in the room, so claiming it is owner-only is the
+            // fail-open answer #217 removed: the personal-content gate treats
+            // Personal as "allowed" and NULL as "not private". Ingress
+            // classifies the session from the chat kind before the first turn
+            // runs (see the channel handlers' `mark_session_*_durable`); this
+            // value is only the honest starting state.
+            sharing: None,
         };
 
         let result = repo

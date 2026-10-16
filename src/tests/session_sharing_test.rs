@@ -131,10 +131,16 @@ async fn a_persisted_classification_is_readable_by_a_later_process() {
 }
 
 #[tokio::test]
-async fn a_channel_session_starts_personal_and_the_handler_upgrades_it() {
+async fn a_channel_session_starts_unclassified_and_the_handler_classifies_it() {
     let db = make_db().await;
     let repo = SessionRepository::new(db.pool().clone());
-    let session = Session::new(Some("t".into()), None, None);
+    // The channel creation path hands over `sharing: None`. It used to stamp
+    // 'personal', which is the fail-open answer #217 removed: a group session
+    // claiming to be owner-only, so the personal-content gate allowed personal
+    // memory into a room several people can read. NULL is the honest state, and
+    // the gate reads it as "not private".
+    let mut session = Session::new(Some("t".into()), None, None);
+    session.sharing = None;
     let resolved = repo
         .insert_or_resolve_channel(&session, "discord:123")
         .await
@@ -142,13 +148,33 @@ async fn a_channel_session_starts_personal_and_the_handler_upgrades_it() {
 
     assert_eq!(
         repo.sharing_of(resolved.id).await.unwrap().as_deref(),
-        Some("personal"),
-        "a channel session is created personal; the handler upgrades a group"
+        None,
+        "a channel session is born unclassified, not personal"
     );
     repo.set_sharing(resolved.id, "shared").await.unwrap();
     assert_eq!(
         repo.sharing_of(resolved.id).await.unwrap().as_deref(),
         Some("shared")
+    );
+}
+
+#[tokio::test]
+async fn the_channel_insert_honours_the_callers_classification() {
+    // The INSERT used to hardcode 'personal' and ignore the field, so a caller
+    // that already knew the audience could not say so.
+    let db = make_db().await;
+    let repo = SessionRepository::new(db.pool().clone());
+    let mut session = Session::new(Some("t".into()), None, None);
+    session.sharing = Some("shared".to_string());
+    let resolved = repo
+        .insert_or_resolve_channel(&session, "discord:456")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.sharing_of(resolved.id).await.unwrap().as_deref(),
+        Some("shared"),
+        "the caller's classification must reach the row"
     );
 }
 

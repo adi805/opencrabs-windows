@@ -190,7 +190,7 @@ fn schedule_detail(app: &App) -> (String, ratatui::style::Color, Vec<Line<'stati
     (" Schedule detail ".to_string(), theme::white(), lines)
 }
 
-fn render_schedule(item: &McScheduleItem) -> Vec<Line<'static>> {
+pub(crate) fn render_schedule(item: &McScheduleItem) -> Vec<Line<'static>> {
     let kind = match item.kind {
         McScheduleKind::Cron => "cron job",
         McScheduleKind::PendingApproval => "pending approval",
@@ -259,8 +259,15 @@ fn render_schedule(item: &McScheduleItem) -> Vec<Line<'static>> {
     if !item.prompt.is_empty() {
         lines.push(blank());
         lines.push(section_heading("Prompt"));
+        // `truncate_str`, not `[..300]`: a byte slice panics when the cut
+        // lands inside a multibyte character, which is the #1919 / #2051 class
+        // (this was its third instance in the tree). Cron prompts are written
+        // from chat, so an arrow or an emoji at the wrong offset is enough.
         let preview = if item.prompt.len() > 300 {
-            format!("{}...", &item.prompt[..300])
+            format!(
+                "{}...",
+                crate::utils::string::truncate_str(&item.prompt, 300)
+            )
         } else {
             item.prompt.clone()
         };

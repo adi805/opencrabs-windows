@@ -8,7 +8,7 @@
 
 mod activity_panel;
 mod analytics_panel;
-mod detail_popup;
+pub(crate) mod detail_popup;
 mod dispatch;
 mod inbox_panel;
 mod layout;
