@@ -365,3 +365,53 @@ fn the_gate_warn_never_displays_below_the_trigger_band() {
         );
     }
 }
+
+/// The dispatch's last arm covers the two states the gate refuses to announce
+/// for. The invariant holds today, but it is a property of two places staying in
+/// step: `gate_announces_compaction` and this `match`. It used to be written as
+/// the panic macro, which fires on the turn path, so a new `PendingState`
+/// variant (or an edit to the gate) would have taken the user's turn down
+/// instead of costing one no-op visit (F-BR-03).
+#[test]
+fn the_dispatch_declines_a_desynced_state_instead_of_panicking() {
+    const SRC: &str = include_str!("../brain/agent/service/compaction.rs");
+
+    // The detector, so the test below can be shown to have teeth.
+    fn panicking_arm(src: &str) -> Option<usize> {
+        src.find("unreachable!(")
+    }
+    if let Some(at) = panicking_arm(SRC) {
+        panic!(
+            "compaction.rs:{} panics on the turn path. A desync between \
+             gate_announces_compaction and the dispatch must cost a no-op visit, \
+             not the user's turn (F-BR-03)",
+            SRC[..at].lines().count()
+        );
+    }
+
+    // Teeth: the same detector has to catch the shape it was written for, or a
+    // green result above proves nothing.
+    assert!(
+        panicking_arm("PendingState::Empty => unreachable!(\"nope\")").is_some(),
+        "the detector no longer matches the panic it exists to catch"
+    );
+
+    let arm = SRC
+        .find("PendingState::StillRunning | PendingState::Applied(_) =>")
+        .expect("the desync arm");
+    let after = &SRC[arm..];
+    let end = after
+        .find("\n        }\n")
+        .expect("the end of the dispatch match");
+    let body = &after[..end];
+
+    assert!(
+        body.contains("return truncated.then_some("),
+        "the desync arm must return rather than fall through into the \
+         summariser: {body}"
+    );
+    assert!(
+        body.contains("tracing::warn!("),
+        "a silent fallback would hide the desync; it has to say so: {body}"
+    );
+}

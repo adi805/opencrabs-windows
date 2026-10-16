@@ -1807,26 +1807,57 @@ impl AgentService {
         std::fs::create_dir_all(&memory_dir)
             .map_err(|e| format!("Failed to create memory directory: {}", e))?;
 
-        let date = chrono::Local::now().format("%Y-%m-%d");
-        let memory_path = memory_dir.join(format!("{}.md", date));
+        let now = chrono::Local::now();
+        let memory_path = memory_dir.join(format!("{}.md", now.format("%Y-%m-%d")));
 
-        // Read existing content (if any — multiple compactions per day stack)
-        let existing = std::fs::read_to_string(&memory_path).unwrap_or_default();
-
-        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-        let new_content = format!(
-            "{}\n\n---\n\n## Auto-Compaction Summary ({})\n\n{}\n",
-            existing.trim(),
-            timestamp,
-            summary
-        );
-
-        std::fs::write(&memory_path, new_content.trim_start())
-            .map_err(|e| format!("Failed to write daily memory log: {}", e))?;
+        append_compaction_summary(&memory_path, summary, now).await?;
 
         tracing::info!("Saved compaction summary to {}", memory_path.display());
         Ok(())
     }
+}
+
+/// Serializes the read-modify-write on the daily memory log.
+///
+/// Every compaction on a day appends to the same file, and the write is a
+/// read-modify-write, so two overlapping visits that both read `existing` and
+/// both write lose one summary silently: the later write wins over a copy that
+/// never saw the earlier one. Background compaction (`spawn_background_compaction`)
+/// makes that overlap possible rather than theoretical.
+///
+/// The lock covers read AND write, which is the pair the defect lives in. A lock
+/// around the write alone would still let the second visit read a file the first
+/// has not published yet.
+static MEMORY_LOG_WRITE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Append one compaction summary to the daily memory log at `path`.
+///
+/// Split out from its caller so the read-modify-write can be tested against a
+/// temp path: the defect is in the pair, and reaching it through
+/// `AgentService` would mean standing up a live service to append a line.
+pub(crate) async fn append_compaction_summary(
+    path: &std::path::Path,
+    summary: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> std::result::Result<(), String> {
+    let _guard = MEMORY_LOG_WRITE.lock().await;
+
+    // Read existing content (if any — multiple compactions per day stack)
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+
+    let new_content = format!(
+        "{}\n\n---\n\n## Auto-Compaction Summary ({})\n\n{}\n",
+        existing.trim(),
+        now.format("%Y-%m-%d %H:%M:%S"),
+        summary
+    );
+
+    // Publish by rename, never by truncate-then-write. `fs::write` opens with
+    // O_TRUNC, so a reader landing in that window sees a zero-byte log, and a
+    // process that dies mid-write leaves one.
+    crate::brain::tools::fs_util::atomic_write_file(path, new_content.trim_start().as_bytes())
+        .await
+        .map_err(|e| format!("Failed to write daily memory log: {}", e))
 }
 
 /// Harness-written plan-state block appended to every compaction summary
