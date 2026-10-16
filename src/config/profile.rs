@@ -788,19 +788,113 @@ pub(crate) fn split_pid_ticks(field: &str) -> Option<(u32, Option<u64>)> {
     Some((pid, ticks))
 }
 
-/// Body of a lock stamp: this process's PID, plus its creation time on
-/// Windows. See [`split_pid_ticks`] for what the extra field buys. A failed
-/// creation-time query writes the bare PID, which the preempt path reads as
-/// unverifiable and refuses -- fail-closed, never a guess.
+/// This process's creation time, in the unit its platform's stamp records.
+///
+/// Windows asks `winlock`; Unix reads field 22 of `/proc/self/stat`
+/// (starttime, in clock ticks since boot). A platform with no reading falls
+/// back to a bare PID.
+#[cfg(windows)]
+fn own_creation_stamp() -> Option<u64> {
+    crate::config::winlock::own_creation_ticks()
+}
+
+#[cfg(unix)]
+fn own_creation_stamp() -> Option<u64> {
+    proc_stat_starttime(std::process::id())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn own_creation_stamp() -> Option<u64> {
+    None
+}
+
+/// Field 22 (starttime, in clock ticks since boot) of `/proc/<pid>/stat`.
+///
+/// Field 2 is the command, parenthesised, and may itself contain spaces and
+/// parentheses, so the fields after it only line up once everything up to the
+/// LAST `)` is skipped; starttime is then the 20th field of the remainder.
+#[cfg(unix)]
+fn proc_stat_starttime(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = stat.rsplit_once(')')?.1;
+    rest.split_whitespace().nth(19)?.parse::<u64>().ok()
+}
+
+/// The kernel's boot time as a Unix timestamp (`btime` in `/proc/stat`).
+#[cfg(unix)]
+fn proc_boot_epoch() -> Option<i64> {
+    let stat = fs::read_to_string("/proc/stat").ok()?;
+    stat.lines()
+        .find_map(|l| l.strip_prefix("btime "))
+        .and_then(|v| v.trim().parse::<i64>().ok())
+}
+
+/// Body of a lock stamp: this process's PID, plus its creation time. See
+/// [`split_pid_ticks`] for what the extra field buys. A failed creation-time
+/// query writes the bare PID, which the read side still checks against the
+/// boot epoch. Fail-closed, never a guess.
 fn owner_stamp() -> String {
     let pid = std::process::id();
-    #[cfg(windows)]
+    match own_creation_stamp() {
+        Some(ticks) => format!("{pid}:{ticks}"),
+        None => pid.to_string(),
+    }
+}
+
+/// Is the process named by a lock stamp still the one that wrote it?
+///
+/// A PID alone is not proof of ownership. A lock file outlives the machine it
+/// was written on, and the kernel hands a freed PID to whatever starts next,
+/// so after a reboot `is_pid_alive` can report a total stranger as the owner.
+/// On Unix that stranger is usually another user's process, where `kill(pid, 0)`
+/// answers EPERM -- indistinguishable from "alive but not mine" -- so the stamp
+/// keeps looking held for as long as that unrelated process lives. The cost is
+/// silent: every channel behind the lock is disabled, the TUI's preempt path
+/// can SIGTERM the stranger, and `instance_running` can report a daemon that is
+/// not there so its cron scheduler is never adopted.
+///
+/// Two checks recover the truth:
+/// 1. Exact creation time -- a stamp carrying one (`pid:ticks`) must match the
+///    live process's own reading; a mismatch is a recycled PID, not an owner.
+/// 2. Boot epoch -- a stamp written before the machine booted cannot name any
+///    process alive now, whatever its PID resolves to. Covers bare-PID stamps
+///    written by builds that predate this one.
+///
+/// When neither check can be taken (no `/proc`, unreadable file) the answer is
+/// `true`: refusing to start is worse than a duplicate start.
+fn stamp_owner_is_live(pid_field: &str, lock_file: &Path) -> bool {
+    let Some((pid, ticks)) = split_pid_ticks(pid_field) else {
+        return false;
+    };
+    if !is_pid_alive(pid) {
+        return false;
+    }
+    #[cfg(unix)]
     {
-        if let Some(ticks) = crate::config::winlock::own_creation_ticks() {
-            return format!("{pid}:{ticks}");
+        if let Some(recorded) = ticks
+            && let Some(live) = proc_stat_starttime(pid)
+            && live != recorded
+        {
+            return false;
+        }
+        if let Some(boot) = proc_boot_epoch()
+            && let Ok(meta) = fs::metadata(lock_file)
+            && let Ok(written) = meta.modified()
+        {
+            let written = written
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(i64::MAX);
+            if written < boot {
+                return false;
+            }
         }
     }
-    pid.to_string()
+    #[cfg(not(unix))]
+    {
+        let _ = (ticks, lock_file);
+    }
+    true
 }
 
 /// Check and acquire a token lock for a channel credential.
@@ -834,9 +928,13 @@ pub fn acquire_token_lock(channel: &str, token_hash: &str) -> Result<()> {
                     // fall through to overwrite
                 }
                 Some(locked_pid) => {
+                    // Liveness comes from the stamp, not the bare PID: see
+                    // [`stamp_owner_is_live`] for why a recycled PID must not
+                    // count as a live owner.
+                    let owner_is_live = stamp_owner_is_live(parts[1], &lock_file);
                     if locked_profile == current_profile {
                         // Same profile — only one instance per profile allowed.
-                        if is_pid_alive(locked_pid) && locked_pid != pid {
+                        if owner_is_live && locked_pid != pid {
                             bail!(
                                 "profile '{}' already running (PID {}). Only one instance per profile allowed.",
                                 current_profile,
@@ -844,7 +942,7 @@ pub fn acquire_token_lock(channel: &str, token_hash: &str) -> Result<()> {
                             );
                         }
                         // Stale lock from same profile — overwrite
-                    } else if is_pid_alive(locked_pid) {
+                    } else if owner_is_live {
                         // Different profile holds it with a live process.
                         bail!(
                             "channel '{}' token is locked by profile '{}' (PID {}). \
@@ -1075,7 +1173,12 @@ pub fn instance_running(profile: &str) -> bool {
 pub(crate) fn instance_running_in(lock_dir: &Path, profile: &str) -> bool {
     let path = lock_dir.join(format!("{profile}.lock"));
     match fs::read_to_string(&path) {
-        Ok(contents) => split_pid_ticks(&contents).is_some_and(|(pid, _)| is_pid_alive(pid)),
+        // The instance stamp is a bare `pid[:ticks]` — no profile prefix — so
+        // the whole file is the PID field. `stamp_owner_is_live` rather than
+        // `is_pid_alive`: a recycled PID would otherwise report a daemon that
+        // is not running, and the multi-profile scheduler would never adopt
+        // this profile's cron jobs.
+        Ok(contents) => stamp_owner_is_live(contents.trim(), &path),
         Err(_) => false, // missing lock file => no live instance => adoptable
     }
 }
@@ -1295,7 +1398,11 @@ pub(crate) fn foreign_lock_owners(
             Some(pair) => pair,
             None => continue,
         };
-        if pid == self_pid || !is_pid_alive(pid) {
+        // The preempt path SIGTERMs whatever this scan returns, so a bare
+        // `is_pid_alive` here is not enough: a stamp naming a recycled PID
+        // would hand an unrelated process to `kill`. Same stamp discipline as
+        // the token lock itself.
+        if pid == self_pid || !stamp_owner_is_live(pid_field, &path) {
             continue;
         }
         // Lock file is `<channel>_<hash>.lock` — channel is everything
