@@ -12,13 +12,32 @@
 //! test builds. Profile-scoped test homes (`~/.opencrabs/profiles/<name>`)
 //! are not the live default home and pass.
 
-use std::path::Path;
+use std::path::{Component, Path};
 
-/// `Some(reason)` when a test build is about to write a file that sits
-/// directly in the live default home. Callers pass the resolved target and
-/// the real base directory so the rule is testable without touching disk.
+/// `Some(reason)` when a test build is about to write a file under the live
+/// default home. Callers pass the resolved target and the real base directory so
+/// the rule is testable without touching disk.
+///
+/// Everything under the home is refused, not just its direct children. The check
+/// used to be `target.parent() != Some(live_default_home)`, which holds for
+/// `~/.opencrabs/memory/YYYY-MM-DD.md`, `~/.opencrabs/agents/session/<id>.json`,
+/// `~/.opencrabs/rsi/…` and every other path one directory down: the guard
+/// covered `~/.opencrabs/<file>` and nothing else. #1399 happened to be a
+/// `config.toml` write, which is why the gap went unnoticed, but the incident it
+/// exists to prevent is a test build rewriting live state, and the memory log
+/// and session store are live state.
+///
+/// `profiles/<name>/` is exempt on purpose: that is a different home, and it is
+/// the override mechanism itself. A test running under `with_home_override` /
+/// `in_temp_home` writes there.
 pub(crate) fn refusal_for(target: &Path, live_default_home: &Path) -> Option<String> {
-    if target.parent() != Some(live_default_home) {
+    let relative = target.strip_prefix(live_default_home).ok()?;
+    let mut parts = relative.components();
+    let under_profiles = matches!(
+        parts.next(),
+        Some(Component::Normal(first)) if first.to_str() == Some("profiles")
+    ) && parts.next().is_some();
+    if under_profiles {
         return None;
     }
     Some(format!(
