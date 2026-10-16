@@ -112,20 +112,32 @@ fn default_string_type() -> String {
 /// scanning a shell command template so each value is escaped correctly (#523).
 #[derive(Clone, Copy, PartialEq)]
 enum ShellQuoteCtx {
+    /// Outside any quoting in the template. The value is wrapped in single
+    /// quotes, because no escape sequence makes it inert here (#OC-SEC-01).
     None,
     Single,
     Double,
 }
 
 /// Escape a string value for the shell quoting context it is substituted into
-/// (#523). Single-quoted and unquoted spans use the exact previous single-quote
-/// escaping (`'` → `'\''`) so working templates are byte-for-byte unchanged; a
-/// double-quoted span backslash-escapes the characters the shell still expands
-/// there (`\`, `` ` ``, `$`, `"`). `!` is intentionally not escaped: history
-/// expansion is off in the non-interactive `sh -c` these commands run under.
+/// (#523, #OC-SEC-01). A single-quoted span keeps the exact previous
+/// single-quote escaping (`'` → `'\''`), so working templates are byte-for-byte
+/// unchanged. A double-quoted span backslash-escapes the characters the shell
+/// still expands there (`\`, `` ` ``, `$`, `"`). `!` is intentionally not
+/// escaped: history expansion is off in the non-interactive `sh -c` these
+/// commands run under.
+///
+/// An UNQUOTED span has no escape that makes a value inert: `;`, `|`, `&&`,
+/// newline and `$(...)` are all live there, and escaping the quote character
+/// alone left every one of them executable. The value is therefore wrapped in
+/// single quotes, which neutralises the whole metacharacter class while keeping
+/// ordinary values (`/tmp/x`, `5`, `--verbose`) byte-identical after the shell
+/// removes the quotes. A template that meant to splice a shell fragment loses
+/// that ability; that was the vulnerability, not a feature.
 fn escape_for_shell_ctx(s: &str, ctx: ShellQuoteCtx) -> String {
     match ctx {
-        ShellQuoteCtx::Single | ShellQuoteCtx::None => s.replace('\'', "'\\''"),
+        ShellQuoteCtx::None => format!("'{}'", s.replace('\'', "'\\''")),
+        ShellQuoteCtx::Single => s.replace('\'', "'\\''"),
         ShellQuoteCtx::Double => s
             .replace('\\', "\\\\")
             .replace('`', "\\`")
