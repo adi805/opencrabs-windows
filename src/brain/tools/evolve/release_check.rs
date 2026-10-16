@@ -247,8 +247,64 @@ pub(crate) fn has_platform_asset(release: &serde_json::Value, tag: &str) -> bool
         .unwrap_or(false)
 }
 
-/// Compare semver strings: returns true if `latest` is strictly newer than `current`.
+/// The version at which this repository restarted its own release line.
+///
+/// The fork inherited upstream's `0.5.x` tags and then restarted its own
+/// versioning at `0.1.0`. A numeric compare reads that restart as a downgrade:
+/// `[0,1,0] > [0,5,13]` is false, so `releases/latest` could resolve to the
+/// fork's very first release while every host still on the inherited line was
+/// told "already on latest" and never offered it. That is the same class as the
+/// non-semver tag that made `releases/latest` unusable before this file existed
+/// (#151), just with a well-formed tag instead of a malformed one.
+const RELEASE_LINE_RESTART: &str = "0.1.0";
+
+/// Inherited `MAJOR.MINOR` lines that the restarted line supersedes.
+///
+/// A restart cannot be inferred from the numbers, because `0.1.0` really is
+/// older than `0.5.13` as a version; it has to be declared. Each entry names a
+/// line whose releases are all superseded by [`RELEASE_LINE_RESTART`] and
+/// anything above it.
+///
+/// Delete an entry once no install can still be running that line. A standing
+/// exemption outlives its reason, which is exactly how the dead-knob allowlist
+/// went stale and hid three dead keys (#260).
+const SUPERSEDED_INHERITED_LINES: &[&str] = &["0.5"];
+
+/// The `MAJOR.MINOR` pair of a version, or `None` when it carries fewer than
+/// two numeric components.
+fn major_minor(v: &str) -> Option<(u64, u64)> {
+    let mut parts = v.split('.').filter_map(|s| s.parse::<u64>().ok());
+    Some((parts.next()?, parts.next()?))
+}
+
+/// Whether `latest` supersedes `current` because this repo restarted its
+/// release line, which the numeric order cannot express.
+fn supersedes_by_release_line_restart(latest: &str, current: &str) -> bool {
+    let parse = |v: &str| -> Vec<u64> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
+    if parse(latest) < parse(RELEASE_LINE_RESTART) {
+        // A pre-restart version cannot supersede anything.
+        return false;
+    }
+    let Some(current_line) = major_minor(current) else {
+        return false;
+    };
+    SUPERSEDED_INHERITED_LINES
+        .iter()
+        .any(|line| major_minor(line) == Some(current_line))
+}
+
+/// Compare semver strings: returns true if `latest` is strictly newer than
+/// `current`.
+///
+/// Two ways to be newer, in this order: a declared release-line restart, then
+/// the numeric order. The restart is checked first because it is precisely the
+/// case the numeric order gets backwards, and it is scoped to the inherited
+/// lines so it can never turn a real downgrade into an update: `0.1.0` does
+/// not supersede `0.2.0`.
 pub fn is_newer(latest: &str, current: &str) -> bool {
+    if supersedes_by_release_line_restart(latest, current) {
+        return true;
+    }
     let parse = |v: &str| -> Vec<u64> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
     let l = parse(latest);
     let c = parse(current);
