@@ -866,6 +866,7 @@ pub mod undeclared_source_modules_test;
 pub mod usage_categorizer_test;
 pub mod usage_dashboard_test;
 pub mod usage_data_test;
+pub mod usage_layout_test;
 pub mod usage_ledger_attribution_test;
 pub mod utils_cwd_test;
 pub mod utils_file_extract_test;
