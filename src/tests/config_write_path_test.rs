@@ -58,7 +58,6 @@ fn the_real_paths_are_accepted() {
         ("browser", "cdp_endpoint", "\"\""),
         ("cron", "default_model", "\"x\""),
         ("database", "path", "\"/tmp/x.db\""),
-        ("debug", "debug_lsp", "false"),
         ("image", "generation", "{ enabled = true, model = \"x\" }"),
         ("logging", "level", "\"info\""),
         ("providers.custom.myrepo", "base_url", "\"http://x\""),
@@ -160,7 +159,6 @@ fn client_facing_read_list_matches_the_struct_derivation() {
         "provider_registry",
         "database",
         "logging",
-        "debug",
         "providers",
         "tui",
     ] {

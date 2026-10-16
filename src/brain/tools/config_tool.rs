@@ -147,7 +147,6 @@ impl ConfigTool {
                 )
             }
             Some("logging") => format_toml(&config.logging),
-            Some("debug") => format_toml(&config.debug),
             Some("channels") => format_toml(&config.channels),
             Some("provider_registry") => format_toml(&config.provider_registry),
             Some("database") => format_toml(&config.database),

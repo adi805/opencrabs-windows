@@ -61,15 +61,12 @@ from pathlib import Path
 # made rather than a finding someone silenced. Anything here that outlives its
 # fix is a bug in this list.
 KNOWN_DEAD: dict[str, str] = {
-    # Placeholder channel sections: the config says `enabled = true`, the build
-    # has no module, and nothing warns the operator.
-    "google_chat": "fixed in #255",
-    "imessage": "fixed in #255",
-    "signal": "#260 (missed by #255, belongs in the same list)",
-    # Written from an env var, read by nothing: the override changes no behaviour.
-    "silence_group_start": "fixed in #254",
-    "debug_lsp": "#260",
-    "profiling": "#260",
+    # Empty, and it should stay that way: every entry that lived here was
+    # removed by the fix it named. `google_chat` and `imessage` (#255) and
+    # `silence_group_start` (#254) had already outlived theirs, which is the
+    # bug this table warns about, and `signal`, `debug_lsp` and `profiling`
+    # went with #260. A non-empty table means work in flight, not a standing
+    # exemption.
 }
 
 # Fields with no `.field` reader that are NOT dead: consulted by serde, by

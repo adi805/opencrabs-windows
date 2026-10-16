@@ -375,7 +375,6 @@ fn schema_derived_sections_are_the_registry() {
         "provider_registry",
         "database",
         "logging",
-        "debug",
         "providers",
     ] {
         assert!(

@@ -37,7 +37,6 @@ fn an_exact_section_is_unchanged() {
         "cron",
         "daemon",
         "database",
-        "debug",
         "doctor",
         "image",
         "logging",
