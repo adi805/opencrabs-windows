@@ -17,6 +17,7 @@ use crate::usage::cards;
 use crate::usage::data::{DashboardData, ModelEntry, Period};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use uuid::Uuid;
 
 /// The run from the issue: 14,508,042 tokens, 14,103,232 of them cache reads,
 /// billed $0.5246 by the provider. The share of tokens is 97.2%.
@@ -185,5 +186,90 @@ fn by_model_card_leaves_the_cell_blank_for_a_model_without_a_split() {
         text.matches("% cache").count(),
         1,
         "exactly the measured model may show a share, buffer was:\n{text}"
+    );
+}
+
+// ── the MAIN commit path writes the cache split too (F-DB-01) ─────────
+//
+// `usage_ledger` kept only a token total and a cost, so the By Model card could
+// not say how much of a model's tokens were served from cache. The column was
+// added (#2027) and the fallback path `UsageLedgerRepository::record` wrote it,
+// but `commit_turn`'s INSERT listed five columns and dropped it. The result:
+// the split depended on whether the journal happened to open, and the dashboard
+// silently lost the cache share on every normal turn.
+
+/// Drive the real `commit_turn` for one turn and read the ledger row back.
+async fn ledger_row_after_commit(cache_read: Option<i64>) -> Option<i64> {
+    let home = tempfile::tempdir().expect("tempdir");
+    crate::config::profile::with_home_override_async(home.path().to_path_buf(), async move {
+        let db = Database::connect_in_memory().await.expect("in-memory DB");
+        db.run_migrations().await.expect("migrations");
+        let service = SessionService::new(ServiceContext::new(db.pool().clone()));
+        let session = service
+            .create_session(Some("ledger split".to_string()))
+            .await
+            .expect("session");
+
+        // commit_turn settles a turn that is still `running`; an unknown id
+        // changes zero rows and rolls the whole transaction back.
+        let turn_id = crate::db::repository::TurnRepository::new(db.pool().clone())
+            .open(session.id)
+            .await
+            .expect("open turn");
+
+        crate::db::turn_commit::commit_turn(
+            db.pool(),
+            crate::db::turn_commit::TurnCommit {
+                turn_id: &turn_id,
+                message_id: Uuid::new_v4(),
+                session_id: session.id,
+                provider: "zai",
+                model: "glm-5.3-flash",
+                token_count: HEAVY_TOKENS,
+                cost: HEAVY_COST,
+                input_tokens: Some(HEAVY_TOKENS),
+                cache_creation_tokens: Some(0),
+                cache_read_tokens: cache_read,
+                duration_secs: Some(3),
+            },
+        )
+        .await
+        .expect("commit turn");
+
+        db.pool()
+            .get()
+            .await
+            .expect("pool")
+            .interact(move |conn| {
+                conn.query_row(
+                    "SELECT cache_read_tokens FROM usage_ledger ORDER BY id DESC LIMIT 1",
+                    [],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+            })
+            .await
+            .expect("interact")
+            .expect("ledger row must exist")
+    })
+    .await
+}
+
+#[tokio::test]
+async fn commit_turn_records_the_cache_read_split_in_the_ledger() {
+    assert_eq!(
+        ledger_row_after_commit(Some(HEAVY_READS)).await,
+        Some(HEAVY_READS),
+        "the main commit path must write the same split the fallback path writes"
+    );
+}
+
+#[tokio::test]
+async fn commit_turn_with_no_reported_split_stays_none() {
+    // NULL, never 0: a provider that reported nothing is not a provider that
+    // reported zero cache reads.
+    assert_eq!(
+        ledger_row_after_commit(None).await,
+        None,
+        "an unreported split must stay NULL, not become a zero"
     );
 }
