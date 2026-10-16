@@ -274,7 +274,27 @@ impl SessionRepository {
         Ok(winner)
     }
 
-    /// Update an existing session
+    /// Update the mutable session columns of an existing row.
+    ///
+    /// This is deliberately NOT a whole-row write. It sets exactly the columns
+    /// in the statement below, and two fields on [`Session`] are excluded on
+    /// purpose, so mutating them in memory and calling this changes nothing on
+    /// disk and reports no error:
+    ///
+    /// - `sharing` is the durable audience classification (#217), written only
+    ///   by [`Self::set_sharing`]. It is a safety mark rather than turn state,
+    ///   so a routine save during a turn must not be able to overwrite it with
+    ///   whatever the in-memory copy happens to hold.
+    /// - `channel_chat_key` is the stable chat identity (#1721), written only
+    ///   by [`Self::insert_or_resolve_channel`]. It backs a unique index, and a
+    ///   generic save that rewrote it could move a live chat's row onto another
+    ///   key, or collide with one already there.
+    ///
+    /// `created_at` is excluded for the obvious reason: it does not change.
+    ///
+    /// The contract is pinned by `update_is_not_a_whole_row_write` in
+    /// `src/tests/db_repository_session_test.rs`, so it cannot rot into a
+    /// surprise.
     pub async fn update(&self, session: &Session) -> Result<()> {
         let s = session.clone();
         self.pool
