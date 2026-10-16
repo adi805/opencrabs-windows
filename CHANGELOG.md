@@ -1593,6 +1593,15 @@ version number covers.
 224 commits of internal work not enumerated here: 88 refactors, 59 test additions, 17 chores, 14 formatting passes, 7 CI changes, and the remainder small reverts and
 housekeeping. Run `git log v0.3.83..v0.5.0 --no-merges` for the full list.
 
+### 👥 Contributors
+
+4 contributors this release:
+
+- @adolfousier (Adolfo Usier)
+- @leshchenko1979 (Alexey Leshchenko)
+- @moneyacademyKE (Moe)
+- @adi805 (Syafriadi)
+
 ### 📊 Stats
 
 - 595 commits since v0.3.83
