@@ -802,6 +802,10 @@ pub struct App {
     /// Onboarding wizard state
     pub onboarding: Option<OnboardingWizard>,
     pub force_onboard: bool,
+    /// Set when this launch is a first run. `initialize_async` uses it to
+    /// provision the built-in provider and greet the user, with no wizard:
+    /// straight to chat is the design, and the wizard is opt-in (#2079).
+    pub(crate) first_run: bool,
 
     /// Sessions currently processing (have in-flight agent tasks)
     pub(crate) processing_sessions: HashSet<Uuid>,
@@ -1134,6 +1138,7 @@ impl App {
             mouse_frag_gate: crate::tui::app::mouse_frag::MouseFragGate::default(),
             onboarding: None,
             force_onboard: false,
+            first_run: false,
             processing_sessions: HashSet::new(),
             session_cancel_tokens: HashMap::new(),
             sessions_with_unread: HashSet::new(),
@@ -1451,21 +1456,31 @@ impl App {
         crate::config::Config::cleanup_empty_custom_providers();
 
         let is_first = super::onboarding::is_first_time();
-        if self.force_onboard || is_first {
-            self.force_onboard = false;
-            tracing::info!("[init] Starting onboarding wizard");
-            // Resume where the user left off rather than restarting from step
-            // one. `resumed()` falls back to a fresh wizard when there is no
-            // recorded progress, so an explicit `--onboard` still starts clean.
-            let mut wizard = OnboardingWizard::resumed();
-            wizard.is_first_time = is_first;
-            self.onboarding = Some(wizard);
-            self.mode = AppMode::Onboarding;
-            return false;
-        }
-        self.mode = AppMode::Chat;
 
-        true
+        match plan_launch(self.force_onboard, is_first) {
+            LaunchPlan::Wizard => {
+                self.force_onboard = false;
+                tracing::info!("[init] Starting onboarding wizard");
+                // Resume where the user left off rather than restarting from
+                // step one. `resumed()` falls back to a fresh wizard when there
+                // is no recorded progress, so an explicit `--onboard` still
+                // starts clean.
+                let mut wizard = OnboardingWizard::resumed();
+                wizard.is_first_time = is_first;
+                self.onboarding = Some(wizard);
+                self.mode = AppMode::Onboarding;
+                false
+            }
+            LaunchPlan::Chat { first_run } => {
+                // A first run has to bring the built-in provider online and
+                // say hello. Flagged here, done in `initialize` once the
+                // session exists, because the greeting is a message and
+                // messages need a session.
+                self.first_run = first_run;
+                self.mode = AppMode::Chat;
+                true
+            }
+        }
     }
 
     /// Initialize the app by loading or creating a session
@@ -1547,6 +1562,14 @@ impl App {
             self.provider_model_for_current_session(),
             self.current_session.as_ref().map(|s| s.id),
         );
+
+        // Zero-setup first run (#2079): bring the built-in provider online and
+        // let the agent open the conversation. Done here rather than in
+        // `initialize_sync` because the greeting is a message, and a message
+        // needs the session that was just created.
+        if self.first_run {
+            self.provision_first_run().await;
+        }
 
         // Pre-load sessions for restored split panes so they render
         // immediately instead of showing empty until focused.
@@ -4478,6 +4501,33 @@ impl App {
             self.input_buffer.replace_range(colon..end, emoji);
             self.cursor_position = colon + emoji.len();
             self.dismiss_emoji_picker();
+        }
+    }
+}
+
+/// Which screen a launch opens on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LaunchPlan {
+    /// The opt-in wizard: `--onboard` or `/onboard`.
+    Wizard,
+    /// Straight to chat. `first_run` marks the launch that still has to bring
+    /// the built-in provider online and greet the user (#2079).
+    Chat { first_run: bool },
+}
+
+/// Decide the landing screen.
+///
+/// Zero setup is the design: a download, open, and the built-in provider is
+/// already there talking to you. So a first run goes to chat, NOT to the
+/// wizard, and the wizard only appears when the user asks for it with
+/// `--onboard` / `/onboard` (#2079). Landing a new install on step 1 of 6 is
+/// the regression this encodes against.
+pub(crate) fn plan_launch(force_onboard: bool, is_first_time: bool) -> LaunchPlan {
+    if force_onboard {
+        LaunchPlan::Wizard
+    } else {
+        LaunchPlan::Chat {
+            first_run: is_first_time,
         }
     }
 }

@@ -674,6 +674,17 @@ impl OnboardingWizard {
     pub fn from_config(config: &crate::config::Config) -> Self {
         let mut wizard = Self::new();
 
+        // The selection below is derived from `config` alone. `new()` pre-fills
+        // it from the live config on disk, and inheriting that made the answer
+        // depend on the machine running it: on a CI runner with an enabled
+        // `claude-cli` in its own config.toml, that pre-fill survived every arm
+        // here, so `/models` opened on provider 8 while the fixture asked for
+        // the built-in one at 17 (#2077). Reset to the no-config default first,
+        // so the arms are the only thing that can set the selection.
+        wizard.ps.selected_provider = 0;
+        wizard.ps.api_key_input.clear();
+        wizard.ps.custom_model.clear();
+
         // Determine which provider is configured and set selected_provider.
         // Routes by id via `index_of_provider` so reordering PROVIDERS never
         // requires bumping numeric literals in this block.
@@ -873,10 +884,31 @@ impl OnboardingWizard {
             {
                 wizard.ps.custom_model = model.clone();
             }
+        } else if config
+            .providers
+            .opencrabs
+            .as_ref()
+            .is_some_and(|p| p.enabled)
+        {
+            // The built-in provider, same as `new()` handles it. This arm was
+            // the one missing from the chain, so an enabled OpenCrabs section
+            // fell through to the custom-provider fallback and `/models`
+            // opened on the wrong entry (#2079).
+            wizard.ps.selected_provider = resolve("opencrabs");
+            wizard.ps.api_key_input = EXISTING_KEY_SENTINEL.to_string();
+            if let Some(model) = &config
+                .providers
+                .opencrabs
+                .as_ref()
+                .and_then(|p| p.default_model.clone())
+            {
+                wizard.ps.custom_model = model.clone();
+            }
         }
 
-        // Detect if we have an existing API key for the selected provider
-        wizard.ps.detect_existing_key();
+        // Key presence comes from the config we were handed, never from the
+        // live config.toml on this machine (#2077).
+        wizard.ps.detect_existing_key_from(config);
         wizard.ps.reload_config_models();
         wizard.ps.resolve_selected_model_index();
 
