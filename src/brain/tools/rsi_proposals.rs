@@ -170,7 +170,27 @@ impl RsiProposalsTool {
             proposal.skill.description.replace('\n', " ").trim(),
             proposal.skill.body.trim_end(),
         );
-        if let Err(e) = std::fs::write(&skill_path, contents) {
+
+        // A SKILL.md that does not register is invisible: `load_all_skills`
+        // parses each file and a malformed frontmatter falls back to the
+        // built-in skill of that name, so the user sees the wrong workflow
+        // rather than an error. Parse what is about to be written with the SAME
+        // parser the loader uses, so an installed skill is one that loads
+        // (F-BR-07).
+        if let Err(e) = crate::brain::skills::Skill::parse(
+            &proposal.skill.name,
+            &contents,
+            crate::brain::skills::SkillSource::User,
+        ) {
+            return Err(format!(
+                "refusing to install skill '{}': the file would not register ({e})",
+                proposal.skill.name
+            ));
+        }
+
+        // Publish by rename: a truncated SKILL.md is a skill that does not
+        // register, which is the failure this whole path exists to avoid.
+        if let Err(e) = crate::utils::plan_files::write_atomic(&skill_path, &contents) {
             return Err(format!("write {}: {e}", skill_path.display()));
         }
 
