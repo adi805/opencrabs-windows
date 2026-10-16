@@ -1103,6 +1103,7 @@ pub mod shell_scan_test;
 pub mod skill_gate_test;
 pub mod slack_handler_test;
 pub mod slack_history_dedup_test;
+pub mod slack_interaction_admission_test;
 pub mod slack_thread_persistence_test;
 #[cfg(feature = "telegram")]
 pub mod stale_topic_eviction_test;
