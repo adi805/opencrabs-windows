@@ -23,6 +23,25 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+/// May this Slack caller act on the SHARED session?
+///
+/// `provider:` and `model:` both read `state.shared_session` and call
+/// `swap_provider_for_session` on it, so an ungated tap re-points the provider
+/// for the whole room, from a channel where anyone who can see the message can
+/// click. They shipped with no gate at all, while the two neighbouring arms
+/// (`session:` and the approval buttons, OC-01) both require `is_owner`, and
+/// the message path refuses a non-allowlisted caller outright
+/// (deny-by-default, OC-02).
+///
+/// The rule here is therefore the same one the `session:` arm already applies:
+/// the shared session belongs to the owner, and only the owner may change what
+/// it runs on. Discord gates at the top of its component branch for the same
+/// reason (discord/agent.rs:595-620); Slack keeps the per-arm shape, because
+/// the `session:` arm needs its own owner/non-owner split.
+fn may_act_on_shared_session(sl_cfg: &crate::config::types::SlackConfig, user_id: &str) -> bool {
+    sl_cfg.is_owner(user_id)
+}
+
 /// Socket Mode interaction callback — handles button clicks for tool approvals.
 pub async fn on_interaction(
     event: SlackInteractionEvent,
@@ -111,6 +130,22 @@ pub async fn on_interaction(
 
                 // Provider picker callback → show models for that provider
                 if let Some(provider_name) = action_id.strip_prefix("provider:") {
+                    let caller_id = block_actions
+                        .user
+                        .as_ref()
+                        .map(|u| u.id.0.as_str())
+                        .unwrap_or("");
+                    if !may_act_on_shared_session(
+                        &state.config_rx.borrow().channels.slack,
+                        caller_id,
+                    ) {
+                        tracing::warn!(
+                            "Slack: non-owner {} clicked '{}' — refused (F-CH-02)",
+                            caller_id,
+                            action_id
+                        );
+                        continue;
+                    }
                     let resp = crate::channels::commands::models_for_provider(provider_name).await;
                     tracing::info!("Slack: showing models for provider {}", provider_name);
                     if let Some(ref channel) = block_actions.channel {
@@ -243,6 +278,22 @@ pub async fn on_interaction(
 
                 // Model switch callback (format: model:<provider>:<model>)
                 if let Some(rest) = action_id.strip_prefix("model:") {
+                    let caller_id = block_actions
+                        .user
+                        .as_ref()
+                        .map(|u| u.id.0.as_str())
+                        .unwrap_or("");
+                    if !may_act_on_shared_session(
+                        &state.config_rx.borrow().channels.slack,
+                        caller_id,
+                    ) {
+                        tracing::warn!(
+                            "Slack: non-owner {} clicked '{}' — refused (F-CH-02)",
+                            caller_id,
+                            action_id
+                        );
+                        continue;
+                    }
                     let (provider_name, model_name) = if let Some((p, m)) = rest.split_once(':') {
                         (Some(p), m)
                     } else {
