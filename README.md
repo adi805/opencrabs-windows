@@ -225,7 +225,7 @@ Recall falling is the point: the old rule answered almost everything, which is e
 
 ### Structural code search ([full report](src/eval/results/code-graph-structural-v1.md))
 
-Measured on this repository (1,383 `.rs` files), ground truth locked by grep before any blind search. The symbol graph (`code-graph`, on by default) adds a structural lane beside FTS5+vector:
+Measured on this repository (1,902 `.rs` files), ground truth locked by grep before any blind search. The symbol graph (`code-graph`, on by default) adds a structural lane beside FTS5+vector:
 
 | Query class | Before (FTS5+vector) | After (+ symbol graph) |
 |---|---|---|
@@ -5045,7 +5045,7 @@ cargo build --release
 # Small release build
 cargo build --profile release-small
 
-# Run tests (10,366 tests: 1,079 test files under src/tests/, where tests
+# Run tests (10,762 tests: 1,119 test files under src/tests/, where tests
 # belong — zero inline blocks in production files);
 # 38 slower ones are #[ignore]d to keep the default
 # run fast: profile tests that touch ~/.opencrabs, browser end-to-end

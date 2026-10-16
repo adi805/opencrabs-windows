@@ -7,6 +7,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.10] - 2026-10-16
+
+99 commits since v0.5.5, 4 contributors. 213 files changed, +17,230 / -1,738 lines.
+
+The release that works the second you install it. OpenCrabs now ships its own provider inside the binary: no account, no API key, no sign-up. It serves DeepSeek v4.1 Flash, a 200k-context multimodal model, so text and attached images both work on the first run. Onboarding was rebuilt around that first run: a quick-start welcome interviews the user, asks only for what is missing, names the session's provider and model, and offers next steps, and the built-in provider is wired into both the quick-start and the advanced path with vision and image generation on by default. Its context window is pinned at 200k and held by host, and install tokens are redacted from logs and kept out of Debug output. The provider chain got sturdier: a 429 that declares a long wait parks that provider and routes around it instead of poisoning the fallback, a lapsed cooldown no longer drops the primary from the chain, a declared-wait cooldown no longer makes the fallback sticky, every compatible provider shares one 120s stream idle default, and providers that need it now route over the Responses API. Attachments became first-class across every channel: Discord, Slack and Trello all save inbound files to the channel attachment store, Discord and Slack store DM turns in channel_messages, and the answer now posts before its suggestion buttons on Discord, Slack and WhatsApp. Discord tool cards became durable and paginated, surviving restarts in SQLite with a Log view, collapsed repeats and a colored bar. The TUI gained a full-screen responsive /usage and a /mission-control that adapts to the terminal width, /models opens on the session's provider and model and switches directly on a full provider/model argument, and the final answer stays visible when tools run after its text. Usage accounting grew a cache-read split with prices on the cards, and model costs come from the ledger rather than a cache-blind estimate. Voice serves stt_model and tts_model from any provider and splits TTS chunks on character boundaries. The plan tool locks a per-task spec check at start and runs it at completion. motion-graphics moved to an opt-in skill template. WhatsApp gained newsletter creation from the tool surface and live tool blocks on background-completion turns, and Slack got the same live tool flow on background resume.
+
+### ✨ Features
+
+- `ed3f5e07` **debug**: log the matched pair when the announcement-loop guard trips (#2052)
+- `4dff2cd0` **tui**: make /usage a full-screen responsive screen (#2073)
+- `94b9f850` **skills**: ship motion-graphics as an opt-in template, not a built-in (#1991)
+- `dccd4b94` **whatsapp**: create and post to a newsletter from the tool surface (#1827)
+- `d809bd05` **discord**: tool cards survive restarts, stored in SQLite (#1880)
+- `0ab7dd53` **discord**: paged tool card with Log, collapsed repeats and a colored bar (#1880)
+- `99681af6` **plan**: generate a per-task spec check at start and confirm before lock (#2063)
+- `f68327ba` **plan**: lock a per-task spec check at start and run it at complete (#1904)
+- `d03ede28` **usage**: record the cache-read split in the usage ledger (#2062)
+- `069e627a` **usage**: cache breakdown with prices on the usage cards (#2027)
+- `a5625f1c` **openai**: route providers that need it over the Responses API (#2059)
+- `ea86c735` **telegram**: userbot-download CLI command
+- `d589dfb6` **voice**: serve stt_model and tts_model from any provider
+- `5819a822` **config**: set generation_model on the built-in OpenCrabs provider (#2054)
+- `11ba4d6d` **onboarding**: quick-start welcome asks only about what is missing (#2048)
+- `1020ccd5` **config**: enable vision on the built-in OpenCrabs provider (#2047)
+- `cdf39e45` **sanitize**: redact ocp_ built-in provider install tokens (#2047)
+- `75cb5f11` **onboarding**: built-in OpenCrabs provider in advanced and quick start (#2047, #2048)
+- `44e71883` **provider**: list the built-in OpenCrabs model in the example config (#2047)
+- `6fe59821` **provider**: register the built-in OpenCrabs provider (#2047)
+- `a61e5b01` **provider**: request and store the built-in provider's install token (#2047)
+- `5bfd7de9` **provider**: store the built-in provider's install ID and token (#2047)
+- `2ce43d14` **provider**: install-token client for the built-in OpenCrabs provider (#2047)
+- `98d4cc21` **onboarding**: quick-start welcome names the session's provider and model
+- `81271c5e` **onboarding**: quick-start welcome names the default model and offers next steps (#2048)
+- `884545d1` **onboarding**: quick start gets its own welcome that interviews the user
+- `5b71e2f2` **generate_image**: accept several input images on Gemini and OpenAI-compatible backends (#2045)
+- `54e300f9` **db**: add ToolExecutionRepository::count_for_session
+- `d21300b9` **onboarding**: OpenCode asks for its Go or Zen plan before the key (#2040)
+- `fa6c64d6` **whatsapp**: background-completion turns show a live tool block (#2023)
+- `cc73a9d5` **slack**: background resume turns show the live tool flow (#1986)
+
+### 🔧 Fixes
+
+- `a2d7aae4` **cron**: apply channel converters before delivery
+- `bfb090d9` **telegram**: record the scripted wait in the spacing ledger (#2076)
+- `47970a5a` **tui**: draw the new full-screen screens with theme colours
+- `fbf6ac6b` **tui**: make /mission-control adapt to the terminal width (#2074)
+- `90102245` **tui**: unfocused split panes draw tool blocks the way the focused pane does (#2075)
+- `03885a52` **db**: stop publishing GLOBAL_POOL in test builds (#2072)
+- `2b11a07f` **discord**: tool rows finish their own call by id, not by name (#1880)
+- `76e6712b` **provider**: hold the 200k cap on the built-in endpoint by host (#2067)
+- `eda566e4` **provider**: pin the built-in OpenCrabs provider to a fixed 200k context window (#2066)
+- `8c6fcf1c` **cron**: evaluate the trigger gate on the unscoped path (#2065)
+- `238f984e` **tui**: /models <provider/model> switches directly instead of opening the picker (#2064)
+- `33c74d5b` **voice**: split TTS chunks on char boundaries (#2051)
+- `99f3d07e` **discord**: the owner's /cowork and /respond_to pass the channel gate (#2061)
+- `c2594ef8` **tui**: register the /models session-pair tests and set the session pair last (#2060)
+- `1dd40b36` **tui**: /models opens on the session's provider and model (#2060)
+- `c37c767e` **telegram**: keep userbot downloads inside the output directory
+- `2820f126` **config**: use the bare gemini-3.1-flash-image id for the built-in image model (#2054)
+- `d5f02a67` **provider**: resolve the built-in OpenCrabs endpoint for image generation (#2053)
+- `05085449` **provider**: resolve the built-in OpenCrabs endpoint for vision (#2047)
+- `3add0609` **provider**: keep install tokens out of Debug output (#2047)
+- `34a3fe0b` **provider**: name the transport cause in HTTP error messages
+- `f7a8bf87` **provider**: a declared-wait cooldown does not make the fallback sticky
+- `a6716300` **provider**: a lapsed cooldown window no longer drops the primary from the chain
+- `9dbc9035` **provider**: park a provider that declares a long 429 wait, route around it
+- `4d962a97` **phantom**: turn-end verdict exempts structured reports from phrases only (#2038)
+- `a3ee4430` **phantom**: structured reports exempt phrase matchers, never fact checks (#2039)
+- `e8fbe2a0` **phantom**: run the fact checker on zero-tool turns (#2038)
+- `39735b7b` **phantom**: gate structured-report exemption on tools having run
+- `626b37dc` **tui**: show Shift+Tab Back on the provider step and in /help (#2043)
+- `fa076614` **telegram**: /models shows the live CLI list, and Current is the configured default (#2041)
+- `c6f81d6d` **telegram**: apply-to-all asks first and writes only on Confirm (#2042)
+- `57a7e579` **discord**: DM turns reach channel_messages on both sides (#2025)
+- `afddd246` **slack**: store DM user messages in channel_messages (#2034)
+- `1f378cb6` **trello**: save card attachments to the channel attachment store (#2033)
+- `3ba15c9a` **slack**: save inbound files to the channel attachment store (#2032)
+- `a2ebdf95` **discord**: save inbound files to the channel attachment store (#2031)
+- `96ed46c8` **tui**: keep the final answer visible when tools ran after its text (#2026)
+- `e4f80f6a` **whatsapp**: background-completion turns offer suggestions and post the held answer (#2030)
+- `c91869d5` **slack**: post the answer before the suggestion buttons (#2029)
+- `f7e00a22` **discord**: post the answer before the options buttons (#2028)
+- `8a034064` **usage**: model costs come from the ledger, not the cache-blind estimate (#2024)
+- `f31de15a` **onboarding**: send the welcome when /onboard completes (#2022)
+- `df0e9d52` **provider**: one 120s stream idle default for every OpenAI-compatible provider (#2021)
+
+### 📖 Documentation
+
+- `8f134a7e` templates: correct the false tier claim in commands/README (#1991)
+- `9df15404` readme: document the opt-in skill tier (#1991)
+- `3a948554` tests: correct the stale GLOBAL_POOL note in auto_title_e2e_test (#2072)
+- `6f76827e` readme: whatsapp_send carries the newsletter actions, and the rail that gates them (#1827)
+- `4e584c30` config: the broadcast allowlist also gates the newsletter surfaces (#1827)
+- `f1fda41c` readme: the Discord tool card: paging, repeats, the colored bar and Log (#1880)
+- `405c7175` readme: /cowork writes respond_to = all; channel entries pass the channel scope (#2070)
+- `fcf2b783` provider: the built-in provider's window is fixed and its key ignored (#2068)
+- `fdee09c5` note the userbot download command
+- `7bb599c1` readme: state unlimited built-in tokens with abuse protection
+- `119a359f` readme: update wizard steps and provider priority for the built-in provider (#2056)
+- `759fe34a` readme: image generation is on by default for the built-in provider (#2054)
+- `2b607271` readme: document the built-in OpenCrabs provider and first run (#2055)
+- `7958de5e` provider: describe the current vision candidate order (#1318)
+- `0a09b3d5` provider: list the built-in OpenCrabs provider in the README and provider reference
+- `b77faaa9` README: onboarding videos per OS, quick start and advanced
+
+### 🧹 Miscellaneous
+
+- `06313a0e` discord: assert tool-group retention on memory, not on a SQLite restore (#2071)
+- `a4299eb0` telegram: use a portable output directory in the download test
+- `cc128b6f` telegram: check the userbot download direction
+- `fca50d3f` deps: bump rustls to 0.23.46, clearing four RUSTSEC advisories
+- `5f1cff50` sanitize: pin redaction of 64-char hex install tokens (#2047)
+- `eea82e62` onboarding: move the completion path into finish_onboarding
+- `dfe8ce52` config: write several keys of one section in one atomic write
+- `25a08ffa` provider: a lapsed primary that fails without a wait stays in the chain
+- `5a359135` db: remove unused count_for_session (#2036)
+
+### 👥 Contributors
+
+4 contributors this release:
+
+- @loonix (Daniel Carneiro)
+- @moneyacademyKE (Moe)
+- @adi805 (Syafriadi)
+- @mysteriouspants (Christopher R. Miller)
+
+### 📊 Stats
+
+- 99 commits since v0.5.5
+- 213 files changed, +17,230 / -1,738 lines
+- 10,762 tests (10,724 passed, 0 failed, 38 ignored)
+
 ## [0.5.5] - 2026-10-10
 
 283 commits since v0.5.4, 6 contributors. 471 files changed, +51,885 / -4,903 lines.
@@ -9298,3 +9430,4 @@ fixes.
 [0.5.3]: https://github.com/adolfousier/opencrabs/compare/v0.5.2...v0.5.3
 [0.5.4]: https://github.com/adolfousier/opencrabs/compare/v0.5.3...v0.5.4
 [0.5.5]: https://github.com/opencrabs/opencrabs/compare/v0.5.4...v0.5.5
+[0.5.10]: https://github.com/opencrabs/opencrabs/compare/v0.5.5...v0.5.10
