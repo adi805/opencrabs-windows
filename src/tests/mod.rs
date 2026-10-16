@@ -788,6 +788,7 @@ pub mod tui_clipboard_hint_test;
 pub mod tui_clipboard_paste_keys_test;
 pub mod tui_clipboard_route_test;
 pub mod tui_components_logo_test;
+pub mod tui_mission_control_detail_test;
 // Unix-only alongside the editor module it exercises (#1755).
 pub mod dialog_ctrl_c_panel_test;
 pub mod dialog_footer_batch_test;
