@@ -1629,10 +1629,22 @@ impl App {
                 .recovery_reason
                 .as_deref()
                 .unwrap_or("cause not recorded");
+            // How old the settings in effect are. Recovery deliberately proceeds
+            // on a stale snapshot (a running daemon on older settings beats
+            // refusing to start), so the age is the fact that lets the user judge
+            // what they have lost, and it was previously only in the log
+            // (F-CFG-04).
+            let staleness = match load_status.snapshot_age_secs {
+                Some(secs) => format!(
+                    "\n\nThe settings in effect are from a snapshot {} old.",
+                    crate::config::humanize_age(std::time::Duration::from_secs(secs))
+                ),
+                None => String::new(),
+            };
             self.push_system_message(format!(
                 "🔧 Config failed to load and was recovered from the \
                  last-known-good snapshot, so edits to ~/.opencrabs/config.toml \
-                 are NOT in effect until this is fixed.\n\nCause: {why}"
+                 are NOT in effect until this is fixed.\n\nCause: {why}{staleness}"
             ));
         }
 

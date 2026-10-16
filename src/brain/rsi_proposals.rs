@@ -193,23 +193,17 @@ impl ProposalsStore {
 
     fn write_tools(&self, file: &ToolProposalsFile) -> Result<()> {
         self.ensure_dirs()?;
-        let toml_str = toml::to_string_pretty(file)?;
-        fs::write(self.tools_path(), toml_str)?;
-        Ok(())
+        write_toml_atomic(&self.tools_path(), file)
     }
 
     fn write_commands(&self, file: &CommandProposalsFile) -> Result<()> {
         self.ensure_dirs()?;
-        let toml_str = toml::to_string_pretty(file)?;
-        fs::write(self.commands_path(), toml_str)?;
-        Ok(())
+        write_toml_atomic(&self.commands_path(), file)
     }
 
     fn write_skills(&self, file: &SkillProposalsFile) -> Result<()> {
         self.ensure_dirs()?;
-        let toml_str = toml::to_string_pretty(file)?;
-        fs::write(self.skills_path(), toml_str)?;
-        Ok(())
+        write_toml_atomic(&self.skills_path(), file)
     }
 
     /// Names already decided in a prior cycle (#502): every proposal name
@@ -563,9 +557,53 @@ impl ProposalsStore {
         let chunk = toml::to_string_pretty(&toml::Value::Table(wrapper))?;
         existing.push_str(&chunk);
         existing.push('\n');
-        fs::write(&path, existing)?;
-        Ok(())
+        write_text_atomic(&path, &existing)
     }
+}
+
+/// Serialize `value` to TOML and publish it, or refuse and leave the file alone.
+///
+/// The refusal is the point (F-BR-07). `read_file` above returns `None` when a
+/// proposal file does not parse, and `read_tools`/`read_commands`/`read_skills`
+/// turn that into `unwrap_or_default()`: a file the store itself wrote but cannot
+/// read back silently becomes an EMPTY inbox, and every pending proposal in it
+/// disappears without a message. The round-trip check here means the store cannot
+/// write a file it would then refuse to read.
+///
+/// Publishing by rename is the other half, and the same reason the plan store and
+/// the memory log use it: `fs::write` opens with `O_TRUNC`, so between the
+/// truncate and the write the file is zero bytes on disk, and a process that dies
+/// in that window leaves it that way. The inbox is read on every RSI cycle and
+/// every "show me proposed tools" request.
+pub(crate) fn write_toml_atomic<T: Serialize + serde::de::DeserializeOwned>(
+    path: &Path,
+    value: &T,
+) -> Result<()> {
+    let text = toml::to_string_pretty(value)?;
+    // Read it back the way the reader will, before it becomes the file's
+    // content: as `T`, not as a generic `toml::Value`. The distinction has
+    // teeth. `toml::Value` accepts any well-formed TOML, so it would pass a
+    // document that is syntactically fine and still missing a field the reader
+    // requires, which is exactly the write this guard exists to refuse.
+    toml::from_str::<T>(&text).with_context(|| {
+        format!(
+            "refusing to write {}: the serialized form does not parse back as the same type, \
+             and a proposal file that does not parse reads as an EMPTY inbox",
+            path.display()
+        )
+    })?;
+    write_text_atomic(path, &text)
+}
+
+/// Publish `text` at `path` by rename, or fail without touching the file.
+///
+/// A free function rather than a method so the archive append and the three
+/// proposal files share one publish path. `write_atomic` is the plan store's, so
+/// there is one implementation of the rename dance in the crate rather than one
+/// per module.
+pub(crate) fn write_text_atomic(path: &Path, text: &str) -> Result<()> {
+    crate::utils::plan_files::write_atomic(path, text)
+        .with_context(|| format!("publishing {}", path.display()))
 }
 
 impl Default for ProposalsStore {
