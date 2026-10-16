@@ -257,3 +257,105 @@ async fn purge_is_a_hard_delete_unlike_delete_which_archives() {
     repo.purge(a.id).await.unwrap();
     assert!(svc.get_session(a.id).await.unwrap().is_none());
 }
+
+/// The sweep must NOT take the usage ledger with it (F-DB-03).
+///
+/// The ledger is cumulative accounting, not session data. Its module doc says
+/// the entries are never deleted, the migration that added its `provider`
+/// column says the ledger outlives sessions, and every query over it is
+/// all-time and joins nothing. A sub-agent's spend is recorded under that
+/// sub-agent's session id and nowhere else, so a purge that swept the ledger
+/// would shrink the user's all-time total by whatever the sub-agent cost, with
+/// nothing reporting it.
+///
+/// The neighbouring test pins the opposite for `tool_executions`, which IS
+/// session data. The two together are the contract: session-scoped rows go, the
+/// ledger stays.
+#[tokio::test]
+async fn the_sweep_keeps_the_usage_ledger() {
+    let (svc, ctx) = service().await;
+    let session = svc
+        .create_session(Some("subagent: costly".into()))
+        .await
+        .unwrap();
+    let sid = session.id.to_string();
+
+    // A real spend, recorded the way a turn records it.
+    ctx.pool()
+        .get()
+        .await
+        .expect("conn")
+        .interact({
+            let sid = sid.clone();
+            move |conn| {
+                conn.execute(
+                    "INSERT INTO usage_ledger (session_id, provider, model, token_count, cost) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![sid, "prov", "opus-4-6", 1_000, 0.42],
+                )
+            }
+        })
+        .await
+        .expect("interact")
+        .expect("insert ledger row");
+
+    let before = ctx
+        .pool()
+        .get()
+        .await
+        .expect("conn")
+        .interact(|conn| {
+            conn.query_row(
+                "SELECT COALESCE(SUM(cost), 0.0) FROM usage_ledger",
+                [],
+                |r| r.get::<_, f64>(0),
+            )
+        })
+        .await
+        .expect("interact")
+        .expect("sum");
+    assert!((before - 0.42).abs() < 1e-9, "fixture: {before}");
+
+    age_session(&ctx, session.id, 30).await;
+    assert_eq!(svc.prune_expired_subagent_sessions(7).await.unwrap(), 1);
+
+    let (rows, after) = ctx
+        .pool()
+        .get()
+        .await
+        .expect("conn")
+        .interact({
+            let sid = sid.clone();
+            move |conn| {
+                let rows: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM usage_ledger WHERE session_id = ?1",
+                    rusqlite::params![sid],
+                    |r| r.get(0),
+                )?;
+                let total: f64 = conn.query_row(
+                    "SELECT COALESCE(SUM(cost), 0.0) FROM usage_ledger",
+                    [],
+                    |r| r.get(0),
+                )?;
+                Ok::<_, rusqlite::Error>((rows, total))
+            }
+        })
+        .await
+        .expect("interact")
+        .expect("read back");
+
+    assert_eq!(
+        rows, 1,
+        "the ledger row must survive the purge: it is the only record of what \
+         that session cost (F-DB-03)"
+    );
+    assert!(
+        (after - before).abs() < 1e-9,
+        "the all-time total must not move when a session is purged: {before} -> {after}"
+    );
+    assert!(
+        svc.get_session(session.id).await.unwrap().is_none(),
+        "the session row itself still goes; this is about the ledger, not about \
+         keeping sessions alive"
+    );
+}
