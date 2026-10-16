@@ -168,7 +168,7 @@ The release that works the second you install it. OpenCrabs now ships its own pr
 
 ## [0.5.5] - 2026-10-10
 
-283 commits since v0.5.4, 7 contributors. 471 files changed, +51,885 / -4,903 lines.
+283 commits since v0.5.4, 9 contributors. 471 files changed, +51,885 / -4,903 lines.
 
 A channel-native window. Discord became a first-class surface: native polls via send_poll (#1848), TTS replies delivered as voice messages (#1849), commands.toml projected onto native slash commands (#1850), a flow group that opens at turn start with a live clock covering thinking and activity text leading the flow line (#1841, #1843, #1844, #1845), a persistent plan card riding one shared outbound write governor with 429 park (#1910, #1912), per-channel respond_to and open modes with a /respond_to command (#2014), and /cowork opening a channel or thread to its members (#2015). Slack matched the pass: throttled flow ticker (#1807), flow group opening at turn start with live activity text (#1808, #1809), and an outbound write governor with 429 observability (#2012). Telegram got observability and rate discipline: instrumented getUpdates polls and handler handoffs for stall triage, a cross-surface sub-second spacing floor with per-second admission telemetry (#1927), a per-chat 429 pause behind one Cooldown accessor, markdown links to local files delivered as documents (#1916), a flag to keep markdown documents out of the rich media array (#1968), and mermaid fences rendering inside trailer bubbles via the hooked rich send (#583). ACP implemented the five v1 session lifecycle methods and publishes the plan as a v1 plan update (#1815), and decodes image prompt blocks into IMG attachments. The TUI unified every dialog on a shared command footer with direct a/r approval verbs (#1775), made URLs and file paths clickable (#1772), redesigned onboarding around a left-side step timeline with direct setup commands (#1979, #1980, #1981, #1982), hinted when the clipboard holds a screenshot, and stamped the banner with the running binary's build time (#1965). The claude-cli provider grew background-task lifecycle surfacing into the agent mirror, process-group isolation with group kill, and post-turn completion delivery (#1774, #1776). Cron retires one-shot jobs on delivery instead of re-firing a year later (#544), stamps every delivered run with its run id (#1703), and Discord cron reports arrive as one forum post (#1851). Windows carried a LockFileEx saga of its own (9 scoped commits) and stopped telling users to run as Administrator or use WSL2. Restart and resume paint revived turns as processing and park is a third resume outcome in the boot ledger (#1951, #1952). governance.toml plus a policy-lint CI job landed (#1934). The DB snapshots the image before migrations touch it (#1779), supervised brew evolve bounds its children and reads the installed version back (#1779), session_notify got a kill switch defaulting off (#1802), and suggest_options recovers channel-safe option chips from final text (#1774).
 
@@ -467,6 +467,20 @@ A channel-native window. Discord became a first-class surface: native polls via 
 - `110df5c4` **provider**: relocate stable_model_id tests to src/tests per contributing.md
 - `dea20183` **lint**: annotate the macOS-only launchd label parser for non-macOS builds
 
+### 👥 Contributors
+
+9 contributors this release:
+
+- @adolfousier (Adolfo Usier)
+- @leshchenko1979 (Alexey Leshchenko)
+- @adi805 (Syafriadi)
+- @kaaduu
+- @Jah-yee (RoomWithOutRoof)
+- @loonix (Daniel Carneiro)
+- @NadLad (Nader)
+- @moneyacademyKE (Moe)
+- @Absolute-Law
+
 ### 📊 Stats
 
 - 283 commits since v0.5.4
@@ -595,6 +609,18 @@ An agent-experience window. ACP sessions became first-class: the context meter i
 - `29fda59a` **tui**: /doctor routes straight to the health check, drop the hidden /onboard:health arm (#1665)
 - `1f039341` **theme**: serialise the process-global theme slot across test modules
 - `888b2307` **decisions**: rustfmt decide_cached and its test module
+
+### 👥 Contributors
+
+7 contributors this release:
+
+- @adolfousier (Adolfo Usier)
+- @moneyacademyKE (Moe)
+- @leshchenko1979 (Alexey Leshchenko)
+- @adi805 (Syafriadi)
+- @loonix (Daniel Carneiro)
+- @gefsikatsinelou
+- @djaafarishers-cloud
 
 ### 📊 Stats
 
@@ -1144,6 +1170,17 @@ A hardening window: per-job cron sessions, a config write guard derived from the
 - `49a9cab0` test(whatsapp): restore the rate-limit test registration dropped in a9f65d9b
 - `0936fa02` style: rustfmt the merged PR stack
 - `a08a8911` test(brain): isolate time-marker tests from live home recall
+
+### 👥 Contributors
+
+6 contributors this release:
+
+- @adolfousier (Adolfo Usier)
+- @leshchenko1979 (Alexey Leshchenko)
+- @moneyacademyKE (Moe)
+- @adi805 (Syafriadi)
+- @loonix (Daniel Carneiro)
+- @technologicalsingularity (Andy)
 
 ### 📊 Stats
 
