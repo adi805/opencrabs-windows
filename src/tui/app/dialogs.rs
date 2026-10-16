@@ -11,9 +11,70 @@ use std::path::PathBuf;
 const QUIT_HINT: &str = "Press Ctrl+C again to quit";
 
 impl App {
-    /// Leave the app from inside the wizard. Whatever was typed is saved
-    /// first, like a cancel; an unfinished first run reopens on next launch
-    /// because completion is only recorded on `Complete`.
+    /// Zero-setup first run (#2079).
+    ///
+    /// A fresh install goes straight to chat on the built-in OpenCrabs
+    /// provider: its section is turned on, the proxy issues this install's
+    /// token, the agent is rebuilt onto it, and the agent opens the
+    /// conversation with the welcome prompt. The wizard is never shown here.
+    /// `/onboard` and `--onboard` are the opt-in paths to Quick start and
+    /// Advanced.
+    ///
+    /// Nothing in here blocks the session. An unreachable proxy still lands
+    /// the user in a working chat, with a line saying what happened and where
+    /// to go next; a dead screen would be the one outcome worse than a failed
+    /// fetch.
+    pub(crate) async fn provision_first_run(&mut self) {
+        // Clear the flag first: every path below ends the provisioning, and a
+        // second launch must not re-run it from a stale flag.
+        self.first_run = false;
+
+        // The documented files first. `write_key` below needs the provider
+        // sections the example carries, and a genuinely fresh home has
+        // neither config.toml nor keys.toml on disk.
+        crate::config::seed::ensure_config_seeded();
+        crate::config::seed::ensure_keys_seeded();
+
+        // The example ships every provider disabled, the built-in one
+        // included, so it has to be turned on explicitly. Without this the
+        // section exists but `active_provider_and_model` skips it.
+        if let Err(e) = crate::config::Config::write_key("providers.opencrabs", "enabled", "true") {
+            tracing::warn!("First run: could not enable the built-in provider: {e}");
+        }
+
+        // The token the proxy issues is the only credential this provider
+        // takes. `ensure_install` writes it to keys.toml under
+        // `[providers.opencrabs]`, and it is reused as-is on later launches.
+        if let Err(e) = crate::brain::provider::opencrabs_acquire::ensure_install().await {
+            tracing::warn!("First run: built-in provider token request failed: {e:?}");
+            self.push_system_message(first_run_offline_message(&e));
+            return;
+        }
+
+        // Only now is the install actually set up, so only now is onboarding
+        // recorded as done. A failed fetch above leaves it unrecorded, and the
+        // next launch tries again instead of leaving a chat with no provider.
+        crate::tui::onboarding::state::OnboardingState::mark_completed();
+
+        if let Err(e) = self.rebuild_agent_service().await {
+            tracing::warn!("First run: could not build the built-in provider: {e}");
+            self.push_system_message(format!(
+                "The built-in brain did not come up: {e}\n\
+                 Type /onboard and pick Advanced to choose another provider."
+            ));
+            return;
+        }
+
+        self.sync_session_to_provider().await;
+
+        let (provider, model) = self.welcome_provider_and_model().await;
+        self.push_system_message(format!(
+            "Setup complete! Provider: {provider} | Model: {model}"
+        ));
+        self.send_onboarding_welcome(true, WizardMode::QuickStart)
+            .await;
+    }
+
     /// Send the hidden welcome prompt once the wizard has saved its config.
     /// Runs for every completion, quick or advanced, first run or `/onboard`.
     /// A failed save sends nothing, so the agent never greets an unconfigured
@@ -55,6 +116,9 @@ impl App {
         (provider, model)
     }
 
+    /// Leave the app from inside the wizard. Whatever was typed is saved
+    /// first, like a cancel; an unfinished first run reopens on next launch
+    /// because completion is only recorded on `Complete`.
     fn quit_from_onboarding(&mut self) {
         if let Some(ref wizard) = self.onboarding
             && let Err(e) = wizard.apply_config()
@@ -1891,4 +1955,21 @@ async fn test_trello_connection(api_key: &str, api_token: &str) -> Result<(), St
 #[cfg(not(feature = "trello"))]
 async fn test_trello_connection(_api_key: &str, _api_token: &str) -> Result<(), String> {
     Err("Trello feature not enabled".to_string())
+}
+
+/// What a first run says when the built-in provider could not come online.
+///
+/// The reason is the proxy's own, so the user gets "rate limited" or
+/// "unreachable" instead of a shrug. The second line is the way out: the
+/// wizard is one command away, and the session is alive either way.
+fn first_run_offline_message(
+    err: &crate::brain::provider::opencrabs_install::InstallError,
+) -> String {
+    use crate::brain::provider::opencrabs_install::install_error_message;
+    format!(
+        "Could not bring the built-in brain online: {}\n\
+         No drama, the crab is fine. Type /onboard to pick another provider, or fix \
+         the connection and restart.",
+        install_error_message(err)
+    )
 }
