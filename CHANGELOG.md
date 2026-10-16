@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.11] - 2026-10-16
 
-4 commits since v0.5.10, 1 contributor. 19 files changed, +1,361 / -349 lines.
+4 commits since v0.5.10, 2 contributors. 19 files changed, +1,361 / -349 lines.
 
 Four fixes, each one closing a hole that a shipped release exposed. A first run lands in the chat with the built-in provider already live and the agent greeting the user, instead of on a "New Chat · none / none" screen with no provider, no config.toml and no keys.toml (#2079). The agent's worker threads get a 16 MiB stack, so the first turn can no longer abort the process with a stack overflow on the default 2 MiB one (#2080). The release workflow reads the conclusion of the commit's own CI run before it publishes anything, so a red main can never ship a tag again the way v0.5.10 did (#2078). And the scheduled evolve restart no longer hands `systemctl restart` the discovery glob `opencrabs*.service`: that glob also matched the transient unit the restart runs inside, so systemd stopped its own executor 16 ms in, retried until start-limit-hit, and churned the daemon and its browser sidecar five times inside one second. The restart target is a resolved list of exact unit names now, the unit-list parser no longer drops failed units because of systemd's status glyph, and an unreadable unit list reports `Unresolved` instead of scheduling blind (#2081).
 
@@ -22,8 +22,9 @@ Four fixes, each one closing a hole that a shipped release exposed. A first run 
 
 ### 👥 Contributors
 
-1 contributor this release:
+2 contributors this release:
 
+- @adolfousier (Adolfo Usier)
 - @adi805 (Syafriadi)
 
 ### 📊 Stats
@@ -34,7 +35,7 @@ Four fixes, each one closing a hole that a shipped release exposed. A first run 
 
 ## [0.5.10] - 2026-10-16
 
-99 commits since v0.5.5, 4 contributors. 213 files changed, +17,230 / -1,738 lines.
+99 commits since v0.5.5, 5 contributors. 213 files changed, +17,230 / -1,738 lines.
 
 The release that works the second you install it. OpenCrabs now ships its own provider inside the binary: no account, no API key, no sign-up. It serves DeepSeek v4.1 Flash, a 200k-context multimodal model, so text and attached images both work on the first run. Onboarding was rebuilt around that first run: a quick-start welcome interviews the user, asks only for what is missing, names the session's provider and model, and offers next steps, and the built-in provider is wired into both the quick-start and the advanced path with vision and image generation on by default. Its context window is pinned at 200k and held by host, and install tokens are redacted from logs and kept out of Debug output. The provider chain got sturdier: a 429 that declares a long wait parks that provider and routes around it instead of poisoning the fallback, a lapsed cooldown no longer drops the primary from the chain, a declared-wait cooldown no longer makes the fallback sticky, every compatible provider shares one 120s stream idle default, and providers that need it now route over the Responses API. Attachments became first-class across every channel: Discord, Slack and Trello all save inbound files to the channel attachment store, Discord and Slack store DM turns in channel_messages, and the answer now posts before its suggestion buttons on Discord, Slack and WhatsApp. Discord tool cards became durable and paginated, surviving restarts in SQLite with a Log view, collapsed repeats and a colored bar. The TUI gained a full-screen responsive /usage and a /mission-control that adapts to the terminal width, /models opens on the session's provider and model and switches directly on a full provider/model argument, and the final answer stays visible when tools run after its text. Usage accounting grew a cache-read split with prices on the cards, and model costs come from the ledger rather than a cache-blind estimate. Voice serves stt_model and tts_model from any provider and splits TTS chunks on character boundaries. The plan tool locks a per-task spec check at start and runs it at completion. motion-graphics moved to an opt-in skill template. WhatsApp gained newsletter creation from the tool surface and live tool blocks on background-completion turns, and Slack got the same live tool flow on background resume.
 
@@ -151,8 +152,9 @@ The release that works the second you install it. OpenCrabs now ships its own pr
 
 ### 👥 Contributors
 
-4 contributors this release:
+5 contributors this release:
 
+- @adolfousier (Adolfo Usier)
 - @loonix (Daniel Carneiro)
 - @moneyacademyKE (Moe)
 - @adi805 (Syafriadi)
@@ -166,7 +168,7 @@ The release that works the second you install it. OpenCrabs now ships its own pr
 
 ## [0.5.5] - 2026-10-10
 
-283 commits since v0.5.4, 6 contributors. 471 files changed, +51,885 / -4,903 lines.
+283 commits since v0.5.4, 7 contributors. 471 files changed, +51,885 / -4,903 lines.
 
 A channel-native window. Discord became a first-class surface: native polls via send_poll (#1848), TTS replies delivered as voice messages (#1849), commands.toml projected onto native slash commands (#1850), a flow group that opens at turn start with a live clock covering thinking and activity text leading the flow line (#1841, #1843, #1844, #1845), a persistent plan card riding one shared outbound write governor with 429 park (#1910, #1912), per-channel respond_to and open modes with a /respond_to command (#2014), and /cowork opening a channel or thread to its members (#2015). Slack matched the pass: throttled flow ticker (#1807), flow group opening at turn start with live activity text (#1808, #1809), and an outbound write governor with 429 observability (#2012). Telegram got observability and rate discipline: instrumented getUpdates polls and handler handoffs for stall triage, a cross-surface sub-second spacing floor with per-second admission telemetry (#1927), a per-chat 429 pause behind one Cooldown accessor, markdown links to local files delivered as documents (#1916), a flag to keep markdown documents out of the rich media array (#1968), and mermaid fences rendering inside trailer bubbles via the hooked rich send (#583). ACP implemented the five v1 session lifecycle methods and publishes the plan as a v1 plan update (#1815), and decodes image prompt blocks into IMG attachments. The TUI unified every dialog on a shared command footer with direct a/r approval verbs (#1775), made URLs and file paths clickable (#1772), redesigned onboarding around a left-side step timeline with direct setup commands (#1979, #1980, #1981, #1982), hinted when the clipboard holds a screenshot, and stamped the banner with the running binary's build time (#1965). The claude-cli provider grew background-task lifecycle surfacing into the agent mirror, process-group isolation with group kill, and post-turn completion delivery (#1774, #1776). Cron retires one-shot jobs on delivery instead of re-firing a year later (#544), stamps every delivered run with its run id (#1703), and Discord cron reports arrive as one forum post (#1851). Windows carried a LockFileEx saga of its own (9 scoped commits) and stopped telling users to run as Administrator or use WSL2. Restart and resume paint revived turns as processing and park is a third resume outcome in the boot ledger (#1951, #1952). governance.toml plus a policy-lint CI job landed (#1934). The DB snapshots the image before migrations touch it (#1779), supervised brew evolve bounds its children and reads the installed version back (#1779), session_notify got a kill switch defaulting off (#1802), and suggest_options recovers channel-safe option chips from final text (#1774).
 
