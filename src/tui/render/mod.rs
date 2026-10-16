@@ -23,6 +23,7 @@ mod plan_widget;
 pub(crate) mod plan_window;
 pub(crate) mod profiles_dialog;
 mod projects;
+pub(crate) mod responsive;
 mod session_files;
 mod sessions;
 pub(crate) mod skills_dialog;
