@@ -83,7 +83,6 @@ fn config_known_top_level_keys_are_accepted() {
 [provider_registry]
 [database]
 [logging]
-[debug]
 [providers]
 [channels]
 [agent]

@@ -11,8 +11,6 @@ fn test_default_config() {
     // the user never asked for.
     assert!(!config.provider_registry.enabled);
     assert_eq!(config.logging.level, "info");
-    assert!(!config.debug.debug_lsp);
-    assert!(!config.debug.profiling);
 }
 
 #[test]
@@ -64,10 +62,6 @@ path = "/custom/path/db.sqlite"
 [logging]
 level = "debug"
 
-[debug]
-debug_lsp = true
-profiling = true
-
 [provider_registry]
 enabled = false
         "#;
@@ -78,8 +72,6 @@ enabled = false
         PathBuf::from("/custom/path/db.sqlite")
     );
     assert_eq!(config.logging.level, "debug");
-    assert!(config.debug.debug_lsp);
-    assert!(config.debug.profiling);
     assert!(!config.provider_registry.enabled);
 }
 
@@ -108,18 +100,12 @@ fn test_config_from_toml_overrides() {
 [logging]
 level = "trace"
 
-[debug]
-debug_lsp = true
-profiling = true
-
 [database]
 path = "/tmp/test.db"
         "#;
 
     let config: Config = toml::from_str(toml_content).unwrap();
     assert_eq!(config.logging.level, "trace");
-    assert!(config.debug.debug_lsp);
-    assert!(config.debug.profiling);
     assert_eq!(config.database.path, PathBuf::from("/tmp/test.db"));
 }
 
@@ -166,10 +152,17 @@ fn test_local_config_path() {
 }
 
 #[test]
-fn test_debug_config_default() {
-    let debug = DebugConfig::default();
-    assert!(!debug.debug_lsp);
-    assert!(!debug.profiling);
+fn a_removed_debug_section_is_ignored_rather_than_rejected() {
+    // `[debug]` carried `debug_lsp` and `profiling`, two flags nothing ever
+    // read (#260). Both are gone from the schema, so the property that
+    // matters for an existing install is that a config still carrying the
+    // section LOADS: `Config` does not deny unknown fields, so the keys are
+    // ignored rather than failing startup for a user who never touched them.
+    let config: Config = toml::from_str(
+        "[logging]\nlevel = \"info\"\n\n[debug]\ndebug_lsp = true\nprofiling = true\n",
+    )
+    .expect("an old config carrying the removed section must still load");
+    assert_eq!(config.logging.level, "info");
 }
 
 #[test]

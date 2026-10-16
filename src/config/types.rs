@@ -43,10 +43,6 @@ pub struct Config {
     #[serde(default)]
     pub logging: LoggingConfig,
 
-    /// Debug options
-    #[serde(default)]
-    pub debug: DebugConfig,
-
     /// LLM provider configurations
     #[serde(default)]
     pub providers: ProviderConfigs,
@@ -2775,18 +2771,6 @@ impl MemoryConfig {
     }
 }
 
-/// Debug configuration options
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct DebugConfig {
-    /// Enable LSP debug logging
-    #[serde(default)]
-    pub debug_lsp: bool,
-
-    /// Enable profiling
-    #[serde(default)]
-    pub profiling: bool,
-}
-
 /// LLM Provider configurations
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderConfigs {
@@ -3657,7 +3641,6 @@ impl Default for Config {
                 level: default_log_level(),
                 file: None,
             },
-            debug: DebugConfig::default(),
             tui: TuiConfig::default(),
             providers: ProviderConfigs::default(),
             channels: ChannelsConfig::default(),

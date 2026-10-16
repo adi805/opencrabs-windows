@@ -39,7 +39,6 @@ pub const CONFIG_SECTIONS: &[&str] = &[
     "cron",
     "daemon",
     "database",
-    "debug",
     "doctor",
     "image",
     "logging",
