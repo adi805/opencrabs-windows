@@ -161,6 +161,7 @@ pub(crate) enum BudgetPhase {
 }
 
 /// What a visit found in the session's pending slot.
+#[derive(Debug)]
 pub(crate) enum PendingState {
     /// Nothing in flight.
     Empty,
@@ -395,8 +396,21 @@ impl AgentService {
             // Backgrounding off, or the background attempt already failed:
             // block the turn, exactly as every compaction did before.
             PendingState::Empty | PendingState::Failed => {}
+            // Unreachable today: the guard above returns early for both of
+            // these, and `gate_announces_compaction` is the only place that
+            // decides. It is written as a return rather than `unreachable!`
+            // because this is the turn path, and the invariant is a property of
+            // two places staying in step. If a new `PendingState` variant or an
+            // edit to the gate ever desyncs them, a panic costs the user's turn
+            // while a return costs one no-op visit. Report the desync loudly and
+            // let the turn carry on (F-BR-03).
             PendingState::StillRunning | PendingState::Applied(_) => {
-                unreachable!("gate_announces_compaction returns false for both")
+                tracing::warn!(
+                    "compaction gate desync: {:?} reached the dispatch, but \
+                     gate_announces_compaction did not announce for it",
+                    pending_state
+                );
+                return truncated.then_some(CompactionOutcome::Truncated);
             }
         }
 
