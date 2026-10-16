@@ -340,10 +340,39 @@ fn shell_single_quoted_matches_previous_behavior() {
 }
 
 #[test]
-fn shell_unquoted_matches_previous_behavior() {
-    // Unquoted context: same single-quote escaping as before (unchanged).
+fn shell_unquoted_value_is_wrapped_in_single_quotes() {
+    // #OC-SEC-01: an unquoted span has no inert escape, so the value is
+    // wrapped. The shell removes the quotes, so ordinary values are unchanged.
     let out = DynamicToolDef::render_shell_command("run {{x}}", &serde_json::json!({ "x": "a'b" }));
-    assert_eq!(out, r#"run a'\''b"#);
+    assert_eq!(out, r#"run 'a'\''b'"#);
+    let plain = DynamicToolDef::render_shell_command(
+        "du -sh {{path}}",
+        &serde_json::json!({ "path": "/tmp/x" }),
+    );
+    assert_eq!(plain, "du -sh '/tmp/x'");
+}
+
+#[test]
+fn shell_unquoted_value_cannot_inject_commands() {
+    // #OC-SEC-01 regression: the old escape only handled the quote character,
+    // so `;`, `|`, `&&`, newline and `$(...)` all stayed executable in an
+    // unquoted span. Every one of them must now land inside the quotes.
+    for payload in [
+        "hello; touch /tmp/oc_inject_proof",
+        "x | tee /tmp/oc_inject_proof",
+        "x && touch /tmp/oc_inject_proof",
+        "x$(id)",
+        "x`id`",
+        "x\ntouch /tmp/oc_inject_proof",
+    ] {
+        let out =
+            DynamicToolDef::render_shell_command("run {{x}}", &serde_json::json!({ "x": payload }));
+        assert_eq!(
+            out,
+            format!("run '{payload}'"),
+            "payload must be a single quoted word: {payload:?}"
+        );
+    }
 }
 
 #[test]
@@ -362,7 +391,7 @@ fn shell_sections_still_resolve() {
         "base{{#flag}} --on {{flag}}{{/flag}}",
         &serde_json::json!({ "flag": "yes" }),
     );
-    assert_eq!(present, "base --on yes");
+    assert_eq!(present, "base --on 'yes'");
     let absent = DynamicToolDef::render_shell_command(
         "base{{#flag}} --on {{flag}}{{/flag}}",
         &serde_json::json!({}),
