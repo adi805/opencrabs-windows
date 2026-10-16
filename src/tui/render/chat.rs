@@ -368,6 +368,83 @@ pub(crate) fn folded_turn_preview(
         })
 }
 
+/// The transcript of an unfocused pane, drawn the way the focused pane draws
+/// it by default (#2075): every turn folds to its header and last-call
+/// preview, and only the rows that stay visible when folded are drawn. Tool
+/// groups are never drawn as bare bullets, so a pane looks the same whether it
+/// is focused or not.
+pub(crate) fn folded_pane_lines(messages: &[DisplayMessage], width: usize) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for turn in turn_ranges(messages) {
+        let summary = turn_summary(messages, turn);
+        let final_idx = settled_final_answer_idx(messages, turn, false, false);
+        let hideable = turn_hideable_count(messages, turn, final_idx);
+        let header = format_turn_header(summary, hideable);
+        let preview = folded_turn_preview(messages, turn);
+        // The header sits above the turn's first non-user row, as in the focused pane.
+        let anchor = if messages.get(turn.start).is_some_and(|m| m.role == "user") {
+            turn.start + 1
+        } else {
+            turn.start
+        };
+        let end = turn.end.min(messages.len());
+        for idx in turn.start..end {
+            if idx == anchor
+                && let Some(ref base) = header
+            {
+                push_folded_header(&mut out, base, preview.as_ref());
+            }
+            if messages[idx].tool_group.is_some() {
+                continue;
+            }
+            if visible_when_folded(messages, idx, final_idx) {
+                super::panes::render_simple_message(&mut out, &messages[idx], width);
+            }
+        }
+        if anchor >= end
+            && let Some(ref base) = header
+        {
+            push_folded_header(&mut out, base, preview.as_ref());
+        }
+    }
+    out
+}
+
+/// One folded turn's header and last-call preview, styled as the focused pane
+/// styles them.
+fn push_folded_header(out: &mut Vec<Line<'static>>, base: &str, preview: Option<&(String, bool)>) {
+    out.push(Line::from(vec![
+        Span::styled(
+            format!("  {base}"),
+            Style::default()
+                .fg(theme::role(Role::AccentTeal))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " (click to expand)".to_string(),
+            Style::default().fg(theme::role(Role::GrayMid)),
+        ),
+    ]));
+    if let Some((description, success)) = preview {
+        let style = if *success {
+            Style::default()
+                .fg(theme::role(Role::GrayDim))
+                .add_modifier(Modifier::ITALIC)
+        } else {
+            Style::default()
+                .fg(theme::role(Role::Error))
+                .add_modifier(Modifier::ITALIC)
+        };
+        out.push(Line::from(vec![
+            Span::styled(
+                "    └─ ".to_string(),
+                Style::default().fg(theme::role(Role::GrayDim)),
+            ),
+            Span::styled(description.clone(), style),
+        ]));
+    }
+}
+
 /// Whether row `idx` still renders while its turn is folded (#758).
 ///
 /// Folding hides the turn's working-out — thinking, tool groups, and the
