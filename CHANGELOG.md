@@ -1195,7 +1195,7 @@ A hardening window: per-job cron sessions, a config write guard derived from the
 
 ## [0.5.0] - 2026-09-06
 
-595 commits since v0.3.83. 591 files changed, +57,403 / -11,296 lines.
+595 commits since v0.3.83, 4 contributors. 591 files changed, +57,403 / -11,296 lines.
 
 The biggest release since v0.3.9 in April, and more than six times the largest
 one since: 595 commits against a previous best of 97. Only v0.3.9 itself, at
