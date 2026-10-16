@@ -157,6 +157,7 @@ pub(crate) fn run_tracked_resume_turn(
                                         .upsert_tool_group(
                                             mid.get(),
                                             GroupState {
+                                                page: 0,
                                                 entries,
                                                 notes: Vec::new(),
                                                 expanded: false,
@@ -167,6 +168,7 @@ pub(crate) fn run_tracked_resume_turn(
                                         .await;
                                     let edit = EditMessage::new()
                                         .content(super::tool_group::render_content(&group))
+                                        .embeds(super::tool_group::render_embeds(&group))
                                         .components(super::tool_group::render_components(
                                             &group,
                                             mid.get(),
@@ -187,6 +189,7 @@ pub(crate) fn run_tracked_resume_turn(
                                 }
                                 None => {
                                     let group = GroupState {
+                                        page: 0,
                                         entries,
                                         notes: Vec::new(),
                                         expanded: false,
@@ -214,7 +217,11 @@ pub(crate) fn run_tracked_resume_turn(
                                                     channel,
                                                     &http,
                                                     sent_msg.id,
-                                                    EditMessage::new().components(comps),
+                                                    EditMessage::new()
+                                                        .embeds(super::tool_group::render_embeds(
+                                                            &group,
+                                                        ))
+                                                        .components(comps),
                                                 )
                                                 .await
                                             {
@@ -257,6 +264,7 @@ pub(crate) fn run_tracked_resume_turn(
                                     .upsert_tool_group(
                                         mid.get(),
                                         GroupState {
+                                            page: 0,
                                             entries,
                                             notes: Vec::new(),
                                             expanded: false,
@@ -267,6 +275,7 @@ pub(crate) fn run_tracked_resume_turn(
                                     .await;
                                 let edit = EditMessage::new()
                                     .content(super::tool_group::render_content(&group))
+                                    .embeds(super::tool_group::render_embeds(&group))
                                     .components(super::tool_group::render_components(
                                         &group,
                                         mid.get(),
@@ -337,6 +346,7 @@ pub(crate) fn run_tracked_resume_turn(
                                 };
                                 let edit = EditMessage::new()
                                     .content(super::tool_group::render_content(&group))
+                                    .embeds(super::tool_group::render_embeds(&group))
                                     .components(super::tool_group::render_components(
                                         &group,
                                         mid.get(),
@@ -474,6 +484,7 @@ pub(crate) fn run_tracked_resume_turn(
         // second zero. On a post failure the mid stays None and bubble creation
         // falls back to the first tool event.
         let turn_shell = GroupState {
+            page: 0,
             entries: Vec::new(),
             notes: Vec::new(),
             expanded: false,
@@ -612,6 +623,7 @@ pub(crate) fn run_tracked_resume_turn(
                 {
                     let edit = serenity::builder::EditMessage::new()
                         .content(super::tool_group::render_content(&group))
+                        .embeds(super::tool_group::render_embeds(&group))
                         .components(super::tool_group::render_components(&group, mid.get()));
                     if let Some(Err(e)) =
                         super::governor::edit_chrome(&dstate.governor, channel, &http, mid, edit)
@@ -651,6 +663,7 @@ pub(crate) fn run_tracked_resume_turn(
                     }
                     let edit = serenity::builder::EditMessage::new()
                         .content(super::tool_group::render_content(&group))
+                        .embeds(super::tool_group::render_embeds(&group))
                         .components(super::tool_group::render_components(&group, mid.get()));
                     if let Err(e) = super::governor::edit_content(
                         &dstate.governor,
@@ -697,6 +710,7 @@ pub(crate) fn run_tracked_resume_turn(
                 {
                     let edit = serenity::builder::EditMessage::new()
                         .content(super::tool_group::render_content(&group))
+                        .embeds(super::tool_group::render_embeds(&group))
                         .components(super::tool_group::render_components(&group, mid.get()));
                     if let Err(e) = super::governor::edit_content(
                         &dstate.governor,
@@ -735,6 +749,7 @@ pub(crate) fn run_tracked_resume_turn(
                 {
                     let edit = serenity::builder::EditMessage::new()
                         .content(super::tool_group::render_content(&group))
+                        .embeds(super::tool_group::render_embeds(&group))
                         .components(super::tool_group::render_components(&group, mid.get()));
                     if let Err(e) = super::governor::edit_content(
                         &dstate.governor,

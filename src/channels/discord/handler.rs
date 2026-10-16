@@ -212,6 +212,7 @@ pub(super) fn spawn_flow_ticker(
             }
             let edit = EditMessage::new()
                 .content(super::tool_group::render_content(&group))
+                .embeds(super::tool_group::render_embeds(&group))
                 .components(super::tool_group::render_components(&group, mid.get()));
             // The ticker is the one chrome writer that pays for its paint up
             // front, because a refusal here means skipping the rest of the
@@ -243,6 +244,7 @@ pub(super) fn spawn_flow_ticker(
                         .await;
                     let edit = EditMessage::new()
                         .content(super::tool_group::render_content(&re))
+                        .embeds(super::tool_group::render_embeds(&re))
                         .components(super::tool_group::render_components(&re, mid.get()));
                     // Same shape as the chrome tick: the `gate` above is what
                     // paid for this write, so the edit goes out directly and
@@ -1418,6 +1420,7 @@ pub(crate) async fn handle_message(
                                     .upsert_tool_group(
                                         mid.get(),
                                         GroupState {
+                                            page: 0,
                                             entries,
                                             notes: Vec::new(),
                                             expanded: false,
@@ -1428,6 +1431,7 @@ pub(crate) async fn handle_message(
                                     .await;
                                 let edit = EditMessage::new()
                                     .content(super::tool_group::render_content(&group))
+                                    .embeds(super::tool_group::render_embeds(&group))
                                     .components(super::tool_group::render_components(
                                         &group,
                                         mid.get(),
@@ -1446,6 +1450,7 @@ pub(crate) async fn handle_message(
                             }
                             None => {
                                 let group = GroupState {
+                                    page: 0,
                                     entries,
                                     notes: Vec::new(),
                                     expanded: false,
@@ -1473,7 +1478,11 @@ pub(crate) async fn handle_message(
                                                 channel,
                                                 &http,
                                                 sent.id,
-                                                EditMessage::new().components(comps),
+                                                EditMessage::new()
+                                                    .embeds(super::tool_group::render_embeds(
+                                                        &group,
+                                                    ))
+                                                    .components(comps),
                                             )
                                             .await
                                         {
@@ -1514,6 +1523,7 @@ pub(crate) async fn handle_message(
                                 .upsert_tool_group(
                                     mid.get(),
                                     GroupState {
+                                        page: 0,
                                         entries,
                                         notes: Vec::new(),
                                         expanded: false,
@@ -1524,6 +1534,7 @@ pub(crate) async fn handle_message(
                                 .await;
                             let edit = EditMessage::new()
                                 .content(super::tool_group::render_content(&group))
+                                .embeds(super::tool_group::render_embeds(&group))
                                 .components(super::tool_group::render_components(
                                     &group,
                                     mid.get(),
@@ -1603,6 +1614,7 @@ pub(crate) async fn handle_message(
                             };
                             let edit = EditMessage::new()
                                 .content(super::tool_group::render_content(&group))
+                                .embeds(super::tool_group::render_embeds(&group))
                                 .components(super::tool_group::render_components(
                                     &group,
                                     mid.get(),
@@ -1754,6 +1766,7 @@ pub(crate) async fn handle_message(
     // post failure the mid stays None and creation falls back to the first
     // tool call, the pre-#1845 behavior.
     let turn_shell = super::tool_group::GroupState {
+        page: 0,
         entries: Vec::new(),
         notes: Vec::new(),
         expanded: false,
@@ -1900,6 +1913,7 @@ pub(crate) async fn handle_message(
             {
                 let edit = serenity::builder::EditMessage::new()
                     .content(super::tool_group::render_content(&group))
+                    .embeds(super::tool_group::render_embeds(&group))
                     .components(super::tool_group::render_components(&group, mid.get()));
                 if let Some(Err(e)) = super::governor::edit_chrome(
                     &discord_state.governor,
@@ -1950,6 +1964,7 @@ pub(crate) async fn handle_message(
                 }
                 let edit = serenity::builder::EditMessage::new()
                     .content(super::tool_group::render_content(&group))
+                    .embeds(super::tool_group::render_embeds(&group))
                     .components(super::tool_group::render_components(&group, mid.get()));
                 if let Err(e) = super::governor::edit_content(
                     &discord_state.governor,
@@ -2165,6 +2180,7 @@ pub(crate) async fn handle_message(
             {
                 let edit = serenity::builder::EditMessage::new()
                     .content(super::tool_group::render_content(&group))
+                    .embeds(super::tool_group::render_embeds(&group))
                     .components(super::tool_group::render_components(&group, mid.get()));
                 if let Err(e) = super::governor::edit_content(
                     &discord_state.governor,
@@ -2209,6 +2225,7 @@ pub(crate) async fn handle_message(
             {
                 let edit = serenity::builder::EditMessage::new()
                     .content(super::tool_group::render_content(&group))
+                    .embeds(super::tool_group::render_embeds(&group))
                     .components(super::tool_group::render_components(&group, mid.get()));
                 if let Err(e) = super::governor::edit_content(
                     &discord_state.governor,

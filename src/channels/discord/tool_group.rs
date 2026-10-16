@@ -10,12 +10,16 @@
 //! trace): one editable work-log per turn instead of one message per
 //! intermediate.
 
-use serenity::builder::{CreateActionRow, CreateButton};
+use serenity::builder::{CreateActionRow, CreateButton, CreateEmbed, CreateEmbedFooter};
 use serenity::model::application::ButtonStyle;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use super::DiscordState;
+use super::tool_card::{
+    card_color, card_footer, card_title, clamp_page, collapse_repeats, page_count, page_slice,
+    row_line,
+};
 use crate::channels::background_work::FlowOutcome;
 
 /// One tool row in a group.
@@ -38,6 +42,8 @@ pub(crate) struct GroupState {
     /// way it preserves `expanded`.
     pub notes: Vec<String>,
     pub expanded: bool,
+    /// Zero-based card page shown while expanded (#1880).
+    pub page: usize,
     /// Turn-start anchor for the live `🕒` segment and the settled `⏱` one
     /// (#1841). Stamped at first insert and preserved across updates so the
     /// clock never restarts mid-turn.
@@ -104,7 +110,7 @@ fn notes_block(notes: &[String]) -> String {
         .join("\n")
 }
 
-fn entry_icon(status: Option<bool>) -> &'static str {
+pub(crate) fn entry_icon(status: Option<bool>) -> &'static str {
     match status {
         None => "⚙️",
         Some(true) => "✅",
@@ -253,39 +259,6 @@ fn summary_line(group: &GroupState) -> String {
 /// construction.
 pub(crate) const CONTENT_MAX_CHARS: usize = 2000;
 
-/// Room reserved for the omission marker so the clamped body stays under
-/// [`CONTENT_MAX_CHARS`] once the marker is appended.
-const OMIT_MARKER_RESERVE: usize = 80;
-
-/// Keep newest rows of an expansion that overshoots the cap. Walks rows
-/// backwards (the freshest activity is what people expand for), restores
-/// chronology, and states how many rows were dropped — never silently.
-fn clamp_rows(summary: String, rows: Vec<String>) -> String {
-    let budget = CONTENT_MAX_CHARS - OMIT_MARKER_RESERVE;
-    let mut used = summary.chars().count() + 1;
-    let mut kept: Vec<String> = Vec::new();
-    let mut dropped = 0usize;
-    for row in rows.into_iter().rev() {
-        let cost = row.chars().count() + 1;
-        if used + cost > budget {
-            dropped += 1;
-            continue;
-        }
-        used += cost;
-        kept.push(row);
-    }
-    let mut out = format!(
-        "{summary}\n{}",
-        kept.into_iter().rev().collect::<Vec<_>>().join("\n")
-    );
-    if dropped > 0 {
-        out.push_str(&format!(
-            "\n_{dropped} omitted to fit Discord's message limit_"
-        ));
-    }
-    out
-}
-
 /// Final wire guard: hard-cut at the cap on a char boundary. Entry rows
 /// and notes are clipped upstream, so this only exists for pathological
 /// callers — an oversized message must never reach the API.
@@ -307,13 +280,6 @@ pub(crate) fn render_content(group: &GroupState) -> String {
     let tools_part = if group.entries.len() == 1 && !group.expanded && group.settled.is_none() {
         let e = &group.entries[0];
         format!("{} **{}**{}", entry_icon(e.status), e.name, e.context)
-    } else if group.expanded {
-        let lines: Vec<String> = group
-            .entries
-            .iter()
-            .map(|e| format!("{} **{}**{}", entry_icon(e.status), e.name, e.context))
-            .collect();
-        clamp_rows(summary_line(group), lines)
     } else {
         summary_line(group)
     };
@@ -333,22 +299,78 @@ pub(crate) fn render_content(group: &GroupState) -> String {
     hard_clip(body)
 }
 
-/// Toggle components for the group message; empty for single-tool groups
-/// (a lone line has nothing extra to reveal).
+/// Reply for a card click whose message aged out of retention (#1880).
+pub(crate) fn stale_card_reply() -> serenity::builder::CreateInteractionResponse {
+    serenity::builder::CreateInteractionResponse::Message(
+        serenity::builder::CreateInteractionResponseMessage::new()
+            .ephemeral(true)
+            .content("This status bubble is too old to use."),
+    )
+}
+
+/// Buttons under the group message. A lone line has nothing to reveal, so it
+/// gets none. Collapsed: Expand and Log. Expanded: page back and forward,
+/// Log, and Collapse (#1880).
 pub(crate) fn render_components(group: &GroupState, message_id: u64) -> Vec<CreateActionRow> {
     if group.entries.len() < 2 {
         return Vec::new();
     }
-    let label = if group.expanded {
-        "Collapse ▲"
-    } else {
-        "Expand ▼"
-    };
+    let log = CreateButton::new(format!("tglog:{message_id}"))
+        .label("Log")
+        .style(ButtonStyle::Secondary);
+    if !group.expanded {
+        return vec![CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("toolgroup:{message_id}"))
+                .label("Expand ▼")
+                .style(ButtonStyle::Secondary),
+            log,
+        ])];
+    }
+    let rows = collapse_repeats(&group.entries);
+    let page = clamp_page(group.page, rows.len());
+    let last = page_count(rows.len()) - 1;
     vec![CreateActionRow::Buttons(vec![
+        CreateButton::new(format!("tgpage:{message_id}:{}", page.saturating_sub(1)))
+            .label("◀")
+            .style(ButtonStyle::Secondary)
+            .disabled(page == 0),
+        CreateButton::new(format!("tgpage:{message_id}:{}", (page + 1).min(last)))
+            .label("▶")
+            .style(ButtonStyle::Secondary)
+            .disabled(page >= last),
+        log,
         CreateButton::new(format!("toolgroup:{message_id}"))
-            .label(label)
+            .label("Collapse ▲")
             .style(ButtonStyle::Secondary),
     ])]
+}
+
+/// The card embed for an expanded group: the current page of rows, the
+/// header, the bar color, and the page footer. Empty when no card is shown
+/// (collapsed, or a lone line). Rows live here and not in the message text,
+/// so a long turn pages instead of being clipped (#1880).
+pub(crate) fn render_embeds(group: &GroupState) -> Vec<CreateEmbed> {
+    if !group.expanded || group.entries.len() < 2 {
+        return Vec::new();
+    }
+    let rows = collapse_repeats(&group.entries);
+    let page = clamp_page(group.page, rows.len());
+    let body = page_slice(&rows, page)
+        .iter()
+        .map(row_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    vec![
+        CreateEmbed::new()
+            .title(card_title(&rows))
+            .colour(card_color(&rows))
+            .description(body)
+            .footer(CreateEmbedFooter::new(card_footer(
+                &rows,
+                page,
+                group.entries.len(),
+            ))),
+    ]
 }
 
 impl DiscordState {
@@ -370,6 +392,7 @@ impl DiscordState {
         match map.get(&message_id) {
             Some(existing) => {
                 group.expanded = existing.expanded;
+                group.page = existing.page;
                 group.notes = existing.notes.clone();
                 group.started_at = existing.started_at;
                 group.settled = existing.settled.clone();
@@ -384,6 +407,19 @@ impl DiscordState {
         }
         map.insert(message_id, group.clone());
         group
+    }
+
+    /// Set a group's card page; None when it aged out of retention (#1880).
+    pub(crate) async fn set_tool_group_page(
+        &self,
+        message_id: u64,
+        page: usize,
+    ) -> Option<GroupState> {
+        let mut guard = self.tool_groups.lock().await;
+        let (_, map) = &mut *guard;
+        let group = map.get_mut(&message_id)?;
+        group.page = page;
+        Some(group.clone())
     }
 
     /// Flip a group's expanded state; None when it aged out of retention.
@@ -500,87 +536,5 @@ impl DiscordState {
         let idx = group.notes.iter().rposition(|n| pred(n))?;
         group.notes.remove(idx);
         Some(group.clone())
-    }
-}
-
-#[cfg(test)]
-mod cap_tests {
-    use super::*;
-
-    fn probe(entries: usize, notes: usize, expanded: bool) -> GroupState {
-        GroupState {
-            entries: (0..entries)
-                .map(|i| GroupEntry {
-                    name: format!("tool{i}"),
-                    context: format!(" (long context line to reach the cap sooner #{i})"),
-                    status: Some(true),
-                })
-                .collect(),
-            notes: (0..notes)
-                .map(|i| clip_note(&"n".repeat(NOTE_MAX_CHARS + 40 + i)))
-                .collect(),
-            expanded,
-            started_at: Instant::now(),
-            settled: Some(SettledStatus {
-                elapsed: Duration::from_secs(3),
-                ctx: None,
-                waiting: None,
-                outcome: None,
-            }),
-        }
-    }
-
-    #[test]
-    fn huge_expansion_fits_the_cap_and_states_drops() {
-        let rendered = render_content(&probe(300, 6, true));
-        let chars = rendered.chars().count();
-        assert!(chars <= CONTENT_MAX_CHARS, "expansion overshot: {chars}");
-        assert!(
-            rendered.contains("_") && rendered.contains("omitted to fit"),
-            "silent drop: {rendered}"
-        );
-        assert!(
-            rendered.contains("tool299"),
-            "the newest entry must survive the clamp"
-        );
-    }
-
-    #[test]
-    fn small_expansion_is_untouched() {
-        let rendered = render_content(&probe(3, 0, true));
-        assert!(rendered.contains("tool0") && rendered.contains("tool2"));
-        assert!(!rendered.contains("omitted to fit"));
-    }
-
-    #[test]
-    fn collapsed_note_flood_fits_the_cap() {
-        let rendered = render_content(&probe(30, 6, false));
-        assert!(rendered.chars().count() <= CONTENT_MAX_CHARS);
-    }
-
-    #[test]
-    fn multibyte_context_never_splits_a_char() {
-        let mut g = probe(2, 0, true);
-        g.entries[0].context = " (".repeat(3000);
-        let rendered = render_content(&g);
-        assert!(rendered.chars().count() <= CONTENT_MAX_CHARS);
-        assert!(!rendered.ends_with('\u{FFFD}'));
-    }
-
-    #[test]
-    fn marker_counts_exactly_the_dropped_rows() {
-        let rendered = render_content(&probe(250, 0, true));
-        // Line 0 is the summary (`✅ **250 tool calls** · …`), which also
-        // starts with an entry icon — only the entry rows count as shown.
-        let shown = rendered
-            .lines()
-            .skip(1)
-            .filter(|l| l.starts_with(['✅', '❌', '\u{2699}']))
-            .count();
-        assert!(shown > 0 && shown < 250, "clamp kept {shown} rows");
-        assert!(
-            rendered.contains(&format!("_{} omitted to fit", 250 - shown)),
-            "marker disagrees with visible rows:\n{rendered}"
-        );
     }
 }

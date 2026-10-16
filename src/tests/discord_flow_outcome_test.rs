@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 fn settled(outcome: Option<FlowOutcome>, waiting: Option<&str>) -> GroupState {
     GroupState {
+        page: 0,
         entries: vec![
             GroupEntry {
                 name: "bash".into(),

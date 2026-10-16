@@ -787,6 +787,7 @@ impl EventHandler for Handler {
                         Some(group) => CreateInteractionResponse::UpdateMessage(
                             CreateInteractionResponseMessage::new()
                                 .content(super::tool_group::render_content(&group))
+                                .embeds(super::tool_group::render_embeds(&group))
                                 .components(super::tool_group::render_components(&group, mid)),
                         ),
                         None => {
@@ -814,6 +815,62 @@ impl EventHandler for Handler {
                     if let Err(e2) = comp.create_response(&ctx.http, fallback).await {
                         tracing::warn!("Discord: tool group toggle fallback response failed: {e2}");
                     }
+                }
+                return;
+            }
+
+            // Tool card paging and Log (#1880). Paging edits this message in
+            // place; Log sends the full list to the viewer as a Markdown file.
+            if let Some(rest) = custom_id.strip_prefix("tgpage:") {
+                use serenity::builder::{
+                    CreateInteractionResponse, CreateInteractionResponseMessage,
+                };
+                let parsed = rest.split_once(':').and_then(|(mid, page)| {
+                    Some((mid.parse::<u64>().ok()?, page.parse::<usize>().ok()?))
+                });
+                let resp = match parsed {
+                    Some((mid, page)) => {
+                        match self.discord_state.set_tool_group_page(mid, page).await {
+                            Some(group) => CreateInteractionResponse::UpdateMessage(
+                                CreateInteractionResponseMessage::new()
+                                    .content(super::tool_group::render_content(&group))
+                                    .embeds(super::tool_group::render_embeds(&group))
+                                    .components(super::tool_group::render_components(&group, mid)),
+                            ),
+                            None => super::tool_group::stale_card_reply(),
+                        }
+                    }
+                    None => super::tool_group::stale_card_reply(),
+                };
+                if let Err(e) = comp.create_response(&ctx.http, resp).await {
+                    tracing::warn!("Discord: tool card page response failed: {e}");
+                }
+                return;
+            }
+            if let Some(mid_str) = custom_id.strip_prefix("tglog:") {
+                use serenity::builder::{
+                    CreateAttachment, CreateInteractionResponse, CreateInteractionResponseMessage,
+                };
+                let snapshot = match mid_str.parse::<u64>() {
+                    Ok(mid) => self.discord_state.tool_group_snapshot(mid).await,
+                    Err(_) => None,
+                };
+                let resp = match snapshot {
+                    Some(group) => {
+                        let log = super::tool_card::log_markdown(&group.entries);
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .ephemeral(true)
+                                .add_file(CreateAttachment::bytes(
+                                    log.into_bytes(),
+                                    "tool-calls.md",
+                                )),
+                        )
+                    }
+                    None => super::tool_group::stale_card_reply(),
+                };
+                if let Err(e) = comp.create_response(&ctx.http, resp).await {
+                    tracing::warn!("Discord: tool card log response failed: {e}");
                 }
                 return;
             }

@@ -5,7 +5,7 @@
 use crate::channels::background_work::FlowOutcome;
 use crate::channels::discord::DiscordState;
 use crate::channels::discord::tool_group::{
-    GroupEntry, GroupState, SettledStatus, render_components, render_content,
+    GroupEntry, GroupState, SettledStatus, render_components, render_content, render_embeds,
 };
 use std::time::{Duration, Instant};
 
@@ -21,6 +21,7 @@ fn entries(n: usize, done: bool) -> Vec<GroupEntry> {
 
 fn group(n: usize, done: bool, expanded: bool) -> GroupState {
     GroupState {
+        page: 0,
         entries: entries(n, done),
         expanded,
         notes: Vec::new(),
@@ -36,8 +37,11 @@ fn collapsed_shows_summary_expanded_lists_tools() {
     assert!(collapsed.contains("running"));
     assert!(!collapsed.contains("tool0"));
 
+    // Expanded rows live in the card embed, not the message text (#1880).
     let expanded = render_content(&group(3, true, true));
-    assert!(expanded.contains("tool0") && expanded.contains("tool2"));
+    assert!(!expanded.contains("tool0"));
+    let card = serde_json::to_string(&render_embeds(&group(3, true, true))).unwrap();
+    assert!(card.contains("tool0") && card.contains("tool2"));
 
     let single = render_content(&group(1, false, false));
     assert!(single.contains("tool0"));
