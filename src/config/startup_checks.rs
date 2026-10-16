@@ -107,6 +107,50 @@ pub fn startup_warnings(config: &Config, raw_toml: Option<&str>) -> Vec<String> 
         }
     }
 
+    // 5. Channels whose owner is decided by LIST POSITION.
+    //    `config::owner::is_owner` falls back to the FIRST entry of the allow
+    //    list when `bot_owner` is unset, and `seed_bot_owner` migrates that same
+    //    first entry into `bot_owner` on the next migration pass. So the order
+    //    of `allowed_users` is a privilege grant: inserting a new id at the head
+    //    transfers ownership, and nothing said so (F-CFG-02). Naming it lets the
+    //    operator pin `bot_owner` explicitly instead of relying on position.
+    for (section, allowed_len, owner_len) in [
+        (
+            "telegram",
+            config.channels.telegram.allowed_users.len(),
+            config.channels.telegram.bot_owner.len(),
+        ),
+        (
+            "discord",
+            config.channels.discord.allowed_users.len(),
+            config.channels.discord.bot_owner.len(),
+        ),
+        (
+            "slack",
+            config.channels.slack.allowed_users.len(),
+            config.channels.slack.bot_owner.len(),
+        ),
+        (
+            "trello",
+            config.channels.trello.allowed_users.len(),
+            config.channels.trello.bot_owner.len(),
+        ),
+        (
+            "whatsapp",
+            config.channels.whatsapp.allowed_phones.len(),
+            config.channels.whatsapp.bot_owner.len(),
+        ),
+    ] {
+        if owner_len == 0 && allowed_len > 0 {
+            warns.push(format!(
+                "config: [channels.{section}] sets no `bot_owner`, so the OWNER is whichever id \
+                 comes FIRST in the allow list — reordering that list transfers ownership, and \
+                 seeding will write that same entry into `bot_owner` on the next migration. Set \
+                 `bot_owner` explicitly to stop ownership depending on position"
+            ));
+        }
+    }
+
     warns
 }
 
