@@ -428,7 +428,7 @@ Referenced markdown files (`.md`, `.markdown`) are a special case: they ship as 
 
 #### /cowork — workspace creation (Telegram) and channel opening (Discord)
 
-On **Discord**, `/cowork` (owner only, typed in a channel or thread, or picked from the `/` menu) opens that channel or thread to its members. It writes `[channels.discord.channels.<id>]` with `open = true` and the channel's `name`. Members are not registered anywhere: `open` admits them, threads and forum posts included, and DMs and other channels stay locked. Run it in a server channel; in a DM it refuses.
+On **Discord**, `/cowork` (owner only, typed in a channel or thread, or picked from the `/` menu) opens that channel or thread to its members. It writes `[channels.discord.channels.<id>]` with `open = true`, `respond_to = "all"` and the channel's `name`. Members are not registered anywhere: `open` admits them, threads and forum posts included, and DMs and other channels stay locked. Because the owner's `/cowork` and `/respond_to` pass the channel scope, the owner can open or fix a channel from inside it even when it has no entry yet. Run `/cowork` in a server channel; in a DM it refuses.
 
 The Telegram flow below creates a team workspace directly from Telegram. It is **Telegram-only** because it relies on Telegram-specific primitives: group creation via `?startgroup` deep links, invite links, QR codes from `t.me` URLs, and `new_chat_members` service messages for auto-registration. None of these exist in Discord, Slack, or WhatsApp.
 
@@ -555,7 +555,7 @@ respond_to = "all"               # this channel's mode; unset inherits the globa
 open = true                      # any member of THIS channel is allowed, threads and forum posts included
 ```
 
-A thread or forum post takes any setting it does not set from its parent channel, and its own setting wins over the parent's. `open` never admits anyone while the bot has no `allowed_users`, `allowed_roles` or `bot_owner`, and DMs and other channels stay locked. `auto` on Discord currently behaves as `mention`. The owner can run `/respond_to` inside a channel or thread to set that entry; the command reports the mode that applies there.
+A channel with its own entry passes the channel scope without an `allowed_channels` entry. A thread or forum post takes any setting it does not set from its parent channel, and its own setting wins over the parent's. `open` never admits anyone while the bot has no `allowed_users`, `allowed_roles` or `bot_owner`, and DMs and other channels stay locked. `auto` on Discord currently behaves as `mention`. The owner can run `/respond_to` inside a channel or thread to set that entry; the command reports the mode that applies there.
 
 **`/cowork` opens a group.** Running `/cowork` (owner-only) is the explicit, owner-initiated action that sets that group's `open = true` (persisted, until you change it): either by adding the bot to a group via the cowork deep link, or by sending `/cowork` inside a group the bot is already in. Once open, every member (existing and new) is allowed and tracked in the group's `allowed_users` — no per-user `/start` needed — while DM access stays closed. Auto-registration only happens in open groups; a group you never `/cowork` (or set `open = true` on) stays secure by default and admits no one automatically.
 
