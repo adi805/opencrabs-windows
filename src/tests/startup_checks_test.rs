@@ -6,6 +6,7 @@
 use crate::config::startup_checks::startup_warnings;
 use crate::config::{
     ChannelsConfig, Config, GoogleChatConfig, IMessageConfig, ProviderConfig, ProviderConfigs,
+    TelegramConfig, WhatsAppConfig,
 };
 
 fn config_with_default(dp: Option<&str>, force: bool) -> Config {
@@ -203,5 +204,91 @@ fn a_disabled_unimplemented_channel_is_not_reported() {
             .iter()
             .any(|w| w.contains("google_chat") || w.contains("imessage")),
         "a channel left disabled must stay quiet, got {warns:?}"
+    );
+}
+
+// ── Ownership decided by list position (F-CFG-02) ───────────────────────────
+//
+// `config::owner::is_owner` falls back to the FIRST allow-list entry when
+// `bot_owner` is unset, and `seed_bot_owner` writes that same entry into
+// `bot_owner`. Order is therefore a privilege grant, and it was silent.
+
+fn config_with_channels(channels: ChannelsConfig) -> Config {
+    Config {
+        channels,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn an_owner_decided_by_position_is_reported() {
+    let cfg = config_with_channels(ChannelsConfig {
+        telegram: TelegramConfig {
+            allowed_users: vec!["111".into(), "222".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let warns = startup_warnings(&cfg, None);
+    let hit = warns
+        .iter()
+        .find(|w| w.contains("[channels.telegram]"))
+        .unwrap_or_else(|| panic!("positional ownership must warn, got {warns:?}"));
+    assert!(
+        hit.contains("FIRST") && hit.contains("bot_owner"),
+        "the warning must name both the rule and the key that pins it, got {hit}"
+    );
+}
+
+#[test]
+fn an_explicit_owner_is_quiet() {
+    let cfg = config_with_channels(ChannelsConfig {
+        telegram: TelegramConfig {
+            allowed_users: vec!["111".into(), "222".into()],
+            bot_owner: vec!["222".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let warns = startup_warnings(&cfg, None);
+    assert!(
+        !warns.iter().any(|w| w.contains("[channels.telegram]")),
+        "an explicit bot_owner makes position irrelevant, got {warns:?}"
+    );
+}
+
+#[test]
+fn a_channel_with_no_allow_list_is_quiet() {
+    // No allow list means no position to grant ownership from: `is_owner`
+    // returns false, so there is nothing to warn about.
+    let cfg = config_with_channels(ChannelsConfig {
+        telegram: TelegramConfig::default(),
+        whatsapp: WhatsAppConfig::default(),
+        ..Default::default()
+    });
+    let warns = startup_warnings(&cfg, None);
+    assert!(
+        !warns
+            .iter()
+            .any(|w| w.contains("[channels.telegram]") || w.contains("[channels.whatsapp]")),
+        "an unconfigured channel must stay quiet, got {warns:?}"
+    );
+}
+
+#[test]
+fn the_phone_channel_is_covered_too() {
+    // WhatsApp gates on `allowed_phones`, not `allowed_users`; the check has to
+    // read the right field or it silently covers four channels and not five.
+    let cfg = config_with_channels(ChannelsConfig {
+        whatsapp: WhatsAppConfig {
+            allowed_phones: vec!["+62812".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let warns = startup_warnings(&cfg, None);
+    assert!(
+        warns.iter().any(|w| w.contains("[channels.whatsapp]")),
+        "WhatsApp ownership by position must warn, got {warns:?}"
     );
 }
