@@ -2939,7 +2939,10 @@ newsletters = []
 # Broadcast rails (#1485). Status updates reach a LIST of people, so they are
 # opt-in per number: an EMPTY allowlist allows nobody, which is the opposite of
 # the usual convention and is deliberate. Sends are paced; `0` or unset means
-# the conservative 5s default rather than "no pacing".
+# the conservative 5s default rather than "no pacing". The same allowlist also
+# gates the newsletter surfaces (#1827): `whatsapp_send` action
+# `create_newsletter` is refused while this list is empty, and `post_newsletter`
+# publishes only to a channel JID listed here.
 [channels.whatsapp.broadcast]
 allowed_targets = []
 min_delay_seconds = 5
@@ -3611,7 +3614,7 @@ OpenCrabs includes 40+ built-in tools. The AI can use these during conversation:
 | `discord_send` | 17 actions: send, reply, react, edit, delete, pin, threads, embeds, roles, kick, ban, send_file |
 | `slack_send` | 17 actions: send, reply, react, edit, delete, pin, blocks, topics, members, send_file |
 | `trello_send` | 22 actions: cards, comments, checklists, labels, members, attachments, board management, search |
-| `whatsapp_send` | 27 actions: send, reply, delete, react, polls, typing, mark_read, photos, documents, audio/voice notes, video, stickers, location, contacts, pin/unpin, forward, block/unblock/list_blocked, profile name and status, status_update, list_newsletters, create_label, assign_label, send_buttons |
+| `whatsapp_send` | 29 actions: send, reply, delete, react, polls, typing, mark_read, photos, documents, audio/voice notes, video, stickers, location, contacts, pin/unpin, forward, block/unblock/list_blocked, profile name and status, status_update, list_newsletters, create_newsletter, post_newsletter, create_label, assign_label, send_buttons |
 | `channel_search` | Search captured message history across all channels (Telegram, Discord, Slack, WhatsApp) |
 | `telegram_connect` | Connect a Telegram bot from chat — takes a @BotFather token and starts listening |
 | `discord_connect` | Connect a Discord bot from chat — takes a bot token and starts listening |
