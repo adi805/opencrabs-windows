@@ -1424,7 +1424,7 @@ pub struct WhatsAppConfig {
     #[serde(default)]
     pub rate_limit: WaRateLimitConfig,
     /// `[channels.whatsapp.broadcast]` - opt-in rails for the newsletter,
-    /// status and label surfaces (#1485). Empty allowlist = nobody, on
+    /// status and label surfaces (#1485, #1827). Empty allowlist = nobody, on
     /// purpose: an unconfigured install must not be one tool call away from
     /// messaging arbitrary numbers.
     #[serde(default)]
@@ -1535,9 +1535,13 @@ impl WhatsAppConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct WaBroadcastConfig {
-    /// Numbers (E.164 or any formatting) that may receive a status update.
-    /// EMPTY MEANS NOBODY, which is the opposite of the usual convention and
-    /// is deliberate: broadcast has to be switched on by a human.
+    /// Numbers (E.164 or any formatting) that may receive a status update, and
+    /// newsletter (channel) JIDs that `post_newsletter` may publish to
+    /// (#1827). A channel entry is written as its own JID, e.g.
+    /// `120363...@newsletter`; matching keeps the digits only, so the JID form
+    /// and the bare digits are the same entry. EMPTY MEANS NOBODY, which is
+    /// the opposite of the usual convention and is deliberate: broadcast has
+    /// to be switched on by a human.
     pub allowed_targets: Vec<String>,
     /// Minimum seconds between two broadcast sends. `0` or unset falls back
     /// to the 5s default rather than disabling pacing - turning the rail off
