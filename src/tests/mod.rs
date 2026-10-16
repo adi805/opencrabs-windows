@@ -854,6 +854,7 @@ pub mod tui_theme_picker_test;
 pub mod tui_theme_presets_test;
 pub mod tui_user_themes_test;
 pub mod ui_snapshot_dump_test;
+pub mod undeclared_source_modules_test;
 pub mod usage_categorizer_test;
 pub mod usage_dashboard_test;
 pub mod usage_data_test;
