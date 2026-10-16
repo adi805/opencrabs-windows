@@ -205,6 +205,7 @@ pub mod claude_cli_task_events_test;
 pub mod clear_context_test;
 pub mod cli_agent_session_resume_test;
 pub mod cli_arg_too_long_test;
+pub mod cli_attachment_test;
 pub mod cli_context_rows_stripped_test;
 pub mod cli_headless_tools_test;
 pub mod cli_session_id_prefix_test;
