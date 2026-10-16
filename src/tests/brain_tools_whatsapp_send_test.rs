@@ -1,10 +1,11 @@
 //! Tests for whatsapp_send helpers and schema.
 
 use crate::brain::tools::whatsapp_send::{
-    build_vcard, delivered_prefix, get_f64, get_str, mime_from_extension, partial_failure_report,
-    resolve_jid, tag_with_header,
+    build_post, build_vcard, delivered_prefix, get_f64, get_str, mime_from_extension,
+    newsletter_jid, partial_failure_report, resolve_jid, tag_with_header,
 };
 use serde_json::json;
+use wacore_binary::JidExt;
 
 // ── get_str ──────────────────────────────────────────────────────────
 
@@ -441,4 +442,68 @@ async fn resolve_jid_normalizes_raw_target_number() {
     let res_jid = resolve_jid(&input_jid, &state, &rx, session_id).await;
     assert!(res_jid.is_ok(), "resolve_jid JID failed: {:?}", res_jid);
     assert_eq!(res_jid.unwrap().1, "6285270679623@s.whatsapp.net");
+}
+
+// ── #1827: newsletter create/post helpers ────────────────────────────
+
+#[test]
+fn newsletter_jid_accepts_a_channel_jid() {
+    let jid = newsletter_jid("120363123456789012@newsletter").expect("parses");
+    assert!(jid.is_newsletter());
+    assert_eq!(jid.to_string(), "120363123456789012@newsletter");
+}
+
+#[test]
+fn newsletter_jid_refuses_a_phone_jid() {
+    // A phone JID would take the encrypted DM path in `send_message`, so it
+    // must be refused here rather than delivered somewhere nobody asked for.
+    let err = newsletter_jid("15551234567@s.whatsapp.net").unwrap_err();
+    assert!(err.contains("not a newsletter JID"), "got: {err}");
+}
+
+#[test]
+fn newsletter_jid_refuses_garbage() {
+    assert!(newsletter_jid("").is_err());
+    assert!(newsletter_jid("not a jid").is_err());
+    assert!(newsletter_jid("https://whatsapp.com/channel/abc123").is_err());
+}
+
+#[test]
+fn build_post_text_is_a_plain_conversation() {
+    let msg = build_post(Some("hello channel"), None).expect("builds");
+    assert_eq!(msg.conversation.as_deref(), Some("hello channel"));
+    assert!(msg.image_message.as_option().is_none());
+}
+
+#[test]
+fn build_post_image_carries_no_caption_by_default() {
+    let img = waproto::whatsapp::message::ImageMessage {
+        mimetype: Some("image/jpeg".to_string()),
+        ..Default::default()
+    };
+    let msg = build_post(None, Some(img)).expect("builds");
+    let img = msg.image_message.as_option().expect("image present");
+    assert_eq!(img.mimetype.as_deref(), Some("image/jpeg"));
+    assert!(img.caption.is_none());
+    assert!(msg.conversation.is_none());
+}
+
+#[test]
+fn build_post_image_caption_lands_on_the_image() {
+    // `message` doubles as the caption when `media_path` is given, the same
+    // shape a status takes.
+    let img = waproto::whatsapp::message::ImageMessage {
+        mimetype: Some("image/png".to_string()),
+        ..Default::default()
+    };
+    let msg = build_post(Some("a caption"), Some(img)).expect("builds");
+    let img = msg.image_message.as_option().expect("image present");
+    assert_eq!(img.caption.as_deref(), Some("a caption"));
+    assert!(msg.conversation.is_none());
+}
+
+#[test]
+fn build_post_with_no_body_is_refused() {
+    let err = build_post(None, None).unwrap_err();
+    assert!(err.contains("Nothing was sent"), "got: {err}");
 }

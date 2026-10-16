@@ -121,3 +121,14 @@ fn the_shipped_config_default_broadcasts_to_nobody() {
         "an unset delay must still pace"
     );
 }
+
+#[test]
+fn a_newsletter_jid_is_gated_by_the_same_allowlist() {
+    // #1827: `post_newsletter` reuses this rail. `normalize` keeps the digits
+    // and drops the `@newsletter` server, so a channel JID is allowlisted by
+    // its own JID and an unlisted channel is refused.
+    let allow = vec!["120363123456789012@newsletter".to_string()];
+    assert!(is_allowed("120363123456789012@newsletter", &allow));
+    assert!(!is_allowed("120363999999999999@newsletter", &allow));
+    assert!(!is_allowed("120363123456789012@newsletter", &[]));
+}
