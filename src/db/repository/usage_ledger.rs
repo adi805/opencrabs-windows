@@ -1,7 +1,14 @@
 //! Usage Ledger Repository
 //!
 //! Cumulative usage tracking that persists across session deletes and compaction.
-//! Entries are append-only — never deleted.
+//!
+//! Entries are append-only and never deleted: nothing rewrites a row, nothing
+//! ages one out, and a session purge leaves them in place. That last one is
+//! deliberate rather than incidental (F-DB-03). The ledger is cumulative
+//! accounting, not session data: every query over it (`totals`,
+//! `stats_by_model`, `by_provider`) is all-time and joins nothing, so a purged
+//! session's rows are still the only record of what that session cost, and
+//! deleting them would shrink the all-time total silently.
 
 use crate::db::Pool;
 use crate::db::database::interact_err;
