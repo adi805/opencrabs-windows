@@ -160,20 +160,27 @@ impl CopilotTokenManager {
     /// Get the current Copilot token. If expired or empty, refreshes first.
     pub async fn ensure_token(&self) -> anyhow::Result<String> {
         {
-            let token = self.copilot_token.read().unwrap();
-            let expires = self.expires_at.read().unwrap();
+            let token = self.copilot_token.read().unwrap_or_else(|e| e.into_inner());
+            let expires = self.expires_at.read().unwrap_or_else(|e| e.into_inner());
             // Refresh if token is empty or expires within 2 minutes
             if !token.is_empty() && *expires > Instant::now() + Duration::from_secs(120) {
                 return Ok(token.clone());
             }
         }
         self.refresh().await?;
-        Ok(self.copilot_token.read().unwrap().clone())
+        Ok(self
+            .copilot_token
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone())
     }
 
     /// Get the current cached token without refreshing (sync, for headers callback).
     pub fn get_cached_token(&self) -> String {
-        self.copilot_token.read().unwrap().clone()
+        self.copilot_token
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Exchange the OAuth token for a fresh Copilot API token.
@@ -210,11 +217,14 @@ impl CopilotTokenManager {
         let ttl = token_resp.expires_at.saturating_sub(now_unix);
 
         {
-            let mut token = self.copilot_token.write().unwrap();
+            let mut token = self
+                .copilot_token
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
             *token = token_resp.token;
         }
         {
-            let mut expires = self.expires_at.write().unwrap();
+            let mut expires = self.expires_at.write().unwrap_or_else(|e| e.into_inner());
             *expires = Instant::now() + Duration::from_secs(ttl);
         }
 
@@ -233,7 +243,7 @@ impl CopilotTokenManager {
             loop {
                 // Sleep until 2 minutes before expiry (min 60s between refreshes)
                 let sleep_secs = {
-                    let expires = self.expires_at.read().unwrap();
+                    let expires = self.expires_at.read().unwrap_or_else(|e| e.into_inner());
                     let remaining = expires.saturating_duration_since(Instant::now());
                     remaining.as_secs().saturating_sub(120).max(60)
                 };

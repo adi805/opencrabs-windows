@@ -227,7 +227,10 @@ impl AgentService {
     /// log at debug, same contract as `record_tool_feedback`.
     pub(super) fn tool_health_annotations(&self) -> HashMap<String, String> {
         let stale = {
-            let cache = self.tool_health_cache.read().unwrap();
+            let cache = self
+                .tool_health_cache
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
             cache
                 .fetched_at
                 .map(|t| t.elapsed() >= TOOL_HEALTH_REFRESH_INTERVAL)
@@ -248,7 +251,7 @@ impl AgentService {
                 {
                     Ok(stats) => {
                         let annotations = build_tool_health_annotations(&stats);
-                        let mut cache = cache_handle.write().unwrap();
+                        let mut cache = cache_handle.write().unwrap_or_else(|e| e.into_inner());
                         cache.fetched_at = Some(Instant::now());
                         cache.annotations = annotations;
                     }
@@ -258,7 +261,11 @@ impl AgentService {
                 }
             });
         }
-        self.tool_health_cache.read().unwrap().annotations.clone()
+        self.tool_health_cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .annotations
+            .clone()
     }
 
     pub(super) fn record_tool_feedback(

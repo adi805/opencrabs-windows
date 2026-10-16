@@ -115,7 +115,10 @@ impl ToolRegistry {
     /// [`MAX_ACTIVE_EXTENDED`] (#603).
     pub fn activate_tools(&self, session_id: uuid::Uuid, names: impl IntoIterator<Item = String>) {
         use std::sync::atomic::Ordering;
-        let mut map = self.session_active.write().unwrap();
+        let mut map = self
+            .session_active
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         let set = map.entry(session_id).or_default();
         for name in names {
             let seq = self.activation_seq.fetch_add(1, Ordering::Relaxed);
@@ -147,17 +150,28 @@ impl ToolRegistry {
     pub fn register(&self, tool: Arc<dyn Tool>) {
         let name = tool.name().to_string();
         tracing::trace!("Registered tool: {}", name);
-        self.tools.write().unwrap().insert(name, tool);
+        self.tools
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name, tool);
     }
 
     /// Unregister a tool by name. Returns true if it existed.
     pub fn unregister(&self, name: &str) -> bool {
-        self.tools.write().unwrap().remove(name).is_some()
+        self.tools
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(name)
+            .is_some()
     }
 
     /// Get a tool by name
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.read().unwrap().get(name).cloned()
+        self.tools
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .cloned()
     }
 
     /// Whether the named tool's successful execution should end the agent
@@ -171,12 +185,20 @@ impl ToolRegistry {
 
     /// Check if a tool is registered
     pub fn has_tool(&self, name: &str) -> bool {
-        self.tools.read().unwrap().contains_key(name)
+        self.tools
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(name)
     }
 
     /// List all registered tool names
     pub fn list_tools(&self) -> Vec<String> {
-        self.tools.read().unwrap().keys().cloned().collect()
+        self.tools
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// Get tool definitions in LLM format
@@ -460,7 +482,7 @@ impl ToolRegistry {
 
     /// Get the number of registered tools
     pub fn count(&self) -> usize {
-        self.tools.read().unwrap().len()
+        self.tools.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 
