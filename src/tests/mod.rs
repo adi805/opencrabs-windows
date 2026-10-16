@@ -330,6 +330,7 @@ pub mod file_versions_test;
 pub mod generate_image_filename_test;
 pub mod git_branch_test;
 pub mod glob_tool_test;
+pub mod global_pool_isolation_test;
 pub mod goal_budget_test;
 pub mod goal_command_test;
 pub mod goal_driver_line_test;
