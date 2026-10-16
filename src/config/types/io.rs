@@ -156,12 +156,53 @@ pub fn save_last_good_config() {
     }
 }
 
+/// The path of the last-known-good snapshot.
+pub fn last_good_config_path() -> PathBuf {
+    opencrabs_home().join("config.last_good.toml")
+}
+
+/// How long ago the last-known-good snapshot was written, or `None` when there
+/// is no snapshot or its mtime cannot be read.
+///
+/// One definition of the path and one of the age, so the log line, the
+/// user-facing notice and any future reader cannot disagree about which file
+/// they are describing (F-CFG-04).
+pub fn last_good_snapshot_age() -> Option<std::time::Duration> {
+    let meta = fs::metadata(last_good_config_path()).ok()?;
+    let modified = meta.modified().ok()?;
+    Some(
+        std::time::SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_default(),
+    )
+}
+
+/// Render a duration the way an operator reads it: minutes under an hour, then
+/// hours and minutes, then days and hours.
+pub fn humanize_age(age: std::time::Duration) -> String {
+    let hours = age.as_secs() / 3600;
+    if hours >= 24 {
+        format!("{}d {}h", hours / 24, hours % 24)
+    } else if hours >= 1 {
+        format!("{}h {}m", hours, (age.as_secs() % 3600) / 60)
+    } else {
+        format!("{}m", age.as_secs() / 60)
+    }
+}
+
 /// Try loading config from last-known-good snapshot.
 ///
 /// Returns None if no snapshot exists or if it also fails to parse.
+///
+/// Recovery PROCEEDS on a stale snapshot, deliberately, and the log says so
+/// rather than reading like a bug report (F-CFG-04). The alternative is refusing
+/// to start on a config the user cannot fix without the daemon running, and a
+/// working daemon on last week's settings beats no daemon. What the user needs is
+/// not a refusal but the two facts the notice carries: their edits are not in
+/// effect, and how old the settings they are running on are. The age is returned
+/// to the caller through `ConfigLoadStatus` for that second fact.
 pub fn load_last_good_config() -> Option<Config> {
-    let home = opencrabs_home();
-    let config_good = home.join("config.last_good.toml");
+    let config_good = last_good_config_path();
 
     if !config_good.exists() {
         return None;
@@ -170,27 +211,20 @@ pub fn load_last_good_config() -> Option<Config> {
     tracing::warn!("Attempting recovery from last-known-good config");
 
     // Log the age of the snapshot so the operator knows how stale it is.
-    if let Ok(meta) = fs::metadata(&config_good)
-        && let Ok(modified) = meta.modified()
-    {
-        let age = std::time::SystemTime::now()
-            .duration_since(modified)
-            .unwrap_or_default();
-        let saved_at = chrono::DateTime::<chrono::Local>::from(modified)
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-        let hours = age.as_secs() / 3600;
-        let age_str = if hours >= 24 {
-            format!("{}d {}h", hours / 24, hours % 24)
-        } else if hours >= 1 {
-            format!("{}h {}m", hours, (age.as_secs() % 3600) / 60)
-        } else {
-            format!("{}m", age.as_secs() / 60)
-        };
+    if let Some(age) = last_good_snapshot_age() {
+        let saved_at = fs::metadata(&config_good)
+            .and_then(|m| m.modified())
+            .map(|m| {
+                chrono::DateTime::<chrono::Local>::from(m)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_else(|_| "unknown".to_string());
         tracing::warn!(
-            "last_known_good snapshot is {} old (saved at {}) — \
-             config.toml changes since then are silently ignored",
-            age_str,
+            "last_known_good snapshot is {} old (saved at {}): config.toml changes since \
+             then are NOT in effect. Recovering anyway — a running daemon on older settings \
+             beats refusing to start — and the age is reported to the user with the reason.",
+            humanize_age(age),
             saved_at
         );
     }
@@ -205,7 +239,7 @@ pub fn load_last_good_config() -> Option<Config> {
     };
 
     // Try loading keys from good snapshot
-    let keys_good = home.join("keys.last_good.toml");
+    let keys_good = opencrabs_home().join("keys.last_good.toml");
     if keys_good.exists()
         && let Ok(content) = fs::read_to_string(&keys_good)
         && let Ok(keys) = toml::from_str::<KeysFile>(&content)

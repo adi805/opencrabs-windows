@@ -23,6 +23,15 @@ pub struct ConfigLoadStatus {
     /// Why it fell back, so the user is told WHAT failed rather than only that
     /// something did (#909). Set only alongside `recovered`.
     pub recovery_reason: Option<String>,
+    /// How old the snapshot the load recovered from was, in seconds, when that
+    /// could be read (F-CFG-04).
+    ///
+    /// Recovery deliberately proceeds on a stale snapshot: a running daemon on
+    /// older settings beats refusing to start on a config the user cannot fix
+    /// without the daemon. So the age is the fact that matters, not the refusal,
+    /// and it travels with the reason so the notice can say "you are running on
+    /// settings from 31 days ago" rather than only "your edits are not in effect".
+    pub snapshot_age_secs: Option<u64>,
 }
 
 impl ConfigLoadStatus {
@@ -285,12 +294,17 @@ impl Config {
                         // Keep the reason: the warning used to name a file and
                         // give no cause, so a transient truncated read looked
                         // identical to a genuine syntax error in the user's
-                        // edit (#909).
+                        // edit (#909). The snapshot's age rides along for the
+                        // same reason (F-CFG-04): "your edits are not in
+                        // effect" is only half the story when the settings
+                        // being used are a month old.
                         Some(good) => Ok((
                             good,
                             ConfigLoadStatus {
                                 recovered: true,
                                 recovery_reason: Some(format!("{e:#}")),
+                                snapshot_age_secs: last_good_snapshot_age()
+                                    .map(|age| age.as_secs()),
                                 ..ConfigLoadStatus::clean()
                             },
                         )),
