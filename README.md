@@ -426,6 +426,17 @@ Referenced markdown files (`.md`, `.markdown`) are a special case: they ship as 
 
 **Flow logs** (processing-log messages showing tool calls and intermediate text) also use the rich API when enabled, supporting 32K characters instead of HTML's 4K limit. Long tool chains fit in a single message without splitting. If the rich send fails, flow logs fall back to HTML rendering. The block auto-freezes at 30K characters to stay within limits.
 
+#### Discord tool card
+
+On **Discord**, each turn's tool calls are one message. Collapsed, it shows the summary: the tool count, how many are running or failed, the context budget, tokens per second and the elapsed time. **Expand** opens the card:
+
+- **Five rows per page**, with previous and next buttons. Nothing is dropped: the footer states the page and the call total.
+- **Repeats collapse.** Identical consecutive calls show as one row with `×N`, such as `cargo check ×3`. Non-adjacent repeats stay separate.
+- **A colored bar.** Yellow while a tool runs, red when one failed, green when everything finished clean. The header names the tool that is running.
+- **Log** sends the full list, every call uncollapsed, to you as `tool-calls.md`. Only you see it.
+
+Each completion finishes its own call, matched by the provider's call id, so parallel calls of one tool no longer leave a finished row showing a running icon. Cards are stored in SQLite, so after a restart their buttons still work. Telegram keeps its own tool block.
+
 #### /cowork — workspace creation (Telegram) and channel opening (Discord)
 
 On **Discord**, `/cowork` (owner only, typed in a channel or thread, or picked from the `/` menu) opens that channel or thread to its members. It writes `[channels.discord.channels.<id>]` with `open = true`, `respond_to = "all"` and the channel's `name`. Members are not registered anywhere: `open` admits them, threads and forum posts included, and DMs and other channels stay locked. Because the owner's `/cowork` and `/respond_to` pass the channel scope, the owner can open or fix a channel from inside it even when it has no entry yet. Run `/cowork` in a server channel; in a DM it refuses.
@@ -589,7 +600,7 @@ This solves the core UX problem in mention-only groups: previously, tagging the 
 | **Syntax Highlighting** | 100+ languages with line numbers via syntect |
 | **Markdown Rendering** | Rich text formatting with code blocks, headings, lists, and inline styles |
 | **Tool Context Persistence** | Tool call groups saved to DB and reconstructed on session reload — no vanishing tool history |
-| **Expand / Collapse Blocks** | Click a tool-call group or a **Thinking** block, or press `Ctrl+O`, to expand it. Reasoning cycles through three states so a long thought never floods the view: **collapsed → capped** (first ~10 lines + a "… N more (click / ctrl+o for full)" hint) **→ full → collapsed**. Tool-call groups toggle expand/collapse. A plain **click** toggles the block under the cursor; a **click-and-drag** selects text to copy (even over a collapsible block) instead of expanding it |
+| **Expand / Collapse Blocks** | Click a tool-call group or a **Thinking** block, or press `Ctrl+O`, to expand it. Reasoning cycles through three states so a long thought never floods the view: **collapsed → capped** (first ~10 lines + a "… N more (click / ctrl+o for full)" hint) **→ full → collapsed**. Tool-call groups toggle expand/collapse (on Discord, the card pages through its rows; see *Discord tool card*). A plain **click** toggles the block under the cursor; a **click-and-drag** selects text to copy (even over a collapsible block) instead of expanding it |
 | **Multi-line Input** | Alt+Enter / Shift+Enter for newlines; Enter to send |
 | **Abort Processing** | Escape×2 within 3 seconds to cancel any in-progress request |
 | **Clipboard Image Paste** | Copy an image from a browser, screenshot tool, or any app and paste it directly into the input. Raw image bytes are read from the OS clipboard (macOS: osascript, Linux: wl-paste/xclip), written to a temp file, and attached through the existing image pipeline. No need to save to disk first. `Ctrl+V` in the chat input reads the clipboard directly and works in every terminal, including a screenshot copied to the clipboard (image data, no text). `Cmd+V` works where the terminal pastes or passes the key through; iTerm2 and Terminal.app swallow `Cmd+V` for an image-only clipboard, so use `Ctrl+V` there. While the chat input is focused on macOS, an unpasted screenshot in the clipboard also shows a vanishing `Image in clipboard - Ctrl+V to paste` hint inside the input area, like the other notices, until you paste or the clipboard changes |
