@@ -401,6 +401,73 @@ mod scan {
     }
 
     #[test]
+    fn a_confidential_file_is_refused_as_an_attachment() {
+        // F-UT-01 / SEC-02: the text redactor never sees attachment bytes, so a
+        // model-authored link to the secret store must be refused at read time.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let keys = write_file(dir.path(), "keys.toml", b"api_key = \"secret\"\n");
+        let scan = extract_local_files(&format!("[config]({})", keys.display()), None);
+        assert!(
+            scan.attachments.is_empty(),
+            "keys.toml must never become an attachment"
+        );
+        assert_eq!(
+            scan.failures[0].reason,
+            LocalImageFailureReason::Confidential
+        );
+    }
+
+    #[test]
+    fn confidential_backups_are_refused_too() {
+        // A copy of the store is the same secrets: `keys.toml.bak-<stamp>` and
+        // `keys.last_good.toml` sit beside the real file in a live home.
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in ["keys.toml.bak-20261016", "keys.last_good.toml"] {
+            let p = write_file(dir.path(), name, b"api_key = \"secret\"\n");
+            let scan = extract_local_files(&format!("[x]({})", p.display()), None);
+            assert!(
+                scan.attachments.is_empty(),
+                "{name} must not be an attachment"
+            );
+            assert_eq!(
+                scan.failures[0].reason,
+                LocalImageFailureReason::Confidential,
+                "{name}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_a_confidential_file_is_refused() {
+        // The denylist matches names, so an innocently named symlink whose
+        // target is the secret store must be caught by the canonical check.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let keys = write_file(dir.path(), "keys.toml", b"api_key = \"secret\"\n");
+        let link = dir.path().join("report.txt");
+        std::os::unix::fs::symlink(&keys, &link).expect("symlink");
+        let scan = extract_local_files(&format!("[x]({})", link.display()), None);
+        assert!(
+            scan.attachments.is_empty(),
+            "a symlink to keys.toml must not be an attachment"
+        );
+        assert_eq!(
+            scan.failures[0].reason,
+            LocalImageFailureReason::Confidential
+        );
+    }
+
+    #[test]
+    fn an_ordinary_file_is_still_delivered() {
+        // The guard must not cost a legitimate attachment.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ok = write_file(dir.path(), "report.pdf", b"%PDF-1.4\n");
+        let scan = extract_local_files(&format!("[x]({})", ok.display()), None);
+        assert_eq!(scan.attachments.len(), 1, "{:?}", scan.failures);
+        assert!(scan.failures.is_empty());
+    }
+
+    #[test]
     fn validate_accepts_a_readable_non_empty_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let pdf = write_file(dir.path(), "q3.pdf", PDF_BYTES);
