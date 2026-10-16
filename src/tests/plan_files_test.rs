@@ -10,7 +10,7 @@ use crate::utils::plan_files::{
     PlanModeState, archive_dir, create_design_md, discard_plan, is_plan_autonomy,
     is_pre_init_editing, load_plan, plan_json_path, plan_md_path, plan_mode_state,
     pre_init_marker_path, save_plan, set_plan_autonomy, set_pre_init_editing, sync_md_to_json,
-    template_section_warnings,
+    template_section_warnings, write_atomic,
 };
 use uuid::Uuid;
 
@@ -523,4 +523,91 @@ async fn plan_task_status_survives_a_restart() {
         );
     })
     .await;
+}
+
+// ── the artifact writes publish by rename (F-UT-02) ──────────────────
+//
+// Six of the eight writes in `plan_files.rs` were a bare `fs::write`, which
+// opens with `O_TRUNC`: between the truncate and the write the artifact is zero
+// bytes on disk, and a process that dies in that window leaves it that way. The
+// plan gate reads these artifacts on every turn, so a truncated one does not
+// read as a failed write, it reads as a plan that is absent or a JSON that does
+// not parse. Two sites in the same file already published by rename, so this was
+// consistency that had leaked.
+
+/// The publish is atomic and leaves nothing beside the target.
+#[test]
+fn write_atomic_publishes_and_strands_no_temp_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("plan.json");
+
+    write_atomic(&target, "{\"status\":\"Editing\"}").expect("publish");
+
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("read"),
+        "{\"status\":\"Editing\"}"
+    );
+    let names: Vec<String> = std::fs::read_dir(dir.path())
+        .expect("read dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["plan.json".to_string()],
+        "the temp file must not survive the publish: {names:?}"
+    );
+}
+
+/// Replacing an existing artifact keeps the old bytes readable until the rename
+/// lands, which is the property a truncating write does not have.
+#[test]
+fn write_atomic_replaces_without_a_zero_byte_window() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("plan.json");
+    std::fs::write(&target, "the previous body").expect("seed");
+
+    write_atomic(&target, "the new body").expect("publish");
+
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("read"),
+        "the new body"
+    );
+    assert_eq!(
+        std::fs::read_dir(dir.path()).expect("read dir").count(),
+        1,
+        "a replaced file is still one file"
+    );
+}
+
+/// Fix the class, not the six instances: a bare `fs::write` added back to this
+/// module re-opens the window on whatever artifact it targets, and the file is
+/// small enough that the count is a usable pin. One occurrence is allowed, and
+/// it is the one inside `write_atomic` itself.
+#[test]
+fn the_plan_store_has_one_truncating_write_left_and_it_is_the_helper() {
+    const SRC: &str = include_str!("../utils/plan_files.rs");
+
+    let helper = SRC
+        .find("pub(crate) fn write_atomic(")
+        .expect("the helper exists");
+    let helper_body = &SRC[helper..];
+    let helper_end = helper_body
+        .find("\n}\n")
+        .expect("the end of the helper body");
+    let helper_body = &helper_body[..helper_end];
+
+    let total = SRC.matches("std::fs::write(").count();
+    assert_eq!(
+        total, 1,
+        "expected exactly one truncating write (the helper's own), found {total}: \
+         every other artifact write in this module must publish by rename (F-UT-02)"
+    );
+    assert!(
+        helper_body.contains("std::fs::write("),
+        "the single remaining write must be the helper's own temp-file write"
+    );
+    assert!(
+        SRC.matches("write_atomic(").count() >= 7,
+        "the eight artifact writes must route through write_atomic"
+    );
 }

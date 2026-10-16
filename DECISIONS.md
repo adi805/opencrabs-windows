@@ -79,6 +79,14 @@ Use this file as the target project's source of truth for approved and proposed 
   Rationale: Dropping the branch discards research that a Windows host would immediately validate, while merging it without validation would ship an unverified control path.
   Impact: The branch stays out of main, and the question is recorded as the PRD's review focus until a host exists.
 
+- [2026-10-16 02:10] Decision: Hold the upstream channel turn and flow cluster back, and record it
+  Status: Accepted
+  Approval: Merged as the #263 upstream sync, which took the channel layer's declarations from the fork's side; #264 recorded the same reason for the tests that pair with these modules
+  Requirement IDs: N/A - governance-only decision
+  Context: The #263 sync deposited eight upstream channel modules (`discord/{turns,tracked_turn,options_host}.rs`, `slack/{flow_progress,options_host,resume_turn}.rs`, `whatsapp/{flow_message,flow_render}.rs`, 2,065 lines) as byte-identical copies while the fork's own `mod.rs` files won the declaration conflict, so the files sit in the tree and nothing compiles them. None is reachable from any fork code, and upstream reaches them from its own `handler`/`resume`/`interactions`, which the fork has since rewritten.
+  Rationale: Declaring them is not a one-line change and is not a fix. `discord/turns.rs` needs `DiscordState::active_turns`, `discord/tracked_turn.rs` needs `channels::background_work::FlowOutcome`, and `whatsapp/flow_message.rs` needs `whatsapp::followups::send_suggestions`; none exists in the fork. And CI runs `clippy -- -D warnings`, so declaring a module nothing calls fails the build on `dead_code` rather than shipping quietly. Porting the cluster is therefore a feature job against the fork's most diverged area, which does not belong in a release that exists to close a finding list.
+  Impact: The eight files stay uncompiled and are listed, with this reason, in `src/tests/undeclared_source_modules_test.rs`, which fails when a source file is reachable from no declaration and is not recorded. The port stays an open follow-up rather than an unstated gap, and the same check covers the deferred test modules.
+
 ## AI Agent Rules
 
 1. Read this file before proposing a target-project architecture or policy change.
