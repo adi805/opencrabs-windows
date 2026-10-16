@@ -54,6 +54,48 @@ fn is_newer_ignores_non_numeric() {
     assert!(is_newer("1.0.0-beta", "0.9.0"));
 }
 
+// ─── Release-line restart ───────────────────────────────────────────────────
+//
+// The fork inherited upstream's 0.5.x tags and restarted its own versioning at
+// 0.1.0. Numerically that is a downgrade, so every host still on the inherited
+// line was told "already on latest" while the fork's first release sat there
+// unoffered. The restart is declared in release_check.rs because it cannot be
+// inferred from the numbers.
+
+#[test]
+fn a_restarted_line_supersedes_the_inherited_one() {
+    assert!(is_newer("0.1.0", "0.5.13"));
+    assert!(is_newer("0.1.0", "0.5.0"));
+    assert!(is_newer("0.1.0", "0.5"));
+    // Every later version on the restarted line supersedes the old one too, so
+    // a host that cannot take the first release is not stranded on it.
+    assert!(is_newer("0.2.0", "0.5.13"));
+    assert!(is_newer("1.0.0", "0.5.13"));
+}
+
+#[test]
+fn a_restarted_line_never_supersedes_itself() {
+    // The reset must not turn a real downgrade into an update: inside the
+    // restarted line the numeric order still decides.
+    assert!(!is_newer("0.1.0", "0.1.0"));
+    assert!(!is_newer("0.1.0", "0.1.5"));
+    assert!(!is_newer("0.1.0", "0.2.0"));
+    assert!(!is_newer("0.2.0", "0.3.0"));
+}
+
+#[test]
+fn the_reset_is_scoped_to_the_declared_inherited_line() {
+    // Only the lines named in SUPERSEDED_INHERITED_LINES are superseded; a
+    // later inherited line, or one this repo never inherited, keeps the plain
+    // numeric verdict.
+    assert!(!is_newer("0.1.0", "0.6.0"));
+    assert!(!is_newer("0.1.0", "1.0.0"));
+    // `MAJOR.MINOR` equality, not a string prefix: "0.5" must not match 0.50.
+    assert!(!is_newer("0.1.0", "0.50.1"));
+    // A version below the restart is not the restarted line.
+    assert!(!is_newer("0.0.9", "0.5.13"));
+}
+
 // ─── Asset naming (single binary) ──────────────────────────────────────────
 
 #[test]
