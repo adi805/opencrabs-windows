@@ -1702,10 +1702,10 @@ fn read_channel_secret(channel: &str, field: &str) -> Option<String> {
 }
 
 /// Split `text` into `<= max_len` byte chunks, breaking on a newline near the
-/// limit when possible and never inside a multi-byte char. Used for Discord's
-/// 2000-char and Slack's message limits. (Telegram reuses its own chunker so
-/// HTML stays valid across splits.)
-#[cfg(any(feature = "discord", feature = "slack"))]
+/// limit when possible and never inside a multi-byte char. Used for Slack's
+/// message limit. (Discord uses its own fence-aware `split_message`; Telegram
+/// reuses its own chunker so HTML stays valid across splits.)
+#[cfg(feature = "slack")]
 fn split_for_delivery(text: &str, max_len: usize) -> Vec<&str> {
     if text.len() <= max_len {
         return vec![text];
@@ -1730,6 +1730,45 @@ fn split_for_delivery(text: &str, max_len: usize) -> Vec<&str> {
         start = break_at;
     }
     chunks
+}
+
+/// Chunk a cron report for Discord, converting the markdown Discord cannot
+/// render (#2069).
+///
+/// Discord has no table markup, so a pipe table arrives as its own source in a
+/// proportional font where no column lines up. Every interactive path rewrites
+/// the text first; cron delivery was the one outbound path that sent it raw.
+///
+/// The chunker is the Discord chat path's own `split_message`, not the generic
+/// `split_for_delivery`. The grid render wraps a table in a fenced text block,
+/// and only `split_message` closes a fence it has to break and reopens it on
+/// the next chunk (#876). The generic splitter breaks at the nearest newline,
+/// so a grid straddling the limit would arrive cut in half: one chunk holding
+/// an unclosed fence, the next starting mid-table.
+#[cfg(feature = "discord")]
+pub(crate) fn discord_chunks_for_delivery(message: &str) -> Vec<String> {
+    let normalized = crate::channels::discord::table_convert::tables_to_discord(message);
+    crate::channels::discord::handler::split_message(&normalized, 2000)
+}
+
+/// Chunk a cron report for Slack, converting the markdown Slack cannot render
+/// (#2069).
+///
+/// Slack renders neither tables nor headings: a pipe table arrives as its own
+/// source and a `##` heading as two literal hashes. The chat path calls
+/// `structure_to_slack` for both, so cron delivery calls the same function
+/// rather than the table half alone.
+///
+/// The generic splitter is safe here. `structure_to_slack` emits bold labels,
+/// `└` continuations and `---` rules, so it never opens a fence that a break
+/// could cut.
+#[cfg(feature = "slack")]
+pub(crate) fn slack_chunks_for_delivery(message: &str) -> Vec<String> {
+    let normalized = crate::channels::slack::table_convert::structure_to_slack(message);
+    split_for_delivery(&normalized, 3500)
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 /// Deliver via the shared Telegram outbox ladder (#1085 P1b R2). The
@@ -1854,8 +1893,9 @@ fn is_forum_chat(chat: &teloxide::types::ChatFullInfo) -> bool {
 }
 
 /// Deliver via Discord Bot API (direct HTTP POST to the channel-messages
-/// endpoint). Discord renders its own markdown natively, so the content is
-/// sent as-is, chunked to the 2000-char message limit.
+/// endpoint). The report is rewritten for Discord first, so a table arrives as
+/// a monospace grid or bold labels instead of its own source (#2069), and then
+/// chunked to the 2000-char message limit.
 #[cfg(feature = "discord")]
 async fn deliver_discord(channel_id: &str, message: &str) {
     let Some(token) = read_channel_secret("discord", "token") else {
@@ -1866,7 +1906,7 @@ async fn deliver_discord(channel_id: &str, message: &str) {
     let url = format!("https://discord.com/api/v10/channels/{channel_id}/messages");
     let client = reqwest::Client::new();
     let mut delivered = 0usize;
-    for chunk in split_for_delivery(message, 2000) {
+    for chunk in discord_chunks_for_delivery(message) {
         let body = serde_json::json!({ "content": chunk });
         match client
             .post(&url)
@@ -1970,8 +2010,8 @@ async fn deliver_discord_forum(forum_id: &str, job_name: &str, message: &str) {
     }
 
     let title = forum_post_title(job_name, Utc::now());
-    let chunks = split_for_delivery(message, 2000);
-    let first = chunks.first().copied().unwrap_or("");
+    let chunks = discord_chunks_for_delivery(message);
+    let first = chunks.first().map(String::as_str).unwrap_or("");
 
     let mut posted = 0usize;
     let thread_id = match client
@@ -2054,7 +2094,7 @@ async fn deliver_slack(channel_id: &str, message: &str) {
     let url = "https://slack.com/api/chat.postMessage";
     let client = reqwest::Client::new();
     let mut delivered = 0usize;
-    for chunk in split_for_delivery(message, 3500) {
+    for chunk in slack_chunks_for_delivery(message) {
         let body = serde_json::json!({ "channel": channel_id, "text": chunk });
         match client
             .post(url)
