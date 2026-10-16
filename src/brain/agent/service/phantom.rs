@@ -263,6 +263,16 @@ pub fn has_forward_intent_post_success(text: &str) -> bool {
     if trimmed.len() < 20 {
         return false;
     }
+    // A reply that ends by asking the user something has handed the turn back:
+    // the agent is waiting for the answer, so 'I'll ask what you do' or 'I'll
+    // walk you through it' is conversation, not a promised action (#2083). An
+    // explicit work announcement in the same reply still counts.
+    if prose_tail(trimmed).contains('?')
+        && !matches_work_announcement(trimmed)
+        && !matches_now_gerund(trimmed)
+    {
+        return false;
+    }
     // Both ends, for the same reason the zero-tool detector reads both: a
     // promise made AFTER the tool results ("...no errors from our changes.
     // Let me run tests and check the diff.") sits in the tail, and a
