@@ -138,3 +138,126 @@ fn unfixable_broken_config_recovers_from_last_good() {
         );
     });
 }
+
+// ── a stale snapshot recovers, and the age is reported (F-CFG-04) ─────
+
+/// Recovery from an OLD snapshot is deliberate, and this pins it so nobody
+/// "fixes" the message by turning the fallback into a refusal.
+///
+/// The alternative is refusing to start on a config the user cannot fix without
+/// the daemon running, and a working daemon on older settings beats no daemon.
+/// What the user needs is the age of the settings in effect, which is why it
+/// travels on the status rather than sitting only in the log.
+#[test]
+fn a_stale_snapshot_still_recovers_and_reports_its_age() {
+    let (_temp, home) = temp_home_with(GOOD_CONFIG);
+    with_home_override(home, || {
+        save_last_good_config();
+
+        // Backdate the snapshot by 31 days. `File::set_modified` rather than a
+        // sleep, so this cannot flake on a filesystem clock.
+        let snapshot = crate::config::last_good_config_path();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(31 * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(&snapshot)
+            .expect("open the snapshot")
+            .set_modified(old)
+            .expect("backdate the snapshot");
+
+        let age = crate::config::last_good_snapshot_age().expect("the snapshot has an mtime");
+        assert!(
+            age.as_secs() >= 31 * 86_400,
+            "the backdate must be visible to the age reader: {age:?}"
+        );
+
+        // Break config.toml unfixably so the load has to recover.
+        let config_path = opencrabs_home().join("config.toml");
+        std::fs::write(&config_path, UNFIXABLE_BROKEN).expect("overwrite with unfixable config");
+
+        let (recovered, status) = Config::load_with_status()
+            .expect("a stale snapshot still recovers, it does not refuse");
+        assert_eq!(
+            recovered.agent.approval_policy, "auto-always",
+            "the stale snapshot's values are what the daemon runs on"
+        );
+        assert!(status.recovered, "the load reports the recovery");
+        assert!(
+            status.recovery_reason.is_some(),
+            "and the cause, so the user knows what to fix (#909)"
+        );
+        let secs = status
+            .snapshot_age_secs
+            .expect("the age must travel with the status (F-CFG-04)");
+        assert!(
+            secs >= 31 * 86_400,
+            "the reported age must be the snapshot's, not a fresh one: {secs}"
+        );
+        assert!(
+            crate::config::humanize_age(std::time::Duration::from_secs(secs)).contains("d "),
+            "31 days has to render as days, not as 744h: {}",
+            crate::config::humanize_age(std::time::Duration::from_secs(secs))
+        );
+    });
+}
+
+/// A clean load carries no age, so the notice cannot claim staleness when there
+/// was no recovery.
+#[test]
+fn a_clean_load_reports_no_snapshot_age() {
+    let (_temp, home) = temp_home_with(GOOD_CONFIG);
+    with_home_override(home, || {
+        let (_cfg, status) = Config::load_with_status().expect("a valid config loads");
+        assert!(!status.recovered);
+        assert!(
+            status.snapshot_age_secs.is_none(),
+            "a clean load has no snapshot in effect, so no age"
+        );
+    });
+}
+
+/// The age renderer, on the three bands an operator reads.
+#[test]
+fn ages_render_in_the_band_they_belong_to() {
+    use crate::config::humanize_age;
+    use std::time::Duration;
+
+    assert_eq!(humanize_age(Duration::from_secs(0)), "0m");
+    assert_eq!(humanize_age(Duration::from_secs(59)), "0m");
+    assert_eq!(humanize_age(Duration::from_secs(60)), "1m");
+    assert_eq!(humanize_age(Duration::from_secs(3_599)), "59m");
+    assert_eq!(humanize_age(Duration::from_secs(3_600)), "1h 0m");
+    assert_eq!(humanize_age(Duration::from_secs(3_600 + 60)), "1h 1m");
+    assert_eq!(humanize_age(Duration::from_secs(86_399)), "23h 59m");
+    assert_eq!(humanize_age(Duration::from_secs(86_400)), "1d 0h");
+    assert_eq!(humanize_age(Duration::from_secs(31 * 86_400)), "31d 0h");
+    assert_eq!(
+        humanize_age(Duration::from_secs(31 * 86_400 + 3_600)),
+        "31d 1h"
+    );
+}
+
+/// The snapshot path is one definition, and the age reader reports nothing when
+/// there is no snapshot rather than inventing an age.
+#[test]
+fn the_age_reader_needs_a_snapshot() {
+    let (_temp, home) = temp_home_with(GOOD_CONFIG);
+    with_home_override(home, || {
+        assert!(
+            !crate::config::last_good_config_path().exists(),
+            "fixture: no snapshot has been written yet"
+        );
+        assert!(
+            crate::config::last_good_snapshot_age().is_none(),
+            "no snapshot means no age, not zero"
+        );
+
+        save_last_good_config();
+        assert!(crate::config::last_good_config_path().exists());
+        let age = crate::config::last_good_snapshot_age().expect("just written");
+        assert!(
+            age.as_secs() < 60,
+            "a snapshot written a moment ago is not a minute old: {age:?}"
+        );
+    });
+}
