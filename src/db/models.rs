@@ -51,6 +51,39 @@ pub fn uuid_col(row: &rusqlite::Row, col: &str) -> rusqlite::Result<Uuid> {
 }
 
 /// Parse a Unix-timestamp column into `DateTime<Utc>`.
+///
+/// # Two timestamp conventions, and which tables use which (F-DB-06)
+///
+/// A timestamp column is EITHER an integer holding Unix epoch seconds, read with
+/// this function and [`opt_timestamp_col`], OR RFC-3339 TEXT, read with
+/// [`rfc3339_col`] and [`opt_rfc3339_col`]. Both work. What does not work is a
+/// query that compares one against the other: `created_at >= ?1` is a comparison
+/// between a number and a string, and SQLite answers it by type order rather than
+/// by time, silently.
+///
+/// Epoch integers are the default and the majority. Four tables use RFC-3339
+/// TEXT, and the set is pinned by
+/// `src/tests/db_timestamp_convention_test.rs` so a new table cannot pick a
+/// convention by accident:
+///
+/// - `cron_jobs`
+/// - `cron_job_runs`
+/// - `feedback_ledger`
+/// - `goal_state`
+///
+/// Three of the four declare the RFC-3339 form as their column DEFAULT
+/// (`strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`), which is where the split started:
+/// those rows are written by SQL, so the timestamp never passes through Rust.
+/// `goal_state` is the fourth and takes the other route: it has no DEFAULT and
+/// its writer binds `Utc::now().to_rfc3339()` from Rust
+/// (`brain/goal/manager.rs`). It followed the three rather than introducing the
+/// convention.
+///
+/// A new table written from Rust should use epoch seconds. If it must use TEXT,
+/// it belongs in that test's list and in this one.
+///
+/// Nothing mixes the two inside one table, and the test asserts that too, since a
+/// single column added with the wrong type is exactly how the hazard would arrive.
 pub fn timestamp_col(row: &rusqlite::Row, col: &str) -> rusqlite::Result<DateTime<Utc>> {
     let ts: i64 = row.get(col)?;
     DateTime::from_timestamp(ts, 0).ok_or_else(|| {
