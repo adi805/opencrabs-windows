@@ -92,6 +92,7 @@ fn the_component_gate_precedes_every_consume_and_dispatch() {
 
     for needle in [
         "take_select(",
+        "take_followup(",
         "take_form(",
         "route_followup_turn(",
         "route_interaction_turn(",

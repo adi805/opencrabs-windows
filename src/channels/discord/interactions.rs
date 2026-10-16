@@ -384,6 +384,7 @@ pub(crate) async fn handle_invoked_request(
             idle,
             invocation,
             history_line,
+            None,
         )
         .await;
     });
@@ -468,11 +469,24 @@ pub(crate) async fn route_followup_turn(
     idle_hours: Option<f64>,
     context_text: String,
     display_tag: String,
+    // Session that rendered the tapped buttons, when the tap carries one
+    // (#598). `Some` pins the turn to that session instead of re-deriving it
+    // from the channel, so a suggestion tap after an idle rotation still
+    // answers the question it belongs to (#1217 parity with Telegram).
+    // `None` (slash commands) keeps the channel-derived resolution.
+    session_override: Option<Uuid>,
 ) {
-    let Some(session_id) =
-        resolve_interaction_session(&session_svc, is_dm, user_id, channel_id, idle_hours).await
-    else {
-        return;
+    let session_id = match session_override {
+        Some(sid) => sid,
+        None => {
+            let Some(sid) =
+                resolve_interaction_session(&session_svc, is_dm, user_id, channel_id, idle_hours)
+                    .await
+            else {
+                return;
+            };
+            sid
+        }
     };
     let channel = serenity::model::id::ChannelId::new(channel_id);
     let http = ctx.http.clone();

@@ -1080,6 +1080,7 @@ pub mod discord_dead_control_test;
 pub mod discord_dm_channel_message_test;
 pub mod discord_evidence_footer_test;
 pub mod discord_flow_ticker_test;
+pub mod discord_followup_session_test;
 pub mod discord_followup_tap_tool_loop_test;
 pub mod discord_footer_placement_test;
 pub mod discord_formatting_prompt_test;

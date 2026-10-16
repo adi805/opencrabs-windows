@@ -641,24 +641,29 @@ impl EventHandler for Handler {
 
             // Optional follow-up suggestion tapped (#598): inject the chosen
             // suggestion as the user's next message (a fresh turn). Options were
-            // stashed under `followup:<id>:<idx>` via the TTL-bounded select map.
+            // stashed under `followup:<id>:<idx>` via the TTL-bounded follow-up
+            // map, which carries the owning session so the tap lands where the
+            // buttons were rendered.
             if let Some(rest) = custom_id.strip_prefix(super::suggest_options::FOLLOWUP_PREFIX) {
                 let ttl = self.config_rx.borrow().channels.discord.component_ttl_hours;
-                let picked: Option<String> = if let Some((id, idx_str)) = rest.rsplit_once(':') {
-                    match (
-                        self.discord_state.take_select(id, ttl).await,
-                        idx_str.parse::<usize>(),
-                    ) {
-                        (Some(opts), Ok(idx)) => opts.get(idx).cloned(),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
+                let picked: Option<(Uuid, String)> =
+                    if let Some((id, idx_str)) = rest.rsplit_once(':') {
+                        match (
+                            self.discord_state.take_followup(id, ttl).await,
+                            idx_str.parse::<usize>(),
+                        ) {
+                            (Some((sid, opts)), Ok(idx)) => {
+                                opts.get(idx).cloned().map(|choice| (sid, choice))
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
                 use serenity::builder::{
                     CreateInteractionResponse, CreateInteractionResponseMessage,
                 };
-                let Some(choice) = picked else {
+                let Some((owner_session, choice)) = picked else {
                     let _e = comp
                         .create_response(
                             &ctx.http,
@@ -713,6 +718,7 @@ impl EventHandler for Handler {
                         idle,
                         choice,
                         display_tag,
+                        Some(owner_session),
                     )
                     .await;
                 });
