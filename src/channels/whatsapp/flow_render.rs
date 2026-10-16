@@ -47,6 +47,7 @@ pub(crate) fn fold(steps: &mut Vec<Step>, event: &ProgressEvent) -> bool {
         ProgressEvent::ToolStarted {
             tool_name,
             tool_input,
+            ..
         } => {
             steps.push(Step::Tool {
                 name: tool_name.clone(),

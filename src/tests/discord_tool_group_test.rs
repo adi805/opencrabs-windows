@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 fn entries(n: usize, done: bool) -> Vec<GroupEntry> {
     (0..n)
         .map(|i| GroupEntry {
+            call_id: String::new(),
             name: format!("tool{i}"),
             context: format!(" (arg{i})"),
             status: if done { Some(true) } else { None },

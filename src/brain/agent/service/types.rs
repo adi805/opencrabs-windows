@@ -42,12 +42,18 @@ pub enum ProgressEvent {
     ToolStarted {
         tool_name: String,
         tool_input: Value,
+        /// The provider's id for this call, so a completion finds its own
+        /// start even when two calls of one tool run in parallel (#1880).
+        /// Empty when the emitter has no id: consumers fall back to the name.
+        tool_call_id: String,
     },
     ToolCompleted {
         tool_name: String,
         tool_input: Value,
         success: bool,
         summary: String,
+        /// Same id as the matching `ToolStarted` (#1880). Empty when unknown.
+        tool_call_id: String,
     },
     /// Intermediate text the agent sends between tool call batches
     IntermediateText {

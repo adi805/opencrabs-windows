@@ -757,6 +757,7 @@ async fn cmd_chat_inner(
                 ProgressEvent::ToolStarted {
                     tool_name,
                     tool_input,
+                    ..
                 } => progress_sender.send(TuiEvent::ToolCallStarted {
                     session_id,
                     tool_name,
@@ -767,6 +768,7 @@ async fn cmd_chat_inner(
                     tool_input,
                     success,
                     summary,
+                    ..
                 } => progress_sender.send(TuiEvent::ToolCallCompleted {
                     session_id,
                     tool_name,

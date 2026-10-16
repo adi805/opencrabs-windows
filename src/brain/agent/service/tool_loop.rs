@@ -6778,6 +6778,7 @@ impl AgentService {
                         ProgressEvent::ToolStarted {
                             tool_name: tool_name.clone(),
                             tool_input: tool_input_for_progress.clone(),
+                            tool_call_id: tool_id.clone(),
                         },
                     );
                 }
@@ -7046,6 +7047,7 @@ impl AgentService {
                                                     tool_input: tool_input_for_progress.clone(),
                                                     success,
                                                     summary: output_summary,
+                                                    tool_call_id: tool_id.clone(),
                                                 },
                                             );
                                         }
@@ -7146,6 +7148,7 @@ impl AgentService {
                                                     tool_input: tool_input_for_progress.clone(),
                                                     success: false,
                                                     summary: output_summary,
+                                                    tool_call_id: tool_id.clone(),
                                                 },
                                             );
                                         }
@@ -7358,6 +7361,7 @@ impl AgentService {
                                     tool_input: tool_input_for_progress.clone(),
                                     success,
                                     summary: output_summary,
+                                    tool_call_id: tool_id.clone(),
                                 },
                             );
                         }
@@ -7446,6 +7450,7 @@ impl AgentService {
                                     tool_input: tool_input_for_progress.clone(),
                                     success: false,
                                     summary: output_summary,
+                                    tool_call_id: tool_id.clone(),
                                 },
                             );
                         }

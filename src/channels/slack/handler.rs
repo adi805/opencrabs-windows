@@ -1925,6 +1925,7 @@ async fn handle_message(
                 ProgressEvent::ToolStarted {
                     tool_name,
                     tool_input,
+                    ..
                 } => {
                     let group_ts = tool_group_ts_cb.clone();
                     let ctx = crate::utils::tool_context_hint(&tool_name, &tool_input);

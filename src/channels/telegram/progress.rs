@@ -91,6 +91,7 @@ pub(crate) fn build_progress_cb(
             ProgressEvent::ToolStarted {
                 tool_name,
                 tool_input,
+                ..
             } => {
                 if let Ok(mut s) = st.lock() {
                     s.thinking.clear();

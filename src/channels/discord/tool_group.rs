@@ -27,6 +27,9 @@ use crate::channels::background_work::FlowOutcome;
 pub(crate) struct GroupEntry {
     pub name: String,
     pub context: String,
+    /// The provider's id for this call; empty when unknown (#1880). A
+    /// completion matches its own row by this id.
+    pub call_id: String,
     /// None = running, Some(success) = finished.
     pub status: Option<bool>,
 }

@@ -12,6 +12,7 @@ fn started(name: &str) -> ProgressEvent {
     ProgressEvent::ToolStarted {
         tool_name: name.to_string(),
         tool_input: json!({}),
+        tool_call_id: String::new(),
     }
 }
 
@@ -21,6 +22,7 @@ fn completed(name: &str, success: bool) -> ProgressEvent {
         tool_input: json!({}),
         success,
         summary: String::new(),
+        tool_call_id: String::new(),
     }
 }
 
@@ -231,6 +233,7 @@ fn tool_arguments_are_scrubbed_before_they_reach_the_chat() {
             tool_input: json!({
                 "command": "curl -H \"Authorization: Bearer sk-abc123\" https://api.example.com"
             }),
+            tool_call_id: String::new(),
         },
     );
     let block = render(&steps, Phase::Running, Duration::from_secs(1));

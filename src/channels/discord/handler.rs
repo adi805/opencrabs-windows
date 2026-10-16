@@ -1394,6 +1394,7 @@ pub(crate) async fn handle_message(
                 ProgressEvent::ToolStarted {
                     tool_name,
                     tool_input,
+                    tool_call_id,
                 } => {
                     if let Ok(mut host) = options_host_cb.lock() {
                         host.on_tool_started(&tool_name);
@@ -1409,6 +1410,7 @@ pub(crate) async fn handle_message(
                             t.push(GroupEntry {
                                 name: tool_name,
                                 context: ctx_hint,
+                                call_id: tool_call_id.clone(),
                                 status: None,
                             });
                             t.clone()
@@ -1502,18 +1504,24 @@ pub(crate) async fn handle_message(
                     });
                 }
                 ProgressEvent::ToolCompleted {
-                    tool_name, success, ..
+                    tool_name,
+                    success,
+                    tool_call_id,
+                    ..
                 } => {
                     let gmid = group_msg_id.clone();
                     let dstate = group_state_cb.clone();
                     tokio::spawn(async move {
                         let entries = {
                             let mut t = tools.lock().await;
-                            if let Some(entry) = t
-                                .iter_mut()
-                                .rev()
-                                .find(|e| e.name == tool_name && e.status.is_none())
-                            {
+                            if let Some(entry) = t.iter_mut().rev().find(|e| {
+                                e.status.is_none()
+                                    && super::tool_card::entry_matches_completion(
+                                        e,
+                                        &tool_name,
+                                        &tool_call_id,
+                                    )
+                            }) {
                                 entry.status = Some(success);
                             }
                             t.clone()

@@ -1006,6 +1006,7 @@ impl AgentService {
                         if is_cli {
                             let state = &mut block_states[index];
                             if let ContentBlock::ToolUse {
+                                ref id,
                                 ref name,
                                 ref input,
                                 ..
@@ -1018,6 +1019,7 @@ impl AgentService {
                                     ProgressEvent::ToolStarted {
                                         tool_name: emit_name.clone(),
                                         tool_input: input.clone(),
+                                        tool_call_id: id.clone(),
                                     },
                                 );
                                 cb(
@@ -1027,6 +1029,7 @@ impl AgentService {
                                         tool_input: input.clone(),
                                         success: true,
                                         summary: String::new(),
+                                        tool_call_id: id.clone(),
                                     },
                                 );
 

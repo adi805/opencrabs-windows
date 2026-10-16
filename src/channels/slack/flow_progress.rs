@@ -64,6 +64,7 @@ pub(crate) fn build_flow_progress(
                 ProgressEvent::ToolStarted {
                     tool_name,
                     tool_input,
+                    ..
                 } => {
                     let ctx = crate::utils::tool_context_hint(&tool_name, &tool_input);
                     let thread = thread.clone();

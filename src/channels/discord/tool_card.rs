@@ -27,6 +27,17 @@ pub(crate) struct CardRow {
     pub status: Option<bool>,
 }
 
+/// Whether a completion belongs to this row. By call id when both sides have
+/// one, so each of two parallel calls of one tool finishes its own row.
+/// Otherwise by name, as before (#1880).
+pub(crate) fn entry_matches_completion(entry: &GroupEntry, name: &str, call_id: &str) -> bool {
+    if !call_id.is_empty() && !entry.call_id.is_empty() {
+        entry.call_id == call_id
+    } else {
+        entry.name == name
+    }
+}
+
 /// Merge two statuses for one collapsed row. Running wins, then failed, so a
 /// row never shows a finished icon while one of its calls is still running.
 fn merge_status(a: Option<bool>, b: Option<bool>) -> Option<bool> {

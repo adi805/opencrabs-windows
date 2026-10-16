@@ -13,6 +13,7 @@ fn live_group() -> GroupState {
         page: 0,
         entries: (0..2)
             .map(|i| GroupEntry {
+                call_id: String::new(),
                 name: format!("tool{i}"),
                 context: format!(" (arg{i})"),
                 status: None,

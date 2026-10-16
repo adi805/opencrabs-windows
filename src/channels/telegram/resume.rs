@@ -841,6 +841,7 @@ pub(crate) async fn resume_session_inner(
             ProgressEvent::ToolStarted {
                 tool_name,
                 tool_input,
+                ..
             } => {
                 if let Ok(mut s) = st.lock() {
                     s.thinking.clear();

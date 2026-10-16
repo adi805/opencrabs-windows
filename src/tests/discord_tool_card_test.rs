@@ -9,6 +9,7 @@ use crate::channels::discord::tool_group::GroupEntry;
 
 fn entry(name: &str, context: &str, status: Option<bool>) -> GroupEntry {
     GroupEntry {
+        call_id: String::new(),
         name: name.to_string(),
         context: context.to_string(),
         status,
@@ -229,4 +230,48 @@ fn the_log_is_the_full_list_not_one_page() {
     let g = card_group(14, 0, true);
     let log = log_markdown(&g.entries);
     assert!(log.contains("14. ✅ **tool** (step 13)"), "{log}");
+}
+
+// ── Matching a completion to its row (#1880: the stale gear) ──
+
+fn with_id(name: &str, context: &str, call_id: &str, status: Option<bool>) -> GroupEntry {
+    GroupEntry {
+        name: name.to_string(),
+        context: context.to_string(),
+        call_id: call_id.to_string(),
+        status,
+    }
+}
+
+#[test]
+fn a_completion_finishes_its_own_call_when_two_calls_of_one_tool_run() {
+    use crate::channels::discord::tool_card::entry_matches_completion;
+    let first = with_id("bash", " (grep a)", "call_1", None);
+    let second = with_id("bash", " (grep b)", "call_2", None);
+    // The second call finishes first, which the name-only match got wrong.
+    assert!(entry_matches_completion(&second, "bash", "call_2"));
+    assert!(!entry_matches_completion(&first, "bash", "call_2"));
+}
+
+#[test]
+fn an_entry_without_an_id_still_matches_by_name() {
+    use crate::channels::discord::tool_card::entry_matches_completion;
+    let legacy = with_id("bash", " (x)", "", None);
+    assert!(entry_matches_completion(&legacy, "bash", ""));
+    assert!(entry_matches_completion(&legacy, "bash", "call_9"));
+    assert!(!entry_matches_completion(&legacy, "read_file", "call_9"));
+}
+
+#[test]
+fn the_discord_consumers_match_completions_by_call_id() {
+    for src in [
+        include_str!("../channels/discord/handler.rs"),
+        include_str!("../channels/discord/interactions.rs"),
+        include_str!("../channels/discord/tracked_turn.rs"),
+    ] {
+        assert!(
+            src.contains("entry_matches_completion(") && src.contains("&tool_call_id"),
+            "a consumer still matches completions by name alone"
+        );
+    }
 }
