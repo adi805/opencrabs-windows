@@ -1035,7 +1035,6 @@ impl Config {
             provider_registry: overlay.provider_registry,
             database: overlay.database,
             logging: overlay.logging,
-            debug: overlay.debug,
             decisions: overlay.decisions,
             providers: overlay.providers,
             channels: overlay.channels,
@@ -1069,15 +1068,6 @@ impl Config {
         // Log file
         if let Ok(log_file) = std::env::var("OPENCRABS_LOG_FILE") {
             config.logging.file = Some(PathBuf::from(log_file));
-        }
-
-        // Debug options
-        if let Ok(debug_lsp) = std::env::var("OPENCRABS_DEBUG_LSP") {
-            config.debug.debug_lsp = debug_lsp.parse().unwrap_or(false);
-        }
-
-        if let Ok(profiling) = std::env::var("OPENCRABS_PROFILING") {
-            config.debug.profiling = profiling.parse().unwrap_or(false);
         }
 
         // provider registry options
