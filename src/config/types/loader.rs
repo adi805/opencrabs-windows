@@ -550,6 +550,22 @@ impl Config {
         Ok(config)
     }
 
+    /// Get `key` as a mutable table, inserting an empty one when the key is
+    /// absent. Returns `None` when the key exists but holds a NON-table value.
+    ///
+    /// `contains_key` proves presence, not shape: a config carrying
+    /// `providers = 5` plus a legacy `[voice]` used to reach
+    /// `.as_table_mut().unwrap()` and panic on startup, and because the loader
+    /// has no `catch_unwind`, `load_last_good_config()` never ran. A migration
+    /// is a best-effort upgrade, so an unexpected shape is skipped with a
+    /// warning instead of taking the agent down.
+    fn table_or_insert<'a>(parent: &'a mut toml::Table, key: &str) -> Option<&'a mut toml::Table> {
+        if !parent.contains_key(key) {
+            parent.insert(key.to_string(), toml::Value::Table(toml::map::Map::new()));
+        }
+        parent.get_mut(key)?.as_table_mut()
+    }
+
     /// Migrate old config keys in-place.
     ///
     /// Currently handles: `channels.trello.allowed_channels` → `board_ids`.
@@ -608,19 +624,28 @@ impl Config {
         }
 
         // ── Migration 2: [voice] → providers.stt.* / providers.tts.* ──
+        //
+        // A migration is a best-effort upgrade, so a value of the wrong SHAPE
+        // skips this block instead of aborting the whole pass: Migrations 3 and
+        // 4 run after it. `contains_key` proves presence, not shape, and the
+        // old `.as_table_mut().unwrap()` panicked on a config carrying
+        // `providers = 5` next to a legacy `[voice]`. The loader has no
+        // `catch_unwind`, so a panic here meant `load_last_good_config()` never
+        // ran and the agent simply failed to start.
         let mut voice_migrated = false;
-        if let Some(voice) = doc.get("voice").and_then(|v| v.as_table()).cloned() {
-            voice_migrated = true;
-            let root = doc.as_table_mut().unwrap();
-
-            // Ensure providers.stt and providers.tts tables exist
-            if !root.contains_key("providers") {
-                root.insert(
-                    "providers".to_string(),
-                    toml::Value::Table(toml::map::Map::new()),
+        'voice: {
+            let Some(voice) = doc.get("voice").and_then(|v| v.as_table()).cloned() else {
+                break 'voice;
+            };
+            let Some(root) = doc.as_table_mut() else {
+                break 'voice;
+            };
+            let Some(providers) = Self::table_or_insert(root, "providers") else {
+                tracing::warn!(
+                    "config migration: `providers` is not a table, skipping the [voice] migration"
                 );
-            }
-            let providers = root.get_mut("providers").unwrap().as_table_mut().unwrap();
+                break 'voice;
+            };
             if !providers.contains_key("stt") {
                 providers.insert("stt".to_string(), toml::Value::Table(toml::map::Map::new()));
             }
@@ -642,15 +667,19 @@ impl Config {
             // provider table already carried `enabled = false`, so the
             // migration could never re-enable what the user had on.
             if stt_enabled {
-                let stt = providers.get_mut("stt").unwrap().as_table_mut().unwrap();
-                let engine = if stt_mode == "local" { "local" } else { "groq" };
-                if !stt.contains_key(engine) {
-                    stt.insert(
-                        engine.to_string(),
-                        toml::Value::Table(toml::map::Map::new()),
+                let Some(stt) = Self::table_or_insert(providers, "stt") else {
+                    tracing::warn!(
+                        "config migration: `providers.stt` is not a table, skipping the [voice] migration"
                     );
-                }
-                let table = stt.get_mut(engine).unwrap().as_table_mut().unwrap();
+                    break 'voice;
+                };
+                let engine = if stt_mode == "local" { "local" } else { "groq" };
+                let Some(table) = Self::table_or_insert(stt, engine) else {
+                    tracing::warn!(
+                        "config migration: `providers.stt.{engine}` is not a table, skipping the [voice] migration"
+                    );
+                    break 'voice;
+                };
                 table.insert("enabled".to_string(), toml::Value::Boolean(true));
                 if engine == "local"
                     && let Some(model) = voice.get("local_stt_model")
@@ -670,19 +699,23 @@ impl Config {
                 .unwrap_or("api")
                 .to_string();
             if tts_enabled {
-                let tts = providers.get_mut("tts").unwrap().as_table_mut().unwrap();
+                let Some(tts) = Self::table_or_insert(providers, "tts") else {
+                    tracing::warn!(
+                        "config migration: `providers.tts` is not a table, skipping the [voice] migration"
+                    );
+                    break 'voice;
+                };
                 let engine = if tts_mode == "local" {
                     "local"
                 } else {
                     "openai"
                 };
-                if !tts.contains_key(engine) {
-                    tts.insert(
-                        engine.to_string(),
-                        toml::Value::Table(toml::map::Map::new()),
+                let Some(table) = Self::table_or_insert(tts, engine) else {
+                    tracing::warn!(
+                        "config migration: `providers.tts.{engine}` is not a table, skipping its [voice] seed"
                     );
-                }
-                let table = tts.get_mut(engine).unwrap().as_table_mut().unwrap();
+                    break 'voice;
+                };
                 table.insert("enabled".to_string(), toml::Value::Boolean(true));
                 if engine == "local" {
                     if let Some(voice_name) = voice.get("local_tts_voice") {
@@ -697,9 +730,19 @@ impl Config {
                     }
                 }
             }
-
-            // Remove the old [voice] section
-            root.remove("voice");
+            // Reached only when every seed above landed: each `break 'voice`
+            // leaves this false, so a migration that skipped a wrong-shaped
+            // value cannot consume the legacy table it did not migrate.
+            // Removing `[voice]` after a skip is silent data loss, and the
+            // file is the only copy the user has.
+            voice_migrated = true;
+        }
+        if voice_migrated {
+            // Remove the old [voice] section. Done after the block so the
+            // `providers` borrow has ended.
+            if let Some(root) = doc.as_table_mut() {
+                root.remove("voice");
+            }
             changed = true;
         }
 
@@ -767,8 +810,13 @@ impl Config {
         // Migration 2: remove [voice] section and carry the provider
         // enablement it produced into this document (#1399); the removal
         // alone left every migrated flag on the value document only.
-        edit_doc.as_table_mut().remove("voice");
+        //
+        // Guarded: this document is what gets written to disk, so removing
+        // `[voice]` here while the block above skipped a wrong-shaped value
+        // would drop the legacy table even though nothing was carried over.
+        // The guard has to hold on BOTH documents, or the file still loses it.
         if voice_migrated {
+            edit_doc.as_table_mut().remove("voice");
             super::voice_port::port_voice_providers(&doc, &mut edit_doc);
         }
 
