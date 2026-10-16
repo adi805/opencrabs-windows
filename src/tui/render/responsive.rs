@@ -24,3 +24,16 @@ pub fn grid_cols(width: u16) -> usize {
         1
     }
 }
+
+/// Width at which Mission Control gets its two column split.
+pub const MC_SPLIT_MIN: u16 = 100;
+
+/// Width at which that split widens to the wide 40/60 ratio. Below this and
+/// above [`MC_SPLIT_MIN`] the left column gets 45% instead of 40%.
+pub const MC_WIDE_MIN: u16 = 120;
+
+/// Does Mission Control have room for two columns at this width? Below this
+/// it shows one panel at a time, filling the area.
+pub fn mc_two_column(width: u16) -> bool {
+    width >= MC_SPLIT_MIN
+}
