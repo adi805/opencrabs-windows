@@ -275,3 +275,52 @@ fn the_discord_consumers_match_completions_by_call_id() {
         );
     }
 }
+
+// ── A card survives a restart: the stored snapshot (#1880) ──
+
+#[test]
+fn a_settled_card_round_trips_through_the_stored_snapshot() {
+    use crate::channels::background_work::FlowOutcome;
+    use crate::channels::discord::tool_card_store::{restore, snapshot};
+    use crate::channels::discord::tool_group::SettledStatus;
+    use std::time::Duration;
+
+    let mut g = card_group(14, 2, true);
+    g.entries[3].call_id = "call_3".to_string();
+    g.entries[3].status = Some(false);
+    g.notes = vec!["checking the build".to_string()];
+    g.started_at = Instant::now() - Duration::from_secs(252);
+    g.settled = Some(SettledStatus {
+        elapsed: Duration::from_secs(247),
+        ctx: Some("ctx: 105K/200K 53%".to_string()),
+        waiting: None,
+        outcome: Some(FlowOutcome::TimedOut),
+    });
+
+    let json = serde_json::to_string(&snapshot(&g)).expect("encodes");
+    let stored = serde_json::from_str(&json).expect("decodes");
+    let back = restore(stored);
+
+    assert_eq!(back.entries.len(), 14);
+    assert_eq!(back.entries[3].call_id, "call_3");
+    assert_eq!(back.entries[3].status, Some(false));
+    assert_eq!(back.notes, g.notes);
+    assert!(back.expanded);
+    assert_eq!(back.page, 2);
+    let settled = back.settled.expect("settled survives");
+    assert_eq!(settled.elapsed, Duration::from_secs(247));
+    assert_eq!(settled.ctx.as_deref(), Some("ctx: 105K/200K 53%"));
+    assert!(matches!(settled.outcome, Some(FlowOutcome::TimedOut)));
+    // The clock resumes from the stored elapsed, not from zero.
+    assert!(back.started_at.elapsed() >= Duration::from_secs(251));
+}
+
+#[test]
+fn every_card_mutation_writes_through_to_sqlite() {
+    let src = include_str!("../channels/discord/tool_group.rs");
+    let writes = src.matches("self.persist_tool_group(").count();
+    assert!(
+        writes >= 7,
+        "expected each mutation to persist, found {writes} write-through calls"
+    );
+}

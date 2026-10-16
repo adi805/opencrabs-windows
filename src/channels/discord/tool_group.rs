@@ -377,75 +377,161 @@ pub(crate) fn render_embeds(group: &GroupState) -> Vec<CreateEmbed> {
 }
 
 impl DiscordState {
-    /// Retained tool groups; older ones stop being toggleable (their last
-    /// rendered state stays on screen, like Telegram's frozen blocks).
+    /// Retained tool groups in memory; older ones are restored from SQLite on
+    /// their next click (#1880), so a card outlives the cap as well as a restart.
     const TOOL_GROUP_CAP: usize = 20;
 
+    /// Write a card's state through to SQLite (#1880). Best effort: a failed
+    /// write is logged and the in-memory card keeps working.
+    async fn persist_tool_group(&self, message_id: u64, group: &GroupState) {
+        let Some(pool) = crate::db::database::global_pool() else {
+            return;
+        };
+        let json = match serde_json::to_string(&super::tool_card_store::snapshot(group)) {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::warn!("Discord: could not encode tool card {message_id}: {e}");
+                return;
+            }
+        };
+        let repo = crate::db::repository::DiscordToolCardRepository::new(pool.clone());
+        if let Err(e) = repo.set(message_id, &json).await {
+            tracing::warn!("Discord: could not save tool card {message_id}: {e}");
+        }
+    }
+
+    /// The stored card for a message that is no longer in memory, restored
+    /// into the live map so later clicks hit memory (#1880). None when there is
+    /// no stored card or it cannot be read.
+    async fn restore_tool_group(&self, message_id: u64) -> Option<GroupState> {
+        let pool = crate::db::database::global_pool()?;
+        let repo = crate::db::repository::DiscordToolCardRepository::new(pool.clone());
+        let json = match repo.get(message_id).await {
+            Ok(Some(json)) => json,
+            Ok(None) => return None,
+            Err(e) => {
+                tracing::warn!("Discord: could not read tool card {message_id}: {e}");
+                return None;
+            }
+        };
+        let stored: super::tool_card_store::StoredCard = match serde_json::from_str(&json) {
+            Ok(stored) => stored,
+            Err(e) => {
+                tracing::warn!("Discord: stored tool card {message_id} is unreadable: {e}");
+                return None;
+            }
+        };
+        let group = super::tool_card_store::restore(stored);
+        let mut guard = self.tool_groups.lock().await;
+        let (order, map) = &mut *guard;
+        if !map.contains_key(&message_id) {
+            order.push(message_id);
+            while order.len() > Self::TOOL_GROUP_CAP {
+                let oldest = order.remove(0);
+                map.remove(&oldest);
+            }
+            map.insert(message_id, group);
+        }
+        map.get(&message_id).cloned()
+    }
+
     /// Insert or update a group, PRESERVING the stored expanded/collapsed
-    /// choice on updates (a completing tool must not snap an expanded group
-    /// shut) and the stored narration notes (only `append_note`/`drop_note_if`
-    /// mutate those). Returns the stored state so callers render what is kept.
+    /// choice and page on updates (a completing tool must not snap an expanded
+    /// group shut) and the stored narration notes (only `append_note` and
+    /// `drop_note_if` mutate those). Returns the stored state so callers render
+    /// what is kept.
     pub(crate) async fn upsert_tool_group(
         &self,
         message_id: u64,
         mut group: GroupState,
     ) -> GroupState {
-        let mut guard = self.tool_groups.lock().await;
-        let (order, map) = &mut *guard;
-        match map.get(&message_id) {
-            Some(existing) => {
-                group.expanded = existing.expanded;
-                group.page = existing.page;
-                group.notes = existing.notes.clone();
-                group.started_at = existing.started_at;
-                group.settled = existing.settled.clone();
-            }
-            None => {
-                order.push(message_id);
-                while order.len() > Self::TOOL_GROUP_CAP {
-                    let oldest = order.remove(0);
-                    map.remove(&oldest);
+        {
+            let mut guard = self.tool_groups.lock().await;
+            let (order, map) = &mut *guard;
+            match map.get(&message_id) {
+                Some(existing) => {
+                    group.expanded = existing.expanded;
+                    group.page = existing.page;
+                    group.notes = existing.notes.clone();
+                    group.started_at = existing.started_at;
+                    group.settled = existing.settled.clone();
+                }
+                None => {
+                    order.push(message_id);
+                    while order.len() > Self::TOOL_GROUP_CAP {
+                        let oldest = order.remove(0);
+                        map.remove(&oldest);
+                    }
                 }
             }
+            map.insert(message_id, group.clone());
         }
-        map.insert(message_id, group.clone());
+        self.persist_tool_group(message_id, &group).await;
         group
     }
 
-    /// Set a group's card page; None when it aged out of retention (#1880).
+    /// Set a group's card page; None when the card is in neither memory nor
+    /// SQLite (#1880).
     pub(crate) async fn set_tool_group_page(
         &self,
         message_id: u64,
         page: usize,
     ) -> Option<GroupState> {
-        let mut guard = self.tool_groups.lock().await;
-        let (_, map) = &mut *guard;
-        let group = map.get_mut(&message_id)?;
-        group.page = page;
-        Some(group.clone())
+        let updated = self
+            .edit_tool_group(message_id, |group| group.page = page)
+            .await?;
+        self.persist_tool_group(message_id, &updated).await;
+        Some(updated)
     }
 
-    /// Flip a group's expanded state; None when it aged out of retention.
+    /// Flip a group's expanded state; None when the card is in neither memory
+    /// nor SQLite.
     pub(crate) async fn toggle_tool_group(&self, message_id: u64) -> Option<GroupState> {
+        let updated = self
+            .edit_tool_group(message_id, |group| group.expanded = !group.expanded)
+            .await?;
+        self.persist_tool_group(message_id, &updated).await;
+        Some(updated)
+    }
+
+    /// Apply `edit` to a card in memory, restoring it from SQLite first when it
+    /// is not there (#1880).
+    async fn edit_tool_group<F>(&self, message_id: u64, edit: F) -> Option<GroupState>
+    where
+        F: FnOnce(&mut GroupState),
+    {
+        {
+            let mut guard = self.tool_groups.lock().await;
+            let (_, map) = &mut *guard;
+            if let Some(group) = map.get_mut(&message_id) {
+                edit(group);
+                return Some(group.clone());
+            }
+        }
+        let mut restored = self.restore_tool_group(message_id).await?;
+        edit(&mut restored);
         let mut guard = self.tool_groups.lock().await;
         let (_, map) = &mut *guard;
-        let group = map.get_mut(&message_id)?;
-        group.expanded = !group.expanded;
-        Some(group.clone())
+        map.insert(message_id, restored.clone());
+        Some(restored)
     }
 
     /// Append one narration line to the stored group, keeping only the
     /// newest [`NOTE_CAP`]. Returns the updated state, or None when the
     /// message has no stored group (aged out of retention).
     pub(crate) async fn append_note(&self, message_id: u64, note: String) -> Option<GroupState> {
-        let mut guard = self.tool_groups.lock().await;
-        let (_, map) = &mut *guard;
-        let group = map.get_mut(&message_id)?;
-        group.notes.push(note);
-        if group.notes.len() > NOTE_CAP {
-            group.notes.remove(0);
-        }
-        Some(group.clone())
+        let updated = {
+            let mut guard = self.tool_groups.lock().await;
+            let (_, map) = &mut *guard;
+            let group = map.get_mut(&message_id)?;
+            group.notes.push(note);
+            if group.notes.len() > NOTE_CAP {
+                group.notes.remove(0);
+            }
+            group.clone()
+        };
+        self.persist_tool_group(message_id, &updated).await;
+        Some(updated)
     }
 
     /// Stamp the post-delivery status (#1841): freeze the clock at now and
@@ -465,17 +551,21 @@ impl DiscordState {
         waiting: Option<String>,
         outcome: Option<FlowOutcome>,
     ) -> Option<GroupState> {
-        let mut guard = self.tool_groups.lock().await;
-        let (_, map) = &mut *guard;
-        let group = map.get_mut(&message_id)?;
-        let prev_ctx = group.settled.as_ref().and_then(|s| s.ctx.clone());
-        group.settled = Some(SettledStatus {
-            elapsed: group.started_at.elapsed(),
-            ctx: ctx.or(prev_ctx),
-            waiting,
-            outcome,
-        });
-        Some(group.clone())
+        let updated = {
+            let mut guard = self.tool_groups.lock().await;
+            let (_, map) = &mut *guard;
+            let group = map.get_mut(&message_id)?;
+            let prev_ctx = group.settled.as_ref().and_then(|s| s.ctx.clone());
+            group.settled = Some(SettledStatus {
+                elapsed: group.started_at.elapsed(),
+                ctx: ctx.or(prev_ctx),
+                waiting,
+                outcome,
+            });
+            group.clone()
+        };
+        self.persist_tool_group(message_id, &updated).await;
+        Some(updated)
     }
 
     /// Narrow or clear the waiting line of a settled group (#1987): the
@@ -488,11 +578,15 @@ impl DiscordState {
         message_id: u64,
         waiting: Option<String>,
     ) -> Option<GroupState> {
-        let mut guard = self.tool_groups.lock().await;
-        let (_, map) = &mut *guard;
-        let group = map.get_mut(&message_id)?;
-        group.settled.as_mut()?.waiting = waiting;
-        Some(group.clone())
+        let updated = {
+            let mut guard = self.tool_groups.lock().await;
+            let (_, map) = &mut *guard;
+            let group = map.get_mut(&message_id)?;
+            group.settled.as_mut()?.waiting = waiting;
+            group.clone()
+        };
+        self.persist_tool_group(message_id, &updated).await;
+        Some(updated)
     }
 
     /// Remember that this session's turn settled with live background work
@@ -519,10 +613,16 @@ impl DiscordState {
     /// Clone the live or settled group for out-of-loop renderers (#1843):
     /// the flow ticker snapshots under the lock, renders outside it, and
     /// re-snapshots after its edit so the settled line keeps the last word.
+    /// A card that left memory is restored from SQLite (#1880).
     pub(crate) async fn tool_group_snapshot(&self, message_id: u64) -> Option<GroupState> {
-        let guard = self.tool_groups.lock().await;
-        let (_, map) = &*guard;
-        map.get(&message_id).cloned()
+        {
+            let guard = self.tool_groups.lock().await;
+            let (_, map) = &*guard;
+            if let Some(group) = map.get(&message_id) {
+                return Some(group.clone());
+            }
+        }
+        self.restore_tool_group(message_id).await
     }
 
     /// Remove the LAST narration line matching `pred` — the final-response
@@ -533,11 +633,15 @@ impl DiscordState {
     where
         F: Fn(&str) -> bool,
     {
-        let mut guard = self.tool_groups.lock().await;
-        let (_, map) = &mut *guard;
-        let group = map.get_mut(&message_id)?;
-        let idx = group.notes.iter().rposition(|n| pred(n))?;
-        group.notes.remove(idx);
-        Some(group.clone())
+        let updated = {
+            let mut guard = self.tool_groups.lock().await;
+            let (_, map) = &mut *guard;
+            let group = map.get_mut(&message_id)?;
+            let idx = group.notes.iter().rposition(|n| pred(n))?;
+            group.notes.remove(idx);
+            group.clone()
+        };
+        self.persist_tool_group(message_id, &updated).await;
+        Some(updated)
     }
 }

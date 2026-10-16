@@ -154,6 +154,7 @@ pub(crate) const MIGRATION_SQL: &[&str] = &[
     // no split to backfill), so no heal pass is needed. Appended last per the
     // list invariant above.
     include_str!("../migrations/20261015000001_add_usage_ledger_cache_read_tokens.sql"),
+    include_str!("../migrations/20261016000001_add_discord_tool_cards.sql"),
 ];
 
 pub(crate) fn build_migrations() -> Migrations<'static> {
