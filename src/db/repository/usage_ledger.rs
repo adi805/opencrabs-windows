@@ -1,7 +1,14 @@
 //! Usage Ledger Repository
 //!
 //! Cumulative usage tracking that persists across session deletes and compaction.
-//! Entries are append-only — never deleted.
+//!
+//! Entries are append-only and never deleted: nothing rewrites a row, nothing
+//! ages one out, and a session purge leaves them in place. That last one is
+//! deliberate rather than incidental (F-DB-03). The ledger is cumulative
+//! accounting, not session data: every query over it (`totals`,
+//! `stats_by_model`, `by_provider`) is all-time and joins nothing, so a purged
+//! session's rows are still the only record of what that session cost, and
+//! deleting them would shrink the all-time total silently.
 
 use crate::db::Pool;
 use crate::db::database::interact_err;
@@ -15,6 +22,66 @@ pub struct ModelUsageStats {
     pub total_tokens: i64,
     pub total_cost: f64,
     pub entry_count: i64,
+}
+
+/// The canonical model families, as `(canonical, aliases)`.
+///
+/// ONE table, and the only place a family is spelled out. `normalize_model_name`
+/// matches a name against it, and `stats_by_model` groups by what that function
+/// returns, so the writer and the reader cannot disagree about what a model is
+/// called (F-DB-04).
+///
+/// They did disagree. The aggregate carried its own copy of this mapping in a
+/// hand-written SQL `CASE`, and it had drifted three ways: `k3`/`kimi-k3` and
+/// `zai` were in the Rust list and absent from the SQL; the provider-prefix strip
+/// took everything after the FIRST `/` in SQL and the last segment in Rust; and
+/// the fallback for an unrecognised name returned the suffix-stripped form in SQL
+/// against the raw lowercased form in Rust. The visible effect was one model
+/// showing twice in `/usage`, since a row recorded as `k3` became `kimi-k3` on
+/// the way in and stayed `k3` on the way out.
+pub(crate) const MODEL_FAMILIES: &[(&str, &[&str])] = &[
+    // Claude
+    ("opus-4-6", &["opus", "opus-4-6"]),
+    ("sonnet-4-6", &["sonnet", "sonnet-4-6"]),
+    ("haiku-4-5", &["haiku", "haiku-4-5", "haiku-4-5-20251001"]),
+    // Qwen
+    (
+        "qwen3.6-max-preview",
+        &[
+            "qwen-3.6-max-preview",
+            "qwen3.6-max-preview",
+            "qwen-3-6-max-preview",
+            "qwen3-6-max-preview",
+            "qwen-max-preview",
+        ],
+    ),
+    (
+        "qwen3.6-plus",
+        &["coder-model", "qwen-3.6-plus", "qwen3.6-plus"],
+    ),
+    ("qwen3.5-plus", &["qwen3.5-plus", "qwen-3.5-plus"]),
+    // MiniMax
+    ("minimax-m2.5", &["minimax-m2.5"]),
+    ("minimax-m2.7", &["minimax-m2.7"]),
+    ("minimax-m3", &["minimax-m3"]),
+    // Mimo (free variants merge with the base)
+    ("mimo-v2-omni", &["mimo-v2-omni", "mimo-v2-omni-free"]),
+    ("mimo-v2-pro", &["mimo-v2-pro", "mimo-v2-pro-free"]),
+    // Kimi
+    ("kimi-k3", &["k3", "kimi-k3"]),
+    ("kimi-k2.6", &["kimi-k2.6", "kimi-k2-6", "kimik2.6"]),
+    ("kimi-k2.5", &["kimi-k2.5", "kimi-k2-5"]),
+    // GLM / ZhiPu — 5.1 and turbo stay separate
+    ("glm-5.1", &["glm-5.1", "glm-5-1", "glm-5"]),
+    ("glm-5-turbo", &["glm-5-turbo", "zhipu", "zai"]),
+];
+
+/// The canonical name for a family alias, or `None` when the name is not one.
+pub(crate) fn canonical_model_family(base: &str) -> Option<&'static str> {
+    MODEL_FAMILIES
+        .iter()
+        .find(|(_, aliases)| aliases.contains(&base))
+        .map(|(canonical, _)| *canonical)
 }
 
 /// Normalize model names for consistent ledger tracking.
@@ -47,36 +114,9 @@ pub(crate) fn normalize_model_name(model: &str) -> String {
     // Strip claude- prefix
     let base = base.strip_prefix("claude-").unwrap_or(base);
 
-    match base {
-        // Claude
-        "opus" | "opus-4-6" => "opus-4-6".to_string(),
-        "sonnet" | "sonnet-4-6" => "sonnet-4-6".to_string(),
-        "haiku" | "haiku-4-5" | "haiku-4-5-20251001" => "haiku-4-5".to_string(),
-        // Qwen
-        "qwen-3.6-max-preview"
-        | "qwen3.6-max-preview"
-        | "qwen-3-6-max-preview"
-        | "qwen3-6-max-preview"
-        | "qwen-max-preview" => "qwen3.6-max-preview".to_string(),
-        "coder-model" | "qwen-3.6-plus" | "qwen3.6-plus" => "qwen3.6-plus".to_string(),
-        "qwen3.5-plus" | "qwen-3.5-plus" => "qwen3.5-plus".to_string(),
-        // MiniMax
-        "minimax-m2.5" => "minimax-m2.5".to_string(),
-        "minimax-m2.7" => "minimax-m2.7".to_string(),
-        "minimax-m3" => "minimax-m3".to_string(),
-        // Mimo (free variants merge with base)
-        "mimo-v2-omni" | "mimo-v2-omni-free" => "mimo-v2-omni".to_string(),
-        "mimo-v2-pro" | "mimo-v2-pro-free" => "mimo-v2-pro".to_string(),
-        // Kimi
-        "k3" | "kimi-k3" => "kimi-k3".to_string(),
-        "kimi-k2.6" | "kimi-k2-6" | "kimik2.6" => "kimi-k2.6".to_string(),
-        "kimi-k2.5" | "kimi-k2-5" => "kimi-k2.5".to_string(),
-        // GLM / ZhiPu — keep 5.1 and turbo separate
-        "glm-5.1" | "glm-5-1" | "glm-5" => "glm-5.1".to_string(),
-        "glm-5-turbo" | "zhipu" | "zai" => "glm-5-turbo".to_string(),
-        // No match — return lowercased as-is
-        _ => lower.to_string(),
-    }
+    canonical_model_family(base)
+        .map(str::to_string)
+        .unwrap_or_else(|| lower.clone())
 }
 
 /// Repository for usage ledger operations
@@ -211,88 +251,64 @@ impl UsageLedgerRepository {
             .context("Failed to query usage totals")
     }
 
-    /// Get usage stats grouped by model (normalizes "claude-X" → "X" to merge duplicates)
+    /// Get usage stats grouped by model.
+    ///
+    /// The grouping key comes from [`normalize_model_name`], in Rust, over the
+    /// distinct raw names the ledger holds. The aggregate used to carry its own
+    /// copy of that normalization in SQL, and the two had drifted (F-DB-04), so
+    /// `/usage` could list one model twice: a row written as `k3` became
+    /// `kimi-k3` on the way in and stayed `k3` on the way out. One
+    /// implementation is the fix, and the only reason this can be done cheaply
+    /// is that the ledger holds one row per call rather than one per token.
+    ///
+    /// Ordering is by cost, then by canonical name: two models that cost the same
+    /// would otherwise come back in whatever order the map happened to produce,
+    /// and a caller that renders the top row would show a different one run to
+    /// run.
     pub async fn stats_by_model(&self) -> Result<Vec<ModelUsageStats>> {
-        self.pool
+        let raw: Vec<(String, i64, f64, i64)> = self
+            .pool
             .get()
             .await
             .context("Failed to get connection")?
             .interact(|conn| {
-                // Normalize model names in SQL to merge duplicates.
-                // 1. Strip provider prefix (openrouter/, opencode/, qwen/)
-                // 2. Lowercase everything
-                // 3. Strip :free/-free/-thinking suffixes
-                // 4. Match known families to canonical names
                 let mut stmt = conn.prepare_cached(
-                    "WITH stripped AS ( \
-                       SELECT *, \
-                         LOWER(CASE WHEN model LIKE '%/%' \
-                           THEN SUBSTR(model, INSTR(model, '/') + 1) \
-                           ELSE model \
-                         END) AS m0 \
-                       FROM usage_ledger WHERE model != '' \
-                     ), \
-                     debotted AS ( \
-                       SELECT *, \
-                         CASE WHEN m0 LIKE '%@%' \
-                           THEN RTRIM(SUBSTR(m0, 1, INSTR(m0, '@') - 1), '-') \
-                           ELSE m0 \
-                         END AS m1 \
-                       FROM stripped \
-                     ), \
-                     cleaned AS ( \
-                       SELECT *, \
-                         CASE \
-                           WHEN m1 LIKE '%:free' THEN SUBSTR(m1, 1, LENGTH(m1) - 5) \
-                           WHEN m1 LIKE '%-free' THEN SUBSTR(m1, 1, LENGTH(m1) - 5) \
-                           WHEN m1 LIKE '%-thinking' THEN SUBSTR(m1, 1, LENGTH(m1) - 9) \
-                           ELSE m1 \
-                         END AS m2 \
-                       FROM debotted \
-                     ), \
-                     prefixed AS ( \
-                       SELECT *, \
-                         CASE WHEN m2 LIKE 'claude-%' THEN SUBSTR(m2, 8) ELSE m2 END AS m3 \
-                       FROM cleaned \
-                     ) \
-                     SELECT \
-                       CASE \
-                         WHEN m3 IN ('opus', 'opus-4-6') THEN 'opus-4-6' \
-                         WHEN m3 IN ('sonnet', 'sonnet-4-6') THEN 'sonnet-4-6' \
-                         WHEN m3 IN ('haiku', 'haiku-4-5', 'haiku-4-5-20251001') THEN 'haiku-4-5' \
-                         WHEN m3 IN ('qwen-3.6-max-preview', 'qwen3.6-max-preview', 'qwen-3-6-max-preview', 'qwen3-6-max-preview', 'qwen-max-preview') THEN 'qwen3.6-max-preview' \
-                         WHEN m3 IN ('coder-model', 'qwen3.6-plus', 'qwen-3.6-plus') THEN 'qwen3.6-plus' \
-                         WHEN m3 IN ('qwen3.5-plus', 'qwen-3.5-plus') THEN 'qwen3.5-plus' \
-                         WHEN m3 IN ('minimax-m2.5') THEN 'minimax-m2.5' \
-                         WHEN m3 IN ('minimax-m2.7') THEN 'minimax-m2.7' \
-                         WHEN m3 IN ('minimax-m3') THEN 'minimax-m3' \
-                         WHEN m3 IN ('mimo-v2-omni', 'mimo-v2-omni-free') THEN 'mimo-v2-omni' \
-                         WHEN m3 IN ('mimo-v2-pro', 'mimo-v2-pro-free') THEN 'mimo-v2-pro' \
-                         WHEN m3 IN ('kimi-k2.6', 'kimi-k2-6', 'kimik2.6') THEN 'kimi-k2.6' \
-                         WHEN m3 IN ('kimi-k2.5', 'kimi-k2-5') THEN 'kimi-k2.5' \
-                         WHEN m3 IN ('glm-5.1', 'glm-5-1', 'glm-5') THEN 'glm-5.1' \
-                         WHEN m3 IN ('glm-5-turbo', 'zhipu') THEN 'glm-5-turbo' \
-                         ELSE m3 \
-                       END AS normalized_model, \
-                       COALESCE(SUM(token_count), 0), \
-                       COALESCE(SUM(cost), 0.0), \
-                       COUNT(*) \
-                     FROM prefixed \
-                     GROUP BY normalized_model \
-                     ORDER BY SUM(cost) DESC",
+                    "SELECT model, COALESCE(SUM(token_count), 0), \
+                            COALESCE(SUM(cost), 0.0), COUNT(*) \
+                     FROM usage_ledger WHERE model != '' GROUP BY model",
                 )?;
-                let rows = stmt.query_map([], |row| {
-                    Ok(ModelUsageStats {
-                        model: row.get(0)?,
-                        total_tokens: row.get(1)?,
-                        total_cost: row.get(2)?,
-                        entry_count: row.get(3)?,
-                    })
-                })?;
-                rows.collect::<std::result::Result<Vec<_>, _>>()
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                Ok::<_, rusqlite::Error>(rows)
             })
             .await
             .map_err(interact_err)?
-            .context("Failed to query usage by model")
+            .context("Failed to query usage by model")?;
+
+        let mut merged: std::collections::HashMap<String, ModelUsageStats> =
+            std::collections::HashMap::new();
+        for (model, tokens, cost, count) in raw {
+            let canonical = normalize_model_name(&model);
+            let entry = merged.entry(canonical.clone()).or_insert(ModelUsageStats {
+                model: canonical,
+                total_tokens: 0,
+                total_cost: 0.0,
+                entry_count: 0,
+            });
+            entry.total_tokens += tokens;
+            entry.total_cost += cost;
+            entry.entry_count += count;
+        }
+
+        let mut stats: Vec<ModelUsageStats> = merged.into_values().collect();
+        stats.sort_by(|a, b| {
+            b.total_cost
+                .total_cmp(&a.total_cost)
+                .then_with(|| a.model.cmp(&b.model))
+        });
+        Ok(stats)
     }
 }

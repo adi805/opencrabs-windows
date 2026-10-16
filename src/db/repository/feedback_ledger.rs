@@ -2,7 +2,14 @@
 //!
 //! Append-only observations for recursive self-improvement.
 //! Records tool outcomes, user corrections, provider errors, and performance
-//! signals. Entries are never deleted — consumed by analysis tools.
+//! signals. Consumed by analysis tools.
+//!
+//! Append-only in the sense that nothing rewrites or ages out a row, but a
+//! session purge DOES remove the entries scoped to that session
+//! (`SessionRepository::purge`, listed in `SESSION_SCOPED_TABLES`), which is
+//! what makes them session data rather than accounting: unlike `usage_ledger`,
+//! whose rows outlive their session, these go with it. Say so rather than
+//! claiming a durability the sweep does not provide (F-DB-03).
 
 use crate::db::Pool;
 use crate::db::database::interact_err;

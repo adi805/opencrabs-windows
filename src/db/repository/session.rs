@@ -416,16 +416,26 @@ impl SessionRepository {
         Ok(())
     }
 
-    /// Every table that stores rows against a `session_id`.
+    /// Every table that stores rows against a `session_id` and should go with
+    /// the session.
     ///
-    /// Only `messages` and `files` declare `ON DELETE CASCADE`; the other nine
-    /// carry a bare `session_id` column with no foreign key, so deleting a
-    /// session row leaves their rows behind forever. Listed explicitly so a new
-    /// table is a visible omission here rather than a silent leak.
+    /// Some of these declare `ON DELETE CASCADE` and some carry a bare
+    /// `session_id` with no foreign key at all, so the list is explicit rather
+    /// than derived: a new table is then a visible omission here instead of a
+    /// silent leak.
+    ///
+    /// `usage_ledger` is deliberately NOT in this list, and it is the one entry
+    /// whose absence is a decision rather than an omission (F-DB-03). The ledger
+    /// is cumulative accounting, not session data: its own module doc says the
+    /// entries are never deleted, the migration that added its `provider` column
+    /// says the ledger outlives sessions, and every query over it (`totals`,
+    /// `stats_by_model`, `by_provider`) is all-time and joins nothing. Purging a
+    /// sub-agent session therefore used to shrink the user's all-time spend by
+    /// whatever that sub-agent cost, silently, because the ledger row is the
+    /// only record of it.
     const SESSION_SCOPED_TABLES: &'static [&'static str] = &[
         "messages",
         "files",
-        "usage_ledger",
         "pending_requests",
         "feedback_ledger",
         "tool_executions",

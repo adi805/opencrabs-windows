@@ -141,27 +141,13 @@ impl CodexCliProvider {
                         // CLI does.
                         Some(match source {
                             ImageSource::Base64 { media_type, data } => {
-                                let ext = match media_type.as_str() {
-                                    "image/png" => "png",
-                                    "image/jpeg" => "jpeg",
-                                    "image/gif" => "gif",
-                                    "image/webp" => "webp",
-                                    _ => "png",
-                                };
-                                let tmp = std::env::temp_dir().join(format!(
-                                    "opencrabs_cli_img_{}.{}",
-                                    uuid::Uuid::new_v4(),
-                                    ext
-                                ));
-                                use base64::Engine;
-                                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data)
-                                    && std::fs::write(&tmp, &bytes).is_ok()
-                                {
-                                    format!(
-                                        "[User attached an image at {}. Use the analyze_image tool to view it.]",
-                                        tmp.display()
-                                    )
-                                } else {
+                                match crate::utils::cli_attachment::stage_image(
+                                    crate::utils::cli_attachment::CLI_IMAGE_PREFIX,
+                                    media_type,
+                                    data,
+                                ) {
+                                    Some(tmp) => crate::utils::cli_attachment::image_marker(&tmp),
+                                    None =>
                                     "[User attached an image but it could not be decoded.]".to_string()
                                 }
                             }

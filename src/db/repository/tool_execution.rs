@@ -1,7 +1,12 @@
 //! Tool Execution Repository
 //!
 //! Tracks every tool call for usage analytics (Core Tools card in /usage dashboard).
-//! Entries are append-only.
+//!
+//! Append-only in the sense that nothing rewrites or ages out a row, but a
+//! session purge DOES remove the rows scoped to that session
+//! (`SessionRepository::purge`, listed in `SESSION_SCOPED_TABLES`), and
+//! `subagent_session_ttl_test` pins that. Unlike `usage_ledger`, these are
+//! session data and go with the session (F-DB-03).
 
 use crate::db::Pool;
 use crate::db::database::interact_err;

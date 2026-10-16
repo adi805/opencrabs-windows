@@ -3,7 +3,9 @@
 //! Tests for usage tracking, model name normalization, and stats aggregation.
 
 use crate::db::Database;
-use crate::db::repository::usage_ledger::{UsageLedgerRepository, normalize_model_name};
+use crate::db::repository::usage_ledger::{
+    MODEL_FAMILIES, UsageLedgerRepository, normalize_model_name,
+};
 
 #[tokio::test]
 async fn test_record_and_totals() {
@@ -218,4 +220,130 @@ async fn provider_breakdowns_group_filter_and_handle_unknown() {
         .await
         .unwrap();
     assert!(future.is_empty());
+}
+
+// ── one normalizer, shared by the writer and the reader (F-DB-04) ─────
+
+/// Every alias in the table normalizes to its canonical name, and a canonical
+/// name is already normalized. This is the parity the drift broke: the reader
+/// carried its own copy of this mapping in SQL, and the two disagreed on
+/// `k3`/`kimi-k3` and on `zai`.
+#[test]
+fn every_family_alias_normalizes_to_its_canonical_name() {
+    for (canonical, aliases) in MODEL_FAMILIES {
+        for alias in *aliases {
+            assert_eq!(
+                normalize_model_name(alias),
+                *canonical,
+                "{alias} must normalize to {canonical}"
+            );
+        }
+        // Idempotent: feeding the canonical name back changes nothing, or a
+        // reader that normalizes twice would still split a model in two.
+        assert_eq!(
+            normalize_model_name(canonical),
+            *canonical,
+            "{canonical} must be stable under a second normalization"
+        );
+    }
+}
+
+/// A family's canonical name must not also appear as an alias of another
+/// family, or the table's order would decide the answer.
+#[test]
+fn no_canonical_name_is_another_familys_alias() {
+    let canonicals: Vec<&str> = MODEL_FAMILIES.iter().map(|(c, _)| *c).collect();
+    for (canonical, aliases) in MODEL_FAMILIES {
+        for alias in *aliases {
+            if alias == canonical {
+                continue;
+            }
+            assert!(
+                !canonicals.contains(alias),
+                "{alias} is an alias in {canonical} AND a canonical name, so which \
+                 family wins would depend on table order"
+            );
+        }
+    }
+}
+
+/// The exact drift, end to end: a row stored under `k3` (which is what the
+/// ledger's backfill migration does, since it copies `sessions.model` raw) has
+/// to land in the same bucket as a row recorded as `kimi-k3`, not beside it.
+#[tokio::test]
+async fn a_raw_legacy_spelling_groups_with_its_canonical_name() {
+    let db = Database::connect_in_memory()
+        .await
+        .expect("Failed to create database");
+    db.run_migrations().await.expect("Failed to run migrations");
+    let repo = UsageLedgerRepository::new(db.pool().clone());
+
+    // The writer normalizes, so this row is stored as kimi-k3.
+    repo.record("s1", "prov", "kimi-k3", 100, 0.10, None)
+        .await
+        .unwrap();
+
+    // A backfilled row keeps whatever the session held.
+    //
+    // Scoped on purpose. The in-memory pool holds exactly ONE connection
+    // (`connect_in_memory` caps it at `max_size(1)`, deliberately, so tests
+    // cannot hit cross-connection SQLite locking), so holding this one across
+    // the `stats_by_model()` call below would leave that call waiting for a slot
+    // that can never free: it fails on the 60s acquire timeout, and it fails on
+    // the pool rather than on anything this test is about. Dropping it at the
+    // end of the block returns the slot first.
+    {
+        let conn = db.pool().get().await.expect("connection");
+        conn.interact(|conn| {
+            conn.execute(
+                "INSERT INTO usage_ledger (session_id, provider, model, token_count, cost) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params!["s0", "prov", "k3", 300, 0.30],
+            )
+        })
+        .await
+        .expect("interact")
+        .expect("raw insert");
+    }
+
+    let stats = repo.stats_by_model().await.unwrap();
+    assert_eq!(stats.len(), 1, "k3 and kimi-k3 are one model: {stats:?}");
+    assert_eq!(stats[0].model, "kimi-k3");
+    assert_eq!(stats[0].total_tokens, 400);
+    assert_eq!(stats[0].entry_count, 2);
+}
+
+/// Two models at the same cost must come back in a stable order, or a caller
+/// rendering the top row shows a different one run to run. The previous SQL
+/// aggregate ordered by cost alone.
+#[tokio::test]
+async fn equal_cost_models_have_a_deterministic_order() {
+    let db = Database::connect_in_memory()
+        .await
+        .expect("Failed to create database");
+    db.run_migrations().await.expect("Failed to run migrations");
+    let repo = UsageLedgerRepository::new(db.pool().clone());
+
+    // Same cost, opposite insertion order from the alphabetical one.
+    repo.record("s1", "prov", "glm-5.1", 10, 0.25, None)
+        .await
+        .unwrap();
+    repo.record("s1", "prov", "opus", 10, 0.25, None)
+        .await
+        .unwrap();
+
+    let first = repo.stats_by_model().await.unwrap();
+    assert_eq!(first.len(), 2);
+    assert_eq!(
+        first[0].model, "glm-5.1",
+        "a cost tie breaks by canonical name: {first:?}"
+    );
+    assert_eq!(first[1].model, "opus-4-6");
+
+    // And it is stable across a second call rather than depending on map order.
+    let second = repo.stats_by_model().await.unwrap();
+    assert_eq!(
+        first.iter().map(|s| &s.model).collect::<Vec<_>>(),
+        second.iter().map(|s| &s.model).collect::<Vec<_>>()
+    );
 }
