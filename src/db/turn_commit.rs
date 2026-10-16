@@ -99,11 +99,15 @@ pub async fn commit_turn(pool: &Pool, commit: TurnCommit<'_>) -> Result<()> {
                 params![session_id, token_count, cost],
             )?;
 
-            // 3. Append the cumulative ledger row.
+            // 3. Append the cumulative ledger row. The cache-read split is
+            //    part of the row (#2027): the fallback path
+            //    (`UsageLedgerRepository::record`) already wrote it, so this
+            //    path dropping it made the dashboard's cache split depend on
+            //    whether the journal happened to open.
             tx.execute(
-                "INSERT INTO usage_ledger (session_id, provider, model, token_count, cost) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![session_id, provider, model, token_count, cost],
+                "INSERT INTO usage_ledger (session_id, provider, model, token_count, cost, cache_read_tokens) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![session_id, provider, model, token_count, cost, cache_read_tokens],
             )?;
 
             // 4. Settle the journal LAST. Zero rows changed means the turn was
