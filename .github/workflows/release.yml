@@ -17,12 +17,20 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # CI only runs on PRs (not pushes to main). For release tags, we verify
-  # the commit is on main and skip CI polling entirely. PRs are where CI
-  # gates happen; main is protected by branch protection requiring PR merge.
+  # v0.5.10 was tagged and published six seconds after the CI run on that same
+  # commit started, and that run concluded `failure` (#2078). This job used to
+  # assume CI never runs on main and gate on nothing but the branch, so nothing
+  # stopped a red commit from shipping. ci.yml does run on push to main, so the
+  # tag path now reads that run's conclusion and publishes nothing else.
   wait-for-ci:
     name: Verify main branch
     runs-on: ubuntu-latest
+    # `gh run list` reads Actions data, which `contents: read` alone does not
+    # cover. Without `actions: read` the gate below cannot see the run it is
+    # supposed to check (#2078).
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Confirm commit is on main
         env:
@@ -47,11 +55,99 @@ jobs:
               if [ "$SHA" = "$MAIN_SHA" ]; then
                 echo "Commit $SHA is main HEAD"
               else
-                echo "WARNING: Commit $SHA may not be on main (status: $MERGE_BASE). Proceeding anyway."
+                # This used to warn and release anyway. An unverifiable commit
+                # is not a release candidate (#2078).
+                echo "ERROR: Commit $SHA is not on main (status: $MERGE_BASE). Refusing to release."
+                exit 1
               fi
               ;;
           esac
-          echo "Ready to release."
+
+      - name: Require a green CI run on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          SHA="${{ github.sha }}"
+          REPO="${{ github.repository }}"
+
+          # The step above proves the commit is on main, which it was for
+          # v0.5.10. This step is the actual gate: it reads the conclusion of
+          # the commit's own ci.yml run and refuses to publish anything but a
+          # green one (#2078).
+          #
+          # "No run found" and "run in flight" are handled differently on
+          # purpose. Waiting an hour for a run that will never appear is worse
+          # than saying so: ci.yml skips docs-only commits via `paths-ignore`,
+          # so a missing run is reachable, and the message below says what to
+          # do about it. Either way a missing run FAILS, never skips. Deleting
+          # this step is what made #2078 possible, so silence is not an option
+          # here.
+          if [ "${#SHA}" -ne 40 ]; then
+            echo "ERROR: expected a full 40-character commit SHA, got '${SHA}'."
+            exit 1
+          fi
+
+          # `gh run list --commit` matches on the full SHA and silently returns
+          # nothing for an abbreviated one, which is why the check above exists.
+          ci_run() {
+            gh run list --repo "$REPO" --workflow ci.yml --commit "$SHA" \
+              --limit 1 --json status,conclusion,databaseId \
+              --jq '.[0] // empty' 2>/dev/null || echo ""
+          }
+
+          run=$(ci_run)
+          found_deadline=$((SECONDS + 300))
+          while [ -z "$run" ]; do
+            if [ "$SECONDS" -ge "$found_deadline" ]; then
+              echo "ERROR: no ci.yml run found for $SHA after 5 minutes, so this commit is unverified."
+              echo "CI skips docs-only commits (paths-ignore). Either run 'gh workflow run ci.yml --ref main'"
+              echo "against a commit CI will actually pick up, or tag a commit CI has already run on. (#2078)"
+              exit 1
+            fi
+            echo "No ci.yml run for $SHA yet; waiting for it to appear..."
+            sleep 15
+            run=$(ci_run)
+          done
+
+          run_deadline=$((SECONDS + 3600))
+          while :; do
+            status=$(printf '%s' "$run" | jq -r '.status')
+            conclusion=$(printf '%s' "$run" | jq -r '.conclusion')
+            id=$(printf '%s' "$run" | jq -r '.databaseId')
+            echo "ci.yml run $id on $SHA: status=$status conclusion=$conclusion"
+
+            # An unreadable status must fail, not read as "still running". This
+            # loop is the last thing between a red commit and a published
+            # release, so a parse failure has to be loud (#2078).
+            if [ -z "$status" ] || [ "$status" = "null" ]; then
+              echo "ERROR: could not read the status of the ci.yml run for $SHA (got '${status}')."
+              echo "Refusing to publish a commit whose CI cannot be verified (#2078)."
+              exit 1
+            fi
+
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "CI is green on $SHA. Ready to release."
+                exit 0
+              fi
+              echo "ERROR: ci.yml run $id on $SHA concluded '$conclusion'. Refusing to publish a red commit (#2078)."
+              exit 1
+            fi
+
+            if [ "$SECONDS" -ge "$run_deadline" ]; then
+              echo "ERROR: ci.yml run $id on $SHA is still '$status' after 60 minutes. Refusing to publish unverified (#2078)."
+              exit 1
+            fi
+
+            echo "Waiting for ci.yml run $id to finish (status=$status)..."
+            sleep 30
+            run=$(ci_run)
+            if [ -z "$run" ]; then
+              echo "ERROR: ci.yml run $id for $SHA disappeared while waiting (#2078)."
+              exit 1
+            fi
+          done
 
   publish-crate:
     name: Publish to crates.io
