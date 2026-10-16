@@ -392,6 +392,11 @@ pub enum LocalImageFailureReason {
     Unreadable,
     /// More bytes than the family's size ceiling.
     TooLarge,
+    /// The path is on the harness confidential denylist (keys.toml and its
+    /// backups, .env, private keys). A model-authored link must not be able to
+    /// exfiltrate a secret store as an attachment: the text redactor never sees
+    /// attachment bytes, so the read has to be refused here.
+    Confidential,
     /// The attachment was extracted and validated, but the channel refused to
     /// send it (API error, media-type rejection, platform size ceiling).
     /// Distinct from every other reason: the reference is not the problem.
@@ -407,6 +412,7 @@ impl LocalImageFailureReason {
             Self::Empty => "file is empty (0 bytes)",
             Self::Unreadable => "file could not be read",
             Self::TooLarge => "larger than the size limit",
+            Self::Confidential => "a confidential file (never sent as an attachment)",
             Self::DeliveryFailed => "the channel could not deliver it",
         }
     }
@@ -577,6 +583,21 @@ pub const TELEGRAM_DOCUMENT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 /// document, and rejecting an unrecognised format would delete a referenced
 /// file from the reply and deliver nothing.
 pub fn validate_local_file(path: &Path) -> Result<(), LocalImageFailureReason> {
+    // First, before any stat: the harness confidential denylist. Ordered first
+    // because it is the only check whose failure is a security outcome.
+    //
+    // Checked on BOTH the requested path and the canonical one: the denylist
+    // matches names, so an innocently named symlink (`/tmp/report.txt`) whose
+    // target is `keys.toml` would otherwise pass. Canonicalisation needs the
+    // file to exist, which is why the requested-path check runs first.
+    if crate::brain::tools::confidential::is_confidential(path).is_some() {
+        return Err(LocalImageFailureReason::Confidential);
+    }
+    if let Ok(canonical) = std::fs::canonicalize(path)
+        && crate::brain::tools::confidential::is_confidential(&canonical).is_some()
+    {
+        return Err(LocalImageFailureReason::Confidential);
+    }
     let meta = match std::fs::metadata(path) {
         Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
