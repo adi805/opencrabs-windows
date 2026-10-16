@@ -98,8 +98,14 @@ pub mod brain_provider_codex_oauth_test;
 pub mod brain_provider_copilot_test;
 pub mod brain_provider_error_test;
 pub mod brain_provider_factory_test;
+pub mod brain_provider_http_error_chain_test;
 pub mod brain_provider_identity_test;
 pub mod brain_provider_json_repair_test;
+pub mod brain_provider_opencrabs_acquire_test;
+pub mod brain_provider_opencrabs_catalogue_test;
+pub mod brain_provider_opencrabs_factory_test;
+pub mod brain_provider_opencrabs_install_test;
+pub mod brain_provider_opencrabs_store_test;
 pub mod brain_provider_qwen_test;
 pub mod brain_provider_response_id_test;
 pub mod brain_provider_trait_test;
@@ -228,6 +234,7 @@ pub mod compaction_summary_budget_test;
 pub mod compaction_test;
 mod compaction_truncation_marker_test;
 pub mod compactor_retention_test;
+pub mod compat_stream_idle_default_test;
 pub mod confidential_read_deny_test;
 pub mod config_alias_merge_test;
 pub mod config_dotted_caps_test;
@@ -326,6 +333,12 @@ pub mod desktop_policy_test;
 pub mod desktop_tool_test;
 pub mod desktop_windows_test;
 pub mod directive_discovery_test;
+// Deferred: asserts the Discord handler records the reply's platform message id
+// (`reply_msg_id`), which this fork's handler does not do
+// (`grep -c reply_msg_id src/channels/discord/handler.rs` = 0). The upstream
+// #2025 mechanism is absent here, so wiring this module would pin an
+// implementation the tree does not have.
+//pub mod discord_dm_channel_history_test;
 pub mod discord_interaction_admission_test;
 pub mod discord_tool_group_test;
 pub mod discord_turn_start_group_test;
@@ -410,13 +423,25 @@ pub mod model_match_test;
 pub mod model_menu_test;
 pub mod model_order_test;
 pub mod model_refresh_test;
+// Deferred: asserts `OnboardingWizard::from_config` opens on an enabled
+// `providers.opencrabs` entry (upstream #2060). This fork's wizard chain has no
+// such arm (`grep -c providers.opencrabs src/tui/onboarding/wizard.rs` = 0), so
+// the assertion pins a branch that does not exist here.
+//pub mod models_session_pair_test;
 pub mod native_provider_timeout_test;
 pub mod new_session_pane_binding_test;
 pub mod nudge_text_test;
+pub mod onboarding_builtin_provider_test;
+pub mod onboarding_setup_gaps_test;
+pub mod onboarding_shift_tab_hint_test;
+pub mod opencrabs_generation_candidate_test;
+pub mod opencrabs_vision_candidate_test;
+pub mod opencrabs_voice_candidate_test;
 pub mod pending_context_session_test;
 pub mod pending_request_age_test;
 pub mod pending_request_thread_test;
 pub mod pending_resume_no_reinsert_test;
+pub mod phantom_branch_class_test;
 pub mod phantom_generic_intent_test;
 pub mod phantom_going_to_test;
 pub mod phantom_id_work_intent_test;
@@ -429,6 +454,7 @@ pub mod phantom_uncalled_command_test;
 pub mod phantom_unsent_file_test;
 pub mod phantom_work_announcement_test;
 pub mod picker_limits_test;
+pub mod plan_spec_checks_test;
 pub mod plan_status_glyph_test;
 pub mod plan_tool_inline_test;
 pub mod plan_vacuous_pass_test;
@@ -441,6 +467,7 @@ pub mod profiles_dialog_test;
 pub mod progress_callback_fanout_test;
 pub mod project_remote_identity_test;
 pub mod project_runner_test;
+pub mod provider_cooldown_test;
 pub mod provider_matches_session_test;
 pub mod provider_models_isolation_test;
 pub mod provider_reported_cost_test;
@@ -495,6 +522,7 @@ pub mod shared_session_internal_gate_test;
 pub mod shared_session_memory_gate_test;
 pub mod shutdown_recovery_row_test;
 pub mod source_shape;
+pub mod sources_footer_test;
 pub mod spawn_retry_test;
 pub mod ssrf_redirect_guard_test;
 #[cfg(feature = "telegram")]
@@ -555,6 +583,10 @@ pub mod test_stall_watchdog_test;
 pub mod timeout_resolution_test;
 pub mod tool_search_child_registry_test;
 pub mod tools_md_regression_test;
+pub mod tui_answer_placement_test;
+pub mod usage_cache_breakdown_test;
+pub mod usage_ledger_cache_split_test;
+pub mod usage_model_cost_test;
 pub mod winlock_test;
 pub mod work_status_output_full_test;
 pub mod work_status_parent_binding_test;
