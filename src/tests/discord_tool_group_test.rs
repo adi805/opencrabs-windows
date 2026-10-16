@@ -73,7 +73,14 @@ async fn retention_prunes_oldest_groups() {
     for i in 0..25u64 {
         state.upsert_tool_group(i, group(2, true, false)).await;
     }
-    assert!(state.toggle_tool_group(0).await.is_none());
+    // Retention is a memory bound. A click on an evicted card legitimately
+    // restores it from SQLite whenever a pool is present (#1880), so assert on
+    // the memory map rather than on the toggle, which depends on whether some
+    // other test in the binary has opened a database.
+    let ids = state.memory_group_ids().await;
+    assert_eq!(ids.len(), 20);
+    assert!(!ids.contains(&0));
+    assert!(ids.contains(&24));
     assert!(state.toggle_tool_group(24).await.is_some());
 }
 

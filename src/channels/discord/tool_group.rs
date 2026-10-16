@@ -381,6 +381,15 @@ impl DiscordState {
     /// their next click (#1880), so a card outlives the cap as well as a restart.
     const TOOL_GROUP_CAP: usize = 20;
 
+    /// The message ids held in memory, oldest first. Test-only: the retention
+    /// test asserts on memory directly, because a click on an evicted card
+    /// legitimately restores it from SQLite whenever a pool is present (#1880).
+    #[cfg(test)]
+    pub(crate) async fn memory_group_ids(&self) -> Vec<u64> {
+        let guard = self.tool_groups.lock().await;
+        guard.0.clone()
+    }
+
     /// Write a card's state through to SQLite (#1880). Best effort: a failed
     /// write is logged and the in-memory card keeps working.
     async fn persist_tool_group(&self, message_id: u64, group: &GroupState) {
