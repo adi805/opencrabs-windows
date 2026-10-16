@@ -411,8 +411,8 @@ impl CodexTokenManager {
     /// Get the current access token. Refreshes if expired.
     pub async fn ensure_token(&self) -> anyhow::Result<String> {
         {
-            let tokens = self.tokens.read().unwrap();
-            let expires = self.expires_at.read().unwrap();
+            let tokens = self.tokens.read().unwrap_or_else(|e| e.into_inner());
+            let expires = self.expires_at.read().unwrap_or_else(|e| e.into_inner());
             if let Some(ref t) = *tokens
                 && *expires > Instant::now() + Duration::from_secs(120)
             {
@@ -420,7 +420,7 @@ impl CodexTokenManager {
             }
         }
         self.refresh().await?;
-        let tokens = self.tokens.read().unwrap();
+        let tokens = self.tokens.read().unwrap_or_else(|e| e.into_inner());
         tokens
             .as_ref()
             .map(|t| t.access_token.clone())
@@ -429,8 +429,8 @@ impl CodexTokenManager {
 
     /// Get the current cached token without refreshing (sync).
     pub fn get_cached_token(&self) -> Option<String> {
-        let tokens = self.tokens.read().unwrap();
-        let expires = self.expires_at.read().unwrap();
+        let tokens = self.tokens.read().unwrap_or_else(|e| e.into_inner());
+        let expires = self.expires_at.read().unwrap_or_else(|e| e.into_inner());
         if let Some(ref t) = *tokens
             && *expires > Instant::now()
         {
@@ -451,7 +451,7 @@ impl CodexTokenManager {
     /// Refresh the access token using the refresh_token.
     pub async fn refresh(&self) -> anyhow::Result<()> {
         let refresh_token = {
-            let tokens = self.tokens.read().unwrap();
+            let tokens = self.tokens.read().unwrap_or_else(|e| e.into_inner());
             tokens
                 .as_ref()
                 .map(|t| t.refresh_token.clone())
@@ -503,11 +503,11 @@ impl CodexTokenManager {
 
         // Update in-memory state
         {
-            let mut tokens = self.tokens.write().unwrap();
+            let mut tokens = self.tokens.write().unwrap_or_else(|e| e.into_inner());
             *tokens = Some(new_tokens);
         }
         {
-            let mut expires = self.expires_at.write().unwrap();
+            let mut expires = self.expires_at.write().unwrap_or_else(|e| e.into_inner());
             *expires = Instant::now() + Duration::from_secs(token_resp.expires_in);
         }
 
@@ -521,7 +521,7 @@ impl CodexTokenManager {
             loop {
                 // Sleep until 2 minutes before expiry (min 60s between refreshes)
                 let sleep_secs = {
-                    let expires = self.expires_at.read().unwrap();
+                    let expires = self.expires_at.read().unwrap_or_else(|e| e.into_inner());
                     let remaining = expires.saturating_duration_since(Instant::now());
                     remaining.as_secs().saturating_sub(120).max(60)
                 };

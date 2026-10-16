@@ -144,14 +144,14 @@ impl GlobalRateLimiter {
     /// Sync — safe to call from anywhere without async context.
     pub fn get(&self, model: &str) -> Arc<RateLimiter> {
         {
-            let map = self.limiters.lock().unwrap();
+            let map = self.limiters.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(limiter) = map.get(model) {
                 return Arc::clone(limiter);
             }
         }
         // Double-checked locking: another thread may have created it while we
         // were waiting for the lock after the first lookup.
-        let mut map = self.limiters.lock().unwrap();
+        let mut map = self.limiters.lock().unwrap_or_else(|e| e.into_inner());
         // Check again under the write lock
         if let Some(limiter) = map.get(model) {
             return Arc::clone(limiter);
