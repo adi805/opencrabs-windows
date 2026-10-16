@@ -357,9 +357,16 @@ impl Database {
             "Connected to database: {} (WAL, pool=16, busy_timeout=30s)",
             path_str
         );
-        // Publish pool globally so components without DI access (e.g. qwen-cli
-        // provider streaming persistence) can still write to the DB. Safe to
-        // ignore the error — only the first connect wins.
+        // Publish the pool process-wide so components without DI access (e.g.
+        // CLI-provider streaming persistence) can still write to the DB. Only
+        // the first connect wins; later sets are ignored.
+        //
+        // Deliberately NOT published in test builds (#2072). `GLOBAL_POOL` is a
+        // `OnceLock` and never resets, so one test opening a file DB would hand
+        // every later test in the binary a pool pointing at a temp file it then
+        // deletes. That made those tests depend on run order; #2071 was the
+        // first symptom.
+        #[cfg(not(test))]
         let _ = GLOBAL_POOL.set(pool.clone());
         Ok(Self {
             pool,
