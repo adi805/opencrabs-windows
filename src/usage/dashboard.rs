@@ -8,11 +8,12 @@ use super::cards;
 use super::data::{DashboardData, Period};
 use super::layout;
 use crate::tui::app::dialog_keys::{DialogKey, DialogScope, dialog_keys};
+use crate::tui::render::theme::{self, Role};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
@@ -185,11 +186,11 @@ pub fn render(f: &mut Frame, state: &DashboardState, area: Rect) {
     // The outer border is the screen frame now, not dialog chrome.
     let border = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(theme::role(Role::AccentTeal)))
         .title(Span::styled(
             " Usage Dashboard ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::role(Role::AccentTeal))
                 .add_modifier(Modifier::BOLD),
         ));
     let inner = border.inner(area);
@@ -269,7 +270,7 @@ fn render_too_small(f: &mut Frame, area: Rect) {
         Line::from(Span::styled(
             "Terminal too small for the usage dashboard",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::role(Role::AccentTeal))
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -279,7 +280,7 @@ fn render_too_small(f: &mut Frame, area: Rect) {
                 layout::MIN_WIDTH,
                 layout::required_height(1)
             ),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::role(Role::TextDim)),
         )),
     ];
     let rows = Layout::default()

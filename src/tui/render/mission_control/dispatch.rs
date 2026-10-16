@@ -13,7 +13,7 @@ use crate::tui::render::hints;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -79,7 +79,7 @@ fn render_too_small(frame: &mut Frame, area: Rect) {
         Line::from(Span::styled(
             "Terminal too small for Mission Control",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::teal())
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -89,7 +89,7 @@ fn render_too_small(frame: &mut Frame, area: Rect) {
                 layout::MIN_WIDTH,
                 layout::MIN_PANEL_ROWS + 2
             ),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::text_dim()),
         )),
     ];
     let rows = Layout::default()
