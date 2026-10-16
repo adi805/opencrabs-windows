@@ -656,6 +656,7 @@ pub mod opencode_endpoint_picker_test;
 pub mod orphan_close_tag_strip_test;
 pub mod orphan_think_close_tag_test;
 pub mod owner_resolve_test;
+pub mod pane_folded_tool_group_test;
 pub mod phantom_allowlist_test;
 pub mod phantom_bare_completion_test;
 pub mod phantom_bare_tool_name_test;
