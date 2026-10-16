@@ -455,7 +455,10 @@ impl GeminiProvider {
     async fn ensure_cached_content(&self, system: &str, tools: &[Tool]) -> Result<()> {
         // Check if we already have a cached content name
         {
-            let guard = self.cached_content_name.lock().unwrap();
+            let guard = self
+                .cached_content_name
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if guard.is_some() {
                 return Ok(());
             }

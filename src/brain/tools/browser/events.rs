@@ -48,7 +48,7 @@ pub struct EventLog {
 impl EventLog {
     pub fn push(&self, summary: String) {
         let ts = chrono::Local::now().format("%H:%M:%S").to_string();
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if guard.len() >= RING_CAPACITY {
             guard.pop_front();
         }
@@ -57,7 +57,7 @@ impl EventLog {
 
     /// Drain all pending events (spec: cleared after reporting).
     pub fn take(&self) -> Vec<BrowserEvent> {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         guard.drain(..).collect()
     }
 
@@ -79,7 +79,7 @@ impl EventLog {
     /// Current pending count without draining (tests).
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().len()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 

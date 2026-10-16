@@ -7727,7 +7727,10 @@ impl AgentService {
             context.add_message(assistant_msg);
             if !outgoing_iteration_text.trim().is_empty() {
                 let action = {
-                    let mut rings = self.session_outgoing_text_ring.write().unwrap();
+                    let mut rings = self
+                        .session_outgoing_text_ring
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner());
                     rings
                         .entry(session_id)
                         .or_default()
@@ -8118,7 +8121,10 @@ impl AgentService {
         // canned phantom string can never trip the guard.
         if !final_text.trim().is_empty() {
             let action = {
-                let mut rings = self.session_outgoing_text_ring.write().unwrap();
+                let mut rings = self
+                    .session_outgoing_text_ring
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner());
                 let ring = rings.entry(session_id).or_default();
                 // Dedupe (#961): the within-turn hook may have already recorded
                 // this exact text; re-recording it would double-count one
