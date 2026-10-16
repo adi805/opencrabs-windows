@@ -613,3 +613,126 @@ fn rejected_skill_is_not_reproposed() {
     let reproposed = store.add_skill_proposal("rsi", "again", skill).unwrap();
     assert!(reproposed.is_empty(), "rejected skill must not re-propose");
 }
+
+// ── the inbox publish is guarded and atomic (F-BR-07) ─────────────────
+
+/// A proposal file the store cannot read back is an EMPTY inbox, not an error:
+/// `read_file` returns `None` on a parse failure and `read_tools` turns that into
+/// `unwrap_or_default()`. So a write that produces content the reader rejects
+/// loses every pending proposal silently, which is why the write path refuses
+/// content that does not round-trip.
+///
+/// The teeth test: a type whose serialized form cannot be deserialized (a field
+/// the serializer skips and the deserializer requires) must be REFUSED, and the
+/// existing file must be untouched.
+#[test]
+fn a_write_that_would_not_read_back_is_refused() {
+    use crate::brain::rsi_proposals::write_toml_atomic;
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct RoundTrips {
+        name: String,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct DoesNot {
+        #[serde(skip_serializing)]
+        needed: String,
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("proposed_tools.toml");
+
+    // A good write lands.
+    write_toml_atomic(
+        &path,
+        &RoundTrips {
+            name: "kept".to_string(),
+        },
+    )
+    .expect("a round-tripping value writes");
+    let before = std::fs::read_to_string(&path).expect("read back");
+    assert!(before.contains("kept"), "{before}");
+
+    // Prove the fixture has teeth BEFORE trusting the refusal below, or the
+    // test passes for the wrong reason: if this type round-tripped, the guard
+    // would refuse for some unrelated cause and still look correct.
+    let bad = DoesNot {
+        needed: "lost".to_string(),
+    };
+    let serialized = toml::to_string_pretty(&bad).expect("the bad value still serializes");
+    assert!(
+        !serialized.contains(&bad.needed),
+        "the serializer must drop the field this test depends on dropping: {serialized}"
+    );
+    assert!(
+        toml::from_str::<DoesNot>(&serialized).is_err(),
+        "the written document must fail to read back, or there is nothing to refuse"
+    );
+
+    // The bad one is refused...
+    let err = write_toml_atomic(&path, &bad)
+        .expect_err("a value that does not parse back must be refused");
+    assert!(
+        err.to_string().contains("does not parse back"),
+        "the refusal has to say why: {err}"
+    );
+
+    // ...and the file still holds the good content, byte for byte.
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read back"),
+        before,
+        "a refused write must leave the inbox alone"
+    );
+}
+
+/// The publish is a rename, so it strands no temp file beside the inbox. The
+/// inbox directory is read by the RSI cycle, and a stray `proposed_tools.tmp`
+/// would show up in a directory listing of it forever.
+#[test]
+fn the_inbox_publish_strands_no_temp_file() {
+    use crate::brain::rsi_proposals::write_text_atomic;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("proposed_tools.toml");
+
+    write_text_atomic(&path, "[[tools]]\n").expect("publish");
+    write_text_atomic(&path, "[[tools]]\nname = \"x\"\n").expect("replace");
+
+    let names: Vec<String> = std::fs::read_dir(dir.path())
+        .expect("read dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["proposed_tools.toml".to_string()],
+        "the inbox directory must hold the file and nothing else: {names:?}"
+    );
+}
+
+/// What the store writes, the store reads: every inbox file parses after a real
+/// add, and no temp file is left in the rsi directory.
+#[test]
+fn an_added_proposal_leaves_a_readable_inbox() {
+    let tmp = TempDir::new().expect("tmpdir");
+    let store = ProposalsStore::with_dir(tmp.path().to_path_buf());
+
+    store
+        .add_tool_proposal("test", "rationale", sample_tool_def())
+        .expect("add a tool proposal");
+
+    let inbox = tmp.path().join("proposed_tools.toml");
+    let raw = std::fs::read_to_string(&inbox).expect("the inbox exists");
+    toml::from_str::<toml::Value>(&raw).expect("the inbox parses");
+    assert!(raw.contains("gh_issue_list"), "{raw}");
+
+    // And it comes back through the reader, which is the contract that matters.
+    assert_eq!(store.pending_count(), 1);
+
+    let names: Vec<String> = std::fs::read_dir(tmp.path())
+        .expect("read dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(names.is_empty(), "no temp file may survive: {names:?}");
+}
