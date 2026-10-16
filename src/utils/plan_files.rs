@@ -160,7 +160,7 @@ pub async fn set_plan_autonomy(session_id: Uuid, enabled: bool) -> std::io::Resu
         if let Some(dir) = marker.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(&marker, b"")
+        write_atomic(&marker, b"")
     } else {
         // Remove both the resolved and legacy markers so a revoke is complete.
         for p in [
@@ -415,22 +415,37 @@ pub fn load_plan_from_path(path: &Path) -> Option<PlanDocument> {
         plan.approval_source = None;
         plan.pending_approval = true;
         // Persist the demotion so a crash before the next save cannot
-        // resurrect the auto-activated Active state (atomic tmp + rename,
-        // same shape as save_plan).
-        if let Ok(json) = serde_json::to_string_pretty(&plan) {
-            let tmp = path.with_extension("tmp");
-            if let Err(e) = std::fs::write(&tmp, &json).and_then(|_| std::fs::rename(&tmp, path)) {
-                tracing::warn!(
-                    "Failed to persist plan approval demotion at {}: {e}",
-                    path.display()
-                );
-            }
+        // resurrect the auto-activated Active state.
+        if let Ok(json) = serde_json::to_string_pretty(&plan)
+            && let Err(e) = write_atomic(path, &json)
+        {
+            tracing::warn!(
+                "Failed to persist plan approval demotion at {}: {e}",
+                path.display()
+            );
         }
     }
 
     Some(plan)
 }
 
+/// Write `contents` to `path` through a sibling temp file and a rename.
+///
+/// `fs::write` opens with `O_TRUNC`: between the truncate and the write the file
+/// is zero bytes on disk, and a process that dies in that window leaves it that
+/// way. The plan gate reads these artifacts on every turn, so a truncated
+/// artifact is not a failed write, it is a plan that looks absent or a JSON that
+/// does not parse.
+///
+/// Two sites in this file already published this way and six did not. They all
+/// go through here now. The temp name is the target's with a `tmp` extension, so
+/// two writers racing on one path collide on the rename and one of them gets an
+/// error rather than both silently succeeding.
+pub(crate) fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, contents.as_ref())?;
+    std::fs::rename(&tmp, path)
+}
 /// Save the plan atomically (temp file + rename), writing the canonical
 /// `"Editing"` / `"Active"` status strings.
 pub async fn save_plan(plan: &PlanDocument) -> std::io::Result<()> {
@@ -439,9 +454,7 @@ pub async fn save_plan(plan: &PlanDocument) -> std::io::Result<()> {
     let path = plan_json_path(plan.session_id).await;
     let json = serde_json::to_string_pretty(plan)
         .map_err(|e| std::io::Error::other(format!("serialize plan: {e}")))?;
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &json)?;
-    std::fs::rename(&tmp, &path)?;
+    write_atomic(&path, &json)?;
     // A real plan supersedes any pre-init marker: `plan init` writing the first
     // JSON clears the intent bit so a stale marker can't later resurrect
     // pre-init after the plan is archived (#569).
@@ -502,8 +515,8 @@ pub async fn set_pre_init_editing_with_origin(
         PreInitOrigin::Slash => b"slash",
         PreInitOrigin::Nudge => b"",
     };
-    std::fs::write(
-        dir.join(format!(".opencrabs_plan_{session_id}.preinit")),
+    write_atomic(
+        &dir.join(format!(".opencrabs_plan_{session_id}.preinit")),
         content,
     )
 }
@@ -562,7 +575,7 @@ pub async fn mark_plan_just_archived(session_id: Uuid) {
         tracing::warn!("plan just-archived flag mkdir failed: {e}");
         return;
     }
-    if let Err(e) = std::fs::write(&path, "1") {
+    if let Err(e) = write_atomic(&path, "1") {
         tracing::warn!("plan just-archived flag write failed: {e}");
     }
 }
@@ -793,7 +806,7 @@ pub async fn create_design_md(session_id: Uuid, title: &str) -> std::io::Result<
     let dir = session_dir(session_id).await;
     std::fs::create_dir_all(&dir)?;
     let path = plan_md_path(session_id).await;
-    std::fs::write(&path, design_scaffold(title))?;
+    write_atomic(&path, design_scaffold(title))?;
     Ok(path)
 }
 
@@ -848,7 +861,7 @@ pub async fn sync_md_to_json(session_id: Uuid) -> Result<(), String> {
         } else {
             plan.description.clone()
         };
-        if let Err(e) = std::fs::write(&md, restore) {
+        if let Err(e) = write_atomic(&md, restore) {
             tracing::warn!("Failed to restore refused plan .md write: {e}");
         }
         return Err(format!(
@@ -862,7 +875,7 @@ pub async fn sync_md_to_json(session_id: Uuid) -> Result<(), String> {
         let parse_errors =
             crate::channels::telegram::rich::mermaid::preflight_parse_errors(&body).await;
         if !parse_errors.is_empty() {
-            if let Err(e) = std::fs::write(&md, &plan.description) {
+            if let Err(e) = write_atomic(&md, &plan.description) {
                 tracing::warn!("Failed to restore refused plan .md write: {e}");
             }
             return Err(format!(
