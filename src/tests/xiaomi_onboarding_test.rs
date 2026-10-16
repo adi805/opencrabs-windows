@@ -99,7 +99,8 @@ async fn xiaomi_models_fetch_returns_mimo_list() {
         .position(|p| p.id == "xiaomi")
         .expect("xiaomi in PROVIDERS");
     let models =
-        crate::tui::onboarding::fetch_provider_models(idx, None, None, None, None, None).await;
+        crate::tui::onboarding::fetch_provider_models(idx, None, None, None, None, None, None)
+            .await;
     assert!(
         !models.is_empty(),
         "/models must show a model list for Xiaomi (was empty)"

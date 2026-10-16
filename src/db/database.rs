@@ -174,6 +174,11 @@ pub(crate) const MIGRATION_SQL: &[&str] = &[
     // its next ingress marks it. Local rows (NULL chat key) are backfilled to
     // 'personal' inside the migration. Appended last per the list invariant.
     include_str!("../migrations/20261013000001_add_session_sharing.sql"),
+    // #2027: the per-row cache-read count behind the By Model cache share.
+    // ALTER TABLE ADD COLUMN, NULL by design on every existing row (there is
+    // no split to backfill), so no heal pass is needed. Appended last per the
+    // list invariant.
+    include_str!("../migrations/20261015000001_add_usage_ledger_cache_read_tokens.sql"),
 ];
 
 pub(crate) fn build_migrations() -> Migrations<'static> {

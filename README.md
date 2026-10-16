@@ -36,7 +36,7 @@
 - [📚 Documentation](#-documentation)
 - [Why OpenCrabs?](#why-opencrabs)
 - [📊 Benchmarks](#-benchmarks)
-- [🎬 Full onboard](#-full-onboard)
+- [🎬 Onboarding Videos](#-onboarding-videos)
 - [🎬 Demo](#-demo)
 - [🖥️ Split Panes](#-split-panes)
 - [🎯 Core Features](#-core-features)
@@ -234,9 +234,15 @@ Graph: 15,769 symbols / 95,601 call edges / 5,649 imports, full-repo index in 12
 
 ---
 
-## 🎬 Full onboard
+## 🎬 Onboarding Videos
 
-https://github.com/user-attachments/assets/833dd5e9-3bcc-432a-96ac-3a5bb97b5966
+| OS | Quick start | Advanced setup (Telegram, voice, images) |
+|----|-------------|------------------------------------------|
+| macOS | [Install in under 2 minutes (Homebrew)](https://youtu.be/1_Ta9BFxlSk) | [Advanced setup on macOS](https://youtu.be/Lq891K2GFzU) |
+| Ubuntu/Linux | [Install in 3 minutes (one paste)](https://youtu.be/sXfaKfQiAxo) | [Advanced setup on Linux](https://youtu.be/uZLwzerkQt0) |
+| Windows | [Install in 2 minutes (PowerShell)](https://youtu.be/kY8SW83obOc) | [Advanced setup on Windows](https://youtu.be/TZn1aYgpRuI) |
+
+All videos: [youtube.com/@OpenCrabs](https://www.youtube.com/@OpenCrabs)
 
 ## 🎬 Demo
 
@@ -253,15 +259,15 @@ https://github.com/user-attachments/assets/7f45c5f8-acdf-48d5-b6a4-0e4811a9ee23
 ### AI & Providers
 | Feature | Description |
 |---------|-------------|
-| **Multi-Provider** | **Xiaomi MiMo**, Anthropic Claude, OpenAI, GitHub Copilot (uses your Copilot subscription), OpenRouter (400+ models), MiniMax, Google Gemini, z.ai GLM (General API + Coding API), Moonshot Kimi (API plan + Coding plan), Claude CLI, OpenCode CLI, Codex CLI (uses your ChatGPT/Codex subscription), Qwen Native (free OAuth with multi-account rotation), Qwen Code CLI (1k free req/day), and any OpenAI-compatible API (Ollama, LM Studio, LocalAI). Model lists fetched live from provider APIs — new models available instantly. Custom provider dialog: paste-by-default for API keys, Enter-to-load live models, typed-not-in-list models accepted and merged. Each session remembers its provider + model and restores it on switch |
+| **Multi-Provider** | **OpenCrabs** (built in: no account or key to set up), **Xiaomi MiMo**, Anthropic Claude, OpenAI, GitHub Copilot (uses your Copilot subscription), OpenRouter (400+ models), MiniMax, Google Gemini, z.ai GLM (General API + Coding API), Moonshot Kimi (API plan + Coding plan), Claude CLI, OpenCode CLI, Codex CLI (uses your ChatGPT/Codex subscription), Qwen Native (free OAuth with multi-account rotation), Qwen Code CLI (1k free req/day), and any OpenAI-compatible API (Ollama, LM Studio, LocalAI). Model lists fetched live from provider APIs. New models available instantly. Custom provider dialog: paste-by-default for API keys, Enter-to-load live models, typed-not-in-list models accepted and merged. Each session remembers its provider + model and restores it on switch |
 | **Fallback Providers** | Configure a chain of fallback providers — if the primary fails, each fallback is tried in sequence automatically. Any configured provider can be a fallback. Config: `[providers.fallback] providers = ["openrouter", "anthropic"]` |
-| **Per-Provider Timeouts** | `timeout_secs` caps a non-streaming request (one that buffers a whole body); it never caps a stream. `stream_idle_timeout_secs` is the only stream timer — it caps inter-chunk silence before the stream is treated as dropped and retried, so a long turn that keeps delivering is never cut. Defaults when unset: 3600s for CLI and local providers, 45s for z.ai on `api.z.ai` (whose host closes idle streams at ~30s), 20s for every other remote provider |
+| **Per-Provider Timeouts** | `timeout_secs` caps a non-streaming request (one that buffers a whole body); it never caps a stream. `stream_idle_timeout_secs` is the only stream timer; it caps inter-chunk silence before the stream is treated as dropped and retried, so a long turn that keeps delivering is never cut. Defaults when unset: 3600s for CLI and local providers, 120s for every OpenAI-compatible remote provider (z.ai included), 20s for the native Anthropic and Gemini families |
 | **Per-Provider Vision** | Set `vision_model` per provider — the LLM calls `analyze_image` as a tool, which uses the vision model on the same provider API to describe images. The chat model stays the same and gets vision capability via tool call. Gemini vision takes priority when configured. Auto-configured for known providers (e.g. MiniMax) on first run |
 | **Prompt Caching** | Caches the stable context prefix (system prompt, brain files, earlier turns) on every caching-capable provider — Anthropic native (default), OpenAI/OpenRouter (`cache_enabled`), Qwen/Alibaba (zero-config auto), Xiaomi (server-side). Averaging ~87% cache efficiency in real use; watch it live in the Cache Efficiency card of `/usage`. Big reason a larger context window stays affordable |
 | **Context Window & Auto-Compaction** | Per-provider `context_window` override (default 200k, works on every provider); transparent auto-compaction at 65% (soft, background) / 90% (hard) of the window gives effectively unlimited session memory with no manual clearing |
 | **Real-time Streaming** | Character-by-character response streaming with animated spinner showing model name and live text |
 | **Local LLM Support** | Run with LM Studio, Ollama, or any OpenAI-compatible endpoint — 100% private, zero-cost |
-| **Usage Dashboard** | Per-message token count and cost displayed in header; `/usage` opens an interactive dashboard with daily activity charts, cost breakdowns by project/provider/model/activity, core tool usage stats, and period filtering (Today/Week/Month/All-Time). Sessions are auto-categorized on startup (Development, Bug Fixes, Features, Refactoring, Testing, Documentation, CI/Deploy, etc.). Estimated costs for historical sessions shown as `~$X.XX` |
+| **Usage Dashboard** | Per-message token count and cost displayed in header; `/usage` opens an interactive dashboard with daily activity charts, cost breakdowns by project/provider/model/activity, core tool usage stats, a `N% cache` column on the per-model rows showing the share of that model's recorded tokens that came from cache, and period filtering (Today/Week/Month/All-Time). Sessions are auto-categorized on startup (Development, Bug Fixes, Features, Refactoring, Testing, Documentation, CI/Deploy, etc.). Estimated costs for historical sessions shown as `~$X.XX` |
 | **Context Awareness** | Live context usage indicator showing actual token counts (e.g. `ctx: 45K/200K (23%)`); auto-compaction at 70% with tool overhead budgeting; accurate tiktoken-based counting calibrated against API actuals |
 | **3-Tier Memory** | (1) **Brain MEMORY.md** — user-curated durable memory, loaded on demand in the main session (see [Brain Files](#brain-files--one-file-one-job)), (2) **Daily Logs** — auto-compaction summaries at `~/.opencrabs/memory/YYYY-MM-DD.md`, (3) **Hybrid Memory Search** — FTS5 keyword search + vector embeddings combined via Reciprocal Rank Fusion. Three modes: **Local** (embeddinggemma-300M, 768-dim, no API key, works offline), **API** (any OpenAI-compatible `/v1/embeddings` endpoint: OpenAI, Ollama, Jina, etc.), or **FTS5-only** (no embeddings, VPS-friendly, ~0 RAM overhead). Auto-detects VPS environments and disables local embeddings |
 | **Dynamic Brain System** | System brain assembled from workspace MD files (SOUL, USER, AGENTS, TOOLS, MEMORY) — all editable live between turns |
@@ -285,6 +291,8 @@ https://github.com/user-attachments/assets/7f45c5f8-acdf-48d5-b6a4-0e4811a9ee23
 #### Vision setup — two paths, pick one
 
 > **Using Xiaomi?** Share images and OpenCrabs automatically routes to MiMo's multimodal model — no separate vision key needed.
+>
+> **Using OpenCrabs?** The built-in provider sets `vision_model = "deepseek-v4.1-flash"` on fresh installs, so attached images work on day 0 with no setup. Upgraded installs keep their existing `config.toml`; add `vision_model = "deepseek-v4.1-flash"` under `[providers.opencrabs]` to turn it on.
 
 **Path A (preferred, simpler).** Set `vision_model = "<model>"` on your active `[providers.<name>]` block in `config.toml`. Works for every built-in and custom provider — the agent calls the vision model on the **same provider endpoint** via the `analyze_image` tool, so no second API key is needed. Pick a vision-capable model on that provider (DeepSeek chat models like `deepseek-v4-flash` reject `image_url` content, so point `vision_model` at a vision-capable variant of the same family — every provider has at least one).
 
@@ -1203,6 +1211,7 @@ The CLI `migrate` command currently supports OpenClaw and Hermes. For everything
 | Provider | Auth | Models | Streaming | Tools | Notes |
 |----------|------|--------|-----------|-------|-------|
 | **Xiaomi (MiMo)** | API key | mimo-v2.5-pro (1M ctx), v2-pro, v2.5, omni, flash | ✅ | ✅ | OpenAI-compatible. Get a key at platform.xiaomimimo.com. MiMo v2.5 is multimodal (native vision) |
+| [OpenCrabs (built in)](#opencrabs-built-in) | Automatic (install token, no key to paste) | deepseek-v4.1-flash (200k ctx, multimodal) | ✅ | ✅ | Set up on first run with no account. No charge and no usage caps during the experimental phase |
 | [Anthropic Claude](#anthropic-claude) | API key | Claude Opus 4.6, Sonnet 4.5, Haiku 4.5+ | ✅ | ✅ | Cost tracking, automatic retry |
 | [OpenAI](#openai) | API key | GPT-5 Turbo, GPT-5 | ✅ | ✅ | |
 | [GitHub Copilot](#github-copilot) | OAuth | GPT-4o, Claude Sonnet 4+ | ✅ | ✅ | Uses your Copilot subscription — no API charges |
@@ -1323,6 +1332,33 @@ Access 400+ models from every major provider through a single API key — Anthro
 
 Model list is **fetched live** from the OpenRouter API during onboarding and via `/models` — no binary update needed when new models are added.
 
+### OpenCrabs (built in)
+
+OpenCrabs ships its own provider, so a new install can chat without creating an account or pasting a key.
+
+**What you get on a fresh install**
+- **Chat model:** `deepseek-v4.1-flash`, 200k context window.
+- **Vision:** `vision_model` is set to the same model, so attached images work on day 0.
+- **Image generation:** on by default for fresh installs through `gemini-3.1-flash-image`, which is image-only and never offered as a chat model. Existing installs set `generation_model` on `[providers.opencrabs]` to get it (see [Image Generation & Vision](#-image-generation--vision)).
+- **Voice (STT + TTS):** on by default for fresh installs through `qwen3.8-omni-flash`, which serves both `/v1/audio/transcriptions` and `/v1/audio/speech`. Voice notes transcribe and replies speak on day 0. Existing installs set `stt_model` and `tts_model` on `[providers.opencrabs]` to get it (see [Core Features](#-core-features)).
+
+**How the key works.** On first use, the install asks `inference.opencrabs.com` for its own token once and saves it in `keys.toml` under `[providers.opencrabs]`. The binary holds no shared upstream key, and the server keeps only a hash of each token. If `keys.toml` is lost, the install requests a new token automatically.
+
+**Cost and limits.** The built-in provider is free and has no usage caps during the experimental phase, so every install gets unlimited tokens. To keep it that way for everyone, we protect it against abuse: requests that flood the service, or a single source that mints installs in bulk, can be rate limited or blocked. Normal use will not hit these protections. If we change the limits later, this section will say so before they apply.
+
+**Where your data goes.** Chat and image requests are sent to `inference.opencrabs.com`, which forwards them to the upstream model host. If that is not acceptable for a conversation, switch providers.
+
+**Switching.** Type `/models` and pick another provider, or run `/onboard` and choose Advanced. Keys for your other providers are not touched.
+
+```toml
+[providers.opencrabs]
+enabled = false                       # chosen through onboarding, not by hand
+default_model = "deepseek-v4.1-flash"
+models = ["deepseek-v4.1-flash"]
+context_window = 200000
+vision_model = "deepseek-v4.1-flash"
+```
+
 ### Google Gemini
 
 **Models:** `gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-1.5-pro` — fetched live from the Gemini API
@@ -1385,7 +1421,7 @@ z.ai GLM (Zhipu AI) offers two endpoint types selectable during onboarding or vi
 
 Both use the same API key and model names. The endpoint type can be toggled in the onboarding wizard or `/models` dialog.
 
-The default host is `api.z.ai`, which closes an idle streaming connection after about 30 seconds; the mainland host `open.bigmodel.cn` serves the same API without that cut. On `api.z.ai` the idle tolerance defaults to 45s so the host's own close is what we observe rather than our timer firing first; override it per provider with `stream_idle_timeout_secs`. To use it, or any other z.ai-compatible host, set `base_url` and it wins over `endpoint_type`:
+The default host is `api.z.ai`, which closes an idle streaming connection after about 30 seconds; the mainland host `open.bigmodel.cn` serves the same API without that cut. On `api.z.ai` the idle tolerance is the shared 120s default for OpenAI-compatible providers, well above the host's own close, so a request the host is still queuing is not cut by our timer; override it per provider with `stream_idle_timeout_secs`. To use it, or any other z.ai-compatible host, set `base_url` and it wins over `endpoint_type`:
 
 ```toml
 [providers.zai]
@@ -1660,11 +1696,34 @@ default_model = "moonshotai/kimi-k2.5"
 api_key = "nvapi-..."
 ```
 
-**Provider priority:** Claude CLI > OpenCode CLI > Codex CLI > OpenCode > Qwen > Anthropic > OpenAI > GitHub Copilot > Gemini > OpenRouter > MiniMax > z.ai GLM > Moonshot Kimi > Ollama > Custom. The first provider with `enabled = true` is used on new sessions. Each provider has its own API key in `keys.toml` — no sharing or confusion.
+**Provider priority:** Xiaomi > Claude CLI > OpenCode CLI > Codex CLI > Command Code CLI > Codex > OpenCode > Qwen > Anthropic > OpenAI > GitHub Copilot > Gemini > OpenRouter > MiniMax > z.ai GLM > Moonshot Kimi > Ollama > OpenCrabs > Custom. The first provider with `enabled = true` is used on new sessions. OpenCrabs sits near the end, so it is used only when no provider above it is enabled. Each provider has its own API key in `keys.toml`, no sharing or confusion.
 
 **Per-session provider:** Each session remembers which provider and model it was using. Switch to Claude in one session, Kimi in another — when you `/sessions` switch between them, the provider restores automatically. No need to `/models` every time. New sessions inherit the current provider.
 
 **What `enabled = false` actually means:** it only removes the provider from the default-selection scan above. It does NOT disable the provider. By-name usage ignores the flag entirely: per-session provider restoration, `/models` switching, the `[fallback]` chain, and the `[providers.fallback] vision` list can all still reach a provider marked `enabled = false`. Such a provider works perfectly fine when it has an API key, or when its CLI is authenticated and working on the same machine. Think of `enabled = false` as "not the default", not "dead" (#270).
+
+### Wire Dialect (Chat Completions vs Responses)
+
+An OpenAI-compatible endpoint can serve a request two ways: the classic Chat Completions route (`POST {base}/chat/completions`) or the newer Responses route (`POST {base}/responses`). The two are not interchangeable. Each takes a different request body, returns a different response shape and streams a different event vocabulary, so the route is a property of the endpoint, not of the caller. Reasoning models are the usual reason to care: when a model's reasoning tools are only reachable over Responses, sending it to Chat Completions is what makes a tool call come back as plain text.
+
+`wire_dialect` picks the route per provider:
+
+```toml
+[providers.openai]
+enabled = true
+default_model = "gpt-6"
+wire_dialect = "auto"   # "auto", "chat" or "responses"
+```
+
+| Value | Behavior |
+|-------|----------|
+| `auto` | Chat Completions first, switch to Responses when the endpoint refuses the model on the chat route. This is the default for the official OpenAI host. |
+| `chat` | Always `POST {base}/chat/completions`. |
+| `responses` | Always `POST {base}/responses`. |
+
+Leaving the key unset means `auto`, and `auto` resolves by provider kind. The official host (`api.openai.com`) keeps `auto`, so the official endpoint is still probed on Chat first and only moved to Responses when a model is refused there. Every other OpenAI-compatible endpoint is pinned to `chat`, because a third-party gateway almost never implements `/responses` at all and sending one there would only produce a 404.
+
+Set it explicitly when a gateway does implement `/responses` and its reasoning models need it, or when you want to pin the official host to one route and skip the probe. The value is validated at parse time: anything other than `auto`, `chat` or `responses` is a config error naming the valid values, so a typo never silently pins a provider to Chat.
 
 ### Per-Provider Timeouts
 
@@ -1682,7 +1741,7 @@ Both keys resolve through three tiers, and the most specific tier that is set wi
 |---|---|---|
 | 1 | `[providers.<name>] timeout_secs` | that provider alone |
 | 2 | `[agent] timeout_secs` and `[agent] stream_idle_timeout_secs` | every provider that names no tier-1 value |
-| 3 | the family's compiled default | 300s for the non-streaming ceiling. Stream idle has **no compiled floor**: the runtime table below applies instead |
+| 3 | the family's compiled default | 300s for the non-streaming ceiling. Stream idle has **no compiled floor** on the native families: the runtime table below applies instead. OpenAI-compatible providers use the shared 120s default (#2021) |
 
 ```toml
 [agent]
@@ -1703,8 +1762,8 @@ Defaults when the key is absent:
 | Provider | Idle tolerance |
 |---|---|
 | CLI providers (`claude_cli`, `codex_cli`, ...) and local base URLs | 3600s |
-| `zai` on the default `api.z.ai` host | 45s, deliberately above that host's own ~30s idle close |
-| Every other remote provider | 20s |
+| Every OpenAI-compatible remote provider (OpenRouter, z.ai, Moonshot, MiniMax, custom, ...) | 120s, one shared value (#2021) |
+| Native `anthropic` and `gemini` remote | 20s |
 
 `0` means "use the default", not "no timer". Raise the value if you see `Stream ended without [DONE] ... connection likely dropped` on turns with a long prefill pause: that message means our own idle timer fired, not that the network died.
 
@@ -1755,11 +1814,23 @@ vision_model = "MiniMax-Text-01"  # describes images for the chat model
 
 MiniMax auto-configures this on first run. Works with any provider — just set `vision_model` to a vision-capable model on the same API. The provider does NOT need `enabled = true`: `vision_model` plus a valid key is the whole gate, so a provider you keep disabled for chat still serves vision, and resolution rolls through every provider that qualifies (explicit `[providers.fallback] vision` chain first when set, then the provider scan, then the Gemini `[image.vision]` backend when configured).
 
+### Per-Provider Voice Model
+
+Voice follows the same shape. Set `stt_model` and/or `tts_model` on a provider and voice notes transcribe and replies speak through that provider's own endpoint — no `[providers.stt.*]` / `[providers.tts.*]` block to write:
+
+```toml
+[providers.opencrabs]
+stt_model = "qwen3.8-omni-flash"  # /v1/audio/transcriptions
+tts_model = "qwen3.8-omni-flash"  # /v1/audio/speech
+```
+
+Works with any [OI]-compatible provider that exposes those two routes, not only the built-in one. The active provider's route is the primary one; `[providers.stt].fallback_chain` / `[providers.tts].fallback_chain` still apply behind it, and the standalone `[providers.stt.openai_compatible]` / `[providers.tts.openai_compatible]` blocks keep working unchanged. A remote endpoint with no stored key is not a candidate — the same gate `vision_model` uses.
+
 ---
 
 ## 🖼️ Image Generation & Vision
 
-OpenCrabs supports image generation and vision analysis via Google Gemini by default — independent of the main chat provider, so you can use Claude for chat and Gemini for images. The `generate_image` tool can also be routed at any OpenAI-compatible images endpoint (OpenAI, OpenRouter, Together, etc.) via the per-provider `generation_model` override; see [Picking a different generation model](#picking-a-different-generation-model) below.
+OpenCrabs supports image generation and vision analysis via Google Gemini by default, independent of the main chat provider, so you can use Claude for chat and Gemini for images. The built-in OpenCrabs provider also serves `generate_image` out of the box on fresh installs, using `gemini-3.1-flash-image`. The `generate_image` tool can be routed at any OpenAI-compatible images endpoint (OpenAI, OpenRouter, Together, etc.) via the per-provider `generation_model` override; see [Picking a different generation model](#picking-a-different-generation-model) below.
 
 ### Setup
 
@@ -2056,7 +2127,7 @@ cargo install --git https://github.com/adi805/opencrabs-windows --locked --no-de
 | Feature | Crate | Description |
 |---------|-------|-------------|
 | `telegram` | teloxide | Telegram bot channel |
-| `telegram-userbot` | grammers | Experimental receive-only Telegram MTProto capture |
+| `telegram-userbot` | grammers | Experimental receive-only Telegram MTProto capture, plus an on-demand document download command |
 | `whatsapp` | whatsapp-rust | WhatsApp channel via multi-device API |
 | `discord` | serenity | Discord bot channel |
 | `slack` | slack-morphism | Slack bot channel (Socket Mode) |
@@ -2073,7 +2144,7 @@ cargo install --git https://github.com/adi805/opencrabs-windows --locked --no-de
 Required for adding custom tools, or modifying the agent.
 
 **Prerequisites:**
-- **Rust stable (1.94+)** — [Install Rust](https://rustup.rs/). The project includes a `rust-toolchain.toml` that selects the correct toolchain automatically
+- **Rust stable (1.95+)** — [Install Rust](https://rustup.rs/). The project includes a `rust-toolchain.toml` that selects the correct toolchain automatically
 - **An API key** from at least one supported provider
 - **SQLite** (bundled via sqlx)
 - **macOS:** Xcode CLI Tools + `brew install cmake pkg-config` (requires macOS 15+)
@@ -2203,31 +2274,38 @@ Use `/cd` inside OpenCrabs to switch working directory at runtime without restar
 
 ## 🧙 Onboarding Wizard
 
-First-time users are guided through a 9-step setup wizard that appears automatically after the splash screen.
+A 10-step setup wizard covers the rest of the setup. On a fresh install it does not open first: the screen goes straight to chat (see First Run below).
 
 ### How It Triggers
 
-- **Automatic:** When no `~/.opencrabs/config.toml` exists and no API keys are set in `keys.toml`
+- **Automatic:** On the first launch while onboarding has not been completed. A fresh install goes to chat instead of the wizard, and the wizard is reached through `/onboard`.
 - **CLI:** `cargo run --bin opencrabs -- onboard` (or `opencrabs onboard` after install)
 - **Chat flag:** `cargo run --bin opencrabs -- chat --onboard` to force the wizard before chat
 - **Slash command:** Type `/onboard` in the chat to re-run it anytime
 
-### The 9 Steps
+### First Run
+
+On a fresh install there is no setup step for the LLM. The session runs on the built-in OpenCrabs provider with `deepseek-v4.1-flash`, and the first screen goes straight to chat.
+
+- The welcome names what is already set (provider, model, vision) and asks only about what is still missing: your profile in `USER.md`, speech to text, text to speech, and image generation. Answer what you want and skip the rest.
+- To use another provider, type `/models`, or run `/onboard` and choose Advanced. On a first run, Advanced preselects OpenCrabs with its key and model already filled in, and you can pick any other provider instead.
+
+### The 10 Steps
 
 | Step | Title | What It Does |
 |------|-------|-------------|
 | 1 | **Mode Selection** | QuickStart (sensible defaults) vs Advanced (full control) |
-| 2 | **Model & Auth** | Pick provider (Anthropic, OpenAI, GitHub Copilot, Gemini, OpenRouter, Minimax, z.ai GLM, Custom) → enter token/key or sign in via OAuth → model list fetched live from API → select model. Auto-detects existing keys from `keys.toml` |
+| 2 | **Model & Auth** | Pick provider (OpenCrabs (built in, preselected on a first run), Anthropic, OpenAI, GitHub Copilot, Gemini, OpenRouter, Minimax, z.ai GLM, Custom) → enter token/key or sign in via OAuth → model list fetched live from API → select model. Auto-detects existing keys from `keys.toml` |
 | 3 | **Workspace** | Set brain workspace path (default `~/.opencrabs/`) → seed template files (SOUL.md, etc.) |
 | 4 | **Gateway** | Configure HTTP API gateway: port, bind address, auth mode |
 | 5 | **Channels** | Toggle messaging integrations (Telegram, Discord, WhatsApp, Slack, Trello) |
 | 6 | **Voice** | Choose STT provider: **Off** / **Groq Whisper (API)** / **OpenAI-compatible (API)** / **Voicebox (self-hosted)** / **Local whisper.cpp**. Choose TTS provider: **Off** / **OpenAI TTS (API)** / **OpenAI-compatible (API)** / **Voicebox (self-hosted)** / **Local Piper**. Local modes show model/voice picker with download progress. OpenAI-compatible modes take base URL + model + key. Voicebox modes take base URL + profile_id (TTS) / base URL (STT) |
-| 7 | **Image Handling** | Enable Gemini image generation and/or vision analysis — uses a separate Google AI key |
+| 7 | **Image Handling** | On a fresh install, OpenCrabs already serves vision and image generation with no key. Gemini stays optional for image generation and vision and uses a separate Google AI key |
 | 8 | **Daemon** | Install background service (systemd on Linux, LaunchAgent on macOS) |
 | 9 | **Health Check** | Verify API key, config, workspace — shows pass/fail summary |
 | 10 | **Brain Personalization** | Tell the agent about yourself and how you want it to behave → AI generates personalized brain files (SOUL.md, USER.md, etc.) |
 
-**QuickStart mode** skips steps 4-8 with sensible defaults. **Advanced mode** lets you configure everything.
+A fresh install skips the wizard entirely and needs no answers to reach chat. **Advanced mode** walks the steps above so you can configure each one.
 
 Type `/voice` or `/image` in chat to jump directly to Voice or Image setup anytime. These work from any channel (Telegram, Discord, Slack, WhatsApp) via text-driven handlers — not just the TUI. From a channel, the agent walks you through each step interactively. You can also pass arguments directly: `/channels telegram <BOT_TOKEN> <YOUR_NUMERIC_ID>` to set up Telegram in one line, or `/image gemini <API_KEY>` to configure vision with Google.
 
@@ -3533,7 +3611,7 @@ OpenCrabs includes 40+ built-in tools. The AI can use these during conversation:
 | `web_search` | Search the web (DuckDuckGo, always available, no key needed) |
 | `exa_search` | Neural web search via EXA AI (free via MCP, no API key needed; set key in `keys.toml` for higher rate limits) |
 | `brave_search` | Web search via Brave Search (set key in `keys.toml` — free $5/mo credits at brave.com/search/api) |
-| `serper_search` | Google SERP results via Serper (set key in `keys.toml`, serper.dev); the web_search fan-out dedupes results by URL across engines (#1731) |
+| `serper_search` | Google SERP results via Serper (set key in `keys.toml`, serper.dev); the web_search fan-out dedupes results by URL across engines (#1731); answers backed by any of the four search engines get a deterministic **Sources** footer harvested from the tool output (#1883) |
 | `http_request` | Make HTTP requests |
 | `web_scrape` | Native URL-to-markdown scraping (zero AI, zero API cost). Fetches a URL, extracts clean markdown, keeps images as `![alt](url)` tags so the agent can vision only what it needs. Includes SSRF protection, sitemap crawling, and profile/project-aware markdown export. Surfaced via `tool_search` (deferred, not in core set) |
 | `memory_search` | Hybrid semantic search — FTS5 keyword + vector embeddings combined via RRF. `scope` picks the corpus: `memory` (daily logs, the default) for history, `brain` for rules and policy in your brain files, `all` for both. Local GGUF, OpenAI-compatible API, or FTS5-only mode. With `.rs` files under `extra_paths`, structural queries ("who calls X") auto-route to the tree-sitter symbol graph (`code-graph` feature, on by default) |
@@ -4979,7 +5057,7 @@ cargo build --release
 # Small release build
 cargo build --profile release-small
 
-# Run tests (9,427 tests: 984 test files under src/tests/, where tests
+# Run tests (10,366 tests: 1,079 test files under src/tests/, where tests
 # belong — zero inline blocks in production files);
 # 38 slower ones are #[ignore]d to keep the default
 # run fast: profile tests that touch ~/.opencrabs, browser end-to-end
@@ -5004,7 +5082,7 @@ cargo clippy -- -D warnings
 | Feature | Description |
 |---------|-------------|
 | `telegram` | Telegram bot integration (default: enabled) |
-| `telegram-userbot` | Receive-only Telegram MTProto capture (experimental) |
+| `telegram-userbot` | Receive-only Telegram MTProto capture, plus an on-demand document download command (experimental) |
 | `whatsapp` | WhatsApp Web integration (default: enabled) |
 | `discord` | Discord bot integration (default: enabled) |
 | `slack` | Slack bot integration (default: enabled) |

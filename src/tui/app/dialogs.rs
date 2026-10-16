@@ -1,7 +1,7 @@
 //! Dialogs — onboarding wizard, file/directory pickers, usage dashboard.
 
 use super::events::{AppMode, TuiEvent};
-use super::onboarding::{OnboardingStep, WELCOME_MESSAGE, WizardAction};
+use super::onboarding::{OnboardingStep, WizardAction, WizardMode, welcome_message_for};
 use super::*;
 use crate::brain::provider::{ContentBlock, LLMRequest};
 use anyhow::Result;
@@ -14,6 +14,47 @@ impl App {
     /// Leave the app from inside the wizard. Whatever was typed is saved
     /// first, like a cancel; an unfinished first run reopens on next launch
     /// because completion is only recorded on `Complete`.
+    /// Send the hidden welcome prompt once the wizard has saved its config.
+    /// Runs for every completion, quick or advanced, first run or `/onboard`.
+    /// A failed save sends nothing, so the agent never greets an unconfigured
+    /// install (#2022).
+    pub(crate) async fn send_onboarding_welcome(&mut self, saved: bool, mode: WizardMode) {
+        if !saved {
+            return;
+        }
+        let (provider, model) = self.welcome_provider_and_model().await;
+        let gaps = crate::tui::onboarding::setup_gaps::read_setup_gaps();
+        let prompt = welcome_message_for(mode, &provider, &model, &gaps);
+        if let Err(e) = self.send_message(prompt).await {
+            tracing::warn!(error = %e, "failed to send welcome message");
+        }
+    }
+
+    /// Provider and model serving the current session, read from its row in
+    /// the database. Falls back to the agent's view when the row is missing
+    /// or has no value recorded, so the greeting always names a model.
+    pub(crate) async fn welcome_provider_and_model(&self) -> (String, String) {
+        let row = match self.current_session.as_ref() {
+            Some(session) => match self.session_service.get_session(session.id).await {
+                Ok(found) => found,
+                Err(e) => {
+                    tracing::warn!(error = %e, "welcome: could not read session row");
+                    None
+                }
+            },
+            None => None,
+        };
+        let provider = row
+            .as_ref()
+            .and_then(|s| s.provider_name.clone())
+            .unwrap_or_else(|| self.provider_name_for_current_session());
+        let model = row
+            .as_ref()
+            .and_then(|s| s.model.clone())
+            .unwrap_or_else(|| self.provider_model_for_current_session());
+        (provider, model)
+    }
+
     fn quit_from_onboarding(&mut self) {
         if let Some(ref wizard) = self.onboarding
             && let Err(e) = wizard.apply_config()
@@ -21,6 +62,87 @@ impl App {
             tracing::warn!("Wizard quit: partial save failed: {}", e);
         }
         self.should_quit = true;
+    }
+
+    /// Request this install's built-in OpenCrabs token. On failure the cause is
+    /// shown on the wizard and nothing is saved, so the user can pick another
+    /// provider (#2047).
+    async fn request_builtin_token(&mut self) -> bool {
+        match crate::brain::provider::opencrabs_acquire::ensure_install().await {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!("Built-in provider token request failed: {e:?}");
+                if let Some(ref mut wizard) = self.onboarding {
+                    wizard.error_message = Some(
+                        crate::brain::provider::opencrabs_install::install_error_message(&e)
+                            .to_string(),
+                    );
+                }
+                false
+            }
+        }
+    }
+
+    /// Save the wizard's config, enter chat, and greet the user. Shared by a
+    /// finished wizard and the quick start that skips its steps (#2048).
+    pub(crate) async fn finish_onboarding(&mut self) -> Result<()> {
+        // Apply wizard config before transitioning
+        let mut saved = false;
+        if let Some(ref wizard) = self.onboarding {
+            match wizard.apply_config() {
+                Ok(()) => {
+                    saved = true;
+                    let (provider_name, model_name) = if wizard.ps.is_custom() {
+                        (
+                            format!("Custom ({})", wizard.ps.custom_name),
+                            wizard.ps.custom_model.clone(),
+                        )
+                    } else {
+                        (
+                            super::onboarding::PROVIDERS[wizard.ps.selected_provider]
+                                .name
+                                .to_string(),
+                            wizard.ps.selected_model_name().to_string(),
+                        )
+                    };
+                    // Record completion only where the config was
+                    // actually written. The Err arm below saved
+                    // nothing, so onboarding must run again rather
+                    // than be marked done (#919).
+                    crate::tui::onboarding::state::OnboardingState::mark_completed();
+                    self.push_system_message(format!(
+                        "Setup complete! Provider: {} | Model: {}",
+                        provider_name, model_name
+                    ));
+                    // Rebuild agent service with new provider
+                    if let Err(e) = self.rebuild_agent_service().await {
+                        tracing::warn!("Failed to rebuild agent service: {}", e);
+                        self.push_system_message(format!(
+                            "Warning: Failed to reload provider: {}",
+                            e
+                        ));
+                    }
+                }
+                Err(e) => {
+                    // "finished with warnings" reads as success.
+                    // apply_config returning Err means the config
+                    // was NOT written (#914).
+                    self.push_system_message(format!("⚠️ Setup did NOT save: {e}"));
+                }
+            }
+        }
+        let mode = self
+            .onboarding
+            .as_ref()
+            .map_or(WizardMode::QuickStart, |w| w.mode);
+        self.onboarding = None;
+        self.sync_session_to_provider().await;
+        self.switch_mode(AppMode::Chat).await?;
+
+        // Hidden system prompt so the agent can check its environment
+        // and greet the user. The `[SYSTEM:` prefix hides it from display.
+        self.send_onboarding_welcome(saved, mode).await;
+        Ok(())
     }
 
     /// Handle keys in onboarding wizard mode
@@ -223,65 +345,31 @@ impl App {
                     self.switch_mode(AppMode::Chat).await?;
                 }
                 WizardAction::Complete => {
-                    // Apply wizard config before transitioning
-                    if let Some(ref wizard) = self.onboarding {
-                        match wizard.apply_config() {
-                            Ok(()) => {
-                                let (provider_name, model_name) = if wizard.ps.is_custom() {
-                                    (
-                                        format!("Custom ({})", wizard.ps.custom_name),
-                                        wizard.ps.custom_model.clone(),
-                                    )
-                                } else {
-                                    (
-                                        super::onboarding::PROVIDERS[wizard.ps.selected_provider]
-                                            .name
-                                            .to_string(),
-                                        wizard.ps.selected_model_name().to_string(),
-                                    )
-                                };
-                                // Record completion only where the config was
-                                // actually written. The Err arm below saved
-                                // nothing, so onboarding must run again rather
-                                // than be marked done (#919).
-                                crate::tui::onboarding::state::OnboardingState::mark_completed();
-                                self.push_system_message(format!(
-                                    "Setup complete! Provider: {} | Model: {}",
-                                    provider_name, model_name
-                                ));
-                                // Rebuild agent service with new provider
-                                if let Err(e) = self.rebuild_agent_service().await {
-                                    tracing::warn!("Failed to rebuild agent service: {}", e);
-                                    self.push_system_message(format!(
-                                        "Warning: Failed to reload provider: {}",
-                                        e
-                                    ));
-                                }
-                            }
-                            Err(e) => {
-                                // "finished with warnings" reads as success.
-                                // apply_config returning Err means the config
-                                // was NOT written (#914).
-                                self.push_system_message(format!("⚠️ Setup did NOT save: {e}"));
+                    self.finish_onboarding().await?;
+                }
+                WizardAction::AcquireBuiltinToken => {
+                    if self.request_builtin_token().await
+                        && let Some(ref mut wizard) = self.onboarding
+                    {
+                        wizard.next_step();
+                    }
+                }
+                WizardAction::QuickStartBuiltin => {
+                    let prepared = match self.onboarding.as_mut() {
+                        Some(wizard) => wizard.prepare_quick_start(),
+                        None => Ok(()),
+                    };
+                    match prepared {
+                        Err(e) => {
+                            if let Some(ref mut wizard) = self.onboarding {
+                                wizard.error_message = Some(e);
                             }
                         }
-                    }
-                    let is_first_time = self
-                        .onboarding
-                        .as_ref()
-                        .map(|w| w.is_first_time)
-                        .unwrap_or(false);
-                    self.onboarding = None;
-                    self.sync_session_to_provider().await;
-                    self.switch_mode(AppMode::Chat).await?;
-
-                    // First-time onboard — send hidden system prompt to the agent
-                    // so it can check its environment and surprise the user.
-                    // The `[SYSTEM:` prefix hides it from user display.
-                    if is_first_time
-                        && let Err(e) = self.send_message(WELCOME_MESSAGE.to_string()).await
-                    {
-                        tracing::warn!(error = %e, "failed to send welcome message");
+                        Ok(()) => {
+                            if self.request_builtin_token().await {
+                                self.finish_onboarding().await?;
+                            }
+                        }
                     }
                 }
                 WizardAction::FetchModels => {
@@ -299,6 +387,15 @@ impl App {
                     } else {
                         Some(wizard.ps.base_url.clone())
                     };
+
+                    // OpenCode plan (Zen or Go) picks the /models catalog (#2040)
+                    let opencode_et = (wizard.ps.provider_id() == "opencode").then(|| {
+                        if wizard.ps.opencode_endpoint_type == 1 {
+                            "zen".to_string()
+                        } else {
+                            "go".to_string()
+                        }
+                    });
 
                     // Capture zhipu endpoint type from wizard state (not yet saved to config)
                     let zhipu_et = if wizard.ps.provider_id() == "zai" {
@@ -342,6 +439,7 @@ impl App {
                             xiaomi_et.as_deref(),
                             moonshot_et.as_deref(),
                             base_url.as_deref(),
+                            opencode_et.as_deref(),
                         )
                         .await;
                         let _ = sender.send(TuiEvent::OnboardingModelsFetched(models));
@@ -705,9 +803,11 @@ impl App {
                     }
 
                     // Complete onboarding — go straight to chat
+                    let mut saved = false;
                     if let Some(ref wizard) = self.onboarding {
                         match wizard.apply_config() {
                             Ok(()) => {
+                                saved = true;
                                 let (provider_name, model_name) = if wizard.ps.is_custom() {
                                     (
                                         format!("Custom ({})", wizard.ps.custom_name),
@@ -742,22 +842,17 @@ impl App {
                             }
                         }
                     }
-                    let is_first_time = self
+                    let mode = self
                         .onboarding
                         .as_ref()
-                        .map(|w| w.is_first_time)
-                        .unwrap_or(false);
+                        .map_or(WizardMode::QuickStart, |w| w.mode);
                     self.onboarding = None;
                     self.sync_session_to_provider().await;
                     self.switch_mode(AppMode::Chat).await?;
 
-                    // First-time onboard — send hidden system prompt to the agent
-                    // so it can check its environment and surprise the user.
-                    if is_first_time
-                        && let Err(e) = self.send_message(WELCOME_MESSAGE.to_string()).await
-                    {
-                        tracing::warn!(error = %e, "failed to send welcome message");
-                    }
+                    // Hidden system prompt so the agent can check its environment
+                    // and greet the user. Sent on every saved completion (#2022).
+                    self.send_onboarding_welcome(saved, mode).await;
 
                     // Fire brain generation in the background
                     if let Some((prompt, workspace)) = brain_context {
@@ -1313,6 +1408,7 @@ impl App {
             period,
             focused_card: 0,
             data,
+            cache_detail_open: false,
         });
     }
 

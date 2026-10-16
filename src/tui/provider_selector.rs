@@ -53,6 +53,8 @@ pub struct ProviderSelectorState {
     pub zhipu_endpoint_type: usize,
     /// Moonshot AI endpoint type: 0=API plan, 1=Coding (token) plan
     pub moonshot_endpoint_type: usize,
+    /// OpenCode plan: 0 = Go (default), 1 = Zen (#2040).
+    pub opencode_endpoint_type: usize,
     /// Kimi Coding-plan tier index into `kimi_plan::PLAN_TIERS`
     /// (0=moderato, 1=allegretto, 2=allegro, 3=vivace). Only used when
     /// `moonshot_endpoint_type == 1` (coding plan).
@@ -149,6 +151,16 @@ pub fn index_of_provider(id: &str) -> Option<usize> {
 }
 
 impl ProviderSelectorState {
+    /// The OpenCode plan's (`name`, chat `base_url`) pair, for config writes.
+    /// Zen and Go serve different catalogs (#2040).
+    pub fn opencode_endpoint(plan: usize) -> (&'static str, &'static str) {
+        if plan == 1 {
+            ("zen", "https://opencode.ai/zen/v1/chat/completions")
+        } else {
+            ("go", "https://opencode.ai/zen/go/v1/chat/completions")
+        }
+    }
+
     /// Whether the current provider supports live model fetching from API.
     pub fn supports_model_fetch(&self) -> bool {
         // Custom providers: always try /v1/models if base_url is set
@@ -368,6 +380,16 @@ impl ProviderSelectorState {
             self.xiaomi_endpoint_type = match xiaomi.endpoint_type.as_deref() {
                 Some("token-plan") => 1,
                 _ => 0,
+            };
+        }
+        if self.provider_id() == "opencode"
+            && let Ok(config) = crate::config::Config::load()
+            && let Some(oc) = &config.providers.opencode
+        {
+            self.opencode_endpoint_type = if oc.endpoint_type.as_deref() == Some("zen") {
+                1
+            } else {
+                0
             };
         }
         if self.is_moonshot()

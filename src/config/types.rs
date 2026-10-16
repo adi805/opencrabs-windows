@@ -1,6 +1,7 @@
 //! Configuration types, defaults, loading, and validation.
 
 use super::provider_registry::ProviderRegistryConfig;
+use super::wire_dialect::WireDialect;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -1026,6 +1027,15 @@ pub struct DiscordConfig {
     /// text mid-turn.
     #[serde(default = "default_true")]
     pub auto_embed: bool,
+    /// `[channels.discord.governor]` - the outbound write policy (#1910). Serenity's
+    /// per-bucket limiter stays underneath: it is transport hygiene and owns
+    /// the actual request queue. This is the PRODUCT layer on top: it knows
+    /// the flow ticker and the tool-group edits are the same message being
+    /// rewritten every few seconds, so it can drop a re-render instead of
+    /// queueing five stale snapshots of it, and it records what the API's
+    /// 429s told us. Default-on and deliberately loose.
+    #[serde(default)]
+    pub governor: DiscordGovernorConfig,
 }
 
 /// Proactive Discord write-governor knobs (`[channels.discord.rate_limiter]`).
@@ -1136,6 +1146,58 @@ fn default_silence_warning_secs() -> u64 {
     90
 }
 
+/// Discord outbound write policy (#1910).
+///
+/// Discord publishes no fixed per-route budget and its docs forbid
+/// hardcoding one, so nothing here pretends to be the real limit. The
+/// buckets are CEILINGS that only bite when the bot outruns its own cadence,
+/// and `pause_secs` is only the fallback window for a 429 that did not carry
+/// a `retry_after`: when the response names a window, that window is what we
+/// honor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscordGovernorConfig {
+    /// Master switch. False makes every gate a pass-through: the layer stops
+    /// deciding, and serenity's limiter plus the 429 log stay as the only
+    /// protection, which is the pre-#1910 behavior.
+    pub enabled: bool,
+    /// Rolling per-channel write ceiling. Any surface counts against it
+    /// (send, edit, chrome): it is the one number that says "this channel is
+    /// being rewritten too often". `0` = no ceiling.
+    pub writes_per_minute: u32,
+    /// Burst capacity for that ceiling. A turn opening with a tool group plus
+    /// an answer plus a settle edit needs to land at once, so this is the
+    /// headroom before the sustained rate starts pacing. Ignored when the
+    /// ceiling is off.
+    pub burst: u32,
+    /// Minimum spacing between two LIVE re-renders of the same message: the
+    /// flow ticker's clock edits and the waiting-line refresh. Content edits
+    /// and sends never wait on it. `0` = no spacing.
+    pub chrome_min_spacing_ms: u64,
+    /// Fallback pause window for a 429 that named no `retry_after`. When the
+    /// response DOES name one, that window is what we honor, clamped to four
+    /// times this number: a response asking for an hour parks the channel for
+    /// that ceiling and then resets, because a governor that stalls a channel
+    /// forever is a worse outage than the one it prevents.
+    pub pause_secs: u64,
+}
+
+impl Default for DiscordGovernorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            // Generous on purpose: a real Discord write budget is per route
+            // and per bucket, and this layer must not be the thing that
+            // stalls a turn. It exists to catch a runaway ticker, not to
+            // second-guess the API.
+            writes_per_minute: 40,
+            burst: 12,
+            chrome_min_spacing_ms: 1000,
+            pause_secs: 5,
+        }
+    }
+}
+
 impl Default for DiscordConfig {
     fn default() -> Self {
         Self {
@@ -1160,6 +1222,7 @@ impl Default for DiscordConfig {
             forum_report_tag: None,
             scheduled_events_guild: None,
             auto_embed: default_true(),
+            governor: DiscordGovernorConfig::default(),
             channels: std::collections::HashMap::new(),
         }
     }
@@ -1193,6 +1256,14 @@ impl DiscordConfig {
     pub fn respond_to_for(&self, channel_id: &str, parent_id: Option<&str>) -> RespondTo {
         self.channel_field(channel_id, parent_id, |c| c.respond_to)
             .unwrap_or(self.respond_to)
+    }
+
+    /// Whether `channel_id` or its parent has its own `[channels.discord.channels.<id>]`
+    /// block. Such a block is the owner's scope for that channel, so it admits the
+    /// channel without an entry in the global `allowed_channels` list.
+    pub fn has_channel_block(&self, channel_id: &str, parent_id: Option<&str>) -> bool {
+        self.channels.contains_key(channel_id)
+            || parent_id.is_some_and(|p| self.channels.contains_key(p))
     }
 
     /// Whether `channel_id` (or its parent) is `open` (#2014). Opening a
@@ -2763,6 +2834,13 @@ pub struct ProviderConfigs {
     #[serde(default)]
     pub xiaomi: Option<ProviderConfig>,
 
+    /// Built-in OpenCrabs provider. The user never types its key: onboarding
+    /// asks the inference proxy for one token per install, and that token is
+    /// merged in from keys.toml ([providers.opencrabs] api_key). The install ID
+    /// stored beside it is not read here.
+    #[serde(default)]
+    pub opencrabs: Option<ProviderConfig>,
+
     /// Named custom OpenAI-compatible providers (e.g. [providers.custom.ollama])
     #[serde(default, deserialize_with = "deserialize_custom_providers")]
     pub custom: Option<BTreeMap<String, ProviderConfig>>,
@@ -2888,7 +2966,7 @@ impl ProviderConfigs {
     /// providers handled separately by the caller via `active_custom()`.
     pub(crate) fn provider_registry(
         &self,
-    ) -> [(&'static str, &'static str, bool, Option<&ProviderConfig>); 19] {
+    ) -> [(&'static str, &'static str, bool, Option<&ProviderConfig>); 20] {
         [
             // Xiaomi MiMo — keyed (requires_api_key = true): the user supplies
             // an API key from platform.xiaomimimo.com. An enabled-but-keyless
@@ -2926,6 +3004,8 @@ impl ProviderConfigs {
             ("ollama", "Ollama", false, self.ollama.as_ref()),
             ("bedrock", "AWS Bedrock", true, self.bedrock.as_ref()),
             ("vertex", "Google Vertex", true, self.vertex.as_ref()),
+            // Built-in OpenCrabs — keyed by the install token, which is not typed.
+            ("opencrabs", "OpenCrabs", true, self.opencrabs.as_ref()),
         ]
     }
 
@@ -3393,6 +3473,21 @@ pub struct ProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation_model: Option<String>,
 
+    /// Speech-to-text model for this provider's [OI]-compatible
+    /// `/v1/audio/transcriptions` route. Set it and voice notes transcribe
+    /// through the active provider, the same way `vision_model` drives image
+    /// understanding and `generation_model` drives image creation. The
+    /// endpoint is the provider's own (`base_url`, or its known default), so
+    /// any [OI]-compatible provider can serve transcription, not only the
+    /// built-in one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_model: Option<String>,
+
+    /// Text-to-speech model for this provider's [OI]-compatible
+    /// `/v1/audio/speech` route. See `stt_model`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tts_model: Option<String>,
+
     /// Context window size in tokens for this provider's model.
     /// Used by auto-compaction to know when to summarize history.
     /// Essential for custom/local providers whose models aren't recognized by name.
@@ -3402,6 +3497,13 @@ pub struct ProviderConfig {
     /// Endpoint type for providers with multiple API modes (e.g. zhipu: "api" or "coding")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint_type: Option<String>,
+
+    /// Which route an [OI]-compatible provider speaks: `auto`, `chat`, or
+    /// `responses`. Unset means `auto`, which resolves by provider kind (the
+    /// official host stays `auto`, every other compatible endpoint is pinned
+    /// to `chat`). See `crate::config::wire_dialect` (#2059).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wire_dialect: Option<WireDialect>,
 
     /// Kimi Code subscription-plan tier (`moderato`, `allegretto`, `allegro`,
     /// `vivace`). Only meaningful for a provider pointed at the Kimi Coding

@@ -169,6 +169,12 @@ pub async fn process_comment(
                 }
             };
 
+            // Durable copy in the channel-attachment store, as Telegram and WhatsApp keep (#1729).
+            if let Some(path) = crate::channels::persist_channel_attachment("trello", fname, &bytes)
+            {
+                attachment_context.push_str(&format!("\n\n[file: {}]", path.display()));
+            }
+
             if let Ok(cfg) = crate::config::Config::load() {
                 let fc = process_file_with_vision(&bytes, mime, fname, &cfg);
                 let injected = inject_file_content(&fc).0;

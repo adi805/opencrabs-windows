@@ -22,6 +22,22 @@
 # key or an authenticated CLI on this machine. Think "not the default", not
 # "dead".
 # ========================================
+# Built-in OpenCrabs
+# ========================================
+# No key to type. Onboarding asks the inference proxy for an install token and
+# stores it in keys.toml ([providers.opencrabs] api_key). Enable it by choosing
+# OpenCrabs in onboarding, not by hand. The proxy serves one model today.
+[providers.opencrabs]
+enabled = false
+default_model = "deepseek-v4.1-flash"
+models = ["deepseek-v4.1-flash"]
+context_window = 200000
+vision_model = "deepseek-v4.1-flash"  # Multimodal: attached images work on day 0
+generation_model = "gemini-3.1-flash-image"  # Image generation on day 0, served only on /v1/images/*
+stt_model = "qwen3.8-omni-flash"  # Speech-to-text on day 0, served on /v1/audio/transcriptions
+tts_model = "qwen3.8-omni-flash"  # Text-to-speech on day 0, served on /v1/audio/speech
+
+# ========================================
 # Xiaomi MiMo
 # ========================================
 # OpenAI-compatible, keyed. Get an API key (sk-...) at platform.xiaomimimo.com
@@ -67,6 +83,8 @@ base_url = "http://localhost:11434/v1/chat/completions"
 # Use this for LM Studio, Ollama, LocalAI, etc.
 # Every custom provider needs a name — the label after "custom." (e.g. lm_studio, nvidia, groq).
 # You can define as many as you need and switch between them via /models.
+# A custom endpoint defaults to the Chat Completions route; set wire_dialect = "responses"
+# if the gateway serves /responses, or "auto" to probe Chat first and fall back on refusal.
 [providers.custom.lm_studio]
 enabled = false
 base_url = "http://localhost:1234/v1/chat/completions"  # LM Studio default
@@ -105,8 +123,11 @@ default_model = "gpt-4o"
 [providers.openai]
 enabled = false
 default_model = "gpt-5-nano"  # Optional: override default model
+# wire_dialect = "auto"  # Optional: "auto" (Chat first, fall back to Responses when the model is refused), "chat" (always /chat/completions) or "responses" (always /responses). This host defaults to "auto".
 # vision_model = "gpt-5-nano"  # Optional: describes images for the chat model when it lacks vision
 # generation_model = "gpt-image-1"  # Optional: routes generate_image to OpenAI /v1/images/generations
+# stt_model = "whisper-1"  # Optional: transcribe voice notes via this provider's /v1/audio/transcriptions
+# tts_model = "gpt-4o-mini-tts"  # Optional: speak replies via this provider's /v1/audio/speech
 
 # ========================================
 # Anthropic Provider (Claude)
@@ -529,6 +550,15 @@ model = "gemini-3.1-flash-image-preview"   # Gemini image-gen model ("Nano Banan
 # anything else → `/v1/images/generations` with Bearer auth). This
 # `enabled` flag gates ONLY the global Gemini fallback below — a provider
 # route registers generate_image even with it off (#1672).
+#
+# Voice works the same way: set `stt_model` and `tts_model` on your active
+# [providers.<name>] block and voice notes transcribe and replies speak on
+# that provider's own endpoint. Works for every built-in and custom
+# provider, not only the built-in one — any [OI]-compatible provider that
+# exposes `/v1/audio/transcriptions` and `/v1/audio/speech`. `stt_model`
+# drives `transcribe`, `tts_model` drives `synthesize`; no
+# `[providers.stt.*]` / `[providers.tts.*]` block is needed when the active
+# provider carries them.
 
 # ========================================
 # Vision setup — two paths, pick one
@@ -672,6 +702,19 @@ allowed_channels = ["channel_id"]       # Where the bot operates (empty = all ch
                                         # activity. 0 disables. Default: 90.
                                         # The clock denominator is not set here:
                                         # it reads [agent] thinking_loop_timeout_secs.
+# Outbound write governor (#1910): one token bucket per channel, applied before
+# the write goes out, plus a park learned from a 429. Discord publishes no fixed
+# per-route budget, so these are ceilings that only bite when the bot outruns its
+# own cadence, not a mirror of the API's limits.
+# [channels.discord.governor]
+# enabled = true                        # Master switch. false = pre-#1910 pass-through.
+# writes_per_minute = 40                # Rolling per-channel write ceiling. 0 = no ceiling.
+# burst = 12                            # Headroom before the sustained rate starts pacing.
+# chrome_min_spacing_ms = 1000          # Spacing between LIVE re-renders (ticker clock,
+                                        # waiting line). Content writes and sends never wait
+                                        # on it. 0 = no spacing.
+# pause_secs = 5                        # Fallback park when a 429 names no retry_after, and
+                                        # the ceiling on a park that does (4x this value).
 
 [channels.telegram]
 enabled = false

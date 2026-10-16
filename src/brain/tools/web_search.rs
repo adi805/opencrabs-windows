@@ -287,7 +287,7 @@ impl Tool for WebSearchTool {
 
 /// Entry line of a rendered search result that carries its URL. Covers both
 /// render formats in this module: Brave/Serper `   URL: https://...` and
-/// DuckDuckGo `   🔗 https://...`. Shared with `sources_footer` (#1883).
+/// DuckDuckGo `   🔗 https://...`.
 pub(crate) fn entry_url(line: &str) -> Option<&str> {
     let trimmed = line.trim_start();
     let rest = trimmed
@@ -298,7 +298,7 @@ pub(crate) fn entry_url(line: &str) -> Option<&str> {
 }
 
 /// First line of a rendered result entry: `1. Title` / `10. Title`.
-fn is_entry_start(line: &str) -> bool {
+pub(crate) fn is_entry_start(line: &str) -> bool {
     let trimmed = line.trim_start();
     match trimmed.split_once(". ") {
         Some((num, _)) => !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()),
@@ -307,8 +307,7 @@ fn is_entry_start(line: &str) -> bool {
 }
 
 /// Canonical form for dup comparison: case-insensitive, trailing slash
-///-insensitive. Intentionally not full URL canonicalization. Shared with
-/// `sources_footer` (#1883).
+///-insensitive. Intentionally not full URL canonicalization.
 pub(crate) fn normalize_url(url: &str) -> String {
     url.trim_end_matches('/').to_lowercase()
 }

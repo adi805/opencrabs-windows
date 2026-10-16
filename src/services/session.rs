@@ -171,6 +171,11 @@ impl SessionService {
     /// a request that never happened, e.g. a Xiaomi row naming a GLM model. It
     /// also credited a fallback's work and spend to the primary that did not
     /// serve it. The ledger is append-only, so each such row is permanent.
+    ///
+    /// `cache_read_tokens` is the provider-reported cache-read count for the
+    /// same turn. It rides along to the ledger so the By Model card can show
+    /// the cache share of a model's tokens (#2027); `None` means the turn
+    /// reported no cache usage, which is a different fact from a zero.
     pub async fn update_session_usage(
         &self,
         id: Uuid,
@@ -178,6 +183,7 @@ impl SessionService {
         cost: f64,
         provider: &str,
         model: &str,
+        cache_read_tokens: Option<i64>,
     ) -> Result<()> {
         let mut session = self.get_session_required(id).await?;
         session.token_count += token_count;
@@ -192,7 +198,14 @@ impl SessionService {
         // Append to cumulative usage ledger (never deleted)
         let ledger = UsageLedgerRepository::new(self.context.pool());
         if let Err(e) = ledger
-            .record(&id.to_string(), provider, model, token_count, cost)
+            .record(
+                &id.to_string(),
+                provider,
+                model,
+                token_count,
+                cost,
+                cache_read_tokens,
+            )
             .await
         {
             tracing::warn!("Failed to record usage to ledger: {}", e);
@@ -325,6 +338,18 @@ impl SessionService {
     /// never stamped — recency ordering and title-suffix lookups survive.
     /// Live sessions apply the pair on their next message via the
     /// existing sync path.
+    /// Sessions an apply-to-all for this pair would change, for the confirmation prompt (#2042).
+    pub async fn count_provider_model_all_sessions(
+        &self,
+        provider: &str,
+        model: &str,
+    ) -> Result<usize> {
+        SessionRepository::new(self.context.pool())
+            .count_provider_model_for_all(provider.to_string(), model.to_string())
+            .await
+            .context("Failed to count sessions for apply-to-all")
+    }
+
     pub async fn set_provider_model_all_sessions(
         &self,
         provider: &str,

@@ -6,8 +6,8 @@ use crate::brain::agent::service::MessageEnqueueCallback;
 use crate::brain::agent::service::QueuedUserMessage;
 use crate::brain::agent::service::background_tasks::{
     BackgroundTaskManager, ClaudeTurnTasks, CmdResult, claude_completion_message,
-    claude_needs_survival_delivery, claude_task_label, completion_message, format_elapsed,
-    short_label, tail_lines,
+    claude_needs_survival_delivery, claude_task_label, clear_claude_mirrors_for_session,
+    completion_message, format_elapsed, run_detached, short_label, tail_lines,
 };
 use crate::brain::agent::service::restart_recovery;
 use crate::brain::agent::service::session_routes;
@@ -317,5 +317,129 @@ fn claude_completion_message_failed_wording_and_summary_fallback() {
     assert_eq!(
         msg.display_text,
         "🔧 background task failed: claude-cli bBBB2222"
+    );
+}
+
+// --- #1984: mirror rows must not outlive their notification or their ----
+// --- process, and the detached wait must never be open-ended --------------
+
+#[test]
+fn task_notification_clears_the_row_for_any_status() {
+    // The old match arm removed the mirror row only for completed|failed, so
+    // a task claude reports with any OTHER terminal status (stopped,
+    // cancelled, killed) left the row alive forever, and that stuck row is
+    // what kept the typing tick pinging. The arm now keys the clear on the
+    // SUBTYPE; only the synthetic result wake stays status-limited. The arm
+    // lives inside the 1200-line stream loop (no provider harness exists to
+    // drive it), so this is a source pin, the same shape the WhatsApp parity
+    // test (#1989) uses, and the clearing itself is behavioral in
+    // `process_exit_clears_the_sessions_mirrors_and_markers_only` below.
+    let src = include_str!("../brain/agent/service/helpers.rs");
+    assert!(
+        src.contains("(\"task_notification\", st)"),
+        "any task_notification must clear the mirror row, not only the two \
+         statuses the old arm enumerated"
+    );
+    assert!(
+        !src.contains("(\"task_notification\", Some(s @ (\"completed\" | \"failed\")))"),
+        "the status-filtered clear is the #1984 stuck-row bug, restored"
+    );
+    assert!(
+        src.contains("matches!(st, Some(\"completed\") | Some(\"failed\"))"),
+        "the synthetic survival wake must stay limited to result statuses"
+    );
+}
+
+#[test]
+fn process_exit_clears_the_sessions_mirrors_and_markers_only() {
+    // The other stuck-row source: a notification that never arrives (task
+    // stopped, CLI died). The exit guard drains the marker set, and every
+    // marker IS a row this process mirrored in, so rows and markers leave
+    // together. Another session's mid-turn rows must survive untouched.
+    let mgr = BackgroundTaskManager::new();
+    let sid_a = Uuid::new_v4();
+    let sid_b = Uuid::new_v4();
+    let mut tasks: ClaudeTurnTasks = ClaudeTurnTasks::new();
+    for (sid, id) in [(sid_a, "a1"), (sid_a, "a2"), (sid_b, "b1")] {
+        tasks.insert((sid, id.to_string()));
+        mgr.mirror_started(sid, &claude_task_label(id));
+    }
+    assert_eq!(mgr.running_for(sid_a), 2);
+    clear_claude_mirrors_for_session(&mut tasks, &mgr, sid_a);
+    assert_eq!(
+        mgr.running_for(sid_a),
+        0,
+        "a session's mirrors must not outlive its process"
+    );
+    assert_eq!(mgr.running_for(sid_b), 1, "other sessions are untouched");
+    assert!(
+        !tasks.iter().any(|(s, _)| *s == sid_a),
+        "A's markers go with its rows"
+    );
+    assert_eq!(tasks.len(), 1, "B's marker stays");
+}
+
+/// The wait-what-the-shell-owns behavior of #1984. These are shell job
+/// semantics (`&`), so unix.
+#[cfg(unix)]
+#[tokio::test]
+async fn detached_run_does_not_wait_on_survivor_output() {
+    // `sleep 10 &` leaves a child holding the write end of the output. The
+    // old `.output()` waited for EOF on that pipe, so it waited on a shell
+    // that had ALREADY exited, and a long-lived server held the tracker row
+    // (and every typing tick counting it) open forever. Waiting the shell
+    // only returns the moment `echo done` has run.
+    let sid = Uuid::new_v4();
+    let started = std::time::Instant::now();
+    let result = run_detached(
+        "sleep 10 & echo done",
+        &std::env::temp_dir(),
+        sid,
+        std::time::Duration::from_secs(30),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    assert!(result.success, "the shell exited 0: {}", result.output);
+    assert!(
+        result.output.contains("done"),
+        "output must be captured: {:?}",
+        result.output
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "the shell exited at once; waiting {elapsed:?} means the wait is on \
+         the survivor's inherited output, not on the shell (#1984)"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn detached_run_stops_waiting_at_its_ceiling() {
+    // The other half: a foreground command that never exits (a dev server
+    // without `&`) used to hold its row open forever. The ceiling cuts the
+    // wait, marks the task failed, and still reports what printed before.
+    let sid = Uuid::new_v4();
+    let started = std::time::Instant::now();
+    let result = run_detached(
+        "echo starting; sleep 30",
+        &std::env::temp_dir(),
+        sid,
+        std::time::Duration::from_millis(300),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    assert!(!result.success, "a ceiling cut is not a success");
+    assert!(
+        result.output.contains("ceiling"),
+        "the receipt must say why: {:?}",
+        result.output
+    );
+    assert!(
+        result.output.contains("starting"),
+        "what ran before the cut is still reported"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "the ceiling must end the wait, not sleep 30 ({elapsed:?})"
     );
 }

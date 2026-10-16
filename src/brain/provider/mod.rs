@@ -4,6 +4,7 @@
 //! This file is declarations only — no function definitions live here
 //! (CONTRIBUTING.md).
 
+pub mod cooldown;
 pub mod error;
 pub mod json_repair;
 pub mod placeholder;
@@ -40,8 +41,15 @@ pub mod kimi_reasoning;
 pub mod model_fetch;
 pub(crate) mod nonstream_compat;
 pub mod opencode_cli;
+pub mod opencrabs_acquire;
+pub mod opencrabs_install;
+pub mod opencrabs_store;
 pub mod qwen;
 pub mod qwen_reasoning;
+pub mod responses_request;
+pub mod responses_response;
+pub mod responses_routing;
+pub mod responses_stream;
 pub mod zhipu_endpoint;
 
 pub use anthropic::AnthropicProvider;

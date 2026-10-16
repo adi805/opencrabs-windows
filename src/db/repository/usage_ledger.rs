@@ -93,6 +93,9 @@ impl UsageLedgerRepository {
     /// Record a usage event (append-only, never deleted). `provider` is the
     /// serving provider's name at record time (#402): the ledger outlives
     /// sessions, so provider attribution must live on the row itself.
+    /// `cache_read_tokens` is the provider-reported cache-read count for the
+    /// turn, or `None` when nothing reported one, which keeps the row out of
+    /// the By Model cache share instead of counting it as a zero (#2027).
     pub async fn record(
         &self,
         session_id: &str,
@@ -100,6 +103,7 @@ impl UsageLedgerRepository {
         model: &str,
         token_count: i64,
         cost: f64,
+        cache_read_tokens: Option<i64>,
     ) -> Result<()> {
         let sid = session_id.to_string();
         let prov = provider.to_string();
@@ -110,8 +114,8 @@ impl UsageLedgerRepository {
             .context("Failed to get connection")?
             .interact(move |conn| {
                 conn.execute(
-                    "INSERT INTO usage_ledger (session_id, provider, model, token_count, cost) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![sid, prov, mdl, token_count, cost],
+                    "INSERT INTO usage_ledger (session_id, provider, model, token_count, cost, cache_read_tokens) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![sid, prov, mdl, token_count, cost, cache_read_tokens],
                 )
             })
             .await

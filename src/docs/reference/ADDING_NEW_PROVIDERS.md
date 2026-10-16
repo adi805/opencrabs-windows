@@ -641,7 +641,8 @@ fn try_create_yourprovider(config: &Config) -> Result<Option<Arc<dyn Provider>>>
 12. Minimax (minimax)
 13. z.ai (zai, legacy zhipu)
 14. Ollama (ollama)
-15. Custom (custom)
+15. OpenCrabs (opencrabs), built in; token issued at onboarding
+16. Custom (custom)
 
 ### Onboarding Order (UI Presentation)
 1. Anthropic (anthropic)
@@ -658,4 +659,5 @@ fn try_create_yourprovider(config: &Config) -> Result<Option<Arc<dyn Provider>>>
 12. OpenCode (opencode)
 13. Qwen (qwen)
 14. Ollama (ollama)
-15. Custom OpenAI-Compatible (custom)
+15. OpenCrabs (opencrabs), built in; token issued at onboarding
+16. Custom OpenAI-Compatible (custom)

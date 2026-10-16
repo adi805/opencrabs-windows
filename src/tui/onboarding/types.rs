@@ -333,6 +333,17 @@ pub const PROVIDERS: &[ProviderInfo] = &[
             "OpenAI-compatible — MiMo v2.5 models",
         ],
     },
+    // Built-in OpenCrabs — no key is typed. Onboarding requests the install token.
+    ProviderInfo {
+        id: "opencrabs",
+        name: "OpenCrabs",
+        models: &["deepseek-v4.1-flash"],
+        key_label: "",
+        help_lines: &[
+            "Built in: no account or key needed",
+            "Runs on the OpenCrabs inference service",
+        ],
+    },
     ProviderInfo {
         id: "", // dynamic — custom providers use runtime names
         name: "Custom OpenAI-Compatible",
@@ -685,6 +696,8 @@ pub enum AuthField {
     ZhipuEndpointType,
     XiaomiEndpointType,
     MoonshotEndpointType,
+    /// OpenCode: Go or Zen plan, before the API key (#2040).
+    OpenCodeEndpointType,
     MoonshotPlan,
 }
 
@@ -839,6 +852,12 @@ pub enum WizardAction {
     Complete,
     /// Trigger async AI generation of brain files
     GenerateBrain,
+    /// Request this install's built-in OpenCrabs token, then advance the
+    /// LLM step. The app runs the request (#2047).
+    AcquireBuiltinToken,
+    /// Quick start on a first run: prepare the files, request the built-in
+    /// token, then finish straight into chat (#2048).
+    QuickStartBuiltin,
     /// Trigger async model list fetch from provider API
     FetchModels,
     /// Trigger async WhatsApp QR code pairing

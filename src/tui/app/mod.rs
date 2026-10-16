@@ -1,5 +1,6 @@
 //! App Module — TUI application state and logic.
 
+pub(crate) mod answer_placement;
 pub(crate) mod background_session;
 pub(crate) mod clickable;
 pub(crate) mod clipboard_route;

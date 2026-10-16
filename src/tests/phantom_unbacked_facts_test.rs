@@ -249,18 +249,20 @@ fn the_detection_block_fires_on_unbacked_facts() {
 }
 
 #[test]
-fn the_fact_check_is_gated_to_the_post_success_regime() {
-    // On a zero-tool turn eligibility is already true, so scanning adds cost
-    // without coverage. The gate is also what keeps the haystack off the
-    // common path.
+fn the_fact_check_runs_on_zero_tool_turns_too() {
+    // #2038: a zero-tool turn that states facts the conversation cannot back is
+    // fabricated by construction. The check must not be gated on a completed
+    // tool, or the structured-report exemption hides the fabrication on exactly
+    // the turns where it is total. The haystack is still built only when the
+    // cheap extraction finds a candidate.
     let gate = TOOL_LOOP_SRC
         .split("let unbacked_facts = ")
         .nth(1)
         .expect("unbacked_facts computation not found");
     let gate = gate.split("let phantom_eligible").next().unwrap();
     assert!(
-        gate.contains("if tool_calls_completed_this_turn > 0"),
-        "the fact check is not gated post-success"
+        !gate.contains("if tool_calls_completed_this_turn > 0"),
+        "the fact check is still gated post-success (#2038)"
     );
     assert!(
         gate.contains("asserted.is_empty()"),

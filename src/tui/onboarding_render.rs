@@ -475,6 +475,17 @@ fn footer_key_spans(wizard: &OnboardingWizard) -> Vec<Span<'static>> {
                 "Next Field  ",
                 Style::default().fg(theme::role(Role::AccentSoft)),
             ));
+            // Shift+Tab goes back a field; it was reachable but never shown (#2043).
+            footer.push(Span::styled(
+                "[Shift+Tab] ",
+                Style::default()
+                    .fg(brand_blue())
+                    .add_modifier(Modifier::BOLD),
+            ));
+            footer.push(Span::styled(
+                "Back  ",
+                Style::default().fg(theme::role(Role::AccentSoft)),
+            ));
         }
         footer.push(Span::styled(
             "[Enter] ",
@@ -1369,6 +1380,38 @@ fn render_provider_auth(
                     }),
                 ),
             ]));
+            lines.push(Line::from(""));
+        }
+
+        // OpenCode plan toggle (Go or Zen) — BEFORE API key (#2040)
+        if wizard.ps.provider_id() == "opencode" {
+            let et_focused = wizard.auth_field == AuthField::OpenCodeEndpointType;
+            let go_marker = if wizard.ps.opencode_endpoint_type == 0 {
+                "[*]"
+            } else {
+                "[ ]"
+            };
+            let zen_marker = if wizard.ps.opencode_endpoint_type == 1 {
+                "[*]"
+            } else {
+                "[ ]"
+            };
+            lines.push(Line::from(Span::styled(
+                "  Plan:",
+                Style::default().fg(if et_focused {
+                    brand_blue()
+                } else {
+                    theme::role(Role::Gray)
+                }),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("    {go_marker} Go    {zen_marker} Zen"),
+                Style::default().fg(if et_focused {
+                    theme::role(Role::AccentSoft)
+                } else {
+                    theme::role(Role::Gray)
+                }),
+            )));
             lines.push(Line::from(""));
         }
 
