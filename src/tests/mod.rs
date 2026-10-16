@@ -91,6 +91,7 @@ pub mod brain_file_safety_test;
 pub mod brain_filter_strip_empty_sections_test;
 pub mod brain_hints_test;
 pub mod brain_live_rebuild_test;
+pub mod brain_lock_poison_sentinel_test;
 pub mod brain_project_overlay_test;
 pub mod brain_prompt_builder_test;
 pub mod brain_provider_anthropic_test;
