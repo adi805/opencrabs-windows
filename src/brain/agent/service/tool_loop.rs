@@ -1923,6 +1923,15 @@ impl AgentService {
 
             iteration += 1;
 
+            // An option-surface halt ends the turn (#2086). The halting
+            // iteration's text is the answer and its tool result is already
+            // persisted, so no follow-up model request is made. The loop-break
+            // path below synthesizes the response from the accumulated text.
+            if option_surface_halt_seen {
+                tracing::info!("🛑 Turn ended after option-surface halt (no follow-up request)");
+                break;
+            }
+
             // Emit thinking progress
             if let Some(ref cb) = progress_callback {
                 cb(session_id, ProgressEvent::Thinking);
