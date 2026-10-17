@@ -263,6 +263,16 @@ pub fn has_forward_intent_post_success(text: &str) -> bool {
     if trimmed.len() < 20 {
         return false;
     }
+    // A reply that ends by asking the user something has handed the turn back:
+    // the agent is waiting for the answer, so 'I'll ask what you do' or 'I'll
+    // walk you through it' is conversation, not a promised action (#2083). An
+    // explicit work announcement in the same reply still counts.
+    if prose_tail(trimmed).contains('?')
+        && !matches_work_announcement(trimmed)
+        && !matches_now_gerund(trimmed)
+    {
+        return false;
+    }
     // Both ends, for the same reason the zero-tool detector reads both: a
     // promise made AFTER the tool results ("...no errors from our changes.
     // Let me run tests and check the diff.") sits in the tail, and a
@@ -2097,4 +2107,18 @@ pub fn is_fact_check_branch(branch: &str) -> bool {
 /// report exempts them. Fact checks never yield to the exemption (#2039).
 pub fn structured_report_exempts(structured: bool, fired_branches: &[&str]) -> bool {
     structured && !fired_branches.iter().any(|b| is_fact_check_branch(b))
+}
+
+/// Whether a text-only iteration that follows an option-surface halt escapes
+/// the phantom kill (#31). The halt already handed the turn back with the
+/// options rendered, so the trailing text closes the turn: it is a sign-off,
+/// never a promised action. Phrase matchers false-positive on exactly that
+/// prose, and the self-heal retry they triggered posted a second answer to a
+/// channel whose first answer was already delivered (2026-10-17, Discord:
+/// "Research delivered, file written, nothing generated ..." was killed on
+/// `intent_no_tools` after the turn had run 11 tools). Fact checks still kill
+/// it, the same rule structured reports follow (#2039): a sign-off that
+/// states a sha the conversation cannot back is still invented.
+pub fn option_halt_exempts(fired_branches: &[&str]) -> bool {
+    !fired_branches.iter().any(|b| is_fact_check_branch(b))
 }

@@ -53,6 +53,11 @@ const HELD_BACK_CHANNEL_MODULES: &[&str] = &[
 /// turn engine (which differs by design), four are commented out upstream and
 /// stale against the current `PlanTask`, three import symbols the fork no longer
 /// has, and one asserts a source shape the fork's sources do not have.
+///
+/// Three left this list on 2026-10-17: the upstream port added the `mod`
+/// declarations for `models_session_pair_test`, `telegram_apply_all_confirm_test`
+/// and `telegram_cli_models_menu_test`. Each compiles and its tests pass, so
+/// they are declared modules now rather than deferred ones.
 const DEFERRED_TEST_MODULES: &[&str] = &[
     "src/tests/discord_cowork_gate_test.rs",
     "src/tests/discord_dm_channel_history_test.rs",
@@ -64,14 +69,11 @@ const DEFERRED_TEST_MODULES: &[&str] = &[
     "src/tests/error_scenarios_test.rs",
     "src/tests/generate_image_multi_input_test.rs",
     "src/tests/integration_test.rs",
-    "src/tests/models_session_pair_test.rs",
     "src/tests/onboarding_welcome_send_test.rs",
     "src/tests/plan_mode_integration_test.rs",
     "src/tests/slack_options_host_test.rs",
     "src/tests/slack_resume_turn_test.rs",
     "src/tests/streaming_test.rs",
-    "src/tests/telegram_apply_all_confirm_test.rs",
-    "src/tests/telegram_cli_models_menu_test.rs",
     "src/tests/whatsapp_composing_parity_test.rs",
     "src/tests/whatsapp_flow_options_test.rs",
     "src/tests/whatsapp_flow_render_test.rs",

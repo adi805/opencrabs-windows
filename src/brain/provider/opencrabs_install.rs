@@ -10,6 +10,14 @@ use serde_json::{Value, json};
 /// Proxy base URL. The install route and the chat route both live under it.
 pub const OPENCRABS_BASE_URL: &str = "https://inference.opencrabs.com/v1";
 
+/// Context window of the built-in provider, in tokens.
+///
+/// Fixed on purpose. The endpoint is free and serves one model with a 200k
+/// window, so the budget never exceeds this and `providers.opencrabs.context_window`
+/// is not honoured. The key is dropped before the generic provider setup reads
+/// it, so it is inert in both directions rather than clamped (#2066).
+pub const OPENCRABS_CONTEXT_WINDOW: u32 = 200_000;
+
 /// Path of the install route, relative to [`OPENCRABS_BASE_URL`].
 pub const INSTALL_PATH: &str = "/install";
 

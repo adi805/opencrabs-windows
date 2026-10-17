@@ -276,21 +276,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
             render_directory_picker(f, app, full_content_area);
         }
         AppMode::UsageDashboard => {
-            render_chat(f, app, chunks[0]);
-            if plan_height > 0 {
-                render_plan_checklist(f, app, chunks[1]);
-            }
-            if queue_height > 0 {
-                render_queue(f, app, chunks[2]);
-            }
-            app.input_area_x = chunks[3].x;
-            app.input_area_y = chunks[3].y;
-            app.input_area_width = chunks[3].width;
-            app.input_area_height = chunks[3].height;
-            render_input(f, app, chunks[3]);
-            render_status_bar(f, app, chunks[4]);
+            // Full-screen surface, not an overlay on the chat (#2073). The
+            // chat, plan, queue and input underneath are gone, so nothing
+            // stale shows through the gaps between cards.
+            f.render_widget(Clear, full_content_area);
             if let Some(ref ds) = app.dashboard_state {
-                crate::usage::dashboard::render(f, ds, f.area());
+                crate::usage::dashboard::render(f, ds, full_content_area);
             }
         }
         AppMode::RestartPending => {

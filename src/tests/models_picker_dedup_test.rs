@@ -32,16 +32,17 @@ fn configured_other_provider_gets_a_bullet() {
 // ── apply_all_callback_data: central 64-byte guard (#468 → #1149) ──────────
 
 #[test]
-fn short_pair_builds_the_literal_allm_payload() {
+fn short_pair_builds_the_literal_allq_payload() {
+    // The button asks first (#2042); the write is allm:, tested in telegram_apply_all_confirm_test.
     let data = apply_all_callback_data("openrouter", "stealth/ox-alpha").expect("fits");
-    assert_eq!(data, "allm:openrouter|stealth/ox-alpha");
+    assert_eq!(data, "allq:openrouter|stealth/ox-alpha");
     assert!(data.len() <= 64);
 }
 
 #[test]
 fn custom_prefixes_and_free_suffixes_survive_the_pipe_format() {
     let data = apply_all_callback_data("custom:modelscope", "Qwen/Qwen3-235B:free").expect("fits");
-    assert_eq!(data, "allm:custom:modelscope|Qwen/Qwen3-235B:free");
+    assert_eq!(data, "allq:custom:modelscope|Qwen/Qwen3-235B:free");
 }
 
 #[test]

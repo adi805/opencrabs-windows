@@ -578,22 +578,25 @@ pub async fn run() -> Result<()> {
     // editing config.toml; the ConfigWatcher re-applies live changes.
     crate::logging::apply_debug_logs(cli.debug, config.agent.debug_logs);
 
-    // Auto-generate config.toml if API keys exist in env but no config file yet.
-    // This prevents the onboarding wizard from triggering when .env is already set up.
-    let config_path = Config::system_config_path();
-    if let Some(ref path) = config_path
-        && !path.exists()
-        && config.has_any_api_key()
-    {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
+    // Seed the documented config.toml and keys.toml on every first run, not
+    // only when an API key happens to already be in the environment (#2079).
+    // The seeding below used to be gated on `has_any_api_key`, so a genuinely
+    // fresh install finished startup with neither file on disk: `opencrabs
+    // status` reported `Provider: none`, and the wizard had no documented
+    // file to write its answers into. `seed_if_absent` never touches a file
+    // that is already there, so this only ever fills a blank home.
+    let config_seeded = crate::config::seed::ensure_config_seeded();
+    crate::config::seed::ensure_keys_seeded();
+
+    // With keys in the environment and a config we just seeded, enable what
+    // there are keys for, so the wizard does not ask for a provider the user
+    // has already configured.
+    if config_seeded && config.has_any_api_key() {
         // Seed the documented example, then enable what there are keys for
         // (#1437). This used to serialise the whole in-memory config over the
         // path instead, and because TOML cannot represent a None, that wrote a
         // file holding only the handful of providers that happened to be set:
         // no sections for the rest, no comments, nothing to hand-edit later.
-        crate::config::seed::ensure_config_seeded();
         let enabled = crate::config::seed::enable_providers_with_keys(&config);
         if enabled.is_empty() {
             tracing::warn!(

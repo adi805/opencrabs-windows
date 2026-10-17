@@ -6,8 +6,8 @@ use super::error::{Result, ToolError};
 use super::r#trait::{Tool, ToolCapability, ToolExecutionContext, ToolResult};
 use crate::brain::tools::subagent::agent_type::ALWAYS_EXCLUDED;
 use crate::tui::plan::{
-    ApprovalSource, PlanDocument, PlanStatus, PlanTask, SpecCheck, TaskDep, TaskScope, TaskStatus,
-    TaskType, extract_check_commands,
+    ApprovalSource, PlanDocument, PlanStatus, PlanTask, SpecCheck, SpecCheckSource, TaskDep,
+    TaskScope, TaskStatus, TaskType, extract_check_commands, is_acceptable_check_command,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -85,6 +85,12 @@ enum PlanOperation {
     Start {
         #[serde(default)]
         task_order: Option<usize>,
+        /// Confirm a MODEL-WRITTEN spec check so it may reject a completion
+        /// (#2063). A criteria-derived check needs no confirmation; a
+        /// generated one is advisory until this is passed. Ignored when
+        /// there is nothing generated to confirm.
+        #[serde(default)]
+        confirm_spec_check: bool,
         /// Executor choice for this start (#908 option A). `Some(true)`
         /// spawns a dedicated subagent session that completes the task
         /// (overriding the InProgress-retry-inline rule, since `start`
@@ -812,6 +818,16 @@ pub(crate) struct RalphVerification {
     /// carry runnable criteria.
     #[serde(default)]
     pub(crate) spec_checks: SpecCheckPolicy,
+    /// Whether a task whose criteria name no runnable command may have one
+    /// written by a model at `start` (#2063). On by default.
+    ///
+    /// Costs at most one small model call per task, and only on a miss: a
+    /// task whose criteria already yield a command never calls the model.
+    /// The generated command is locked like any other but stays advisory
+    /// until a human confirms it, because a model asked for a command will
+    /// invent one for "update the docs".
+    #[serde(default = "default_true")]
+    pub(crate) spec_check_generation: bool,
 }
 
 /// Policy for completion claims made against unverified acceptance criteria (#870).
@@ -1392,6 +1408,172 @@ fn describe_commands(commands: &[String]) -> String {
         .join(" then ")
 }
 
+/// The prompt for a generated spec check (#2063).
+///
+/// Deliberately narrow: the title, the description and the criteria, and
+/// nothing else. No diff, no repository contents, no plan history. It asks
+/// for a COMMAND, not a judgement about whether the work was done, and it
+/// says plainly that "none" is a real answer: a model asked for a command
+/// will invent one for "update the docs" unless it is given a way out, and
+/// an invented criterion that blocks a completion is worse than no check.
+pub(crate) fn build_spec_check_prompt(task: &PlanTask) -> String {
+    let criteria = if task.acceptance_criteria.is_empty() {
+        "(none stated)".to_string()
+    } else {
+        task.acceptance_criteria
+            .iter()
+            .map(|c| format!("- {c}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!(
+        "A software task is about to start. Write the shell command that would prove \
+         its acceptance criteria were met, so that command can be run when the task \
+         finishes.\n\n\
+         Title: {title}\nDescription: {description}\nAcceptance criteria:\n{criteria}\n\n\
+         Rules:\n\
+         - One command per line, and nothing else on the line. No numbering, no \
+         bullets, no commentary.\n\
+         - One simple command. No pipes, no redirects, no `&&`, no `;`, no command \
+         substitution.\n\
+         - The command must exit non-zero when the criterion is not met and 0 when \
+         it is.\n\
+         - The command must be runnable in the project root as it stands today, \
+         before any of this work is done.\n\
+         - If a criterion cannot be checked by running a command, answer none for it.\n\
+         - If none of the criteria can be checked by running a command, answer NONE.\n\n\
+         Answer with the commands, one per line, or NONE.",
+        title = task.title,
+        description = task.description,
+    )
+}
+
+/// Parse a model reply into commands the gate is allowed to run (#2063).
+///
+/// Every candidate goes through the same validator the criteria path uses, so
+/// a generated pipe or compound line is refused by the same rule that refuses
+/// a criteria-derived one. The answer is text and the model will format it,
+/// so a leading bullet, a number and a wrapping code fence are stripped before
+/// the check rather than rejected for their punctuation.
+///
+/// The validator is also what keeps the runner vocabulary in one place: a
+/// model cannot introduce a runner the criteria path would never accept.
+pub(crate) fn parse_generated_commands(reply: &str) -> Vec<String> {
+    let mut commands: Vec<String> = Vec::new();
+    for raw in reply.lines() {
+        // Order matters: the bullet, number or fence has to come off before
+        // the backticks are trimmed, or a backticked command keeps its opening
+        // backtick and the compound-operator rule refuses it for punctuation
+        // the model only added for formatting.
+        let line = raw.trim();
+        let line = line.trim_start_matches(['-', '*', '>']).trim();
+        // "1. cargo test" is a numbered answer, not a command with a dot in
+        // it, but only when the part before the dot is a bare number.
+        let line = match line.split_once(". ") {
+            Some((head, tail)) if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) => {
+                tail.trim()
+            }
+            _ => line,
+        };
+        // Only the OUTER backticks come off. A backtick inside the command is
+        // command substitution, and that stays refused.
+        let line = line.trim().trim_matches('`').trim();
+        if line.is_empty() || line.eq_ignore_ascii_case("none") {
+            continue;
+        }
+        if !is_acceptable_check_command(line) {
+            continue;
+        }
+        if !commands.iter().any(|c| c == line) {
+            commands.push(line.to_string());
+        }
+    }
+    commands
+}
+
+/// Ask the model to write a spec check for a task (#2063).
+///
+/// One-shot, temperature 0, small budget: this is a command proposal, not a
+/// conversation. The task's own text is the entire input.
+///
+/// Every failure path returns an empty vector: no provider, a provider error,
+/// or a reply that honours none of the rules. A failed model call must never
+/// fail a `start`, and it must never leave a half-written check behind.
+pub(crate) async fn generate_spec_check_commands(
+    context: &ToolExecutionContext,
+    task: &PlanTask,
+) -> Vec<String> {
+    use crate::brain::provider::{ContentBlock, LLMRequest, Message, Provider, factory};
+    use std::sync::Arc;
+
+    let config = match crate::config::Config::load() {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::warn!("spec check generation: config load failed ({e}); no check generated");
+            return Vec::new();
+        }
+    };
+    let provider: Arc<dyn Provider> = match &context.provider_override {
+        Some(injected) => Arc::clone(injected),
+        None => {
+            let built = match context
+                .session_provider
+                .as_deref()
+                .filter(|name| factory::is_known_provider_name(&config, name))
+            {
+                Some(name) => factory::create_provider_by_name(&config, name).await,
+                None => factory::create_provider(&config).await,
+            };
+            match built {
+                Ok(provider) => provider,
+                Err(e) => {
+                    tracing::warn!(
+                        "spec check generation: no provider resolved ({e}); no check generated"
+                    );
+                    return Vec::new();
+                }
+            }
+        }
+    };
+    let mut request = LLMRequest::new(
+        provider.default_model().to_string(),
+        vec![Message::user(build_spec_check_prompt(task))],
+    );
+    request.temperature = Some(0.0);
+    request.max_tokens = Some(256);
+    let response = match provider.complete(request).await {
+        Ok(response) => response,
+        Err(e) => {
+            tracing::warn!("spec check generation: model call failed ({e}); no check generated");
+            return Vec::new();
+        }
+    };
+    let text = response
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let commands = parse_generated_commands(&text);
+    if commands.is_empty() {
+        tracing::info!(
+            "spec check generation: model proposed no runnable command for task #{}",
+            task.order
+        );
+    } else {
+        tracing::info!(
+            "spec check generation: model proposed {} command(s) for task #{}: {}",
+            commands.len(),
+            task.order,
+            describe_commands(&commands)
+        );
+    }
+    commands
+}
+
 /// Lock a task's per-task spec check (#1904), once, at `start`.
 ///
 /// The criteria as they read right now become the check the task must pass,
@@ -1432,6 +1614,80 @@ pub(crate) fn lock_spec_check_if_absent(
     Some(note)
 }
 
+/// Lock a spec check a model wrote (#2063), once, at `start`.
+///
+/// Sits BESIDE `lock_spec_check_if_absent`, not inside it, because the two
+/// answer different questions: that one asks "do the criteria already name a
+/// command", this one runs only when they do not. Both are called from the
+/// same guarded spot, and both keep the same rule, which is what matters: the
+/// `is_some()` check happens before either is reached, so the post-compaction
+/// recovery `plan start` and a retry after a failure cannot regenerate a check
+/// and void the hash the lock exists to hold.
+///
+/// The generated check is advisory until confirmed: `SpecCheck::may_block`
+/// reads the provenance, so this can never reject a completion on its own,
+/// even under `spec_checks = "block"`.
+///
+/// Returns the note for the start result, or `None` when generation is off,
+/// a lock already exists, or the model proposed nothing runnable.
+pub(crate) async fn lock_generated_spec_check_if_absent(
+    plan: &mut PlanDocument,
+    order: usize,
+    context: &ToolExecutionContext,
+) -> Option<String> {
+    let working_dir = context.working_dir();
+    let config = ralph_loop_config(&working_dir)?;
+    if config.verification.spec_checks == SpecCheckPolicy::Off
+        || !config.verification.spec_check_generation
+    {
+        return None;
+    }
+    // The same guard the criteria path uses, for the same reason.
+    if plan.get_task_by_order(order)?.spec_check.is_some() {
+        return None;
+    }
+    let task = plan.get_task_by_order(order)?.clone();
+    let commands = generate_spec_check_commands(context, &task).await;
+    if commands.is_empty() {
+        return None;
+    }
+    let lock = SpecCheck::lock_generated(commands.clone());
+    let note = format!(
+        "🔒 Locked a MODEL-WRITTEN spec check: {}. It hashes to {} and runs when this          task completes, but it is advisory only until you confirm it: a generated check          never rejects a completion. Call 'start' with confirm_spec_check=true to accept          it, or rewrite the task's acceptance criteria to name the command you want.",
+        describe_commands(&commands),
+        &lock.sha256[..12],
+    );
+    plan.get_task_by_order_mut(order)?.spec_check = Some(lock);
+    Some(note)
+}
+
+/// Confirm a generated spec check so it may reject a completion (#2063).
+///
+/// Confirmation is a separate, explicit act because the check was not in front
+/// of the plan approver when they read the plan. It is recorded on the lock and
+/// deliberately NOT part of the hash: `SpecCheck::matches` covers `commands`
+/// only, so confirming cannot move the lock it is approving.
+///
+/// Returns the note for the start result, or `None` when there is nothing to
+/// confirm (no lock, a criteria-derived lock which needs no confirmation, or
+/// one already confirmed).
+pub(crate) fn confirm_generated_spec_check(
+    plan: &mut PlanDocument,
+    order: usize,
+) -> Option<String> {
+    let task = plan.get_task_by_order_mut(order)?;
+    let lock = task.spec_check.as_mut()?;
+    if lock.source != SpecCheckSource::Generated || lock.confirmed {
+        return None;
+    }
+    lock.confirmed = true;
+    Some(format!(
+        "✅ Confirmed the generated spec check: {}. It may now reject a completion under \
+         spec_checks = \"block\".",
+        describe_commands(&lock.commands)
+    ))
+}
+
 /// Run the check a task locked at `start` (#1904).
 ///
 /// The lock is compared before anything is executed. The commands are
@@ -1466,8 +1722,17 @@ pub(crate) fn run_locked_spec_check(
         return SpecCheckResult::default();
     }
 
+    // Staleness is a question only a criteria-derived lock can answer. That
+    // lock was DERIVED from the criteria, so re-deriving them and comparing is
+    // exactly the check that catches a criterion rewritten after the work
+    // began. A generated lock was never derived from anything: the criteria
+    // are prose by definition, re-deriving yields nothing, and comparing
+    // would fail every time and read as "the criterion moved" when it never
+    // did. There is no derived command here to rewrite, so the approved
+    // commands simply run as locked.
     let current = extract_check_commands(&task.acceptance_criteria);
-    let note = if lock.matches(&current) {
+    let stale = lock.source == SpecCheckSource::Criteria && !lock.matches(&current);
+    let note = if !stale {
         match verify_with(
             &task.task_type.to_string(),
             task_order,
@@ -1499,7 +1764,21 @@ pub(crate) fn run_locked_spec_check(
         )
     };
 
-    let rejected = policy == SpecCheckPolicy::Block;
+    // Provenance decides whether this check may reject, not the policy alone
+    // (#2063): a model-written check that no human confirmed advises under
+    // every policy, including `block`.
+    let policy_wants_reject = policy == SpecCheckPolicy::Block;
+    let rejected = policy_wants_reject && lock.may_block();
+    let note = if policy_wants_reject && !lock.may_block() {
+        format!(
+            "{note}\n\n(spec_checks is \"block\", but this check was written by a model and \
+             has not been confirmed, so it cannot reject the completion. Pass \
+             confirm_spec_check=true to 'start' to accept it, or rewrite the criteria to \
+             name the command you want.)"
+        )
+    } else {
+        note
+    };
     tracing::warn!(
         "Ralph loop: spec check for task #{task_order} {} (spec_checks={policy})",
         if rejected {
@@ -1867,6 +2146,10 @@ impl Tool for PlanTool {
                     "type": "integer",
                     "minimum": 1,
                     "description": "Task number (1-based). Required for complete; optional for start (omit to pick the next task)."
+                },
+                "confirm_spec_check": {
+                    "type": "boolean",
+                    "description": "start only: confirm a MODEL-WRITTEN spec check (#2063) so it may reject a completion under spec_checks = \"block\". A criteria-derived check needs no confirmation; a generated one stays advisory until this is passed."
                 },
                 "isolated": {
                     "type": "boolean",
@@ -2604,6 +2887,7 @@ impl Tool for PlanTool {
             PlanOperation::Start {
                 task_order,
                 isolated,
+                confirm_spec_check,
             } => {
                 if let Some(reason) = checklist_blocked_reason(state) {
                     return Ok(ToolResult::error(reason));
@@ -2696,6 +2980,9 @@ impl Tool for PlanTool {
                         // #1904: set when this `start` locks the task's spec
                         // check. Reported with the task details so the agent
                         // sees the check it will be held to.
+                        // #2063: set when this `start` confirms a generated
+                        // check, so the result says what the check may now do.
+                        let mut confirm_note: Option<String> = None;
                         let mut lock_note: Option<String> = None;
                         if !already_done {
                             // Ralph loop: iteration cap. If the task has been
@@ -2734,6 +3021,34 @@ impl Tool for PlanTool {
                                 order,
                                 &context.working_dir(),
                             );
+
+                            // #2063: the criteria named no runnable command,
+                            // so ask the model for one. This sits AFTER the
+                            // criteria lock and BEFORE the is_some() guard
+                            // below, and the guard is why a recovery `start`
+                            // cannot regenerate: `lock_spec_check_if_absent`
+                            // returned early above only when a lock exists,
+                            // so check for that lock here before generating.
+                            if lock_note.is_none()
+                                && current_plan
+                                    .get_task_by_order(order)
+                                    .is_some_and(|t| t.spec_check.is_none())
+                            {
+                                lock_note = lock_generated_spec_check_if_absent(
+                                    current_plan,
+                                    order,
+                                    context,
+                                )
+                                .await;
+                            }
+                        }
+
+                        // #2063: confirming a generated check is an explicit
+                        // act, separate from locking it. Runs even on the
+                        // recovery path, because that is exactly when a user
+                        // has just read the proposed command and decided.
+                        if confirm_spec_check {
+                            confirm_note = confirm_generated_spec_check(current_plan, order);
                         }
 
                         // #908 option A — isolated execution branch. Routes
@@ -2864,8 +3179,12 @@ impl Tool for PlanTool {
                                 Some(note) => format!("\n\n{note}"),
                                 None => String::new(),
                             };
+                            let confirm_text = match &confirm_note {
+                                Some(note) => format!("\n\n{note}"),
+                                None => String::new(),
+                            };
                             format!(
-                                "▶️ Task #{order}: {}\n\n{details}{epistemic_note}{lock_text}\n\n\
+                                "▶️ Task #{order}: {}\n\n{details}{epistemic_note}{lock_text}{confirm_text}\n\n\
                                  Progress: {done}/{total} done. Do the work, then call 'complete' \
                                  with task_order={order}.",
                                 task.title

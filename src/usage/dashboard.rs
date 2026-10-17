@@ -1,21 +1,26 @@
 //! Usage dashboard layout and state
 //!
-//! Centered overlay panel (~75% of screen), responsive to different sizes.
+//! A full-screen, responsive dashboard (#2073). Geometry lives in
+//! [`super::layout`]; this module holds the state, the key decisions and
+//! the draw call.
 
 use super::cards;
 use super::data::{DashboardData, Period};
+use super::layout;
 use crate::tui::app::dialog_keys::{DialogKey, DialogScope, dialog_keys};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Span,
-    widgets::{Block, Borders, Clear},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
 };
 
-/// Number of focusable cards
-pub(crate) const CARD_COUNT: usize = 6;
+/// Number of focusable cards. It is a layout fact (it decides the grid),
+/// so it lives in [`super::layout`] and is re-exported here for the focus
+/// maths and the tests.
+pub(crate) use super::layout::CARD_COUNT;
 
 /// Grid index of the Cache Efficiency card: 0=daily, 1=project, 2=model,
 /// 3=tools, 4=activity, 5=cache.
@@ -164,37 +169,20 @@ pub fn advertised_keys(state: &DashboardState) -> Vec<DialogKey> {
         .collect()
 }
 
-/// Compute a centered rect that takes ~75% of the terminal, clamped to min/max.
-pub(crate) fn centered_rect(area: Rect) -> Rect {
-    // Target ~75% but at least 60 cols / 20 rows, at most area - 4 margin each side
-    let w = (area.width * 3 / 4)
-        .max(60.min(area.width))
-        .min(area.width.saturating_sub(4));
-    let h = (area.height * 3 / 4)
-        .max(20.min(area.height))
-        .min(area.height.saturating_sub(2));
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    Rect::new(x, y, w, h)
-}
-
-/// Render the usage dashboard as a centered overlay.
+/// Render the usage dashboard across the whole content area.
 ///
-/// Layout inside the panel:
+/// The screen is full width now, so the grid reflows with the terminal
+/// instead of being pinned to a 2x2 (#2073):
 /// ```text
-/// [Summary Bar ─────────────────── full width]
-/// [Daily Activity] [By Project]
-/// [By Model      ] [Core Tools]
-/// [By Activity ────────────────] [Cache Efficiency]
-/// [Footer ────────────────────── full width]
+/// [Summary Bar ────────────────────── full width]
+/// [Daily] [By Project] [By Model]
+/// [Tools] [By Activity] [Cache]
+/// [Footer ─────────────────────────── full width]
 /// ```
+/// Below the floor the layout reports `too_small` and one honest line
+/// replaces the grid, instead of cards clipped narrower than their text.
 pub fn render(f: &mut Frame, state: &DashboardState, area: Rect) {
-    let panel = centered_rect(area);
-
-    // Clear the area behind the panel
-    f.render_widget(Clear, panel);
-
-    // Outer border
+    // The outer border is the screen frame now, not dialog chrome.
     let border = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
@@ -204,99 +192,103 @@ pub fn render(f: &mut Frame, state: &DashboardState, area: Rect) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ));
-    let border_inner = border.inner(panel);
-    f.render_widget(border, panel);
+    let inner = border.inner(area);
+    f.render_widget(border, area);
 
-    // 1-cell horizontal padding inside the border
-    let inner = Rect {
-        x: border_inner.x + 1,
-        y: border_inner.y,
-        width: border_inner.width.saturating_sub(2),
-        height: border_inner.height,
-    };
+    let layout = layout::compute(inner);
 
-    // Activity + Cache row scales with the panel height (responsive to terminal
-    // resize / zoom), like the grid cards above — so the per-model Cache
-    // Efficiency list (and the activity list) reveal more rows as you zoom out
-    // instead of being pinned to two. Clamped so it never starves the 2x2 grid
-    // on a small panel or balloon on a huge one.
-    let activity_height = (inner.height / 4).clamp(5, 16);
-    let grid_min = if inner.height > 30 { 10 } else { 7 };
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),               // summary bar
-            Constraint::Min(grid_min),           // middle grid (2x2)
-            Constraint::Length(activity_height), // activity + cache row
-            Constraint::Length(1),               // footer
-        ])
-        .split(inner);
+    if layout.too_small {
+        render_too_small(f, inner);
+        return;
+    }
 
     // Summary bar
-    cards::render_summary(f, &state.data, chunks[0], state.period.label());
+    cards::render_summary(f, &state.data, layout.summary, state.period.label());
 
-    // Middle grid: 2x2
-    // Row 1: Daily Activity | By Project
-    // Row 2: By Model | Core Tools
-    let mid_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[1]);
-
-    let top_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(mid_rows[0]);
-
-    let bot_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(mid_rows[1]);
-
-    // Card index: 0=daily, 1=project, 2=model, 3=tools, 4=activity, 5=cache
-    cards::render_daily(f, &state.data.daily, top_cols[0], state.focused_card == 0);
+    // The six cards, in focus order. Column count and row count come from
+    // the layout, so the grid reflows with the terminal.
+    cards::render_daily(
+        f,
+        &state.data.daily,
+        layout.cards[0],
+        state.focused_card == 0,
+    );
     cards::render_projects(
         f,
         &state.data.projects,
-        top_cols[1],
+        layout.cards[1],
         state.focused_card == 1,
     );
-    cards::render_models(f, &state.data.models, bot_cols[0], state.focused_card == 2);
-    cards::render_tools(f, &state.data.tools, bot_cols[1], state.focused_card == 3);
-
-    // Bottom row: Activity (75%) | Cache Efficiency (25%)
-    let bottom_row = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(75), Constraint::Percentage(25)])
-        .split(chunks[2]);
-
+    cards::render_models(
+        f,
+        &state.data.models,
+        layout.cards[2],
+        state.focused_card == 2,
+    );
+    cards::render_tools(
+        f,
+        &state.data.tools,
+        layout.cards[3],
+        state.focused_card == 3,
+    );
     cards::render_activities(
         f,
         &state.data.activities,
-        bottom_row[0],
+        layout.cards[4],
         state.focused_card == 4,
     );
     cards::render_cache_efficiency(
         f,
         &state.data.cache,
-        bottom_row[1],
+        layout.cards[5],
         state.cache_card_focused(),
     );
 
     // Footer: the keys that are live in this state (#2027).
-    cards::render_footer(f, chunks[3], state);
+    cards::render_footer(f, layout.footer, state);
 
     // The price breakdown, if Enter opened it. Drawn last so it covers the
     // grid, and sized to stop one row above the footer so the key that
     // dismisses it stays on screen.
     if state.cache_detail_open {
+        let top = layout.cards[0].y;
         let overlay = Rect {
-            x: panel.x,
-            y: panel.y,
-            width: panel.width,
-            height: chunks[3].y.saturating_sub(panel.y),
+            x: layout.summary.x,
+            y: top,
+            width: layout.summary.width,
+            height: layout.footer.y.saturating_sub(top),
         };
         cards::render_cache_breakdown(f, &state.data.cache, overlay);
     }
+}
+
+/// The floor: one honest line naming the size the screen needs, instead of
+/// cards squeezed narrower than their own text.
+fn render_too_small(f: &mut Frame, area: Rect) {
+    let text = vec![
+        Line::from(Span::styled(
+            "Terminal too small for the usage dashboard",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!(
+                "Needs at least {} columns and {} rows.",
+                layout::MIN_WIDTH,
+                layout::required_height(1)
+            ),
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(text.len() as u16),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    f.render_widget(Paragraph::new(text).alignment(Alignment::Center), rows[1]);
 }

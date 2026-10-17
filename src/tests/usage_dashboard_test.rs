@@ -2,7 +2,6 @@ use crate::tui::app::dialog_keys::{DialogScope, dialog_keys};
 use crate::usage::dashboard::*;
 use crate::usage::data::Period;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::Rect;
 
 /// A bare key press, the shape the dashboard's keymap is written in.
 fn key(code: KeyCode) -> KeyEvent {
@@ -45,35 +44,6 @@ fn test_set_period() {
     assert!(s.set_period(Period::Today));
     assert!(!s.set_period(Period::Today)); // same, no change
     assert!(s.set_period(Period::Week));
-}
-
-#[test]
-fn test_centered_rect_large_terminal() {
-    let area = Rect::new(0, 0, 200, 60);
-    let r = centered_rect(area);
-    assert_eq!(r.width, 150); // 75% of 200
-    assert_eq!(r.height, 45); // 75% of 60
-    assert_eq!(r.x, 25); // centered
-    assert_eq!(r.y, 7); // centered (rounding)
-}
-
-#[test]
-fn test_centered_rect_small_terminal() {
-    let area = Rect::new(0, 0, 80, 24);
-    let r = centered_rect(area);
-    assert_eq!(r.width, 60); // 75% of 80 = 60, meets floor of 60
-    assert_eq!(r.height, 20); // max(75%=18, floor=20) = 20, capped at 22
-}
-
-#[test]
-fn test_centered_rect_tiny_terminal() {
-    let area = Rect::new(0, 0, 40, 15);
-    let r = centered_rect(area);
-    // Should not exceed area
-    assert!(r.width <= area.width);
-    assert!(r.height <= area.height);
-    assert!(r.x >= area.x);
-    assert!(r.y >= area.y);
 }
 
 // ── Key decision (#2027) ─────────────────────────────────────────────────────
@@ -241,4 +211,105 @@ fn tab_walks_the_grid() {
         UsageKeyOutcome::Consumed
     );
     assert_eq!(s.focused_card, 0);
+}
+
+// ── Render smoke (#2073) ────────────────────────────────────────────────────
+
+/// The full screen must draw without panicking at every size, and the floor
+/// must be a real message rather than a clipped grid.
+///
+/// `src/tests/help_responsive_test.rs` is the template for drawing into a
+/// `TestBackend`.
+#[test]
+fn renders_the_whole_screen_at_every_size() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let cases: [(u16, u16, bool); 3] = [
+        // 40x20 is below the floor: the message, not the grid.
+        (40, 20, true),
+        (80, 24, false),
+        (160, 50, false),
+    ];
+
+    for (width, height, too_small) in cases {
+        let state = DashboardState::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render(f, &state, area);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let text: String = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if too_small {
+            assert!(
+                text.contains("Terminal too small"),
+                "{width}x{height} should say it is too small:\n{text}"
+            );
+            assert!(
+                !text.contains("Daily Activity"),
+                "{width}x{height} should not draw the grid:\n{text}"
+            );
+        } else {
+            assert!(
+                !text.contains("Terminal too small"),
+                "{width}x{height} fits and should draw the grid:\n{text}"
+            );
+            assert!(
+                text.contains("Daily Activity"),
+                "{width}x{height} should draw the first card:\n{text}"
+            );
+            assert!(
+                text.contains("Usage Dashboard"),
+                "{width}x{height} should draw the screen title:\n{text}"
+            );
+        }
+    }
+}
+
+/// The dashboard is a full screen, so it owns the whole area it is handed.
+/// The old centered dialog painted into 75% of it and left the chat visible
+/// around the edges.
+#[test]
+fn the_grid_uses_the_whole_area_it_is_handed() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let (width, height) = (160u16, 50u16);
+    let state = DashboardState::default();
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            render(f, &state, area);
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    let row = |y: u16| -> String {
+        (0..width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect()
+    };
+
+    // The outer border sits on the first and last row of the area, and on
+    // the first and last column.
+    assert_eq!(buf[(0, 0)].symbol(), "┌", "top-left corner: {:?}", row(0));
+    assert_eq!(
+        buf[(width - 1, 0)].symbol(),
+        "┐",
+        "top-right corner: {:?}",
+        row(0)
+    );
+    assert_eq!(buf[(0, height - 1)].symbol(), "└");
+    assert_eq!(buf[(width - 1, height - 1)].symbol(), "┘");
 }
