@@ -57,6 +57,12 @@ jobs:
   preflight:
     name: Preflight (tag matches Cargo.toml)
     runs-on: ubuntu-latest
+    # `gh run list` reads Actions data, which the workflow-level `contents:
+    # write` alone does not cover. Without `actions: read` the gate below
+    # cannot see the run it is supposed to check (#2078).
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -76,6 +82,93 @@ jobs:
             echo "::error::tag $tag does not match Cargo.toml version $cargo_version: bump Cargo.toml first, or tag the commit that has it"
             exit 1
           fi
+
+      # v0.1.0 shipped from a commit whose CI had never been read (#2078). The
+      # tag check above only proves the tag matches Cargo.toml; it says nothing
+      # about whether that commit is green. ci.yml runs on push to main, so this
+      # step reads that run's conclusion and refuses to publish anything else.
+      #
+      # The SHA comes from `git rev-parse HEAD`, not `github.sha`: this workflow
+      # also fires on `workflow_dispatch` with a `tag` input, and there
+      # `github.sha` is the branch the dispatch ran from, while the checkout
+      # above already resolved the tag. HEAD is the commit actually being built.
+      - name: Require a green CI run on this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          SHA=$(git rev-parse HEAD)
+          REPO="${{ github.repository }}"
+
+          # "No run found" and "run in flight" are handled differently on
+          # purpose. ci.yml skips docs-only commits via `paths-ignore`, so a
+          # missing run is reachable, and the message below says what to do
+          # about it. Either way a missing run FAILS, never skips (#2078).
+          if [ "${#SHA}" -ne 40 ]; then
+            echo "::error::expected a full 40-character commit SHA, got '${SHA}'."
+            exit 1
+          fi
+
+          # `gh run list --commit` matches on the full SHA and silently returns
+          # nothing for an abbreviated one, which is why the check above exists.
+          ci_run() {
+            gh run list --repo "$REPO" --workflow ci.yml --commit "$SHA" \
+              --limit 1 --json status,conclusion,databaseId \
+              --jq '.[0] // empty' 2>/dev/null || echo ""
+          }
+
+          run=$(ci_run)
+          found_deadline=$((SECONDS + 300))
+          while [ -z "$run" ]; do
+            if [ "$SECONDS" -ge "$found_deadline" ]; then
+              echo "::error::no ci.yml run found for $SHA after 5 minutes, so this commit is unverified."
+              echo "CI skips docs-only commits (paths-ignore). Either run 'gh workflow run ci.yml --ref main'"
+              echo "against a commit CI will actually pick up, or tag a commit CI has already run on. (#2078)"
+              exit 1
+            fi
+            echo "No ci.yml run for $SHA yet; waiting for it to appear..."
+            sleep 15
+            run=$(ci_run)
+          done
+
+          run_deadline=$((SECONDS + 3600))
+          while :; do
+            status=$(printf '%s' "$run" | jq -r '.status')
+            conclusion=$(printf '%s' "$run" | jq -r '.conclusion')
+            id=$(printf '%s' "$run" | jq -r '.databaseId')
+            echo "ci.yml run $id on $SHA: status=$status conclusion=$conclusion"
+
+            # An unreadable status must fail, not read as "still running". This
+            # loop is the last thing between a red commit and a published
+            # release, so a parse failure has to be loud (#2078).
+            if [ -z "$status" ] || [ "$status" = "null" ]; then
+              echo "::error::could not read the status of the ci.yml run for $SHA (got '${status}')."
+              exit 1
+            fi
+
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "CI is green on $SHA. Ready to release."
+                exit 0
+              fi
+              echo "::error::ci.yml run $id on $SHA concluded '$conclusion'. Refusing to publish a red commit (#2078)."
+              exit 1
+            fi
+
+            if [ "$SECONDS" -ge "$run_deadline" ]; then
+              echo "::error::ci.yml run $id on $SHA is still '$status' after 60 minutes. Refusing to publish unverified (#2078)."
+              exit 1
+            fi
+
+            echo "Waiting for ci.yml run $id to finish (status=$status)..."
+            sleep 30
+            run=$(ci_run)
+            if [ -z "$run" ]; then
+              echo "::error::ci.yml run $id for $SHA disappeared while waiting (#2078)."
+              exit 1
+            fi
+          done
 
   build-linux:
     name: Build ${{ matrix.asset_suffix }}

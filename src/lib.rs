@@ -86,6 +86,7 @@ pub mod desktop;
 pub mod error;
 pub mod logging;
 pub mod memory;
+pub mod runtime;
 pub mod services;
 pub mod tui;
 pub mod utils;

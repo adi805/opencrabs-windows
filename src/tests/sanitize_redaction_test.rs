@@ -194,6 +194,26 @@ fn redacts_long_hex_token() {
     );
 }
 
+#[test]
+fn redacts_64_char_hex_install_token() {
+    // Shape of a token the inference proxy issues: 32 random bytes, hex encoded.
+    let token = "0123456789abcdef".repeat(4);
+    assert_eq!(token.len(), 64);
+    let input = format!("Authorization: Bearer {token}");
+    let out = redact_secrets(&input);
+    assert!(!out.contains(&token), "64-char install token leaked: {out}");
+}
+
+#[test]
+fn redacts_ocp_prefixed_install_token() {
+    // Shape of a token issued now: `ocp_` plus 64 hex digits. The hex rule
+    // cannot match it, so the `ocp_` prefix entry is what redacts it.
+    let token = format!("ocp_{}", "0123456789abcdef".repeat(4));
+    let input = format!("saw {token} in the log");
+    let out = redact_secrets(&input);
+    assert!(!out.contains(&token), "ocp_ install token leaked: {out}");
+}
+
 // ── Combined patterns ──────────────────────────────────────────────
 
 #[test]

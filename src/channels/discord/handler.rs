@@ -750,15 +750,39 @@ pub(crate) async fn handle_message(
             let mime = attachment.content_type.as_deref().unwrap_or("");
             let fname = &attachment.filename;
 
-            if mime.starts_with("image/") {
+            if mime.starts_with("audio/") {
+                continue;
+            }
+            let is_image = mime.starts_with("image/");
+            if is_image {
                 if content.is_empty() {
                     content = "Describe this image.".to_string();
                 }
                 content.push_str(&format!(" <<IMG:{}>>", attachment.url));
-            } else if !mime.starts_with("audio/")
-                && let Ok(resp) = reqwest::get(attachment.url.as_str()).await
-                && let Ok(bytes) = resp.bytes().await
+            }
+
+            let bytes = match reqwest::get(attachment.url.as_str()).await {
+                Ok(resp) => match resp.bytes().await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!("Discord: failed to read attachment {fname}: {e}");
+                        continue;
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("Discord: failed to download attachment {fname}: {e}");
+                    continue;
+                }
+            };
+
+            // Durable copy in the channel-attachment store, as Telegram and WhatsApp keep (#1729).
+            if let Some(path) =
+                crate::channels::persist_channel_attachment("discord", fname, &bytes)
             {
+                content.push_str(&format!("\n\n[file: {}]", path.display()));
+            }
+
+            if !is_image {
                 let cfg = config_rx.borrow();
                 let fc = process_file_with_vision(&bytes, mime, fname, &cfg);
                 let injected = inject_file_content(&fc).0;
