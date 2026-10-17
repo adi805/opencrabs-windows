@@ -29,6 +29,8 @@
 
 ⭐ Star us on [GitHub](https://github.com/opencrabs/opencrabs) if you like what you see!
 
+**Community funded.** No venture capital, no investors, no company behind it. The people who use OpenCrabs pay for the subscriptions, the inference and the credits that keep it running: see [🫶 Sponsors](#-sponsors).
+
 ---
 
 ## Table of Contents
@@ -75,6 +77,7 @@
 - [⚠️ Disclaimers](#-disclaimers)
 - [🤝 Contributing](#-contributing)
 - [📄 License](#-license)
+- [🫶 Sponsors](#-sponsors)
 - [🙏 Acknowledgments](#-acknowledgments)
 - [📞 Support](#-support)
 - [✨ Stay Tuned](#-stay-tuned)
@@ -5764,6 +5767,8 @@ Any Rust item may be renamed, moved, or removed in any release, including a patc
 
 Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
+Not a coder? Funding the subscriptions and the inference is just as useful, and it keeps every feature free for everyone: see [🫶 Sponsors](#-sponsors).
+
 ```bash
 # Setup
 git clone https://github.com/opencrabs/opencrabs.git
@@ -5778,6 +5783,26 @@ cargo test
 ## 📄 License
 
 **MIT License** — See [LICENSE.md](LICENSE.md) for details.
+
+---
+
+## 🫶 Sponsors
+
+<!-- sponsors:start -->
+### Community funded
+
+OpenCrabs has no investors. The people below cover the subscriptions, the inference and the credits, and some of them write the code too. Totals as of October 17, 2026.
+
+| Sponsor | Role | Sponsoring since |
+|---|---|---|
+| Adolfo Usier | Creator, maintainer | February 14, 2026 |
+| Daniel Carneiro | Core maintainer | August 12, 2026 |
+| Miguel Carneiro | Financial sponsor | August 12, 2026 |
+
+To date: **€30** in cash, **$48** in cash, **$450** in subscriptions, **8B to 9B tokens** of granted credits.
+
+Full ledger: [SPONSORS.md](SPONSORS.md)
+<!-- sponsors:end -->
 
 ---
 
