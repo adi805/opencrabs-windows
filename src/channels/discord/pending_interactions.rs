@@ -3,6 +3,7 @@
 //! on the way out instead of being swept by a timer.
 
 use std::time::Instant;
+use uuid::Uuid;
 
 use super::DiscordState;
 use super::interactions::FormSpec;
@@ -31,6 +32,39 @@ impl DiscordState {
             return None;
         }
         map.remove(id).map(|(_, opts)| opts)
+    }
+
+    /// Register a pending follow-up suggestion (#598). The owning `session_id`
+    /// is stashed WITH the options: a tap resolves its session from this entry
+    /// rather than re-deriving it from the channel, so it lands in the session
+    /// that rendered the buttons even after an idle rotation (#1217).
+    pub(crate) async fn register_followup(
+        &self,
+        id: String,
+        session_id: Uuid,
+        options: Vec<String>,
+    ) {
+        self.pending_followups
+            .lock()
+            .await
+            .insert(id, (Instant::now(), session_id, options));
+    }
+
+    /// Take a pending follow-up as `(session_id, options)` if still within
+    /// `ttl_hours`; expired or unknown entries return None (and expired ones
+    /// are dropped).
+    pub(crate) async fn take_followup(
+        &self,
+        id: &str,
+        ttl_hours: f64,
+    ) -> Option<(Uuid, Vec<String>)> {
+        let mut map = self.pending_followups.lock().await;
+        let (created, _, _) = map.get(id)?;
+        if expired(created, ttl_hours) {
+            map.remove(id);
+            return None;
+        }
+        map.remove(id).map(|(_, sid, opts)| (sid, opts))
     }
 
     /// Register a pending modal form spec (#383).

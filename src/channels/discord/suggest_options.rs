@@ -7,9 +7,10 @@
 //! `interactions::route_followup_turn` (#1852). Typing your own message always
 //! works; there is no oneshot or timeout.
 //!
-//! Reuses the existing TTL-bounded select-map (`register_select`/`take_select`)
-//! to stash `idx -> suggestion text`, since the text can exceed Discord's
-//! 100-char `custom_id` limit.
+//! Stashes `(session_id, options)` under a fresh id via the TTL-bounded
+//! follow-up map (`register_followup`/`take_followup`), since the text can
+//! exceed Discord's 100-char `custom_id` limit and the tap must resolve the
+//! SAME session that rendered the buttons (#1217 parity with Telegram).
 
 use std::sync::Arc;
 
@@ -71,7 +72,9 @@ pub(crate) async fn render_suggestions(
         })
         .collect();
 
-    state.register_select(followup_id, options).await;
+    state
+        .register_followup(followup_id, session_id, options)
+        .await;
 
     if let Err(e) = writes::send(
         http,

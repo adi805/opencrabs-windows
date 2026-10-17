@@ -13,6 +13,11 @@ use uuid::Uuid;
 
 use super::{interactions, long_answer, tool_group};
 
+/// One pending follow-up suggestion keyboard (#598): when it was registered,
+/// the session that rendered it, and the options it offered. Aliased so the
+/// field below stays a readable type instead of a three-deep tuple.
+pub(super) type PendingFollowup = (std::time::Instant, Uuid, Vec<String>);
+
 /// Shared Discord state for proactive messaging.
 ///
 /// Set when the bot connects via the `ready` event.
@@ -51,6 +56,11 @@ pub struct DiscordState {
     /// Pending select menus: id -> (created, options) (#382). Lazy TTL:
     /// stale picks answer "expired" (#386).
     pub(super) pending_selects: Mutex<HashMap<String, (std::time::Instant, Vec<String>)>>,
+    /// Pending follow-up suggestions (#598), keyed by an opaque id. The session
+    /// travels WITH the buttons so a tap lands in the session that rendered
+    /// them even if the channel session has since rotated (#1217 parity with
+    /// Telegram). See [`PendingFollowup`].
+    pub(super) pending_followups: Mutex<HashMap<String, PendingFollowup>>,
     /// Pending modal forms: id -> (created, spec) (#383). Same lazy TTL.
     pub(super) pending_forms: Mutex<HashMap<String, (std::time::Instant, interactions::FormSpec)>>,
     /// Long answers paged behind a button (FR-009), keyed by the id of the
@@ -123,6 +133,7 @@ impl DiscordState {
             pending_approvals: Mutex::new(HashMap::new()),
             cancel_tokens: Mutex::new(HashMap::new()),
             pending_selects: Mutex::new(HashMap::new()),
+            pending_followups: Mutex::new(HashMap::new()),
             pending_forms: Mutex::new(HashMap::new()),
             long_answers: Mutex::new((Vec::new(), HashMap::new())),
             tool_groups: Mutex::new((Vec::new(), HashMap::new())),
