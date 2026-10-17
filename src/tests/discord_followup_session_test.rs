@@ -84,7 +84,7 @@ fn turn_prefers_the_override_over_the_channel() {
         "the override must be consulted BEFORE the channel-derived resolution"
     );
     assert!(
-        body.contains("Some(sid) => Some(sid)"),
+        body.contains("Some(sid) => sid,"),
         "#598: an override must be used verbatim, not re-resolved"
     );
 }
@@ -107,8 +107,10 @@ fn slash_arm_keeps_the_channel_derived_session() {
         .expect("the slash arm dispatches through the tap helper");
     let call = &helper[call_start..];
     let args = &call[..call.find(".await").expect("the slash call is awaited")];
+    // Strip the call's own closing paren before reading the final argument.
+    let args = args.trim_end().trim_end_matches(')').trim_end();
     assert!(
-        args.trim_end().ends_with("None,"),
+        args.ends_with("None,"),
         "#598: a slash command has no rendering session to inherit, so the \
          override must be None and the channel resolution must stand"
     );
