@@ -73,7 +73,20 @@ fn a_follow_up_text_after_the_option_surface_would_hide_the_answer() {
 fn the_halt_stops_the_loop_before_another_request() {
     let src = include_str!("../brain/agent/service/tool_loop.rs");
     assert!(
-        src.contains("if option_surface_halt_seen {\n                tracing::info!(\"🛑 Turn ended after option-surface halt"),
+        src.contains("if option_surface_halt_seen && option_halt_iteration_has_text {\n                tracing::info!(\"🛑 Turn ended after option-surface halt"),
         "the outer loop must end on an option-surface halt"
+    );
+}
+
+#[test]
+fn a_halt_without_text_still_asks_the_model_for_a_reply() {
+    let src = include_str!("../brain/agent/service/tool_loop.rs");
+    assert!(
+        src.contains("option_surface_halt_seen && option_halt_iteration_has_text"),
+        "the halt must end the turn only when the halting iteration has text"
+    );
+    assert!(
+        src.contains("option_halt_iteration_has_text = !iteration_text.trim().is_empty()"),
+        "the halting iteration's text must be recorded at the halt"
     );
 }

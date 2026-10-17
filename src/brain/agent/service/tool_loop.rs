@@ -1633,6 +1633,10 @@ impl AgentService {
         // tags that exemption surgically in the log (the skip itself fires
         // 70+ times/day for ordinary acks and must not be disturbed).
         let mut option_surface_halt_seen = false;
+        // Whether the iteration that halted on an option surface produced text
+        // (#2088). Without text there is no answer on screen, so the turn asks
+        // the model once more instead of ending empty.
+        let mut option_halt_iteration_has_text = false;
         // Consecutive identical tool rounds (#1030). Observes only; the
         // repeated call still runs and its result still reaches the model.
         // Reset on a provider swap below, because a fallback replays the
@@ -1927,7 +1931,7 @@ impl AgentService {
             // iteration's text is the answer and its tool result is already
             // persisted, so no follow-up model request is made. The loop-break
             // path below synthesizes the response from the accumulated text.
-            if option_surface_halt_seen {
+            if option_surface_halt_seen && option_halt_iteration_has_text {
                 tracing::info!("🛑 Turn ended after option-surface halt (no follow-up request)");
                 break;
             }
@@ -7192,6 +7196,8 @@ impl AgentService {
                                     // #31: the following text-only iteration is the
                                     // sign-off — tag it for the phantom-gate exemption.
                                     option_surface_halt_seen = true;
+                                    option_halt_iteration_has_text =
+                                        !iteration_text.trim().is_empty();
                                     break;
                                 }
 
@@ -7489,6 +7495,7 @@ impl AgentService {
                     // #31: the following text-only iteration is the sign-off —
                     // tag it for the phantom-gate exemption.
                     option_surface_halt_seen = true;
+                    option_halt_iteration_has_text = !iteration_text.trim().is_empty();
                     break;
                 }
             }
