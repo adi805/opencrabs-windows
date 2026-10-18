@@ -10,8 +10,8 @@
 //! than pointing `$HOME` at a tempdir, which is process-global and would let a
 //! parallel test resolve into this one's directory (#912).
 
-use crate::cli::{Commands, seeds_config_on_startup};
 use crate::cli::commands::cmd_init;
+use crate::cli::{Commands, seeds_config_on_startup};
 use crate::config::Config;
 use crate::config::profile::{with_home_override, with_home_override_async};
 use crate::config::seed::CONFIG_EXAMPLE;
@@ -67,7 +67,9 @@ async fn init_force_rewrites_an_edited_config_back_to_the_example() {
         std::fs::write(&path, "[agent]\napproval_policy = \"ask\"\n")
             .expect("stand in for a stripped config");
         let config = Config::default();
-        cmd_init(&config, true).await.expect("--force must overwrite");
+        cmd_init(&config, true)
+            .await
+            .expect("--force must overwrite");
     })
     .await;
 

@@ -52,7 +52,10 @@ fn an_unblocked_start_keeps_the_inherited_lock() {
         panic!("an inherited lock must not trigger a second acquisition")
     });
 
-    assert!(taken.is_some(), "the inherited lock is the one this start holds");
+    assert!(
+        taken.is_some(),
+        "the inherited lock is the one this start holds"
+    );
     assert!(
         acquire_scheduler_lock_in(dir.path(), "default").is_none(),
         "the lock is still held by this start"
@@ -65,9 +68,8 @@ fn an_unblocked_start_acquires_when_nothing_was_inherited() {
     let dir = lock_dir();
     let path = dir.path().to_path_buf();
 
-    let taken = scheduler_lock_for_start(false, None, || {
-        acquire_scheduler_lock_in(&path, "default")
-    });
+    let taken =
+        scheduler_lock_for_start(false, None, || acquire_scheduler_lock_in(&path, "default"));
 
     assert!(taken.is_some(), "the start owns scheduling for the profile");
     assert!(
@@ -80,10 +82,19 @@ fn an_unblocked_start_acquires_when_nothing_was_inherited() {
 /// blocks the scheduler.
 #[test]
 fn only_an_enabled_unready_gateway_blocks_the_scheduler() {
-    assert!(!cron_blocked_by_a2a(false, false), "A2A off is never a blocker");
-    assert!(!cron_blocked_by_a2a(false, true), "A2A off, readiness irrelevant");
+    assert!(
+        !cron_blocked_by_a2a(false, false),
+        "A2A off is never a blocker"
+    );
+    assert!(
+        !cron_blocked_by_a2a(false, true),
+        "A2A off, readiness irrelevant"
+    );
     assert!(!cron_blocked_by_a2a(true, true), "A2A up is not a blocker");
-    assert!(cron_blocked_by_a2a(true, false), "enabled but not ready blocks");
+    assert!(
+        cron_blocked_by_a2a(true, false),
+        "enabled but not ready blocks"
+    );
 }
 
 /// A degraded start never prints the plain success line.
@@ -93,9 +104,18 @@ fn a_degraded_start_names_the_failed_bind_and_the_lost_cron() {
     assert_eq!(plain, "🦀 OpenCrabs daemon running. Press Ctrl+C to stop.");
 
     let degraded = daemon_start_line(true, "127.0.0.1", 18790);
-    assert_ne!(degraded, plain, "a failed bind must not claim a normal start");
-    assert!(!degraded.contains("daemon running."), "not the success line");
-    assert!(degraded.contains("degraded"), "the state is named: {degraded}");
+    assert_ne!(
+        degraded, plain,
+        "a failed bind must not claim a normal start"
+    );
+    assert!(
+        !degraded.contains("daemon running."),
+        "not the success line"
+    );
+    assert!(
+        degraded.contains("degraded"),
+        "the state is named: {degraded}"
+    );
     assert!(
         degraded.contains("127.0.0.1:18790"),
         "the operator needs the address that failed: {degraded}"
