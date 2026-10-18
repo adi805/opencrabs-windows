@@ -479,8 +479,11 @@ A guest reply answers a stranger in a chat you were never invited to, so the gat
 What the guest turn sees and sends:
 
 - Only the tagged message. No history from the chat, and nothing from the guest turn enters that group's history either.
-- A single plain-text reply, clamped to Telegram's 4096-character limit (an overlong reply is cut and marked, not dropped). Channel directives are stripped, so a local file path can never leak into a stranger's chat.
-- No `parse_mode`, so the reply arrives as plain text.
+- A single reply, posted as soon as the turn starts and then **edited in place** while it runs: the caller watches the same status block a regular chat shows, with the tools the agent is using, the tool count, the context budget and the settled footer. `answerGuestQuery` returns the reply's `inline_message_id` and every later edit goes through `editMessageText` with that id, which is Telegram's own recommendation for this ("reporting its progress back to the chat or group"). Sent with `parse_mode=HTML` so the block keeps its formatting.
+- Clamped to Telegram's 4096-character limit, counted the way Telegram counts it (UTF-16 units, so an emoji is 2). An overlong answer is cut and marked, and if the block would leave too little room for a real answer the answer ships alone.
+- Secrets are scrubbed, always: a guest reply goes to a chat you do not control, so it never takes the DM branch that shows credentials.
+- Channel directives are stripped, so a local file path can never leak into a stranger's chat.
+- No typing indicator is possible (the bot is not a member of the chat, so there is nothing to type in), and no per-tool messages: the API gives one reply per summon.
 - Tools that need approval are denied: approvals are buttons in a chat, and the caller is not the machine's owner.
 
 Guest queries land on the raw `getUpdates` layer (`allowed_updates` includes `guest_message`), the same path `message_reaction` used before teloxide grew a typed variant for it. The pinned `teloxide-core` has no guest variant, so a guest update is never dispatched as a normal message.

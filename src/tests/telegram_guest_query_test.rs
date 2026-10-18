@@ -162,14 +162,26 @@ fn answer_body_is_a_wellformed_guest_result_and_honours_the_text_ceiling() {
     assert!(text.ends_with("[truncated]"), "cut is marked: {text:?}");
     assert!(text.starts_with(&"x".repeat(64)));
 
-    // The cut counts characters, so multi-byte text is never split in half.
+    // The cut counts the units Telegram counts, so astral text runs out of
+    // room sooner than a character count suggests (a crab is 2 units) and a
+    // glyph is never split in half.
     let emoji = "\u{1F980}".repeat(5000);
     let multibyte = answer_guest_query_body("gq-3", &emoji);
     let text = multibyte["result"]["input_message_content"]["message_text"]
         .as_str()
         .expect("message_text is a string");
-    assert_eq!(text.chars().count(), 4096);
-    assert!(text.starts_with('\u{1F980}'));
+    assert!(utf16_len(text) <= 4096, "{} units", utf16_len(text));
+    let cut = text.strip_suffix("[truncated]").expect("cut is marked");
+    let kept = cut.trim_end_matches('\n');
+    assert!(
+        kept.chars().all(|c| c == '\u{1F980}'),
+        "whole glyphs only, never half a crab"
+    );
+    assert!(
+        kept.chars().count() >= 2000,
+        "the room is spent, not left empty: {} crabs",
+        kept.chars().count()
+    );
 }
 
 #[test]
@@ -200,4 +212,202 @@ fn the_caller_gate_refuses_unlisted_callers_and_grants_nothing_when_off() {
     // A group's open = true opens THAT group to the bot; it does not mean the
     // bot answers guest tags from its members.
     assert!(!on.guest_allowed("444", Some("-100open")));
+}
+
+// ── The progress block (#2109) ─────────────────────────────────────────────
+//
+// A guest summon gets one reply and no typing indicator, so the reply itself
+// is the progress surface: it is posted when the turn starts and edited in
+// place on the regular cadence. These pin the two halves of that. The state it
+// renders is the state a regular turn renders, so the tool lines, the counters
+// and the footer are not a guest-shaped copy; and the composed message always
+// fits inside what `editMessageText` accepts.
+
+use std::sync::{Arc, Mutex};
+
+use crate::brain::agent::ProgressEvent;
+use crate::channels::background_work::FlowOutcome;
+use crate::channels::telegram::flow::{StreamingState, drain_display_queue, render_flow};
+use crate::channels::telegram::guest::{
+    compose_guest_message, edit_response_ok, guest_sanitize, utf16_len, visible_len,
+};
+use crate::channels::telegram::handler::thinking_status_excerpt;
+use crate::channels::telegram::progress::apply_progress_event;
+
+fn turn_state() -> Arc<Mutex<StreamingState>> {
+    // `is_dm: false` is the scrubbing scope: a reply into a chat we do not
+    // control must never carry a credential, so the guest state is built the
+    // way a group chat builds it.
+    Arc::new(Mutex::new(StreamingState::new_turn(false, false)))
+}
+
+/// Run one tool through the shared event mapping and settle the block, the way
+/// the guest path does at the end of a turn.
+fn settled_block() -> String {
+    let state = turn_state();
+    apply_progress_event(
+        &state,
+        ProgressEvent::ToolStarted {
+            tool_name: "bash".to_string(),
+            tool_input: json!({"command": "ls"}),
+            tool_call_id: "call-1".to_string(),
+        },
+    );
+    apply_progress_event(
+        &state,
+        ProgressEvent::ToolCompleted {
+            tool_name: "bash".to_string(),
+            tool_input: json!({"command": "ls"}),
+            success: true,
+            summary: "ok".to_string(),
+            tool_call_id: "call-1".to_string(),
+        },
+    );
+    let mut s = state.lock().unwrap();
+    drain_display_queue(&mut s, |text, _| text.to_string());
+    s.flow_outcome = Some(FlowOutcome::Finished);
+    s.tools_started_at = None;
+    s.sections.ctx = Some("ctx: 1.2K/128K 1%".to_string());
+    render_flow(&s)
+}
+
+#[test]
+fn a_settled_guest_reply_carries_the_block_the_footer_and_the_answer() {
+    let block = settled_block();
+    let message = compose_guest_message(&block, "Here is the answer.");
+
+    assert!(
+        message.contains("✅ Finished"),
+        "the settled outcome leads the block: {message}"
+    );
+    assert!(
+        message.contains("1 tool calls"),
+        "the tool the turn ran is counted, so its line reached the log: {message}"
+    );
+    assert!(
+        message.contains("ctx: 1.2K/128K 1%"),
+        "the context budget rides the settled block: {message}"
+    );
+    assert!(
+        message.contains("Here is the answer."),
+        "the answer is in the same message: {message}"
+    );
+    assert!(
+        message.ends_with("Here is the answer."),
+        "the answer sits under the block, not inside it: {message}"
+    );
+}
+
+#[test]
+fn a_live_guest_reply_shows_activity_and_no_settled_chrome() {
+    let state = turn_state();
+    apply_progress_event(
+        &state,
+        ProgressEvent::ReasoningChunk {
+            // The shared excerpt capitalises its first letter, so the line
+            // reads exactly as it does in a normal chat.
+            text: "Checking the repository layout".to_string(),
+        },
+    );
+    let live = {
+        let mut s = state.lock().unwrap();
+        drain_display_queue(&mut s, |text, _| text.to_string());
+        s.header_preview = thinking_status_excerpt(&s.thinking);
+        render_flow(&s)
+    };
+
+    assert!(
+        live.contains("Checking the repository layout"),
+        "the live status line rides the block while the turn runs: {live}"
+    );
+    assert!(
+        !live.contains("Finished"),
+        "nothing settled while the turn is live: {live}"
+    );
+    assert!(
+        !live.contains("ctx:"),
+        "the context budget is settle-time chrome only: {live}"
+    );
+}
+
+#[test]
+fn a_guest_reply_never_exceeds_the_edit_ceiling() {
+    let block = settled_block();
+    let answer = "x".repeat(9000);
+    let message = compose_guest_message(&block, &answer);
+
+    assert!(
+        visible_len(&message) <= 4096,
+        "over the ceiling at {} units",
+        visible_len(&message)
+    );
+    assert!(message.contains("[truncated]"), "the cut is marked");
+    assert!(
+        message.contains("✅ Finished"),
+        "the block survives the cut: the ceiling belongs to the answer"
+    );
+}
+
+#[test]
+fn a_block_that_leaves_no_room_drops_out_of_the_reply() {
+    let block = format!("<blockquote>{}</blockquote>", "x".repeat(5000));
+    let message = compose_guest_message(&block, "short answer");
+
+    assert_eq!(
+        message, "short answer",
+        "the answer ships alone rather than squeezed under a footer"
+    );
+}
+
+#[test]
+fn the_ceiling_counts_utf16_units_not_chars() {
+    // 4096 crab emoji are 8192 UTF-16 units, which is what Telegram counts.
+    // A character count lets this through to a "message is too long" error.
+    let body = answer_guest_query_body("gq-crabs", &"🦀".repeat(4096));
+    let sent = body["result"]["input_message_content"]["message_text"]
+        .as_str()
+        .expect("message_text");
+
+    assert!(utf16_len(sent) <= 4096, "{} units", utf16_len(sent));
+    assert!(sent.ends_with("[truncated]"), "the cut is marked");
+}
+
+#[test]
+fn a_no_op_edit_is_success_not_failure() {
+    assert!(
+        edit_response_ok(&json!({"ok": true, "result": true})),
+        "a landed edit"
+    );
+    assert!(
+        edit_response_ok(&json!({"ok": false, "error_code": 400,
+                    "description": "Bad Request: message is not modified"})),
+        "writing identical text is what the caller wanted"
+    );
+    assert!(
+        !edit_response_ok(&json!({"ok": false, "error_code": 400,
+                    "description": "Bad Request: message to edit not found"})),
+        "a reply that is gone is a real failure"
+    );
+    assert!(
+        !edit_response_ok(&json!({"ok": false, "error_code": 429,
+                    "description": "Too Many Requests: retry after 30"})),
+        "a rate limit is not a success"
+    );
+}
+
+#[test]
+fn guest_lines_never_carry_markers_or_artifacts() {
+    let line = guest_sanitize(
+        "Here you go <<IMG:/Users/adolfo/secret.png>> <<react:👍>> done",
+        false,
+    );
+
+    assert!(
+        !line.contains("<<IMG"),
+        "no local path in a stranger's chat"
+    );
+    assert!(
+        !line.contains("<<react"),
+        "no channel directive in the block"
+    );
 }
