@@ -26,8 +26,7 @@ pub use find::BrowserFindTool;
 // (src/tests/browser_act_test.rs).
 #[cfg(test)]
 pub(crate) use act::{
-    Act, build_pre_flight_js, build_pre_flight_js_with, format_prefix_report, parse_actions,
-    resolve_upload_paths,
+    Act, build_pre_flight_js_with, format_prefix_report, parse_actions, resolve_upload_paths,
 };
 
 // Eval output cap — re-exported only for test fixtures

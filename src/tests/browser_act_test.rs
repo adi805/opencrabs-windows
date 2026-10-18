@@ -7,8 +7,7 @@
 #![cfg(feature = "browser")]
 
 use crate::brain::tools::browser::{
-    Act, build_pre_flight_js, build_pre_flight_js_with, format_prefix_report, parse_actions,
-    resolve_upload_paths,
+    Act, build_pre_flight_js_with, format_prefix_report, parse_actions, resolve_upload_paths,
 };
 use serde_json::json;
 
@@ -124,11 +123,12 @@ fn prefix_report_names_completed_prefix_and_holds_remaining() {
 
 #[test]
 fn pre_flight_js_embeds_all_selectors_and_all_three_shapes() {
-    let js = build_pre_flight_js(&[
-        "#submit".into(),
-        "text=Sign in".into(),
-        "xpath=//button[1]".into(),
-    ]);
+    let sels = vec![
+        "#submit".to_string(),
+        "text=Sign in".to_string(),
+        "xpath=//button[1]".to_string(),
+    ];
+    let js = build_pre_flight_js_with(&sels, &[true, true, true]);
     // All three selectors ride in as a JSON array.
     assert!(js.contains("\"#submit\""), "js: {js}");
     assert!(js.contains(r#""text=Sign in""#), "js: {js}");
@@ -276,8 +276,8 @@ fn upload_targets_are_exempt_from_the_visibility_requirement() {
     assert!(js.contains("!needVis ||"), "js: {js}");
     assert!(js.contains(r#""not found""#), "js: {js}");
 
-    // The plain builder still requires visibility for everything.
-    let js = build_pre_flight_js(&sels);
+    // All-visible is what the plain batch path asks for.
+    let js = build_pre_flight_js_with(&sels, &[true, true]);
     assert!(js.contains("var vis = [true,true];"), "js: {js}");
 }
 

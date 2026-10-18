@@ -248,15 +248,6 @@ pub(crate) fn format_prefix_report(done: usize, failed: &Act, reason: &str) -> S
     }
 }
 
-/// Build the one-pass pre-flight JS: resolves EVERY selector (all three
-/// shapes: CSS, `text=…`, `xpath=…`) and reports presence + visibility.
-/// Injected as a JSON array so quoting is airtight; pure fn — shape is
-/// pinned by tests.
-pub(crate) fn build_pre_flight_js(selectors: &[String]) -> String {
-    let visible = vec![true; selectors.len()];
-    build_pre_flight_js_with(selectors, &visible)
-}
-
 /// Same pass, with a per-selector visibility requirement.
 ///
 /// An `upload` target is usually a file input that the site hides behind a
