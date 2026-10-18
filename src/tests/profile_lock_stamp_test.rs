@@ -21,11 +21,11 @@ use std::time::{Duration, UNIX_EPOCH};
 // Each platform-gated import is listed under the same cfg as the tests that
 // use it, so a Windows or unsupported-platform build does not warn about an
 // import only its own build cannot reach.
-use crate::config::profile::{owner_stamp, split_pid_ticks, stamp_owner_is_live};
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-use crate::config::profile::{active_profile, foreign_lock_owners, process_creation_stamp};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::config::profile::boot_epoch;
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+use crate::config::profile::{active_profile, foreign_lock_owners, process_creation_stamp};
+use crate::config::profile::{owner_stamp, split_pid_ticks, stamp_owner_is_live};
 
 /// Serialize against every other test that reads or writes under the
 /// $HOME-resolved `~/.opencrabs`, the same lock `profile_test` takes.
