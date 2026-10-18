@@ -3,8 +3,11 @@
 //! The check is pure: USER.md text and the three capability flags go in,
 //! the list of gaps comes out. Nothing here reads the live home.
 
+use crate::config::{Config, ProviderConfig, ProviderConfigs};
 use crate::tui::onboarding::SetupGap;
-use crate::tui::onboarding::setup_gaps::{collect_gaps, profile_gaps, render_gaps};
+use crate::tui::onboarding::setup_gaps::{
+    collect_gaps, image_generation_ready, profile_gaps, render_gaps,
+};
 
 const TEMPLATE_USER_MD: &str = include_str!("../docs/reference/templates/USER.md");
 
@@ -106,4 +109,52 @@ fn gap_labels_have_no_em_dash() {
     for gap in collect_gaps("", false, false, false) {
         assert!(!gap.label().contains('\u{2014}'));
     }
+}
+
+// ---------------------------------------------------------------------------
+// #2106: the image leg must ask the tool's own resolution, not the raw
+// `[image.generation]` flag. The built-in provider ships that flag off and no
+// key, yet serves image generation through its `generation_model`, so a fresh
+// built-in install was told to switch on a capability it already had.
+// ---------------------------------------------------------------------------
+
+const BUILTIN_IMAGE_MODEL: &str = "gemini-3.1-flash-image";
+
+fn builtin_provider_config(api_key: Option<&str>) -> Config {
+    Config {
+        providers: ProviderConfigs {
+            opencrabs: Some(ProviderConfig {
+                enabled: true,
+                api_key: api_key.map(str::to_string),
+                default_model: Some("deepseek-v4.1-flash".into()),
+                generation_model: Some(BUILTIN_IMAGE_MODEL.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_builtin_provider_counts_as_an_image_route() {
+    assert!(
+        image_generation_ready(&builtin_provider_config(Some("ocp_test_token"))),
+        "the built-in provider serves image generation once its model and token are set"
+    );
+}
+
+#[test]
+fn a_builtin_section_without_a_token_is_not_a_route() {
+    assert!(!image_generation_ready(&builtin_provider_config(None)));
+}
+
+#[test]
+fn no_generation_route_at_all_still_reports_the_gap() {
+    let config = Config::default();
+    assert!(!image_generation_ready(&config));
+    assert!(
+        collect_gaps(FILLED_USER_MD, true, true, image_generation_ready(&config))
+            .contains(&SetupGap::ImageGeneration)
+    );
 }

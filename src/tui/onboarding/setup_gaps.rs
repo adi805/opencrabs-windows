@@ -99,6 +99,24 @@ pub fn render_gaps(gaps: &[SetupGap]) -> String {
         .join(", ")
 }
 
+/// Is image generation already available to the tools?
+///
+/// Asks the question the tool itself asks: does ANY generation route
+/// resolve. `GenerateImageTool::plan_candidates` walks the provider chain
+/// first and then the global `[image.generation]` leg, so it is a strict
+/// superset of the old hand-rolled `enabled && api_key` check and an install
+/// configured the old way keeps the same answer.
+///
+/// Reading `config.image.generation` alone is what #2106 reported: the
+/// built-in provider ships `enabled = false` with no key yet serves image
+/// generation through its own `generation_model`, so every fresh built-in
+/// user was told a capability they already had was missing.
+pub(crate) fn image_generation_ready(config: &Config) -> bool {
+    !crate::brain::tools::generate_image::GenerateImageTool::plan_candidates(config, None)
+        .is_empty()
+}
+
+/// Read USER.md and the config from disk and report what is still missing.
 /// Read USER.md and the config from disk and report what is still missing.
 ///
 /// A missing USER.md counts as an empty profile. A config that fails to load
@@ -118,13 +136,7 @@ pub fn read_setup_gaps() -> Vec<SetupGap> {
     let (stt, tts, image) = match Config::load() {
         Ok(config) => {
             let voice = config.voice_config();
-            let image_ready = config.image.generation.enabled
-                && config
-                    .image
-                    .generation
-                    .api_key
-                    .as_deref()
-                    .is_some_and(|key| !key.is_empty());
+            let image_ready = image_generation_ready(&config);
             (voice.stt_enabled, voice.tts_enabled, image_ready)
         }
         Err(e) => {
