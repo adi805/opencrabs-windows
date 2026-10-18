@@ -520,8 +520,7 @@ impl AgentService {
                 registry.set_skill_gate_enabled(config.agent.skill_glob_gate);
                 // Mechanical plan requirement: after N calls in a turn with no
                 // plan, further calls are refused until `plan` init runs.
-                registry
-                    .set_plan_gate_after_tool_calls(config.agent.plan_gate_after_tool_calls);
+                registry.set_plan_gate_after_tool_calls(config.agent.plan_gate_after_tool_calls);
                 Arc::new(registry)
             },
             max_tool_iterations: 0, // 0 = unlimited (loop detection is the safety net)

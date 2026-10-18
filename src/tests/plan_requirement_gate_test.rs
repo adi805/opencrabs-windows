@@ -63,7 +63,10 @@ async fn exactly_at_the_threshold_still_allows() {
         let sid = Uuid::new_v4();
         // The threshold is inclusive: the Nth call runs, the N+1th is refused.
         let decision = check_plan_requirement(sid, "bash", THRESHOLD, THRESHOLD, false).await;
-        assert!(decision.is_allowed(), "call {THRESHOLD} is the last free one");
+        assert!(
+            decision.is_allowed(),
+            "call {THRESHOLD} is the last free one"
+        );
     })
     .await;
 }
@@ -72,8 +75,7 @@ async fn exactly_at_the_threshold_still_allows() {
 async fn over_the_threshold_without_a_plan_denies_and_names_the_count() {
     in_temp_home(async {
         let sid = Uuid::new_v4();
-        let decision =
-            check_plan_requirement(sid, "bash", THRESHOLD + 1, THRESHOLD, false).await;
+        let decision = check_plan_requirement(sid, "bash", THRESHOLD + 1, THRESHOLD, false).await;
         let reason = match decision {
             crate::brain::tools::plan_gate::GateDecision::Deny(reason) => reason,
             other => panic!("expected a deny, got {other:?}"),
@@ -143,8 +145,7 @@ async fn an_active_plan_allows_work() {
     in_temp_home(async {
         let sid = Uuid::new_v4();
         make_active(sid).await;
-        let decision =
-            check_plan_requirement(sid, "bash", THRESHOLD + 20, THRESHOLD, false).await;
+        let decision = check_plan_requirement(sid, "bash", THRESHOLD + 20, THRESHOLD, false).await;
         assert!(
             decision.is_allowed(),
             "a live checklist IS the requirement being met"
