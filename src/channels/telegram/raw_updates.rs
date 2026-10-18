@@ -385,13 +385,13 @@ async fn poll_once(st: &mut RawPollState) {
 /// bot was never added to. See [`super::inline`] for the owner gate and the
 /// bounded result set that keeps it from becoming a second agent loop.
 ///
-/// `stopped_message_generation` (Bot API 10.3) is the one kind with no branch
-/// and no name in [`update_kind_name`], because teloxide-core 0.13 does not
-/// model it: the typed parse lands on `UpdateKind::Error`, so there is no
-/// filter to write. It is subscribed to anyway, and read straight off the raw
-/// payload by [`poll_once_inner`], because a stop request that never arrives
-/// is worse than one the dispatcher cannot route. Adding it here is what makes
-/// Telegram deliver it at all.
+/// `stopped_message_generation` (Bot API 10.3) and `guest_message` (Bot API
+/// 10.0) are the kinds with no branch and no name in [`update_kind_name`],
+/// because teloxide-core 0.13 does not model either: the typed parse lands on
+/// `UpdateKind::Error`, so there is no filter to write. Both are subscribed to
+/// anyway and read straight off the raw payload by [`poll_once_inner`], because
+/// an update that never arrives is worse than one the dispatcher cannot route.
+/// Adding them here is what makes Telegram deliver them at all.
 pub(crate) const ALLOWED_UPDATES: &[&str] = &[
     "message",
     "edited_message",

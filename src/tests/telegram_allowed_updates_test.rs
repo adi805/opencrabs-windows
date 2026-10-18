@@ -8,12 +8,13 @@
 //! returned "other" for it, so the poll log could not name an update the loop
 //! was actively receiving.
 //!
-//! One kind is exempt from the typed half of that agreement. Bot API 10.3
-//! `stopped_message_generation` has no `UpdateKind` variant in teloxide-core
-//! 0.13, so no `Update::filter_*` can exist for it and `update_kind_name`
-//! (which matches on `UpdateKind`) can never name it; the poll loop reads it
-//! off the raw envelope instead. `OFF_ENVELOPE_KINDS` holds those exemptions,
-//! and `off_envelope_kinds_are_read_off_the_envelope` pins each one to a real
+//! Two kinds are exempt from the typed half of that agreement. Bot API 10.3
+//! `stopped_message_generation` and Bot API 10.0 `guest_message` have no
+//! `UpdateKind` variant in teloxide-core 0.13, so no `Update::filter_*` can
+//! exist for either and `update_kind_name` (which matches on `UpdateKind`) can
+//! never name them; the poll loop reads both off the raw envelope instead.
+//! `OFF_ENVELOPE_KINDS` holds those exemptions, and
+//! `off_envelope_kinds_are_read_off_the_envelope` pins each one to a real
 //! reader, so the list cannot quietly excuse a branch that was forgotten.
 
 use crate::channels::telegram::raw_updates::{ALLOWED_UPDATES, raw_update_kind_name};
@@ -40,6 +41,7 @@ const EXPECTED_FILTERS: &[(&str, &str)] = &[
 /// so both guards below still fail for it.
 const OFF_ENVELOPE_KINDS: &[(&str, &str)] = &[
     // (Bot API name, the raw reader the poll loop calls)
+    ("guest_message", "parse_guest_query("),
     ("stopped_message_generation", "stopped_message_generation("),
 ];
 
