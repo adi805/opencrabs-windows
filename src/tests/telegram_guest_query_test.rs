@@ -231,8 +231,8 @@ use crate::channels::telegram::flow::{
     FlowEntry, StreamingState, drain_display_queue, render_flow,
 };
 use crate::channels::telegram::guest::{
-    compose_guest_message, edit_response_ok, guest_sanitize, settle_guest_answer, utf16_len,
-    visible_len,
+    compose_guest_message, edit_response_ok, guest_sanitize, settle_guest_answer,
+    settled_guest_message, utf16_len, visible_len,
 };
 use crate::channels::telegram::handler::thinking_status_excerpt;
 use crate::channels::telegram::progress::apply_progress_event;
@@ -531,5 +531,38 @@ fn narration_before_a_trailing_tool_entry_is_not_the_answer() {
         entries.len(),
         3,
         "a distinct narration line stays in the block: {entries:?}"
+    );
+}
+
+#[test]
+fn a_no_tool_guest_turn_renders_the_footer_and_the_answer_and_nothing_else() {
+    // 2026-10-18 06:20, guest session b809ac31 ("Guest Test"): the turn ran
+    // zero tools (`Found 0 tool uses to execute`), yet the reply shipped a
+    // `<blockquote expandable>` holding the answer, the footer under it, and
+    // the answer again below (#2113). A regular chat shows no expandable at
+    // all when no tool ran, because the log body is what the expandable
+    // wraps. The guest reply has to reach the same shape inside one message.
+    let answer = "Loud and clear, whoever you are. Your test message landed.";
+    let state = turn_state();
+    apply_progress_event(
+        &state,
+        ProgressEvent::IntermediateText {
+            text: answer.to_string(),
+            reasoning: None,
+        },
+    );
+    // The whole settle step, exactly as the runner runs it.
+    let (message, reply) = settled_guest_message(&state, answer, "ctx: 48K/200K 24%".to_string());
+    eprintln!("--- 0-tool guest reply ---\n{message}\n--- end ---");
+
+    assert_eq!(reply, answer, "the reply is the answer, unchanged");
+    assert!(
+        !message.contains("<blockquote"),
+        "no tool ran, so there is no log to collapse: {message}"
+    );
+    assert_eq!(
+        message, answer,
+        "a zero-log turn is the answer and nothing else, the shape a regular \
+         turn lands on when it opens no block: {message}"
     );
 }
