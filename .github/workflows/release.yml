@@ -427,8 +427,13 @@ jobs:
           elif [[ "${{ matrix.asset_suffix }}" == macos-* ]]; then
             tar czf "${ASSET_NAME}.tar.gz" -C dist OpenCrabs.app
           else
+            # A Linux desktop needs a menu entry and an icon next to the binary,
+            # or a file manager shows the generic exec glyph.
+            cp packaging/linux/opencrabs.desktop packaging/linux/opencrabs.png \
+              target/${{ matrix.target }}/release/
             cd target/${{ matrix.target }}/release
-            tar czf ../../../${ASSET_NAME}.tar.gz ${{ matrix.artifact_name }} rtk
+            tar czf ../../../${ASSET_NAME}.tar.gz ${{ matrix.artifact_name }} rtk \
+              opencrabs.desktop opencrabs.png
           fi
 
       - name: Upload artifact

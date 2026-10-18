@@ -40,6 +40,57 @@ fn the_release_workflow_bundles_the_macos_app() {
 }
 
 #[test]
+fn the_release_workflow_ships_the_linux_desktop_files() {
+    let workflow = read(".github/workflows/release.yml");
+
+    for file in ["opencrabs.desktop", "opencrabs.png"] {
+        assert!(
+            workflow.contains(file),
+            "the release workflow does not pack {file}, so a Linux install has no menu entry and no icon"
+        );
+    }
+    assert!(
+        workflow.contains("packaging/linux/"),
+        "the release workflow does not copy the files out of packaging/linux/, so the tar would fail on a missing path"
+    );
+}
+
+#[test]
+fn the_desktop_entry_declares_what_a_launcher_needs() {
+    let entry = read("packaging/linux/opencrabs.desktop");
+
+    assert!(
+        entry.starts_with("[Desktop Entry]"),
+        "a .desktop file must open with the [Desktop Entry] group"
+    );
+    for line in [
+        "Type=Application",
+        "Exec=opencrabs",
+        "Icon=opencrabs",
+        "Terminal=true",
+        "Categories=Development;",
+    ] {
+        assert!(
+            entry.lines().any(|l| l == line),
+            "missing `{line}` in the desktop entry"
+        );
+    }
+}
+
+#[test]
+fn the_desktop_icon_matches_the_shipped_asset() {
+    let shipped = std::fs::read(repo().join("packaging/linux/opencrabs.png"))
+        .expect("packaging/linux/opencrabs.png is missing");
+    let source =
+        std::fs::read(repo().join("src/assets/icon.png")).expect("src/assets/icon.png is missing");
+
+    assert_eq!(
+        shipped, source,
+        "the packaged desktop icon drifted from src/assets/icon.png"
+    );
+}
+
+#[test]
 fn the_bundle_script_is_executable() {
     let path = repo().join("scripts/package-macos-app.sh");
     let meta = std::fs::metadata(&path).expect("scripts/package-macos-app.sh is missing");

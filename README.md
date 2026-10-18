@@ -2084,14 +2084,14 @@ curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/la
 # macOS (Intel)
 curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-amd64\.tar\.gz\)".*/\1/p')" | tar xz && sudo cp -R OpenCrabs.app /Applications/ && sudo ln -sf /Applications/OpenCrabs.app/Contents/MacOS/opencrabs /usr/local/bin/opencrabs
 
-# Linux (x86_64)
-curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+# Linux (x86_64) — binary plus a desktop entry and icon
+curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/ && install -Dm644 opencrabs.desktop ~/.local/share/applications/opencrabs.desktop && install -Dm644 opencrabs.png ~/.local/share/icons/hicolor/256x256/apps/opencrabs.png
 
 # Linux (ARM64)
-curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/
+curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/ && install -Dm644 opencrabs.desktop ~/.local/share/applications/opencrabs.desktop && install -Dm644 opencrabs.png ~/.local/share/icons/hicolor/256x256/apps/opencrabs.png
 ```
 
-The macOS archive ships `OpenCrabs.app`, not a loose binary: macOS reads an app icon only from a bundle, so a bare Mach-O always shows the generic exec glyph. Copying the bundle to `/Applications` gives you the Dock icon and a Launchpad entry, and the symlink keeps `opencrabs` on your PATH.
+The macOS archive ships `OpenCrabs.app`, not a loose binary: macOS reads an app icon only from a bundle, so a bare Mach-O always shows the generic exec glyph. Copying the bundle to `/Applications` gives you the Dock icon and a Launchpad entry, and the symlink keeps `opencrabs` on your PATH. The Linux archive carries `opencrabs.desktop` and `opencrabs.png` for the same reason, so your application menu has an entry with the real icon instead of a nameless terminal.
 
 Then just type `opencrabs` to start. The onboarding wizard handles everything on first run.
 
