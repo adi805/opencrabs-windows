@@ -54,7 +54,8 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::flow::{
-    FlowOutcome, StreamingState, drain_display_queue, humanize_duration, render_flow,
+    FlowEntry, FlowOutcome, StreamingState, drain_display_queue, folded_duplicates_final,
+    humanize_duration, last_folded_text, pop_trailing_folded_texts, render_flow,
 };
 use super::handler::thinking_status_excerpt;
 use super::markdown::markdown_to_telegram_html;
@@ -245,6 +246,64 @@ pub(crate) fn compose_guest_message(block_html: &str, answer_markdown: &str) -> 
         return answer;
     }
     composed
+}
+
+/// Take the answer out of the flow log so the settled reply carries it once.
+///
+/// The streamed answer also reaches the flow log as intermediate text, so a
+/// settled block renders it and the reply renders it again: the caller sees
+/// the same paragraph twice in one message (#2113). The regular delivery path
+/// reclaims that copy before it sends the answer (#300); a guest reply is a
+/// single message, so the same reclaim has to happen here.
+///
+/// - No content from the turn: the folded run IS the answer and comes back as
+///   the reply. With `options_pending` the answer sits before the trailing
+///   tool entry, so the popper lifts that entry aside and restores it.
+/// - Content that duplicates the folded run: the folded copy leaves the block.
+/// - A folded run that is neither stays where it is, because a narration line
+///   that merely ended the turn is not the answer.
+pub(crate) fn settle_guest_answer(
+    entries: &mut Vec<FlowEntry>,
+    content: &str,
+    options_pending: bool,
+) -> String {
+    if content.trim().is_empty() {
+        let (host, trailer) = pop_trailing_folded_texts(entries, options_pending);
+        return match (host, trailer) {
+            (Some(host), Some(trailer)) => format!("{host}\n\n{trailer}"),
+            (Some(host), None) => host,
+            (None, _) => String::new(),
+        };
+    }
+    // The reply carries the answer, so any copy of it left in the block would
+    // be read twice. Drop only the runs that duplicate it: a distinct narration
+    // line that merely ended the turn is not the answer and stays where it is.
+    while last_folded_text(entries).is_some_and(|folded| folded_duplicates_final(folded, content)) {
+        let Some(pos) = entries
+            .iter()
+            .rposition(|e| matches!(e, FlowEntry::Text(_)))
+        else {
+            break;
+        };
+        entries.remove(pos);
+    }
+    // A turn that halted on the options surface keeps its answer BEFORE the
+    // trailing tool entry, where `last_folded_text` refuses to look. The shared
+    // popper is the only thing that knows how to lift that entry aside and put
+    // it back, so it runs on a copy and is kept only when the run it reclaimed
+    // really is the answer.
+    if options_pending {
+        let mut trial = entries.clone();
+        let (host, trailer) = pop_trailing_folded_texts(&mut trial, true);
+        let reclaimed = [host, trailer]
+            .into_iter()
+            .flatten()
+            .any(|run| folded_duplicates_final(&run, content));
+        if reclaimed {
+            *entries = trial;
+        }
+    }
+    content.to_string()
 }
 
 /// Short single-line title for the inline article. Telegram shows it in the
@@ -520,7 +579,16 @@ impl GuestRunner {
             }
         };
 
-        let reply = prepare_guest_text(&response.content);
+        // The answer also streamed into the flow log as intermediate text, so
+        // rendering the settled block as-is would carry it twice: once inside
+        // the block and once under it (#2113). Reclaim it the way the regular
+        // delivery path does (#300) before the block is rendered.
+        let content = prepare_guest_text(&response.content);
+        let reply = {
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            let options_pending = s.pending_suggestions.is_some();
+            settle_guest_answer(&mut s.flow_entries, &content, options_pending)
+        };
         if reply.is_empty() {
             tracing::warn!(
                 "Telegram guest: query {} produced an empty reply, sending the block alone",

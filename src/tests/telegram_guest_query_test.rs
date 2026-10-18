@@ -227,9 +227,12 @@ use std::sync::{Arc, Mutex};
 
 use crate::brain::agent::ProgressEvent;
 use crate::channels::background_work::FlowOutcome;
-use crate::channels::telegram::flow::{StreamingState, drain_display_queue, render_flow};
+use crate::channels::telegram::flow::{
+    FlowEntry, StreamingState, drain_display_queue, render_flow,
+};
 use crate::channels::telegram::guest::{
-    compose_guest_message, edit_response_ok, guest_sanitize, utf16_len, visible_len,
+    compose_guest_message, edit_response_ok, guest_sanitize, settle_guest_answer, utf16_len,
+    visible_len,
 };
 use crate::channels::telegram::handler::thinking_status_excerpt;
 use crate::channels::telegram::progress::apply_progress_event;
@@ -409,5 +412,124 @@ fn guest_lines_never_carry_markers_or_artifacts() {
     assert!(
         !line.contains("<<react"),
         "no channel directive in the block"
+    );
+}
+
+#[test]
+fn an_answer_that_also_streamed_into_the_block_is_not_repeated() {
+    // 2026-10-18 06:20, guest session b809ac31: a no-tool turn streamed its
+    // whole answer as intermediate text, so the block carried it and the reply
+    // carried it again (#2113).
+    let answer = "Loud and clear. The plumbing works.";
+    let mut entries = vec![FlowEntry::Text(answer.to_string())];
+
+    let reply = settle_guest_answer(&mut entries, answer, false);
+
+    assert_eq!(reply, answer, "the reply is the answer, unchanged");
+    assert!(
+        entries.is_empty(),
+        "the folded copy leaves the block, so it renders once: {entries:?}"
+    );
+}
+
+#[test]
+fn a_folded_answer_becomes_the_reply_when_the_turn_returned_nothing() {
+    let mut entries = vec![
+        FlowEntry::Tool(0),
+        FlowEntry::Text("The answer.".to_string()),
+    ];
+
+    let reply = settle_guest_answer(&mut entries, "", false);
+
+    assert_eq!(
+        reply, "The answer.",
+        "the block's trailing run is the answer"
+    );
+    assert_eq!(entries.len(), 1, "the tool history stays in the block");
+    assert!(
+        matches!(&entries[0], FlowEntry::Tool(0)),
+        "the tool entry is untouched: {entries:?}"
+    );
+}
+
+#[test]
+fn narration_that_is_not_the_answer_stays_in_the_block() {
+    let mut entries = vec![
+        FlowEntry::Tool(0),
+        FlowEntry::Text("Reading the config.".to_string()),
+    ];
+
+    let reply = settle_guest_answer(&mut entries, "Here is the real answer.", false);
+
+    assert_eq!(reply, "Here is the real answer.");
+    assert_eq!(
+        entries.len(),
+        2,
+        "a distinct narration line is not the answer and must not be dropped"
+    );
+}
+
+#[test]
+fn a_post_halt_trailer_rides_after_a_reclaimed_answer() {
+    // The turn halted on the options surface: the answer sits before the tool
+    // entry, the sign-off after it. Both leave the block, the answer first.
+    let mut entries = vec![
+        FlowEntry::Text("The answer.".to_string()),
+        FlowEntry::Tool(0),
+        FlowEntry::Text("Anything else?".to_string()),
+    ];
+
+    let reply = settle_guest_answer(&mut entries, "", true);
+
+    assert_eq!(reply, "The answer.\n\nAnything else?");
+    assert_eq!(
+        entries.len(),
+        1,
+        "both text runs left the block and the tool history stayed: {entries:?}"
+    );
+    assert!(
+        matches!(&entries[0], FlowEntry::Tool(0)),
+        "the trailing tool entry is restored in place: {entries:?}"
+    );
+}
+
+#[test]
+fn an_answer_before_a_trailing_tool_entry_leaves_the_block_once() {
+    // The turn halted on the options surface: the answer streamed before the
+    // suggest call, and the settled content carries the same text (#2113).
+    let answer = "The answer.";
+    let mut entries = vec![
+        FlowEntry::Tool(0),
+        FlowEntry::Text(answer.to_string()),
+        FlowEntry::Tool(1),
+    ];
+
+    let reply = settle_guest_answer(&mut entries, answer, true);
+
+    assert_eq!(reply, answer);
+    assert_eq!(
+        entries.len(),
+        2,
+        "both tool entries stay and only the answer leaves: {entries:?}"
+    );
+    assert!(matches!(&entries[0], FlowEntry::Tool(0)));
+    assert!(matches!(&entries[1], FlowEntry::Tool(1)));
+}
+
+#[test]
+fn narration_before_a_trailing_tool_entry_is_not_the_answer() {
+    let mut entries = vec![
+        FlowEntry::Tool(0),
+        FlowEntry::Text("Reading the config.".to_string()),
+        FlowEntry::Tool(1),
+    ];
+
+    let reply = settle_guest_answer(&mut entries, "Here is the real answer.", true);
+
+    assert_eq!(reply, "Here is the real answer.");
+    assert_eq!(
+        entries.len(),
+        3,
+        "a distinct narration line stays in the block: {entries:?}"
     );
 }
