@@ -6,7 +6,10 @@
 
 #![cfg(feature = "browser")]
 
-use crate::brain::tools::browser::{Act, build_pre_flight_js, format_prefix_report, parse_actions};
+use crate::brain::tools::browser::{
+    Act, build_pre_flight_js, build_pre_flight_js_with, format_prefix_report, parse_actions,
+    resolve_upload_paths,
+};
 use serde_json::json;
 
 fn actions(v: serde_json::Value) -> serde_json::Value {
@@ -141,6 +144,141 @@ fn pre_flight_js_embeds_all_selectors_and_all_three_shapes() {
     assert!(js.contains("getBoundingClientRect"));
     // Per-selector result objects carry index + ok + reason.
     assert!(js.contains("results.push"));
+}
+
+// ── upload (#2112) ────────────────────────────────────────────────────────
+
+#[test]
+fn upload_parses_with_absolute_paths_and_labels_the_file_count() {
+    let acts = parse_actions(&actions(json!([
+        {"type": "upload", "selector": "input[type=file]", "files": ["/tmp/a.mp4", "/tmp/b.png"]},
+    ])))
+    .expect("upload parses");
+    assert_eq!(
+        acts[0],
+        Act::Upload {
+            selector: "input[type=file]".into(),
+            files: vec!["/tmp/a.mp4".into(), "/tmp/b.png".into()],
+        }
+    );
+    assert_eq!(acts[0].label(), "upload input[type=file] (2 files)");
+    assert_eq!(acts[0].selector(), Some("input[type=file]"));
+}
+
+#[test]
+fn upload_requires_a_selector_and_a_non_empty_files_array() {
+    let err = parse_actions(&actions(json!([
+        {"type": "upload", "files": ["/tmp/a"]},
+    ])))
+    .unwrap_err();
+    assert!(err.contains("action 1"), "got: {err}");
+    assert!(err.contains("\"selector\""), "got: {err}");
+
+    let err = parse_actions(&actions(json!([
+        {"type": "upload", "selector": "input[type=file]"},
+    ])))
+    .unwrap_err();
+    assert!(err.contains("non-empty \"files\" array"), "got: {err}");
+
+    let err = parse_actions(&actions(json!([
+        {"type": "upload", "selector": "input[type=file]", "files": []},
+    ])))
+    .unwrap_err();
+    assert!(err.contains("non-empty \"files\" array"), "got: {err}");
+
+    let err = parse_actions(&actions(json!([
+        {"type": "upload", "selector": "input[type=file]", "files": ["/tmp/a", 7]},
+    ])))
+    .unwrap_err();
+    assert!(err.contains("non-empty string"), "got: {err}");
+}
+
+#[test]
+fn upload_rejects_a_relative_path_before_any_browser_work() {
+    // A relative path resolves against the BROWSER process's cwd, so the same
+    // action would attach different files depending on how it was launched.
+    let err = parse_actions(&actions(json!([
+        {"type": "upload", "selector": "input[type=file]", "files": ["secrets/id_rsa"]},
+    ])))
+    .unwrap_err();
+    assert!(err.contains("is relative"), "got: {err}");
+    assert!(err.contains("absolute path"), "got: {err}");
+}
+
+#[test]
+fn resolve_upload_paths_verifies_existence_and_regular_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("shot.png");
+    std::fs::write(&file, b"png").expect("write");
+
+    let mut acts = parse_actions(&actions(json!([
+        {"type": "upload", "selector": "input[type=file]",
+         "files": [file.to_string_lossy()]},
+    ])))
+    .expect("parses");
+    resolve_upload_paths(&mut acts).expect("existing regular file resolves");
+    match &acts[0] {
+        Act::Upload { files, .. } => {
+            // Canonicalised: what the browser used is what we echo back.
+            let expected = std::fs::canonicalize(&file)
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+            assert_eq!(files[0], expected);
+        }
+        other => panic!("expected upload, got {other:?}"),
+    }
+
+    // Missing file.
+    let mut acts = parse_actions(&actions(json!([
+        {"type": "upload", "selector": "input[type=file]",
+         "files": [dir.path().join("nope.mp4").to_string_lossy()]},
+    ])))
+    .expect("parses");
+    let err = resolve_upload_paths(&mut acts).unwrap_err();
+    assert!(err.contains("is not readable"), "got: {err}");
+    assert!(err.contains("NOTHING executed"), "got: {err}");
+
+    // Directory: exists, but is not a regular file.
+    let mut acts = parse_actions(&actions(json!([
+        {"type": "upload", "selector": "input[type=file]",
+         "files": [dir.path().to_string_lossy()]},
+    ])))
+    .expect("parses");
+    let err = resolve_upload_paths(&mut acts).unwrap_err();
+    assert!(err.contains("is not a regular file"), "got: {err}");
+}
+
+#[test]
+fn resolve_upload_paths_leaves_other_actions_alone() {
+    let mut acts = parse_actions(&actions(json!([
+        {"type": "click", "selector": "#go"},
+        {"type": "wait", "ms": 10},
+    ])))
+    .expect("parses");
+    resolve_upload_paths(&mut acts).expect("no upload actions, nothing to check");
+    assert_eq!(
+        acts[0],
+        Act::Click {
+            selector: "#go".into()
+        }
+    );
+}
+
+#[test]
+fn upload_targets_are_exempt_from_the_visibility_requirement() {
+    // A file input is usually hidden behind a styled button, so demanding a
+    // non-zero rect would reject the normal case. Presence is still required.
+    let sels = vec!["#submit".to_string(), "input[type=file]".to_string()];
+    let js = build_pre_flight_js_with(&sels, &[true, false]);
+    assert!(js.contains("var vis = [true,false];"), "js: {js}");
+    assert!(js.contains("var needVis = vis[i] !== false;"), "js: {js}");
+    assert!(js.contains("!needVis ||"), "js: {js}");
+    assert!(js.contains(r#""not found""#), "js: {js}");
+
+    // The plain builder still requires visibility for everything.
+    let js = build_pre_flight_js(&sels);
+    assert!(js.contains("var vis = [true,true];"), "js: {js}");
 }
 
 /// Login-form fixture acceptance (#1188): a full fill+fill+press
