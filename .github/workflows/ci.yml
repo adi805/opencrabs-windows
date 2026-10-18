@@ -811,14 +811,14 @@ jobs:
         # per-advisory evidence record: src/docs/dependency-advisories.md. Read that
         # file before removing or adding an ignore here.
         #
-        # The zip trio (added 2026-10-17, #291) is a different shape, and the
-        # reason it is ignored is reachability rather than an unmaintained
-        # parent. All three are patched only in zip >= 9.0.0, which the graph
-        # cannot reach: calamine 0.36.1 and docx-rs 0.4.22 are their latest
-        # releases and both require zip ^8, while candle-core 0.8.4 (via
-        # rwhisper, local-stt) pins zip 1.1.4. Our own `zip = "6.0"` and
-        # rust_xlsxwriter's 7.2.0 are the other two instances, so all four
-        # affected versions stay in the lock until those parents move.
+        # The zip trio (added 2026-10-17, #291; narrowed 2026-10-18 by the
+        # upstream #2092 port) is a different shape, and the reason it is ignored is
+        # reachability rather than an unmaintained parent. All three are
+        # patched only in zip >= 9.0.0. Our direct `zip` and rust_xlsxwriter
+        # are now on zip 9.0.5, so only two copies stay in the lock until
+        # those parents move: candle-core 0.8.4 (via rwhisper, local-stt) pins
+        # zip 1.1.4, and calamine 0.36.1 and docx-rs 0.4.22 are their latest
+        # releases and both require zip ^8 (resolved 8.6.0).
         #
         # Every one of the three advisories is about writing entries to disk:
         # `ZipArchive::extract()`, `ZipStreamReader::extract()`, and the Unix
@@ -826,7 +826,7 @@ jobs:
         # Nothing in this tree calls either API. Our five zip call sites
         # (rtk/rewrite.rs, utils/file_extract.rs, brain/tools/doc_parser.rs,
         # brain/tools/evolve/archive.rs, cli/crash_recovery.rs) open an archive
-        # and read entries into memory; the four crates that pull zip in were
+        # and read entries into memory; the three parents that pull zip in were
         # grepped at their resolved versions and make zero extract() calls.
         # That is a static reachability argument, not a claim about runtime
         # exploitability, and it is the whole basis for these three ignores.
