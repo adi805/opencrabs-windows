@@ -161,3 +161,35 @@ async fn another_sessions_task_does_not_refuse_this_sessions_sleep() {
         result.output
     );
 }
+
+#[tokio::test]
+async fn sleep_runs_again_once_the_task_finished() {
+    let mgr = Arc::new(BackgroundTaskManager::new());
+    let sid = Uuid::new_v4();
+    mgr.mirror_started(sid, "cargo test");
+
+    let mut context = ToolExecutionContext::new(sid).with_auto_approve(true);
+    context.background_manager = Some(mgr.clone());
+
+    let refused = BashTool
+        .execute(serde_json::json!({ "command": "sleep 30" }), &context)
+        .await
+        .unwrap();
+    assert!(
+        !refused.success,
+        "the sleep must be refused while the task runs"
+    );
+
+    mgr.mirror_finished(sid, "cargo test");
+    assert_eq!(mgr.running_for(sid), 0, "the registry must be clear again");
+
+    let allowed = BashTool
+        .execute(serde_json::json!({ "command": "sleep 0" }), &context)
+        .await
+        .unwrap();
+    assert!(
+        allowed.success,
+        "sleep is ordinary shell once nothing is detached: {}",
+        allowed.output
+    );
+}
