@@ -226,9 +226,8 @@ fn the_caller_gate_refuses_unlisted_callers_and_grants_nothing_when_off() {
 use std::sync::{Arc, Mutex};
 
 use crate::brain::agent::ProgressEvent;
-use crate::channels::background_work::FlowOutcome;
 use crate::channels::telegram::flow::{
-    FlowEntry, StreamingState, drain_display_queue, render_flow,
+    FlowEntry, FlowOutcome, StreamingState, drain_display_queue, render_flow,
 };
 use crate::channels::telegram::guest::{
     compose_guest_message, edit_response_ok, guest_sanitize, settle_guest_answer,
