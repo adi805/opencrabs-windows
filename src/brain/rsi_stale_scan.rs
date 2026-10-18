@@ -579,6 +579,7 @@ fn full_provider_sentinel() -> serde_json::Value {
         models: vec!["m".into()],
         force_default: false,
         vision_model: Some("v".into()),
+        vision_max_tokens: Some(4096),
         generation_model: Some("g".into()),
         stt_model: Some("stt-m".into()),
         tts_model: Some("tts-m2".into()),

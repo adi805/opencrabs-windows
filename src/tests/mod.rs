@@ -1154,6 +1154,7 @@ pub mod turn_duration_test;
 pub mod turn_ranges_test;
 pub mod turn_retrieval_recording_test;
 pub mod vision_candidate_auth_gate_1792_test;
+pub mod vision_max_tokens_2120_test;
 pub mod vision_opencode_session_header_1792_test;
 pub mod voice_chain_test;
 pub mod voice_config_derivation_test;

@@ -939,6 +939,40 @@ async fn create_fallback(config: &Config, fallback_type: &str) -> Result<Arc<dyn
     ))
 }
 
+/// One resolved vision endpoint, ready to call.
+///
+/// Was a bare `(api_key, base_url, vision_model)` tuple until #2120 added the
+/// per-provider output cap: a fourth positional field made the tuple
+/// unreadable at every call site, so the record is named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisionCandidate {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+    /// Provider `vision_max_tokens`, when the user pinned one. `None` means
+    /// the request carries no `max_tokens` at all, so the endpoint applies its
+    /// own default (#2120).
+    pub max_tokens: Option<u32>,
+}
+
+impl VisionCandidate {
+    /// The three-field projection the capability scans still speak.
+    pub fn into_tuple(self) -> (String, String, String) {
+        (self.api_key, self.base_url, self.model)
+    }
+
+    /// Same endpoint and model, regardless of the cap.
+    ///
+    /// Dedup compares this, not the whole record: the old tuple dedup keyed on
+    /// exactly these three fields, and a provider reached twice (session
+    /// provider and chain entry) must stay one candidate.
+    fn same_target(&self, other: &Self) -> bool {
+        self.api_key == other.api_key
+            && self.base_url == other.base_url
+            && self.model == other.model
+    }
+}
+
 /// Returns `(api_key, base_url, vision_model)` for the first vision candidate
 /// that `any_provider_vision` finds, or `None` when no provider can see.
 ///
@@ -970,9 +1004,9 @@ pub fn active_provider_vision(config: &Config) -> Option<(String, String, String
 /// `enabled = false` is NOT a filter. That flag governs chat; seeing needs
 /// only an endpoint and a `vision_model`.
 pub fn any_provider_vision(config: &Config) -> Vec<(String, String, String)> {
-    let mut out: Vec<(String, String, String)> = Vec::new();
-    let push = |cand: (String, String, String), out: &mut Vec<(String, String, String)>| {
-        if !out.contains(&cand) {
+    let mut out: Vec<VisionCandidate> = Vec::new();
+    let push = |cand: VisionCandidate, out: &mut Vec<VisionCandidate>| {
+        if !out.iter().any(|c| c.same_target(&cand)) {
             out.push(cand);
         }
     };
@@ -999,7 +1033,7 @@ pub fn any_provider_vision(config: &Config) -> Vec<(String, String, String)> {
             push(cand, &mut out);
         }
     }
-    out
+    out.into_iter().map(VisionCandidate::into_tuple).collect()
 }
 
 /// Ordered vision candidates `(api_key, base_url, vision_model)` for a
@@ -1034,10 +1068,10 @@ pub fn any_provider_vision(config: &Config) -> Vec<(String, String, String)> {
 pub fn vision_candidates_for(
     config: &Config,
     session_provider: Option<&str>,
-) -> Vec<(String, String, String)> {
-    let mut out: Vec<(String, String, String)> = Vec::new();
-    let push = |cand: (String, String, String), out: &mut Vec<(String, String, String)>| {
-        if !out.contains(&cand) {
+) -> Vec<VisionCandidate> {
+    let mut out: Vec<VisionCandidate> = Vec::new();
+    let push = |cand: VisionCandidate, out: &mut Vec<VisionCandidate>| {
+        if !out.iter().any(|c| c.same_target(&cand)) {
             out.push(cand);
         }
     };
@@ -1060,7 +1094,7 @@ pub fn vision_candidates_for(
 }
 
 /// Chain-only resolution, for callers with no session in hand.
-pub fn vision_candidates(config: &Config) -> Vec<(String, String, String)> {
+pub fn vision_candidates(config: &Config) -> Vec<VisionCandidate> {
     vision_candidates_for(config, None)
 }
 
@@ -1104,17 +1138,18 @@ fn builtin_vision_candidate(
     session_id: &str,
     cfg: &ProviderConfig,
     vision_model: &str,
-) -> Option<(String, String, String)> {
+) -> Option<VisionCandidate> {
     let base_url = normalize_vision_url(vision_base_url(session_id, cfg)?);
     let api_key = cfg.api_key.clone().filter(|k| !k.is_empty());
     if api_key.is_none() && !is_local_base_url(&base_url) {
         return None;
     }
-    Some((
-        api_key.unwrap_or_default(),
+    Some(VisionCandidate {
+        api_key: api_key.unwrap_or_default(),
         base_url,
-        vision_model.to_string(),
-    ))
+        model: vision_model.to_string(),
+        max_tokens: cfg.vision_max_tokens,
+    })
 }
 
 /// Candidate for a custom provider: customs carry their own `base_url`
@@ -1127,10 +1162,7 @@ fn builtin_vision_candidate(
 /// it is a guaranteed 401. Before this, every `analyze_image` call walked the
 /// chain burning a round trip per keyless entry and came back with one merged
 /// error naming only the last failure.
-fn custom_vision_candidate(
-    cfg: &ProviderConfig,
-    vision_model: &str,
-) -> Option<(String, String, String)> {
+fn custom_vision_candidate(cfg: &ProviderConfig, vision_model: &str) -> Option<VisionCandidate> {
     let base_url = normalize_vision_url(cfg.base_url.clone()?);
     let api_key = cfg.api_key.clone().filter(|k| !k.is_empty());
     if api_key.is_none() && !is_local_base_url(&base_url) {
@@ -1141,11 +1173,12 @@ fn custom_vision_candidate(
         );
         return None;
     }
-    Some((
-        api_key.unwrap_or_default(),
+    Some(VisionCandidate {
+        api_key: api_key.unwrap_or_default(),
         base_url,
-        vision_model.to_string(),
-    ))
+        model: vision_model.to_string(),
+        max_tokens: cfg.vision_max_tokens,
+    })
 }
 
 fn normalize_vision_url(base_url: String) -> String {
@@ -1157,11 +1190,10 @@ fn normalize_vision_url(base_url: String) -> String {
 }
 
 /// Look up a single provider by `name` (REGISTRATIONS session_id / alias,
-/// or custom map key) and return its `(api_key, base_url, vision_model)`
-/// if it has a `vision_model` configured. `enabled` is deliberately NOT
-/// checked (#401): it gates chat usage only — vision needs a vision_model
-/// and a valid key, which is what `vision_tuple` extracts.
-fn vision_by_name(config: &Config, name: &str) -> Option<(String, String, String)> {
+/// or custom map key) and return its candidate if it has a `vision_model`
+/// configured. `enabled` is deliberately NOT checked (#401): it gates chat
+/// usage only, vision needs a vision_model and a valid key.
+fn vision_by_name(config: &Config, name: &str) -> Option<VisionCandidate> {
     // Custom entries take precedence (same convention as create_fallback).
     if !name.starts_with("custom:")
         && config

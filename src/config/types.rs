@@ -3193,6 +3193,19 @@ pub struct ProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vision_model: Option<String>,
 
+    /// Output token cap for `analyze_image` / `analyze_video` calls on this
+    /// provider (#2120).
+    ///
+    /// Unset is the default and the right answer for almost everyone: the
+    /// request then carries no `max_tokens`, so the endpoint applies its own
+    /// default. A reasoning vision model spends part of that budget on
+    /// reasoning tokens, and a hard-coded cap used to truncate the answer or
+    /// leave `content` empty, which surfaced as "No text response from vision
+    /// model". Set this only to pin a specific figure (an endpoint with a low
+    /// default, or a cost ceiling).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vision_max_tokens: Option<u32>,
+
     /// Image-generation model override for this provider.
     ///
     /// Wins over the global `image.generation.model` when the active
