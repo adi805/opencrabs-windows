@@ -1096,7 +1096,7 @@ impl App {
                     if parsed[0].is_none() || parsed[0].is_none() || parsed[1].is_none() {
                         tracing::warn!(
                             "Brain gen: couldn't parse response (first 500 chars): {}",
-                            &text[..text.len().min(500)]
+                            crate::utils::string::truncate_str(&text, 500)
                         );
                         Err(
                             "Couldn't parse brain files from AI response — using defaults"

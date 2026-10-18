@@ -1108,7 +1108,10 @@ async fn format_usage_breakdown(args: &str, session_svc: &SessionService) -> Str
 
     fn parse_period(tok: &str) -> Option<i64> {
         let now = chrono::Utc::now().timestamp();
-        let (num, unit) = tok.split_at(tok.len().saturating_sub(1));
+        // The unit is the final character, which may be multi-byte. Slicing at
+        // `len - 1` would land inside it and panic.
+        let (last, _) = tok.char_indices().next_back()?;
+        let (num, unit) = tok.split_at(last);
         let n: i64 = num.parse().ok()?;
         match unit {
             "d" => Some(now - n * 86_400),

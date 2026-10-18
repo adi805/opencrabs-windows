@@ -1315,9 +1315,8 @@ impl AgentService {
                     // a legitimate short instruction than a truncated preamble.
                     // Real truncations are single preamble sentences like
                     // "Let me check the current state:" — no prior punctuation.
-                    let has_prior_sentence = trimmed[..trimmed.len().saturating_sub(1)]
-                        .contains('.')
-                        || trimmed[..trimmed.len().saturating_sub(1)].contains('!');
+                    let before_last = crate::utils::string::prefix_before_last_char(trimmed);
+                    let has_prior_sentence = before_last.contains('.') || before_last.contains('!');
                     if has_prior_sentence {
                         tracing::debug!(
                             "Self-heal: skipping truncation check — text contains \
@@ -1325,7 +1324,7 @@ impl AgentService {
                         );
                     } else {
                         let preview = if trimmed.len() > 80 {
-                            &trimmed[trimmed.len() - 80..]
+                            crate::utils::string::truncate_str_tail(trimmed, 80)
                         } else {
                             trimmed
                         };

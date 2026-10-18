@@ -1670,7 +1670,7 @@ impl App {
                     // Show first line of code for context
                     let first_line = code.lines().next().unwrap_or(code);
                     let truncated = if first_line.len() > 80 {
-                        format!("{}…", &first_line[..80])
+                        format!("{}…", crate::utils::string::truncate_str(first_line, 80))
                     } else {
                         first_line.to_string()
                     };
