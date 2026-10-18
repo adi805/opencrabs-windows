@@ -230,6 +230,58 @@ pub(crate) struct StreamingState {
     pub(crate) is_cli: bool,
 }
 
+impl StreamingState {
+    /// A turn with nothing on it yet.
+    ///
+    /// Every surface that shows a turn starts from this: the regular Telegram
+    /// path and a guest reply differ in what they do with the state, not in
+    /// what an empty turn holds. Anything a caller has to decide per chat is a
+    /// parameter instead of a field each caller has to remember to set.
+    /// `is_dm` picks the redaction scope (a chat we do not control never shows
+    /// a credential), and `is_cli` the narration cap (#532: a CLI provider
+    /// runs the tools itself, so its whole turn folds into the block, while an
+    /// API provider shows full reasoning).
+    pub(crate) fn new_turn(is_dm: bool, is_cli: bool) -> Self {
+        Self {
+            is_dm,
+            compacting: false,
+            pending_suggestions: None,
+            pending_trailer: None,
+            delivered_files: Vec::new(),
+            media_intermediates: Vec::new(),
+            msg_id: None,
+            thinking: String::new(),
+            tool_msgs: Vec::new(),
+            display_queue: Vec::new(),
+            open_group_msg_id: None,
+            rich_transport_failures: 0,
+            flow_entries: Vec::new(),
+            flow_status: None,
+            flow_rich: false,
+            response: String::new(),
+            final_bubble: None,
+            dirty: false,
+            recreate: false,
+            header_preview: None,
+            sections: Default::default(),
+            retained_goal: None,
+            applied_plan_kb: Default::default(),
+            tool_round_count: 0,
+            tools_started_at: Some(std::time::Instant::now()),
+            turn_started_at: std::time::Instant::now(),
+            flow_outcome: None,
+            bg_indicator: None,
+            bg_count: None,
+            subagent_counts: Default::default(),
+            sent_intermediates: Vec::new(),
+            intermediate_msg_ids: Vec::new(),
+            voice_msg_ids: Vec::new(),
+            processing: true,
+            is_cli,
+        }
+    }
+}
+
 /// A resolved line in the processing-log flow, ready to render. Tool lines
 /// carry the status label (icon + name) and context; text lines carry the
 /// sanitized intermediate text. Both are HTML-escaped at render time.
@@ -1708,6 +1760,42 @@ pub(crate) fn push_or_supersede(entries: &mut Vec<FlowEntry>, text: &str, system
         } else {
             FlowEntry::Text(text.to_string())
         });
+    }
+}
+
+/// Move a turn's queued display items into its flow log.
+///
+/// The regular path folds the same items into the same log in
+/// [`crate::channels::telegram::delivery::drain_remaining_display`], which
+/// also sends a chat message per item on the way. That send is exactly what a
+/// surface with no per-tool messages cannot do: a guest reply is one edited
+/// message and nothing else. The ordering rules are kept identical here (tools
+/// in place, narration supersedable, chrome never reclaimed as an answer), so
+/// the guest block reads like the block a regular chat shows.
+///
+/// `sanitize` runs on narration and chrome before it reaches the log, taking
+/// `(text, is_system_chrome)`. The regular path applies the artifact and
+/// marker passes to model text and only the secret scrub to our own chrome, so
+/// the same split is a parameter here rather than a second copy of the
+/// pipeline.
+pub(crate) fn drain_display_queue<F>(s: &mut StreamingState, sanitize: F)
+where
+    F: Fn(&str, bool) -> String,
+{
+    for item in std::mem::take(&mut s.display_queue) {
+        match item {
+            DisplayItem::NewTool(idx) => s.flow_entries.push(FlowEntry::Tool(idx)),
+            DisplayItem::Intermediate(text) => {
+                let text = sanitize(&text, false);
+                if !text.trim().is_empty() {
+                    push_or_supersede(&mut s.flow_entries, &text, false);
+                }
+            }
+            DisplayItem::System(text) => {
+                let text = sanitize(&text, true);
+                push_or_supersede(&mut s.flow_entries, &text, true);
+            }
+        }
     }
 }
 

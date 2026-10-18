@@ -2527,46 +2527,13 @@ pub(crate) async fn handle_message(
     };
 
     // ── Streaming setup ───────────────────────────────────────────────────────
-    let streaming = Arc::new(std::sync::Mutex::new(StreamingState {
+    // #532: a CLI provider (claude-cli) runs the tools itself, so its whole
+    // turn folds into the block and folded narration is capped; API providers
+    // skip the cap and show full reasoning.
+    let streaming = Arc::new(std::sync::Mutex::new(StreamingState::new_turn(
         is_dm,
-        compacting: false,
-        pending_suggestions: None,
-        pending_trailer: None,
-        delivered_files: Vec::new(),
-        media_intermediates: Vec::new(),
-        msg_id: None,
-        thinking: String::new(),
-        tool_msgs: Vec::new(),
-        display_queue: Vec::new(),
-        open_group_msg_id: None,
-        rich_transport_failures: 0,
-        flow_entries: Vec::new(),
-        flow_status: None,
-        flow_rich: false,
-        response: String::new(),
-        final_bubble: None,
-        dirty: false,
-        recreate: false,
-        header_preview: None,
-        sections: Default::default(),
-        retained_goal: None,
-        applied_plan_kb: Default::default(),
-        tool_round_count: 0,
-        tools_started_at: Some(std::time::Instant::now()),
-        turn_started_at: std::time::Instant::now(),
-        flow_outcome: None,
-        bg_indicator: None,
-        bg_count: None,
-        subagent_counts: Default::default(),
-        sent_intermediates: Vec::new(),
-        intermediate_msg_ids: Vec::new(),
-        voice_msg_ids: Vec::new(),
-        processing: true,
-        // Provider runs tools in the CLI (claude-cli) → its whole turn folds
-        // into the block, so folded narration is capped; API providers skip
-        // the cap and show full reasoning (#532).
-        is_cli: agent.provider_for_session(session_id).cli_handles_tools(),
-    }));
+        agent.provider_for_session(session_id).cli_handles_tools(),
+    )));
 
     // #61: publish this turn's flow roll while it is live. The push-echo
     // path reads the registry to fold session-notify lines into THIS block
