@@ -23,7 +23,7 @@ fn example_config_lists_the_built_in_model_disabled_by_default() {
 }
 
 /// Image generation ships on day 0 through the built-in provider, on its own
-/// model id (served only on the proxy's image routes, never as chat).
+/// model id (served only on the image route, never as chat).
 #[test]
 fn example_config_sets_the_built_in_image_model() {
     let config: Config = toml::from_str(include_str!("../../config.toml.example"))
@@ -35,20 +35,22 @@ fn example_config_sets_the_built_in_image_model() {
 
     assert_eq!(
         section.generation_model.as_deref(),
-        Some("gemini-3.1-flash-image")
+        Some("gemini-2.5-flash-image")
     );
     assert!(
-        !section.models.iter().any(|m| m == "gemini-3.1-flash-image"),
+        !section.models.iter().any(|m| m == "gemini-2.5-flash-image"),
         "image model must not appear in the chat model list"
     );
 }
 
-/// Voice ships on day 0 the same way: the built-in provider carries the
-/// transcription and synthesis model ids, so a fresh install has STT and TTS
-/// with nothing to configure. The id is bare (no `alicn/` provider prefix),
-/// matching the image model's #2054 treatment.
+/// Voice is NOT served by the built-in provider: it answers no `/v1/audio/*`
+/// route, so the shipped example must leave both audio fields unset. A set
+/// field makes the provider's dead audio route the primary candidate ahead of
+/// `[providers.stt.*]` / `[providers.tts.*]` (`src/config/types/loader.rs:80`),
+/// so a working engine waits behind a failed round trip on every voice note
+/// (#2105). Voice input keeps working through that engine either way.
 #[test]
-fn example_config_sets_the_built_in_voice_models() {
+fn example_config_leaves_the_built_in_voice_models_unset() {
     let config: Config = toml::from_str(include_str!("../../config.toml.example"))
         .expect("config.toml.example parses");
     let section = config
@@ -56,10 +58,14 @@ fn example_config_sets_the_built_in_voice_models() {
         .opencrabs
         .expect("[providers.opencrabs] present in the example");
 
-    assert_eq!(section.stt_model.as_deref(), Some("qwen3.8-omni-flash"));
-    assert_eq!(section.tts_model.as_deref(), Some("qwen3.8-omni-flash"));
     assert!(
-        !section.models.iter().any(|m| m == "qwen3.8-omni-flash"),
-        "voice model must not appear in the chat model list"
+        section.stt_model.is_none(),
+        "no transcription route is served here yet, got: {:?}",
+        section.stt_model
+    );
+    assert!(
+        section.tts_model.is_none(),
+        "no synthesis route is served here yet, got: {:?}",
+        section.tts_model
     );
 }

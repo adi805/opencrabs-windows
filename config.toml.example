@@ -34,9 +34,12 @@ models = ["deepseek-v4.1-flash"]
 # context_window is not honoured here: the built-in endpoint is free and fixed
 # at 200k, so any value set in this section is ignored.
 vision_model = "deepseek-v4.1-flash"  # Multimodal: attached images work on day 0
-generation_model = "gemini-3.1-flash-image"  # Image generation on day 0, served only on /v1/images/*
-stt_model = "qwen3.8-omni-flash"  # Speech-to-text on day 0, served on /v1/audio/transcriptions
-tts_model = "qwen3.8-omni-flash"  # Text-to-speech on day 0, served on /v1/audio/speech
+generation_model = "gemini-2.5-flash-image"  # Image generation on day 0, served only on the image route (/v1/images/generations), never as chat
+# Voice is not served by this provider yet: it answers no /v1/audio/* route, so
+# leave stt_model and tts_model unset here. A voice note still transcribes and
+# still gets a text reply through your STT engine in /voice; only a spoken reply
+# needs a TTS engine. Set these on a provider that exposes the routes: a set
+# field becomes the primary candidate and pays a failed round trip first.
 
 # ========================================
 # Xiaomi MiMo
