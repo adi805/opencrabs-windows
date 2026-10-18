@@ -1174,6 +1174,7 @@ pub mod telegram_group_history_capture_test;
 pub mod telegram_group_migration_test;
 pub mod telegram_group_name_test;
 pub mod telegram_group_sender_label_test;
+pub mod telegram_guest_query_test;
 pub mod telegram_handler_test;
 pub mod telegram_history_dedup_test;
 pub mod telegram_impersonation_test;
