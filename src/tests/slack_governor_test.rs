@@ -409,8 +409,9 @@ fn slack_chat_writes_only_leave_through_the_governor() {
         // ported — its plumbing does not exist on this trunk — so the one
         // site inside it is absent. The #2013 /respond_to reply, which the
         // merge had left calling chat_post_message raw, takes that slot.
-        // Every site that does exist pays.
-        32,
+        // #298 adds one: the end-of-turn flush posts the answer its queued
+        // follow-up earned. Every site that does exist pays.
+        33,
         "every new-message site pays the budget: the count is the coverage"
     );
     assert_eq!(
