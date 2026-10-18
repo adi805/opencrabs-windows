@@ -1048,6 +1048,7 @@ pub mod variation_directive_test;
 pub mod vba_modules_test;
 pub mod voice_onboarding_test;
 pub mod voice_openai_compatible_test;
+pub mod voice_stt_chat_route_test;
 pub mod voice_stt_dispatch_test;
 pub mod voice_voicebox_test;
 pub mod wait_agent_resolver_test;

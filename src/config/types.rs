@@ -3495,13 +3495,17 @@ pub struct ProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation_model: Option<String>,
 
-    /// Speech-to-text model for this provider's [OI]-compatible
-    /// `/v1/audio/transcriptions` route. Set it and voice notes transcribe
-    /// through the active provider, the same way `vision_model` drives image
-    /// understanding and `generation_model` drives image creation. The
-    /// endpoint is the provider's own (`base_url`, or its known default), so
-    /// any [OI]-compatible provider can serve transcription, not only the
-    /// built-in one.
+    /// Speech-to-text model for this provider. Set it and voice notes
+    /// transcribe through the active provider, the same way `vision_model`
+    /// drives image understanding and `generation_model` drives image
+    /// creation.
+    ///
+    /// The request shape follows the provider: an [OI]-compatible engine
+    /// (Groq, LocalAI, Ollama, an [OI] gateway) answers
+    /// `POST /v1/audio/transcriptions` with a multipart body, while the
+    /// built-in provider serves transcription on the CHAT route as an
+    /// `input_audio` part and answers 404 on every `/v1/audio/*` path. The
+    /// route is chosen from the base URL, so both work off this one key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stt_model: Option<String>,
 

@@ -187,7 +187,14 @@ async fn try_stt(kind: SttProviderKind, audio_bytes: Vec<u8>, cfg: &VoiceConfig)
                 .stt_api_key
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("openai-compatible STT missing api_key"))?;
-            super::openai_stt::transcribe_audio(audio_bytes, key, model, base).await
+            match super::openai_stt::route_for(base) {
+                super::openai_stt::SttRoute::ChatAudio => {
+                    super::openai_stt::transcribe_audio_chat(audio_bytes, key, model, base).await
+                }
+                super::openai_stt::SttRoute::Multipart => {
+                    super::openai_stt::transcribe_audio(audio_bytes, key, model, base).await
+                }
+            }
         }
         SttProviderKind::Groq => {
             let key = cfg
