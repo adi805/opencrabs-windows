@@ -829,6 +829,27 @@ impl AgentService {
         evidence
     }
 
+    /// Every tool input this session has recorded so far (#2122).
+    ///
+    /// Read from the persisted assistant rows rather than `tool_executions`,
+    /// which carries no input column. The tail is enough: a denial is about
+    /// this session's recent work, and the whole history of a long session is
+    /// not worth loading to answer it. A failed read yields nothing, because a
+    /// missing read must not become a false fabrication accusation.
+    async fn session_recorded_tool_inputs(session_id: Uuid) -> Vec<String> {
+        /// Rows of history a denial is checked against.
+        const HISTORY_ROWS: usize = 400;
+        let Some(pool) = crate::db::global_pool() else {
+            return Vec::new();
+        };
+        let repo = crate::db::repository::MessageRepository::new(pool.clone());
+        let Ok(messages) = repo.find_recent_by_session(session_id, HISTORY_ROWS).await else {
+            return Vec::new();
+        };
+        let contents: Vec<String> = messages.into_iter().map(|m| m.content).collect();
+        super::phantom::ledger_tool_inputs(&contents)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn run_tool_loop_inner(
         &self,
@@ -1544,6 +1565,12 @@ impl AgentService {
         // checked against what actually ran rather than inferred from its
         // wording (#789).
         let mut turn_tool_input: Vec<String> = Vec::new();
+        // Every tool input this SESSION had recorded before this turn (#2122).
+        // A denial like "no `sleep` command was ever in my tool calls" can be
+        // about an earlier turn, which turn scope cannot see. Filled lazily and
+        // only when the iteration text actually denies something, so an
+        // ordinary turn pays no database read at all.
+        let mut session_tool_input: Option<Vec<String>> = None;
         // Raw search-tool outputs this turn, harvested into the delivered
         // answer's Sources footer at settle (#1883). Kept separate from
         // `turn_tool_output` so non-search tool text never leaks links.
@@ -6330,12 +6357,29 @@ impl AgentService {
                     // cannot vouch for a past-tense claim.
                     let mut executed = turn_tool_input.clone();
                     executed.extend(tool_uses.iter().map(|(_, _, input)| input.to_string()));
+                    // #2122: a denial may be about an earlier turn, so the
+                    // session's recorded calls are read separately. That read is
+                    // gated on the text denying something, happens once per
+                    // turn, and only ever feeds the denial check: a call from an
+                    // hour ago must not clear "you claimed this ran and it did
+                    // not", which is a claim about this turn.
+                    let mut history = Vec::new();
+                    if !super::phantom::asserted_history_denials(&iteration_text).is_empty() {
+                        if session_tool_input.is_none() {
+                            session_tool_input =
+                                Some(Self::session_recorded_tool_inputs(session_id).await);
+                        }
+                        if let Some(ref recorded) = session_tool_input {
+                            history.extend(recorded.iter().cloned());
+                        }
+                    }
                     let evidence = Self::conversation_evidence(&context, &turn_tool_output);
-                    super::phantom::mixed_iteration_facts(
+                    super::phantom::mixed_iteration_facts_with_history(
                         &iteration_text,
                         &executed,
                         &turn_tool_output,
                         &evidence,
+                        &history,
                     )
                 };
 
@@ -7727,6 +7771,7 @@ impl AgentService {
                         branches = ?violation.branches,
                         commands = ?violation.uncalled_commands,
                         facts = ?violation.unbacked_facts,
+                        actions = ?violation.unbacked_actions,
                         "Fabricated claim rode a real tool call — correcting in-turn (#1693)",
                     );
                     let prov = self.provider_name_for_session(session_id);
@@ -7743,6 +7788,8 @@ impl AgentService {
                         super::nudge::uncalled_commands_nudge(&violation.uncalled_commands)
                     } else if !violation.unbacked_facts.is_empty() {
                         super::nudge::unbacked_facts_nudge(&violation.unbacked_facts)
+                    } else if !violation.unbacked_actions.is_empty() {
+                        super::nudge::unbacked_actions_nudge(&violation.unbacked_actions)
                     } else {
                         super::nudge::no_tool_calls_nudge(is_local_provider)
                     };

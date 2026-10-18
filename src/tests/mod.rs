@@ -678,6 +678,7 @@ pub mod phantom_db_persistence_test;
 pub mod phantom_deferment_test;
 pub mod phantom_dotted_command_test;
 pub mod phantom_fenced_command_test;
+pub mod phantom_history_claims_2122_test;
 pub mod phantom_mixed_iteration_facts_test;
 pub mod phantom_participle_object_test;
 pub mod phantom_persist_budget_test;
