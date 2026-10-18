@@ -44,7 +44,7 @@ impl DiscordState {
         session_id: Uuid,
         options: Vec<String>,
     ) {
-        self.pending_followups
+        self.pending_suggestions
             .lock()
             .await
             .insert(id, (Instant::now(), session_id, options));
@@ -58,7 +58,7 @@ impl DiscordState {
         id: &str,
         ttl_hours: f64,
     ) -> Option<(Uuid, Vec<String>)> {
-        let mut map = self.pending_followups.lock().await;
+        let mut map = self.pending_suggestions.lock().await;
         let (created, _, _) = map.get(id)?;
         if expired(created, ttl_hours) {
             map.remove(id);

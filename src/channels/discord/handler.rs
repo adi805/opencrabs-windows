@@ -1302,6 +1302,39 @@ pub(crate) async fn handle_message(
         .register_session_channel(session_id, msg.channel_id.get())
         .await;
 
+    // Mid-turn follow-up claim (#1990): if a turn already owns this session,
+    // this message must NOT fork a second concurrent loop. Queue it, ack with
+    // 👀, and let the live loop inject it between rounds (the queue callback
+    // wired in manager.rs) or this turn's end-of-turn flush pick it up. The
+    // claim precedes `store_cancel_token` below on purpose: a lost claim must
+    // never replace the live turn's cancel token, or /stop would reach a turn
+    // that is not the one running.
+    let Some(_turn_guard) = discord_state.try_begin_turn(session_id) else {
+        tracing::info!("Discord: mid-turn follow-up queued for session {session_id} (#1990)");
+        discord_state.enqueue_followup(
+            session_id,
+            crate::brain::agent::QueuedUserMessage {
+                context_text: agent_input.clone(),
+                display_text: display_text.clone(),
+                origin: crate::brain::agent::PushOrigin::Ingress,
+                bg_meta: None,
+            },
+        );
+        // Same best-effort rule as the receipt ack below: while the channel is
+        // backing off from a 429 the reaction is skipped rather than allowed to
+        // fail the queue path. A dropped 👀 is transient; the queued message
+        // still gets delivered by the live turn.
+        use serenity::model::channel::ReactionType;
+        if super::governor::cooldown_remaining(msg.channel_id.get()).is_none()
+            && let Err(e) = msg
+                .react(&ctx.http, ReactionType::Unicode("👀".to_string()))
+                .await
+        {
+            tracing::debug!("Discord: 👀 ack on queued follow-up failed: {e}");
+        }
+        return;
+    };
+
     // Claim this session's background-task completions for Discord: a completion
     // must be delivered by the surface that OWNS the session, not by whichever
     // service happened to run the command (#940).
@@ -2324,6 +2357,60 @@ pub(crate) async fn handle_message(
                 tracing::warn!(error = %e, "failed to send Discord message");
             }
         }
+    }
+    // End-of-turn flush (#1990, Telegram's #201 rule): a message enqueued
+    // after the loop's last between-rounds drain has no consumer left on
+    // this path. Release the slot first so the flushed turn can claim it.
+    //
+    // Deliberately NOT upstream's `tracked_turn` runner: that file needs a
+    // `Governor` field on `DiscordState` and the `background_work` outcome
+    // types, neither of which exists in this fork, and a rare leftover does
+    // not justify porting them. The invariant that matters is that the
+    // message gets answered; it just has no live tool card.
+    drop(_turn_guard);
+    if let Some(joined) = discord_state.drain_followups(session_id) {
+        let http = ctx.http.clone();
+        let dstate = discord_state.clone();
+        let agent = agent.clone();
+        let channel = target;
+        let chat_id = target.get().to_string();
+        tokio::spawn(async move {
+            let Some(_flush_guard) = dstate.try_begin_turn(session_id) else {
+                // A newer turn won the freshly released slot; its queue takes
+                // the message back so nothing is ever dropped.
+                dstate.enqueue_followup(session_id, joined);
+                return;
+            };
+            let cancel_token = tokio_util::sync::CancellationToken::new();
+            dstate
+                .store_cancel_token(session_id, cancel_token.clone())
+                .await;
+            let outcome = agent
+                .send_push_turn(
+                    session_id,
+                    joined.context_text,
+                    None,
+                    Some(cancel_token),
+                    Some(make_approval_callback(dstate.clone())),
+                    None,
+                    "discord",
+                    Some(&chat_id),
+                    None,
+                )
+                .await;
+            dstate.remove_cancel_token(session_id).await;
+            let answer = match outcome {
+                Ok(response) => {
+                    let converted = super::table_convert::tables_to_discord(&response.content);
+                    crate::utils::sanitize::strip_llm_artifacts(&converted)
+                }
+                Err(e) => format!("❌ Error\n\n{}", crate::brain::agent::format_user_error(&e)),
+            };
+            let answer = redact_secrets(&answer);
+            if let Err(e) = writes::say(&http, channel, &answer, Class::Final).await {
+                tracing::warn!(error = %e, "Discord: failed to post the flushed follow-up answer");
+            }
+        });
     }
     // Plan board (FR-008, #1880): re-stick this session's plan card after the
     // turn so it follows the conversation instead of staying buried at the

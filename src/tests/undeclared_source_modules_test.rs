@@ -25,12 +25,15 @@ use std::path::{Path, PathBuf};
 /// The channel modules the sync deposited and the fork does not compile.
 ///
 /// Each is byte-identical to its `upstream/main` copy, and each depends on the
-/// upstream channel turn engine the fork holds back: `discord/turns.rs` needs
-/// `DiscordState::active_turns`, `discord/tracked_turn.rs` needs
-/// `channels::background_work::FlowOutcome`, `whatsapp/flow_message.rs` needs
-/// `whatsapp::followups::send_suggestions`. Declaring them is therefore not a
-/// one-line change, and declaring an unused module is refused outright: CI runs
-/// `clippy -- -D warnings`, so `dead_code` fails the build.
+/// upstream channel turn engine the fork holds back: `discord/tracked_turn.rs`
+/// needs `channels::background_work::FlowOutcome`, `whatsapp/flow_message.rs`
+/// needs `whatsapp::followups::send_suggestions`. Declaring them is therefore
+/// not a one-line change, and declaring an unused module is refused outright:
+/// CI runs `clippy -- -D warnings`, so `dead_code` fails the build.
+///
+/// `discord/turns.rs` left this list on 2026-10-18 with #296: it needed
+/// `DiscordState::active_turns` and a `Uuid`-keyed `pending_followups`, both
+/// added there, so the turn slot and its follow-up queue compile now.
 ///
 /// The port is the price of holding the channel layer back, and it is a feature
 /// job rather than a fix. Until it happens, these files are recorded here so the
@@ -38,7 +41,6 @@ use std::path::{Path, PathBuf};
 const HELD_BACK_CHANNEL_MODULES: &[&str] = &[
     "src/channels/discord/options_host.rs",
     "src/channels/discord/tracked_turn.rs",
-    "src/channels/discord/turns.rs",
     "src/channels/slack/flow_progress.rs",
     "src/channels/slack/options_host.rs",
     "src/channels/slack/resume_turn.rs",
@@ -58,6 +60,10 @@ const HELD_BACK_CHANNEL_MODULES: &[&str] = &[
 /// declarations for `models_session_pair_test`, `telegram_apply_all_confirm_test`
 /// and `telegram_cli_models_menu_test`. Each compiles and its tests pass, so
 /// they are declared modules now rather than deferred ones.
+///
+/// `discord_turn_slot_test` left on 2026-10-18 with #296: the turn slot and the
+/// follow-up queue it exercises are compiled now, so the module asserts the
+/// real `DiscordState` instead of a file nobody built.
 const DEFERRED_TEST_MODULES: &[&str] = &[
     "src/tests/discord_cowork_gate_test.rs",
     "src/tests/discord_dm_channel_history_test.rs",
@@ -65,7 +71,6 @@ const DEFERRED_TEST_MODULES: &[&str] = &[
     "src/tests/discord_options_host_test.rs",
     "src/tests/discord_plan_board_test.rs",
     "src/tests/discord_resume_turn_tracking_test.rs",
-    "src/tests/discord_turn_slot_test.rs",
     "src/tests/error_scenarios_test.rs",
     "src/tests/generate_image_multi_input_test.rs",
     "src/tests/integration_test.rs",

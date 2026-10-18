@@ -60,7 +60,26 @@ pub struct DiscordState {
     /// travels WITH the buttons so a tap lands in the session that rendered
     /// them even if the channel session has since rotated (#1217 parity with
     /// Telegram). See [`PendingFollowup`].
-    pub(super) pending_followups: Mutex<HashMap<String, PendingFollowup>>,
+    ///
+    /// Named `pending_suggestions`, NOT `pending_followups`: that name belongs
+    /// to the mid-turn follow-up QUEUE below (#1990), a different concern with
+    /// a different key type. The fork carried both under one name, so the queue
+    /// module could not be compiled in at all and Discord lost its turn slot.
+    pub(super) pending_suggestions: Mutex<HashMap<String, PendingFollowup>>,
+    /// Sessions with a live turn for this process's lifetime (#1990): an
+    /// inbound message arriving while the slot is held queues as a
+    /// follow-up instead of forking a second concurrent tool loop. The
+    /// Telegram twin (#501); std Mutex, not tokio's, because the claim must
+    /// be atomic and no await may run under the lock, and because the
+    /// guard's Drop fires synchronously on any unwind.
+    pub(super) active_turns: std::sync::Mutex<std::collections::HashSet<Uuid>>,
+    /// Per-session follow-ups queued while the slot is held (#1990).
+    /// Consumed between tool rounds by the queue callback wired in
+    /// manager.rs, and flushed into a fresh tracked turn by whoever held
+    /// the slot last.
+    pub(super) pending_followups: std::sync::Mutex<
+        HashMap<Uuid, std::collections::VecDeque<crate::brain::agent::QueuedUserMessage>>,
+    >,
     /// Pending modal forms: id -> (created, spec) (#383). Same lazy TTL.
     pub(super) pending_forms: Mutex<HashMap<String, (std::time::Instant, interactions::FormSpec)>>,
     /// Long answers paged behind a button (FR-009), keyed by the id of the
@@ -133,7 +152,9 @@ impl DiscordState {
             pending_approvals: Mutex::new(HashMap::new()),
             cancel_tokens: Mutex::new(HashMap::new()),
             pending_selects: Mutex::new(HashMap::new()),
-            pending_followups: Mutex::new(HashMap::new()),
+            pending_suggestions: Mutex::new(HashMap::new()),
+            active_turns: std::sync::Mutex::new(std::collections::HashSet::new()),
+            pending_followups: std::sync::Mutex::new(HashMap::new()),
             pending_forms: Mutex::new(HashMap::new()),
             long_answers: Mutex::new((Vec::new(), HashMap::new())),
             tool_groups: Mutex::new((Vec::new(), HashMap::new())),
