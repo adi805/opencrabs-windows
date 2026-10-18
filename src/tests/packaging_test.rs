@@ -91,6 +91,26 @@ fn the_desktop_icon_matches_the_shipped_asset() {
 }
 
 #[test]
+fn the_homebrew_cask_installs_the_bundle() {
+    let cask = read("packaging/homebrew/opencrabs.rb");
+
+    assert!(
+        cask.contains("app \"OpenCrabs.app\""),
+        "the cask does not install OpenCrabs.app, so a Homebrew install would still have no Dock icon"
+    );
+    for suffix in ["macos-arm64.tar.gz", "macos-amd64.tar.gz"] {
+        assert!(
+            cask.contains(suffix),
+            "the cask does not reference the {suffix} asset"
+        );
+    }
+    assert!(
+        cask.contains("Contents/MacOS/opencrabs"),
+        "the cask does not expose the CLI binary"
+    );
+}
+
+#[test]
 fn the_bundle_script_is_executable() {
     let path = repo().join("scripts/package-macos-app.sh");
     let meta = std::fs::metadata(&path).expect("scripts/package-macos-app.sh is missing");

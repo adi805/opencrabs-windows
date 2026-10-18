@@ -2137,6 +2137,8 @@ brew install opencrabs
 
 Installs from homebrew-core, with prebuilt bottles for macOS and Linux maintained by Homebrew. The formula is bumped automatically on every release, and `brew upgrade opencrabs` tracks the latest version.
 
+> **No Dock icon with Homebrew on macOS.** The formula installs a bare binary into the Homebrew prefix, and macOS can only show an app icon for a bundle. Until a cask is accepted upstream, a `brew install` has no Dock, Finder or Launchpad icon. Use the release archive in Option 1 if you want the icon.
+
 ### Option 3: Install via Cargo
 
 ```bash
