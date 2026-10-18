@@ -601,6 +601,7 @@ pub mod file_extract_test;
 pub mod force_default_test;
 pub mod handshake_timeout_test;
 pub mod hashline_test;
+pub mod icon_assets_test;
 pub mod image_generation_chain_test;
 pub mod image_util_test;
 pub mod incident_log_dedup_test;
