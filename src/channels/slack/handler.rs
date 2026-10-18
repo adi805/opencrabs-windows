@@ -2161,7 +2161,7 @@ async fn handle_message(
                     // tools-v2 wrapper rendered as raw HTML in Slack
                     // because the streaming chunk never hit the final
                     // response cleanup path.
-                    let text = crate::utils::sanitize::strip_llm_artifacts(&text);
+                    let text = crate::utils::sanitize::sanitize_outbound(&text);
                     // Strip <<IMG:path>> markers — the final-response handler
                     // extracts these and uploads via files_upload, but if the
                     // LLM emits the marker mid-stream the intermediate path
@@ -2916,7 +2916,7 @@ async fn run_followup_turn(
                 ProgressEvent::IntermediateText { text, .. } => {
                     // Same cleaning as handle_message's fold path: artifacts
                     // and media markers must not leak into the note.
-                    let text = crate::utils::sanitize::strip_llm_artifacts(&text);
+                    let text = crate::utils::sanitize::sanitize_outbound(&text);
                     let (text_clean, _img) = crate::utils::extract_img_markers(&text);
                     let (text_clean, _vid) = crate::utils::extract_vid_markers(&text_clean);
                     if text_clean.trim().is_empty() {

@@ -183,6 +183,7 @@ pub mod channel_deny_by_default_test;
 pub mod channel_dispatch_enumeration_test;
 pub mod channel_factory_subagent_test;
 pub mod channel_impl_method_test;
+pub mod channel_outbound_redaction_test;
 pub mod channel_restart_target_test;
 pub mod channel_schema_param_test;
 pub mod channel_search_authz_test;

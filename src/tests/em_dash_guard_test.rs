@@ -95,10 +95,13 @@ fn trello_outbound_funnels_through_the_boundary() {
         content.contains("async fn add_comment_to_card("),
         "add_comment_to_card moved or renamed; re-verify the Trello boundary (#1970)"
     );
+    // #2102 folded the strip and the redactor into one chokepoint, so the
+    // boundary is now `sanitize_outbound`; either name means the card prose
+    // is still being cleaned before it leaves.
     assert!(
-        content.contains("strip_llm_artifacts"),
-        "Trello client no longer routes outbound comments through \
-         strip_llm_artifacts (#1970 regression)"
+        content.contains("sanitize_outbound") || content.contains("strip_llm_artifacts"),
+        "Trello client no longer routes outbound comments through the \
+         artifact boundary (#1970 regression)"
     );
 }
 

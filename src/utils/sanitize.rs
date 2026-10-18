@@ -992,6 +992,19 @@ pub fn strip_phantom_blocked(content: &str) -> String {
     result
 }
 
+/// One outbound chokepoint for channel prose (#2102): strip the LLM
+/// artifacts, then redact credentials, in that order.
+///
+/// The two calls used to be paired by convention only: 18 of the 25 sites
+/// under `src/channels/` did both, and the rest did the strip alone, so the
+/// text they delivered was artifact-clean but still carried any
+/// credential-shaped string the model had echoed. Every new outbound path
+/// is one call now, and `channel_outbound_redaction_test` fails when a
+/// `strip_llm_artifacts` call site is written without it.
+pub fn sanitize_outbound(text: &str) -> String {
+    redact_secrets(&strip_llm_artifacts(text))
+}
+
 pub fn strip_llm_artifacts(text: &str) -> String {
     use crate::brain::agent::service::AgentService;
 
