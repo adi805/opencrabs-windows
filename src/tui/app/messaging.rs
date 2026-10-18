@@ -270,6 +270,7 @@ impl App {
         self.set_plan_file_for_session(session.id).await;
         self.is_processing = false; // New session is never processing
         self.messages.clear();
+        self.turn_start_len = 0;
         self.auto_scroll = true;
         self.scroll_offset = 0;
         self.mode = AppMode::Chat;
@@ -407,6 +408,10 @@ impl App {
             expanded.insert(0, Self::make_history_marker(hidden));
         }
         self.messages = expanded;
+        // Everything loaded here is durable. A turn that starts (or resumes)
+        // from this point on begins at this index, so cancel-persist can never
+        // re-collect history into a fresh placeholder row (#2127).
+        self.turn_start_len = self.messages.len();
         self.auto_scroll = true;
         self.scroll_offset = 0;
 
@@ -747,14 +752,17 @@ impl App {
         let to_add = &older[older.len() - keep..];
 
         // Remove existing history_marker at front
-        if self
+        let removed_marker = if self
             .messages
             .first()
             .map(|m| m.role == "history_marker")
             .unwrap_or(false)
         {
             self.messages.remove(0);
-        }
+            true
+        } else {
+            false
+        };
 
         let mut new_msgs: Vec<DisplayMessage> = to_add
             .iter()
@@ -764,8 +772,18 @@ impl App {
         if hidden_still > 0 {
             new_msgs.insert(0, Self::make_history_marker(hidden_still));
         }
+        // Count the front block BEFORE `append` drains `self.messages`: `append`
+        // leaves the source empty, so measuring afterwards reports the whole
+        // history as prepended and throws the anchor past the end (#2127).
+        let prepended = new_msgs.len();
         new_msgs.append(&mut self.messages);
         self.messages = new_msgs;
+        self.turn_start_len = shift_turn_start(
+            self.turn_start_len,
+            prepended,
+            usize::from(removed_marker),
+            self.messages.len(),
+        );
         self.hidden_older_messages = hidden_still;
         self.oldest_displayed_sequence = to_add.first().map(|m| m.sequence).unwrap_or(0);
         self.display_token_count += tokens;
@@ -3086,6 +3104,12 @@ impl App {
                 self.messages.push(user_msg);
             }
 
+            // This turn's rows begin here. Anything above is durable history,
+            // and cancel-persist must not re-collect it (#2127). Set for system
+            // triggers too: they skip the user row, so without an explicit
+            // anchor the reconstruction would reach back into earlier turns.
+            self.turn_start_len = self.messages.len();
+
             // Auto-scroll to show the new user message and re-enable auto-scroll
             self.auto_scroll = true;
             self.scroll_offset = 0;
@@ -3219,6 +3243,9 @@ impl App {
             self.is_processing = true;
             self.processing_started_at = Some(std::time::Instant::now());
             self.cancel_token = Some(token.clone());
+            // Background-task turns carry their own system prompt and push no
+            // user row, so the anchor has to be explicit (#2127).
+            self.turn_start_len = self.messages.len();
         } else {
             self.session_cancel_tokens.insert(session_id, token.clone());
         }
@@ -3638,7 +3665,7 @@ impl App {
         // persister (#269) is CLI-only, so text promoted out of
         // `streaming_response` into the message list is never written to the
         // DB until turn-end; a cancel would lose it entirely (#1468).
-        let memory_turn_text = collect_turn_assistant_text(&self.messages);
+        let memory_turn_text = collect_turn_assistant_text(&self.messages, self.turn_start_len);
 
         // Build the live tail: in-flight tool group + not-yet-promoted text.
         let mut content = String::new();
@@ -3748,6 +3775,24 @@ impl App {
     }
 }
 
+/// New start index for the in-flight turn after `prepended` rows are inserted
+/// at the front of the message list and `removed_front` rows (a history marker)
+/// are dropped from that front. Pure so the shift arithmetic is testable: the
+/// earlier version measured the prepended count after `append` had already
+/// drained the source, which reported the whole history and clamped the anchor
+/// past the end, so a cancel after Ctrl+O persisted nothing (#2127).
+pub(crate) fn shift_turn_start(
+    turn_start: usize,
+    prepended: usize,
+    removed_front: usize,
+    total: usize,
+) -> usize {
+    turn_start
+        .saturating_add(prepended)
+        .saturating_sub(removed_front)
+        .min(total)
+}
+
 /// Reconstruct the assistant text of the in-flight turn from the in-memory
 /// message list: every `assistant` DisplayMessage after the last `user`
 /// message, joined in order. For HTTP/streaming providers the real-time live
@@ -3758,12 +3803,24 @@ impl App {
 /// in-memory copy), so `persist_streaming_state` reconstructs it from here and
 /// writes it before the task is killed (#1468). Pure over the slice so it is
 /// unit-testable without a live terminal.
-pub(crate) fn collect_turn_assistant_text(messages: &[DisplayMessage]) -> String {
-    let start = messages
+pub(crate) fn collect_turn_assistant_text(
+    messages: &[DisplayMessage],
+    turn_start: usize,
+) -> String {
+    // Never read above the in-flight turn's start. Rows before it are already
+    // durable: loaded from the DB by `load_session`, or written by an earlier
+    // turn in this process. Re-collecting them wrote the whole previous turn
+    // into a fresh placeholder row, which then rendered as a second,
+    // marker-less copy of history that no fold could hide (#2127).
+    //
+    // The last user message stays a second floor so a caller that could not
+    // set an anchor still cannot reach into a settled turn.
+    let after_user = messages
         .iter()
         .rposition(|m| m.role == "user")
         .map(|i| i + 1)
         .unwrap_or(0);
+    let start = turn_start.max(after_user).min(messages.len());
     let mut out = String::new();
     for m in &messages[start..] {
         if m.role == "assistant" && !m.content.trim().is_empty() {

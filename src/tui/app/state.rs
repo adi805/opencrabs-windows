@@ -581,6 +581,18 @@ pub struct App {
     /// Core state
     pub current_session: Option<Session>,
     pub messages: Vec<DisplayMessage>,
+    /// Index into `messages` where the in-flight turn begins.
+    ///
+    /// Cancel-persist reconstruction must never read above this line. Rows
+    /// above it are already durable: they were loaded from the DB by
+    /// `load_session`, or written by an earlier turn in this process. Re-
+    /// collecting them made a turn aborted during boot resume write the whole
+    /// previous turn into the fresh placeholder row, which then rendered as a
+    /// second marker-less copy of history (#2127).
+    ///
+    /// Set at every turn start (user send, system trigger, boot resume,
+    /// background-task resume) and whenever a session is (re)loaded.
+    pub(crate) turn_start_len: usize,
     pub sessions: Vec<Session>,
     /// All-time usage stats from the ledger (survives session deletes)
     pub usage_ledger_stats: Vec<crate::db::repository::usage_ledger::ModelUsageStats>,
@@ -1049,6 +1061,7 @@ impl App {
         let this = Self {
             current_session: None,
             messages: Vec::new(),
+            turn_start_len: 0,
             sessions: Vec::new(),
             usage_ledger_stats: Vec::new(),
             dashboard_state: None,
@@ -3050,6 +3063,10 @@ impl App {
                     self.is_processing = true;
                     self.processing_started_at = Some(std::time::Instant::now());
                     self.cancel_token = Some(cancel_token);
+                    // A resumed turn starts from the end of the loaded history.
+                    // Its own rows come after this line; everything above is
+                    // already durable and must never be re-persisted (#2127).
+                    self.turn_start_len = self.messages.len();
                 } else {
                     self.session_cancel_tokens.insert(session_id, cancel_token);
                 }
