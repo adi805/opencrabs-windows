@@ -758,7 +758,7 @@ mod links {
     use crate::channels::telegram::delivery::{
         file_message_link, link_file_markers, strip_echoed_plan_title,
     };
-    use crate::utils::image::{extract_local_files, LocalFile, LocalFileScan};
+    use crate::utils::image::{LocalFile, LocalFileScan, extract_local_files};
     use std::path::Path;
 
     const PDF_BYTES: &[u8] = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n";
@@ -876,11 +876,7 @@ mod links {
         assert_eq!(scan.text, "Report 📎 Q3 report.");
 
         let moved = format!("(redacted) {}", scan.text);
-        let linked = link_file_markers(
-            &moved,
-            &scan,
-            &[(pdf, "https://t.me/c/1/701".to_string())],
-        );
+        let linked = link_file_markers(&moved, &scan, &[(pdf, "https://t.me/c/1/701".to_string())]);
         assert_eq!(
             linked, "(redacted) Report [📎 Q3 report](https://t.me/c/1/701).",
             "the span is stale but the marker is still there exactly once, so it \
@@ -982,11 +978,7 @@ mod links {
             failures: Vec::new(),
         };
         assert_eq!(
-            link_file_markers(
-                body,
-                &scan,
-                &[(pdf, "https://t.me/c/1/701".to_string())]
-            ),
+            link_file_markers(body, &scan, &[(pdf, "https://t.me/c/1/701".to_string())]),
             "I wrote 📎 Q3 report in the draft. Attached: \
              [📎 Q3 report](https://t.me/c/1/701)",
             "only the scanner's own occurrence is cut, so the model's copy keeps \
@@ -1017,9 +1009,58 @@ mod links {
             &[(pdf, "https://t.me/c/1/701".to_string())],
         );
         assert_eq!(
-            linked.matches("[📎 Q3 report](https://t.me/c/1/701)").count(),
+            linked
+                .matches("[📎 Q3 report](https://t.me/c/1/701)")
+                .count(),
             2,
             "both markers link, each at its own recorded span: {linked:?}"
+        );
+    }
+
+    #[test]
+    fn two_attachments_that_resolve_to_one_offset_splice_once() {
+        // One file named twice survives the scan as two attachments carrying
+        // two identical markers at two recorded spans. A later rewrite drops
+        // one of the two occurrences and shifts the text, so BOTH recorded
+        // spans go stale. Each then falls back to the marker's own bytes,
+        // which now exist exactly once, and both resolve to the SAME offset.
+        // Cutting that one range twice splices a second link into the first
+        // one's bytes, and because the marker's last character is multi-byte
+        // the second cut ends inside it: a `replace_range` panic. One
+        // occurrence carries one link.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pdf = write_fixture(dir.path(), "q3.pdf");
+        let marker = "📎 Reporté";
+        let marker_len = marker.len();
+        let scan = LocalFileScan {
+            text: format!("A: {marker} B: {marker}"),
+            attachments: vec![
+                LocalFile {
+                    path: pdf.clone(),
+                    caption: Some("Reporté".to_string()),
+                    marker_span: Some(3..3 + marker_len),
+                },
+                LocalFile {
+                    path: pdf.clone(),
+                    caption: Some("Reporté".to_string()),
+                    marker_span: Some(3 + marker_len + 4..3 + 2 * marker_len + 4),
+                },
+            ],
+            failures: Vec::new(),
+        };
+        // Moved: a prefix was added and the second occurrence was dropped, so
+        // neither recorded span still names the marker where it claims to.
+        let moved = format!("(x) A: {marker}");
+        let linked = link_file_markers(&moved, &scan, &[(pdf, "https://t.me/c/1/701".to_string())]);
+        assert_eq!(
+            linked,
+            format!("(x) A: [{marker}](https://t.me/c/1/701)"),
+            "one surviving occurrence takes exactly one link"
+        );
+        assert_eq!(
+            linked.matches("https://t.me/c/1/701").count(),
+            1,
+            "a single occurrence must not be spliced twice: {linked:?}"
         );
     }
 

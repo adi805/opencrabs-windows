@@ -1348,6 +1348,15 @@ pub(crate) fn link_file_markers(
     // reordered them: cutting back-to-front is what keeps the earlier spans
     // valid, and that needs the order to be known.
     spans.sort_by_key(|(start, _, _, _)| *start);
+    // Two attachments can resolve to the SAME offset. A file named twice leaves
+    // two identical markers; when the text has moved past both recorded spans,
+    // `locate_marker` falls back to the marker's own bytes, which may now exist
+    // only once, and both attachments land on that one occurrence. Cutting the
+    // range twice splices the second link into the first one's bytes and, when
+    // the marker's last character is multi-byte, ends inside it: a
+    // `replace_range` panic (#2125). One occurrence carries one link, so the
+    // first span wins and the second attachment keeps its plain marker.
+    spans.dedup_by_key(|(start, _, _, _)| *start);
     let mut linked = text.to_string();
     for (start, end, marker, link) in spans.iter().rev() {
         linked.replace_range(*start..*end, &format!("[{marker}]({link})"));
@@ -1369,11 +1378,7 @@ pub(crate) fn link_file_markers(
 /// the scanner wrote one and the model may have written the other itself
 /// (#2001), and a stale span no longer says which. Zero means the text was
 /// rewritten beyond recognition. Both fall back to the plain marker.
-fn locate_marker(
-    text: &str,
-    marker: &str,
-    span: Option<std::ops::Range<usize>>,
-) -> Option<usize> {
+fn locate_marker(text: &str, marker: &str, span: Option<std::ops::Range<usize>>) -> Option<usize> {
     if marker.is_empty() {
         return None;
     }
