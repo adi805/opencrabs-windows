@@ -416,6 +416,7 @@ pub mod plan_vacuous_pass_test;
 pub mod pressure_warning_test;
 pub mod pricing_fallback_test;
 pub mod profile_addressing_test;
+pub mod profile_lock_stamp_test;
 pub mod profile_pid_lock_test;
 pub mod profile_preempt_test;
 pub mod profiles_dialog_test;
