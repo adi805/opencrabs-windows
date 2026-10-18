@@ -50,16 +50,17 @@ fn the_word_sleep_inside_arguments_is_not_matched() {
 
 #[test]
 fn no_running_task_means_no_refusal() {
-    assert!(sleep_refusal("sleep 90", 0).is_none());
+    assert!(sleep_refusal("sleep 90", &[]).is_none());
 }
 
 #[test]
 fn a_running_task_refuses_sleep() {
-    let msg = sleep_refusal("sleep 90", 2).expect("a running task must refuse the sleep");
+    let running = ["cargo test".to_string()];
+    let msg = sleep_refusal("sleep 90", &running).expect("a running task must refuse the sleep");
     assert!(msg.contains("sleep 90"), "message names the command: {msg}");
     assert!(
-        msg.contains("2 detached task"),
-        "message names the count: {msg}"
+        msg.contains("`cargo test` is still running"),
+        "message names the task label: {msg}"
     );
     assert!(
         msg.contains("reports back on its own"),
@@ -68,9 +69,24 @@ fn a_running_task_refuses_sleep() {
 }
 
 #[test]
+fn several_running_tasks_are_all_named() {
+    let running = ["cargo test".to_string(), "cargo build".to_string()];
+    let msg = sleep_refusal("sleep 90", &running).expect("running tasks must refuse the sleep");
+    assert!(
+        msg.contains("2 detached tasks are still running"),
+        "message counts them: {msg}"
+    );
+    assert!(
+        msg.contains("cargo test, cargo build"),
+        "message names every label: {msg}"
+    );
+}
+
+#[test]
 fn a_running_task_does_not_refuse_other_commands() {
-    assert!(sleep_refusal("cargo test", 1).is_none());
-    assert!(sleep_refusal("grep -rn 'sleep' logs/", 1).is_none());
+    let running = ["cargo test".to_string()];
+    assert!(sleep_refusal("cargo test", &running).is_none());
+    assert!(sleep_refusal("grep -rn 'sleep' logs/", &running).is_none());
 }
 
 #[tokio::test]
@@ -93,7 +109,11 @@ async fn execute_refuses_sleep_while_a_task_runs() {
     // and recent-failure refusals already use.
     let msg = result.error.unwrap_or_default();
     assert!(
-        msg.contains("detached task"),
+        msg.contains("`cargo test` is still running"),
+        "error names the task that is running: {msg}"
+    );
+    assert!(
+        msg.contains("reports back on its own"),
         "error explains the refusal: {msg}"
     );
 }

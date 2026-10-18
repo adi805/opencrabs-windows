@@ -406,9 +406,16 @@ impl Tool for BashTool {
         // see the background manager. With nothing detached the command runs
         // as ordinary shell, which is what `sleep` is normally for.
         if let Some(mgr) = context.background_manager.as_ref()
-            && let Some(msg) = sleep_refusal(&input.command, mgr.running_for(context.session_id))
+            && mgr.running_for(context.session_id) > 0
         {
-            return Ok(ToolResult::error(msg));
+            let labels: Vec<String> = mgr
+                .running_tasks(context.session_id)
+                .into_iter()
+                .map(|task| task.label)
+                .collect();
+            if let Some(msg) = sleep_refusal(&input.command, &labels) {
+                return Ok(ToolResult::error(msg));
+            }
         }
 
         // Determine working directory
@@ -1577,16 +1584,28 @@ pub(crate) fn sleeping_segment(command: &str) -> Option<String> {
 /// task resumes the session on its own completion, so waiting on a counter
 /// only burns time that belongs to other work. With nothing detached the
 /// command is ordinary shell and stays available.
-pub(crate) fn sleep_refusal(command: &str, running: usize) -> Option<String> {
-    if running == 0 {
-        return None;
-    }
+///
+/// `running` carries the labels, not a count, because the refusal has to say
+/// WHAT is being waited on. A bare number leaves the reader unable to tell a
+/// two-second test from a ten-minute build.
+pub(crate) fn sleep_refusal(command: &str, running: &[String]) -> Option<String> {
+    let detail = match running {
+        [] => return None,
+        [only] => format!("`{only}` is still running"),
+        many => {
+            let names: Vec<&str> = many.iter().map(String::as_str).collect();
+            format!(
+                "{} detached tasks are still running ({})",
+                many.len(),
+                names.join(", ")
+            )
+        }
+    };
     let seg = sleeping_segment(command)?;
     Some(format!(
-        "Blocked: `{}` waits on a counter, but {} detached task(s) are still running for this session. \
+        "Blocked: `{seg}` waits on a counter, but {detail} for this session. \
          A detached task reports back on its own when it finishes. Do other work, or end the turn and \
-         the completion will start the next one.",
-        seg, running
+         the completion will start the next one."
     ))
 }
 
