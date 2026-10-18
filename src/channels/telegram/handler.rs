@@ -1309,6 +1309,14 @@ pub(crate) async fn handle_message(
     // lived solely as the ephemeral tmp copy, never reaching channel_attachments
     // (#513). Download it and pass the bytes so any attachment from anyone,
     // mention or not, lands in the durable store.
+    //
+    // Whether this message's bytes reached that store. The late The late
+    // "log ALL processed messages" block below uses it to skip a media row the
+    // main store already wrote (#2121): a photo used to land twice under one
+    // platform id, once with `[file: <path>]` and once as a pathless
+    // `[photo] <caption>` twin, and the reply-context lookup could return the
+    // twin.
+    let mut stored_attachment = false;
     if !is_dm {
         let text = msg.text().or(msg.caption()).unwrap_or("").to_string();
         let attachment = download_attachment(&msg, &bot, bot_token.clone()).await;
@@ -1317,6 +1325,7 @@ pub(crate) async fn handle_message(
         } else {
             ("text".to_string(), None)
         };
+        stored_attachment = file_data.is_some();
         store_channel_msg(text, msg_type, file_data).await;
     }
 
@@ -1453,7 +1462,13 @@ pub(crate) async fn handle_message(
         } else {
             String::new() // text was already logged above
         };
-        if !log_content.is_empty() {
+        // A voice row is NOT a duplicate: the main store persisted the audio
+        // file only, so this row is the transcript, and the history needs it.
+        // Every other media row duplicates one that already carries the
+        // caption plus `[file: <path>]`, and dropping it also removes the
+        // pathless twin the reply lookup used to return (#2121).
+        let duplicates_main_store = stored_attachment && !log_content.starts_with("[voice]");
+        if !log_content.is_empty() && !duplicates_main_store {
             let message_type = if log_content.starts_with("[voice]") {
                 "voice"
             } else if log_content.starts_with("[photo]") {
@@ -2108,6 +2123,11 @@ pub(crate) async fn handle_message(
     // into the agent prompt.
     let reply_context = if let Some(reply) = msg.reply_to_message() {
         let mut full_text = reply.text().or(reply.caption()).unwrap_or("").to_string();
+        // #2121: a media message arrives as `text() == None` plus a caption,
+        // so this string is the caption and nothing else. Naming the kind here
+        // is what lets the context below say "this is a photo" instead of
+        // handing the agent a caption it cannot resolve to any artifact.
+        let reply_media = media_kind_of(reply);
         let quote_text = msg.quote().map(|q| q.text.as_str()).unwrap_or("");
         // #548: in a forum topic EVERY ordinary message carries the
         // topic-creation service message as its reply target, so this branch
@@ -2162,7 +2182,7 @@ pub(crate) async fn handle_message(
         // message, so the lookup can only ever waste a query — and a store hit
         // on it would inject the topic's own metadata as if it were the
         // content the user replied to.
-        if full_text.is_empty() && !target_is_topic_root {
+        if (full_text.is_empty() || reply_media.is_some()) && !target_is_topic_root {
             let chat_id_str = msg.chat.id.0.to_string();
             let reply_pmid = reply.id.0.to_string();
             match channel_msg_repo
@@ -2170,10 +2190,19 @@ pub(crate) async fn handle_message(
                 .await
             {
                 Ok(Some(content)) => {
-                    full_text = content;
+                    // A captioned photo used to stop at the caption because
+                    // this lookup only ran for empty text (#2121). Replace the
+                    // caption with the stored row only when that row carries
+                    // the attachment path: the pathless twin is worse than the
+                    // caption it duplicates.
+                    if full_text.is_empty() || attachment_path_in(&content).is_some() {
+                        full_text = content;
+                    }
                     tracing::info!(
-                        "Telegram reply context: recovered EXACT replied-to message by id {reply_pmid} ({} chars)",
-                        full_text.len()
+                        "Telegram reply context: recovered EXACT replied-to message by id {reply_pmid} ({} chars, media={:?}, attachment={})",
+                        full_text.len(),
+                        reply_media,
+                        attachment_path_in(&full_text).is_some()
                     );
                 }
                 Ok(None) => {
@@ -2203,8 +2232,20 @@ pub(crate) async fn handle_message(
         // to media was indistinguishable from not being a reply at all, and the
         // model could not even tell that one had happened. The topic root is
         // excluded by `target_is_topic_root` (computed above).
-        let unrecoverable_reply =
-            full_text.is_empty() && !target_is_topic_root && reply.from.is_some();
+        // The path is read before the tag is stripped: it is what the media
+        // note turns into an `<<IMG:path>>` marker. Leaving `[file: ...]`
+        // inside the quoted caption as well would name the same file twice.
+        let reply_attachment = attachment_path_in(&full_text).map(str::to_string);
+        if reply_media.is_some() && reply_attachment.is_some() {
+            full_text = strip_attachment_tag(&full_text);
+        }
+        // A media target with no resolvable file is reported by the media
+        // note below, which names the kind. Firing this generic marker too
+        // would say "could not be retrieved" twice and name nothing (#2121).
+        let unrecoverable_reply = full_text.is_empty()
+            && !target_is_topic_root
+            && reply.from.is_some()
+            && reply_media.is_none();
 
         // Strip ctx footer from quoted text so metadata never leaks into agent context
         let full_clean = crate::utils::strip_ctx_footer(&full_text);
@@ -2220,12 +2261,18 @@ pub(crate) async fn handle_message(
             false
         };
 
-        let ctx = resolve_reply_context_pruned(
+        let media_note =
+            reply_media.map(|kind| media_reference_note(kind, reply_attachment.as_deref()));
+        let ctx = compose_reply_context(
+            resolve_reply_context_pruned(
+                &reply_sender,
+                &full_clean,
+                &quote_clean,
+                unrecoverable_reply,
+                full_in_context,
+            ),
             &reply_sender,
-            &full_clean,
-            &quote_clean,
-            unrecoverable_reply,
-            full_in_context,
+            media_note,
         );
         // The two new booleans are logged because the field reports that
         // produced #548 could only be read as "ctx=None, reason unknown" —
@@ -3332,6 +3379,107 @@ pub(crate) fn resolve_reply_context(
     unrecoverable_reply: bool,
 ) -> Option<String> {
     resolve_reply_context_pruned(sender, full_clean, quote_clean, unrecoverable_reply, false)
+}
+
+/// Media kind carried by a message, when it has one (#2121).
+///
+/// The reply context is built from `text().or(caption())`, and for media the
+/// first is `None`: the context became the caption and the media handle was
+/// dropped on the floor. Naming the kind is what lets the context say "this is
+/// a photo" even when no path could be resolved, so a caption is never again
+/// mistaken for the whole of the message the user replied to.
+pub(crate) fn media_kind_of(msg: &teloxide::types::Message) -> Option<&'static str> {
+    if msg.photo().is_some() {
+        Some("photo")
+    } else if msg.video().is_some() {
+        Some("video")
+    } else if msg.animation().is_some() {
+        Some("animation")
+    } else if msg.video_note().is_some() {
+        Some("video_note")
+    } else if msg.document().is_some() {
+        Some("document")
+    } else if msg.voice().is_some() {
+        Some("voice")
+    } else if msg.audio().is_some() {
+        Some("audio")
+    } else {
+        None
+    }
+}
+
+/// Drop the `[file: <path>]` tag a stored media row carries.
+///
+/// The reply context already names the file through the media note, so the
+/// raw tag inside the quoted caption is noise the agent has to read past.
+pub(crate) fn strip_attachment_tag(content: &str) -> String {
+    const TAG: &str = "[file: ";
+    match content.find(TAG) {
+        Some(start) => {
+            let end = content[start..]
+                .find(']')
+                .map(|i| start + i + 1)
+                .unwrap_or(content.len());
+            let mut out = String::with_capacity(content.len());
+            out.push_str(content[..start].trim_end());
+            out.push_str(content[end..].trim_start_matches(['\n', ' ']));
+            out.trim().to_string()
+        }
+        None => content.to_string(),
+    }
+}
+
+/// The stored attachment path carried by a persisted message, if any.
+///
+/// `store_channel_msg` appends `[file: <abs path>]` to the content once it has
+/// written the bytes to the durable store, so that marker is where the path
+/// lives. Returns the path alone, never the caption around it, and `None` for a
+/// row that carries no attachment (the `[photo] caption` twin, or a message
+/// whose download failed).
+pub(crate) fn attachment_path_in(content: &str) -> Option<&str> {
+    const TAG: &str = "[file: ";
+    let start = content.find(TAG)? + TAG.len();
+    let rest = &content[start..];
+    let path = rest[..rest.find(']')?].trim();
+    (!path.is_empty()).then_some(path)
+}
+
+/// The reply-context phrase that names the replied-to media and how to reach
+/// it, without the surrounding brackets (the caller wraps it once).
+///
+/// A photo becomes a `<<IMG:path>>` marker so the inbound pipeline inlines the
+/// actual image the user replied to. Any other kind gets its path, or an
+/// explicit unresolved line. A caption with no media reference is exactly the
+/// state that let the agent answer about the wrong artifact (#2121), so the
+/// unresolved case says so instead of degrading back to the caption.
+pub(crate) fn media_reference_note(kind: &str, path: Option<&str>) -> String {
+    match path {
+        Some(p) if kind == "photo" => format!("media: photo, image: <<IMG:{p}>>"),
+        Some(p) => format!("media: {kind}, file: {p}"),
+        None => format!(
+            "media: {kind}, and its file could not be resolved. Do not guess which one it was; \
+             ask the user to resend it if you need to see it"
+        ),
+    }
+}
+
+/// Attach the media note to the reply context (#2121).
+///
+/// The note is what makes the pointer resolvable: without it a reply to a
+/// photo reached the agent as a caption with no path, no marker, and no way to
+/// tell which artifact was meant. When there is no other context the note
+/// stands alone rather than being dropped, which is the captionless-media case
+/// that used to resolve to nothing at all.
+pub(crate) fn compose_reply_context(
+    ctx: Option<String>,
+    sender: &str,
+    media_note: Option<String>,
+) -> Option<String> {
+    match (ctx, media_note) {
+        (Some(ctx), Some(note)) => Some(format!("{ctx} [{note}]")),
+        (None, Some(note)) => Some(format!("[Replying to {sender}, {note}]")),
+        (ctx, None) => ctx,
+    }
 }
 
 pub(crate) fn resolve_reply_context_pruned(

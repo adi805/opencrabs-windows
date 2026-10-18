@@ -842,6 +842,7 @@ pub mod tui_components_logo_test;
 pub mod tui_mission_control_detail_test;
 // Unix-only alongside the editor module it exercises (#1755).
 pub mod channel_chat_key_test;
+pub mod channel_message_attachment_preference_test;
 pub mod dialog_ctrl_c_panel_test;
 pub mod dialog_footer_batch_test;
 pub mod drop_landing_test;
@@ -972,6 +973,7 @@ pub mod telegram_poll_receipt_test;
 pub mod telegram_raw_update_parse_test;
 pub mod telegram_reaction_map_test;
 pub mod telegram_reply_context_recovery_test;
+pub mod telegram_reply_media_context_test;
 pub mod telegram_resume_end_flush_test;
 pub mod telegram_resume_test;
 pub mod telegram_rich_decode_official_test;
