@@ -95,3 +95,59 @@ fn the_container_length_matches_the_file() {
         "declared container length disagrees with the file on disk"
     );
 }
+
+/// The payload of one member, without its 8-byte header. Large members (`ic09`
+/// and up) are PNG streams, which is what makes the tile shape checkable.
+fn member_payload(kind: &[u8]) -> Vec<u8> {
+    let bytes = icns();
+    let mut off = 8;
+    while off + 8 <= bytes.len() {
+        let len = u32::from_be_bytes([
+            bytes[off + 4],
+            bytes[off + 5],
+            bytes[off + 6],
+            bytes[off + 7],
+        ]) as usize;
+        if &bytes[off..off + 4] == kind {
+            return bytes[off + 8..off + len].to_vec();
+        }
+        off += len;
+    }
+    panic!("no {} member", String::from_utf8_lossy(kind));
+}
+
+/// macOS draws an app icon as a rounded tile inset on a transparent canvas.
+/// Full-bleed artwork with square corners is what Finder shows for a bare
+/// executable, so shipping one reproduces the bug the bundle exists to fix.
+/// Decode the largest member and check the shape itself.
+#[test]
+fn the_largest_member_is_a_rounded_tile() {
+    let png = member_payload(b"ic10");
+    let img = image::load_from_memory(&png)
+        .expect("ic10 is not a decodable PNG")
+        .to_rgba8();
+    assert_eq!(img.dimensions(), (1024, 1024), "ic10 is not 1024x1024");
+
+    for (x, y) in [(0u32, 0u32), (1023, 0), (0, 1023), (1023, 1023)] {
+        assert_eq!(
+            img.get_pixel(x, y)[3],
+            0,
+            "corner ({x},{y}) is opaque; the icon is full-bleed, not a rounded tile"
+        );
+    }
+    assert_eq!(
+        img.get_pixel(512, 512)[3],
+        255,
+        "the centre of the tile is transparent"
+    );
+
+    // Apple's 1024 grid insets the tile 100px per side, so the covered area is
+    // about 0.65 of the canvas before the corners come off. A full-bleed icon
+    // lands at 1.0 and a token 1px rounding stays near it.
+    let opaque = img.pixels().filter(|p| p[3] > 0).count();
+    let ratio = opaque as f64 / (1024.0 * 1024.0);
+    assert!(
+        (0.50..0.72).contains(&ratio),
+        "opaque coverage is {ratio:.3}; the tile is not inset the way a macOS icon is"
+    );
+}

@@ -26,11 +26,23 @@ import sys
 import tempfile
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 REPO = Path(__file__).resolve().parent.parent
 SOURCE = REPO / "src" / "assets" / "icon.png"
 TARGET = REPO / "src" / "assets" / "icon.icns"
+
+# macOS app icons are not square artwork. Every app on the system draws the
+# same tile: a rounded square, inset from the canvas edge, sitting at a
+# consistent visual weight in the Dock. The proportions below are Apple's
+# 1024px template (100px margin per side, 185px corner radius) expressed as
+# fractions so they scale with the canvas.
+TILE_INSET = 100 / 1024
+TILE_RADIUS = 185 / 1024
+
+# Shape once at twice the largest member, then downsample. Drawing the corners
+# at 2048 and halving them keeps the curve clean at every size in the ladder.
+SHAPE_SUPERSAMPLE = 2
 
 # (filename, pixel size). The @2x entries are the retina variants of the
 # smaller logical sizes; together they are the ten members of a full ladder.
@@ -48,7 +60,28 @@ LADDER = [
 ]
 
 
-def build(source: Path, iconset: Path) -> None:
+def macos_tile(master: Image.Image) -> Image.Image:
+    """Draw the artwork as a macOS app tile: rounded square, inset on a
+    transparent canvas. Clipping to the tile is what makes Finder and the Dock
+    show a normal app icon instead of a full-bleed rectangle."""
+    canvas = LADDER[-1][1] * SHAPE_SUPERSAMPLE
+    inset = round(canvas * TILE_INSET)
+    radius = round(canvas * TILE_RADIUS)
+    body = canvas - inset * 2
+
+    tile = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    art = master.resize((body, body), Image.LANCZOS)
+
+    mask = Image.new("L", (body, body), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, body - 1, body - 1), radius=radius, fill=255
+    )
+
+    tile.paste(art, (inset, inset), mask)
+    return tile
+
+
+def build(source: Path, iconset: Path, round_corners: bool = True) -> None:
     if not source.is_file():
         sys.exit(f"source icon is missing: {source}")
 
@@ -61,11 +94,13 @@ def build(source: Path, iconset: Path) -> None:
         top = (master.size[1] - side) // 2
         master = master.crop((left, top, left + side, top + side))
 
+    shaped = macos_tile(master) if round_corners else master
+
     iconset.mkdir(parents=True, exist_ok=True)
     for name, size in LADDER:
-        # Resizing every member from the master (not chaining up from the
+        # Resizing every member from the shaped master (not chaining up from the
         # previous one) keeps the small sizes clean.
-        master.resize((size, size), Image.LANCZOS).save(iconset / name)
+        shaped.resize((size, size), Image.LANCZOS).save(iconset / name)
 
     print(f"wrote {len(LADDER)} members to {iconset}")
 
