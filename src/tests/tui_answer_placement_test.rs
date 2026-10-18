@@ -1,8 +1,13 @@
 //! A final answer that follows tool groups must be a row of its own, after
 //! those groups. Overwriting an earlier text row moves it above the tools,
 //! where the fold hides it.
+//!
+//! The mirror case is a halt on an option-surface tool: the answer streamed
+//! before the tool ran, so its row is above the group, and the response the
+//! loop synthesizes on the halt repeats that text. It must not become a second
+//! row.
 
-use crate::tui::app::answer_placement::last_text_precedes_tool_group;
+use crate::tui::app::answer_placement::{answer_already_on_screen, last_text_precedes_tool_group};
 use crate::tui::app::{DisplayMessage, ToolCallEntry, ToolCallGroup};
 use uuid::Uuid;
 
@@ -70,4 +75,48 @@ fn no_tool_group_is_never_stale() {
 fn no_assistant_row_is_never_stale() {
     let msgs = vec![msg("user", "hi"), group_msg()];
     assert!(!last_text_precedes_tool_group(&msgs));
+}
+
+#[test]
+fn text_above_the_last_tool_group_that_the_response_repeats_is_already_on_screen() {
+    // suggest_options halted the turn after the answer streamed. The row sits
+    // above the group and the response carries the same text, trailing
+    // whitespace included.
+    let answer = "Nothing was installed, built, or run.";
+    let msgs = vec![
+        msg("user", "did you run it"),
+        msg("assistant", answer),
+        group_msg(),
+    ];
+    assert!(answer_already_on_screen(&msgs, &format!("{answer}\n")));
+}
+
+#[test]
+fn identical_text_from_an_earlier_turn_is_a_new_answer() {
+    // The only identical row sits before the newest user row, so it belongs to
+    // an earlier turn and this answer must be appended.
+    let answer = "Nothing was installed, built, or run.";
+    let msgs = vec![
+        msg("user", "did you run it"),
+        msg("assistant", answer),
+        msg("user", "again"),
+        group_msg(),
+    ];
+    assert!(!answer_already_on_screen(&msgs, answer));
+}
+
+#[test]
+fn different_text_after_tool_groups_is_not_already_on_screen() {
+    let msgs = vec![
+        msg("user", "check it"),
+        msg("assistant", "Let me check"),
+        group_msg(),
+    ];
+    assert!(!answer_already_on_screen(&msgs, "Here is the answer"));
+}
+
+#[test]
+fn no_assistant_row_is_never_already_on_screen() {
+    let msgs = vec![msg("user", "hi"), group_msg()];
+    assert!(!answer_already_on_screen(&msgs, "hello"));
 }

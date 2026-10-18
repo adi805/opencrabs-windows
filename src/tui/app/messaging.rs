@@ -1,6 +1,6 @@
 //! Messaging — session CRUD, slash commands, message expansion, streaming.
 
-use super::answer_placement::last_text_precedes_tool_group;
+use super::answer_placement::{answer_already_on_screen, last_text_precedes_tool_group};
 use super::dialogs::ensure_whispercrabs;
 use super::events::{AppMode, ToolApprovalResponse, TuiEvent};
 use super::onboarding::OnboardingWizard;
@@ -101,6 +101,30 @@ pub(crate) fn attachment_class_for_path(path: &str) -> AttachmentClass {
         AttachmentClass::TextFile
     } else {
         AttachmentClass::UnknownBinary
+    }
+}
+
+/// Stamp the settled per-turn metadata (tokens, cost, elapsed time, reasoning)
+/// onto an assistant row that already carries this turn's text.
+///
+/// Two paths land here: the turn's text arrived as an IntermediateText and the
+/// response replaced it, or the response text is already on screen and
+/// appending it would render the same answer twice. `duration_secs` is written
+/// only when the turn clock is still known, so a missing clock never clears a
+/// value that is already on the row.
+fn stamp_settled_metadata(
+    msg: &mut DisplayMessage,
+    response: &crate::brain::agent::AgentResponse,
+    reasoning_details: &Option<String>,
+    duration_secs: Option<i64>,
+) {
+    msg.token_count = Some(response.usage.output_tokens as i64);
+    msg.cost = Some(response.cost);
+    if let Some(secs) = duration_secs {
+        msg.duration_secs = Some(secs);
+    }
+    if reasoning_details.is_some() {
+        msg.details = reasoning_details.clone();
     }
 }
 
@@ -3403,17 +3427,16 @@ impl App {
                 if !response.content.is_empty() {
                     last_assistant.content = response.content.clone();
                 }
-                last_assistant.token_count = Some(response.usage.output_tokens as i64);
-                last_assistant.cost = Some(response.cost);
                 // Stamp the elapsed time before `processing_started_at` is
                 // cleared below (#964). Without this the settled header has
                 // nothing to show until the session is reloaded from the DB.
-                if let Some(started) = self.processing_started_at {
-                    last_assistant.duration_secs = Some(started.elapsed().as_secs() as i64);
-                }
-                if reasoning_details.is_some() {
-                    last_assistant.details = reasoning_details.clone();
-                }
+                stamp_settled_metadata(
+                    last_assistant,
+                    &response,
+                    &reasoning_details,
+                    self.processing_started_at
+                        .map(|t| t.elapsed().as_secs() as i64),
+                );
                 tracing::debug!(
                     "Updated intermediate assistant message: old_len={}, new_len={}",
                     old_len,
@@ -3438,6 +3461,32 @@ impl App {
                         .processing_started_at
                         .map(|t| t.elapsed().as_secs() as i64),
                 });
+            }
+        } else if answer_already_on_screen(&self.messages, &response.content) {
+            // The answer text is already on screen as this turn's assistant row.
+            // A turn that halts on an option-surface tool streams its answer and
+            // then calls the tool, so the text row sits ABOVE the tool group and
+            // the response the loop synthesizes on that halt carries the same
+            // text again. Appending it would render the answer twice; the DB
+            // keeps one row per turn, so a reload drops the second copy anyway.
+            // Stamp the settled metadata onto the row that exists instead.
+            tracing::info!(
+                "[TUI] Duplicate answer row skipped: text already on screen (len={})",
+                response.content.len()
+            );
+            if let Some(last_assistant) = self
+                .messages
+                .iter_mut()
+                .rev()
+                .find(|m| m.role == "assistant")
+            {
+                stamp_settled_metadata(
+                    last_assistant,
+                    &response,
+                    &reasoning_details,
+                    self.processing_started_at
+                        .map(|t| t.elapsed().as_secs() as i64),
+                );
             }
         } else {
             // Add assistant message to UI
