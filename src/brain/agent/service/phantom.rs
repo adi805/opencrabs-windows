@@ -191,7 +191,7 @@ fn prose_tail(text: &str) -> &str {
 /// `"Migration created."` — sentences that announce an action's done without
 /// having executed any tool. Only used in the zero-tool-call path; loose
 /// matching elsewhere would false-positive on conversational recaps.
-fn has_past_tense_action_claim(lower: &str, action_verbs: &[String]) -> bool {
+pub(crate) fn has_past_tense_action_claim(lower: &str, action_verbs: &[String]) -> bool {
     for raw_sentence in lower.split(['.', '\n', '!']) {
         let s = raw_sentence.trim();
         if s.is_empty() || s.len() > 80 {
@@ -210,7 +210,15 @@ fn has_past_tense_action_claim(lower: &str, action_verbs: &[String]) -> bool {
                 // counts. Guard on the auxiliary right before the verb.
                 const AUX: &[&str] = &[
                     "is", "are", "was", "were", "been", "be", "being", "gets", "get", "got",
-                    "está", "están", "foi", "é", "est", "sont",
+                    // Copular contractions (#2110): "everything I'm tagged
+                    // in", "it's loaded", "we're done here" describe state,
+                    // not a finished action. Without them the guard missed and
+                    // a zero-tool turn's real answer was swapped for the guard
+                    // note. Only copulas belong here: "i've"/"we've" sit in
+                    // front of ACTIVE claims ("I've pushed the branch") and
+                    // must keep firing.
+                    "i'm", "am", "it's", "we're", "you're", "they're", "he's", "she's", "está",
+                    "están", "foi", "é", "est", "sont",
                 ];
                 let passive = pos > 0 && AUX.contains(&words[pos - 1]);
                 if !passive {
