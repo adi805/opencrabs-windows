@@ -275,6 +275,21 @@ fn an_honest_turn_stays_clean() {
     );
 }
 
+#[test]
+fn a_kill_claim_without_a_named_command_is_not_flagged() {
+    // The accepted trade from the measurement: "I killed the gate" names no
+    // command and no identifier, so nothing about it is mechanically decidable.
+    // The verb list that tried to catch it flagged 10.2% of claim-bearing turns
+    // with a 100% legitimate sample, so it stays out.
+    let text = "I killed the gate.";
+    let executed = vec![bash_input("grep -n foo src/bar.rs")];
+    let outputs = vec!["foo:12".to_string()];
+    assert!(
+        mixed_iteration_facts(text, &executed, &outputs, "foo:12").is_none(),
+        "a claim with nothing checkable in it was flagged"
+    );
+}
+
 // ─── wiring ──────────────────────────────────────────────────
 
 #[test]
