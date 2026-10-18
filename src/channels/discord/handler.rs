@@ -1325,13 +1325,12 @@ pub(crate) async fn handle_message(
         // fail the queue path. A dropped 👀 is transient; the queued message
         // still gets delivered by the live turn.
         use serenity::model::channel::ReactionType;
-        if super::governor::cooldown_remaining(msg.channel_id.get()).is_none() {
-            if let Err(e) = msg
+        if super::governor::cooldown_remaining(msg.channel_id.get()).is_none()
+            && let Err(e) = msg
                 .react(&ctx.http, ReactionType::Unicode("👀".to_string()))
                 .await
-            {
-                tracing::debug!("Discord: 👀 ack on queued follow-up failed: {e}");
-            }
+        {
+            tracing::debug!("Discord: 👀 ack on queued follow-up failed: {e}");
         }
         return;
     };
