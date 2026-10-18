@@ -980,6 +980,7 @@ pub mod slack_narration_fold_test;
 pub mod slack_reactions_test;
 pub mod slack_send_content_type_test;
 pub mod slack_tool_group_test;
+pub mod slack_turn_slot_test;
 pub mod slack_turn_start_group_test;
 pub mod slash_autocomplete_dimensions_test;
 pub mod slash_command_resolution_test;

@@ -514,9 +514,13 @@ impl ChannelManager {
                         self.slack_state.clone(),
                         agent_holder.clone(),
                     );
+                    // Mid-turn follow-up drain (#298): the tool loop injects
+                    // what arrived while a turn was running between rounds,
+                    // the same rail Telegram has run since #302.
+                    let followup_cb = self.slack_state.followup_queue_callback();
                     let sl_agent_service = self
                         .channel_factory
-                        .create_agent_service_full(None, Some(enqueue_cb))
+                        .create_agent_service_full(Some(followup_cb), Some(enqueue_cb))
                         .await;
                     crate::channels::bg_resume::fill(&agent_holder, &sl_agent_service);
                     let agent = crate::channels::slack::SlackAgent::new(
