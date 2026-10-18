@@ -7,8 +7,9 @@
 //! constructor; each concern has its own impl module beside it
 //! (`approval`, `cancel`, `connection`, `followups`, `onboarding_events`,
 //! `introspection`, `pairing`, `photos`, `sessions`); `agent` runs the client event loop,
-//! `handler` routes inbound messages, `resume` re-delivers background
-//! results and `store` persists the session. This file is declarations
+//! `handler` routes inbound messages, `turns` owns the per-session turn slot
+//! and mid-turn queue (#299), `resume` re-delivers background results and
+//! `store` persists the session. This file is declarations
 //! only — no function definitions live here (CONTRIBUTING.md).
 
 pub(crate) mod agent;
@@ -40,6 +41,7 @@ mod sessions;
 mod state;
 pub(crate) mod store;
 pub(crate) mod stream;
+pub(crate) mod turns;
 pub(crate) mod voice_note;
 
 pub use agent::WhatsAppAgent;

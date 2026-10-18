@@ -15,6 +15,7 @@ use uuid::Uuid;
 use whatsapp_rust::client::Client;
 
 use super::WaApproval;
+use crate::brain::agent::QueuedUserMessage;
 
 /// Shared WhatsApp client state for proactive messaging.
 ///
@@ -117,6 +118,21 @@ pub struct WhatsAppState {
     /// only while a lease is held, so the lease is stored here rather than in
     /// the call that acquired it. See `introspection.rs`.
     pub(super) raw_node_lease: std::sync::Mutex<Option<whatsapp_rust::RawNodeLease>>,
+    /// Sessions with a turn in flight (#299). The slot is claimed atomically
+    /// by `try_begin_turn` and released on guard drop, so a second inbound
+    /// message queues instead of forking a second loop. A `std::sync::Mutex`
+    /// because the claim is a pure in-memory set operation: no `.await` runs
+    /// under it. See `turns.rs`.
+    pub(super) active_turns: std::sync::Mutex<std::collections::HashSet<Uuid>>,
+    /// Messages that arrived while their session's slot was held (#299),
+    /// keyed per session, FIFO. Drained between tool rounds by the queue
+    /// callback wired in `manager.rs`, or flushed into a fresh turn at the end
+    /// of the turn that held the slot. Named `pending_turns`, NOT
+    /// `pending_followups`: that name is spent on the `suggest_options`
+    /// numbered list (#600) above, a different concern with a different value
+    /// type.
+    pub(super) pending_turns:
+        std::sync::Mutex<HashMap<Uuid, std::collections::VecDeque<QueuedUserMessage>>>,
 }
 
 impl Default for WhatsAppState {
@@ -156,6 +172,8 @@ impl WhatsAppState {
             outbox: super::outbox::Outbox::default(),
             rate_limiter: std::sync::Arc::new(super::rate_limit::WhatsappRateLimiter::new()),
             raw_node_lease: std::sync::Mutex::new(None),
+            active_turns: std::sync::Mutex::new(std::collections::HashSet::new()),
+            pending_turns: std::sync::Mutex::new(HashMap::new()),
         }
     }
 }
