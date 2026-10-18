@@ -1320,12 +1320,18 @@ pub(crate) async fn handle_message(
                 bg_meta: None,
             },
         );
+        // Same best-effort rule as the receipt ack below: while the channel is
+        // backing off from a 429 the reaction is skipped rather than allowed to
+        // fail the queue path. A dropped 👀 is transient; the queued message
+        // still gets delivered by the live turn.
         use serenity::model::channel::ReactionType;
-        if let Err(e) = msg
-            .react(&ctx.http, ReactionType::Unicode("👀".to_string()))
-            .await
-        {
-            tracing::debug!("Discord: 👀 ack on queued follow-up failed: {e}");
+        if super::governor::cooldown_remaining(msg.channel_id.get()).is_none() {
+            if let Err(e) = msg
+                .react(&ctx.http, ReactionType::Unicode("👀".to_string()))
+                .await
+            {
+                tracing::debug!("Discord: 👀 ack on queued follow-up failed: {e}");
+            }
         }
         return;
     };
