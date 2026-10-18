@@ -404,14 +404,30 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
 
+      # A Mach-O executable has no icon field, so macOS can only show an icon
+      # for a bundle. Without this step the tarball ships a bare binary and the
+      # system falls back to the generic exec glyph.
+      - name: Bundle macOS app
+        if: contains(matrix.asset_suffix, 'macos')
+        shell: bash
+        run: |
+          ./scripts/package-macos-app.sh \
+            --binary "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" \
+            --rtk "target/${{ matrix.target }}/release/rtk" \
+            --version "${{ steps.version.outputs.version }}" \
+            --out dist
+
       - name: Create archive
         shell: bash
         run: |
           ASSET_NAME="opencrabs-v${{ steps.version.outputs.version }}-${{ matrix.asset_suffix }}"
-          cd target/${{ matrix.target }}/release
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cd target/${{ matrix.target }}/release
             7z a ../../../${ASSET_NAME}.zip ${{ matrix.artifact_name }} rtk.exe
+          elif [[ "${{ matrix.asset_suffix }}" == macos-* ]]; then
+            tar czf "${ASSET_NAME}.tar.gz" -C dist OpenCrabs.app
           else
+            cd target/${{ matrix.target }}/release
             tar czf ../../../${ASSET_NAME}.tar.gz ${{ matrix.artifact_name }} rtk
           fi
 

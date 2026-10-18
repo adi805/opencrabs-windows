@@ -605,6 +605,7 @@ pub mod icon_assets_test;
 pub mod image_generation_chain_test;
 pub mod image_util_test;
 pub mod incident_log_dedup_test;
+pub mod packaging_test;
 pub mod provider_complete_retry_notice_test;
 pub mod provider_never_ignored_test;
 pub mod rate_limit_reporting_test;
