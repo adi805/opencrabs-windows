@@ -583,29 +583,27 @@ impl GuestRunner {
         // rendering the settled block as-is would carry it twice: once inside
         // the block and once under it (#2113). Reclaim it the way the regular
         // delivery path does (#300) before the block is rendered.
+        //
+        // The queue has to be drained FIRST: the answer is still sitting in
+        // `display_queue` at this point, so settling `flow_entries` on its own
+        // sees an empty list and leaves the copy to be drained into the block
+        // by `settle_block` afterwards. That is what put a `<blockquote
+        // expandable>` holding the answer above a footer on a turn that ran
+        // zero tools, and the answer again under it.
         let content = prepare_guest_text(&response.content);
-        let reply = {
-            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-            let options_pending = s.pending_suggestions.is_some();
-            settle_guest_answer(&mut s.flow_entries, &content, options_pending)
-        };
-        if reply.is_empty() {
-            tracing::warn!(
-                "Telegram guest: query {} produced an empty reply, sending the block alone",
-                query.query_id
-            );
-        }
-        // Settle the block BEFORE composing it with the answer, so the reply
-        // carries the footer a regular turn ends on: outcome, tool count,
-        // context budget, clock.
         let ctx_max = self.agent.context_limit_for_session(session_id);
         let ctx = crate::utils::format_ctx_footer(
             response.context_tokens,
             ctx_max,
             response.tokens_per_second,
         );
-        let block = settle_block(&state, FlowOutcome::Finished, Some(ctx));
-        let message = compose_guest_message(&block, &reply);
+        let (message, reply) = settled_guest_message(&state, &content, ctx);
+        if reply.is_empty() {
+            tracing::warn!(
+                "Telegram guest: query {} produced an empty reply, sending the block alone",
+                query.query_id
+            );
+        }
         self.deliver(
             &query.query_id,
             opened.as_deref(),
@@ -784,6 +782,25 @@ fn pump(state: &Arc<Mutex<StreamingState>>) -> String {
     render_flow(&s)
 }
 
+/// Fold the finished turn's queued display items into the log, then take the
+/// answer back out of it, returning the text the reply carries under the block.
+///
+/// The order is the whole point (#2113). The answer reaches the log as a queued
+/// `DisplayItem::Intermediate`; settling `flow_entries` before that queue is
+/// drained sees an empty log, does nothing, and leaves the copy to be drained
+/// into the block afterwards by [`settle_block`]. A turn that ran no tools then
+/// renders the answer as the block's log body: a `<blockquote expandable>` that
+/// exists only because the answer is inside it, with the answer repeated under
+/// the footer. Draining first puts the copy where the reclaim can find it, and a
+/// zero-tool turn renders exactly what a regular turn renders, a footer and the
+/// answer and no expandable at all.
+pub(crate) fn settle_reply(state: &Arc<Mutex<StreamingState>>, content: &str) -> String {
+    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+    drain_display_queue(&mut s, guest_sanitize);
+    let options_pending = s.pending_suggestions.is_some();
+    settle_guest_answer(&mut s.flow_entries, content, options_pending)
+}
+
 /// Settle the turn's block and render it. `ctx` is display-only chrome set at
 /// settle time, matching the regular delivery path.
 fn settle_block(
@@ -799,6 +816,39 @@ fn settle_block(
         s.sections.ctx = ctx;
     }
     render_flow(&s)
+}
+
+/// The finished guest reply: the turn's block, when it has one, with the answer
+/// under it, plus the text the reply is meant to carry on its own.
+///
+/// This is the whole settle step in one place, because the order inside it is
+/// the bug it fixes (#2113) and a caller that repeats the steps can repeat them
+/// wrong. Two rules, both about landing on what a regular chat shows:
+///
+/// - The answer leaves the log before the block renders. It reached the log as
+///   a queued intermediate, so the queue is drained first; settling the entries
+///   before that sees nothing to reclaim and ships the answer twice.
+/// - A turn with no log gets no block. A regular turn opens no block when no
+///   tool ran and nothing was narrated, so the answer is the whole message; a
+///   guest reply cannot skip opening one (that is the only handle the Bot API
+///   gives it), so the block is dropped here instead of shipping a footer over
+///   nothing.
+pub(crate) fn settled_guest_message(
+    state: &Arc<Mutex<StreamingState>>,
+    content: &str,
+    ctx: String,
+) -> (String, String) {
+    let reply = settle_reply(state, content);
+    let has_log = {
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
+        !s.flow_entries.is_empty()
+    };
+    let block = if has_log {
+        settle_block(state, FlowOutcome::Finished, Some(ctx))
+    } else {
+        String::new()
+    };
+    (compose_guest_message(&block, &reply), reply)
 }
 
 /// Edit the open reply on the regular cadence until the turn ends.
