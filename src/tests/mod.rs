@@ -444,6 +444,7 @@ pub mod onboarding_shift_tab_hint_test;
 pub mod opencrabs_generation_candidate_test;
 pub mod opencrabs_vision_candidate_test;
 pub mod opencrabs_voice_candidate_test;
+pub mod option_halt_turn_test;
 pub mod pending_context_session_test;
 pub mod pending_request_age_test;
 pub mod pending_request_thread_test;
