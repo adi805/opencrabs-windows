@@ -252,7 +252,6 @@ fn settled_block() -> String {
         ProgressEvent::ToolStarted {
             tool_name: "bash".to_string(),
             tool_input: json!({"command": "ls"}),
-            tool_call_id: "call-1".to_string(),
         },
     );
     apply_progress_event(
@@ -262,7 +261,6 @@ fn settled_block() -> String {
             tool_input: json!({"command": "ls"}),
             success: true,
             summary: "ok".to_string(),
-            tool_call_id: "call-1".to_string(),
         },
     );
     let mut s = state.lock().unwrap();
