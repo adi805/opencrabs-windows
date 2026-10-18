@@ -53,6 +53,7 @@ pub(crate) mod suggest_options;
 pub(crate) mod table_convert;
 pub(crate) mod tool_group;
 pub(crate) mod trace_answer;
+pub(crate) mod turns;
 pub(crate) mod typing;
 pub(crate) mod writes;
 

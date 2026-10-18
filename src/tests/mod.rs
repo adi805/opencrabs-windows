@@ -346,6 +346,7 @@ pub mod directive_discovery_test;
 //pub mod discord_dm_channel_history_test;
 pub mod discord_interaction_admission_test;
 pub mod discord_tool_group_test;
+pub mod discord_turn_slot_test;
 pub mod discord_turn_start_group_test;
 pub mod doc_gen_docx_test;
 pub mod doc_gen_pdf_test;
