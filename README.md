@@ -465,6 +465,29 @@ respond_to = "mention"           # Bot only responds to @mentions in groups
 silence_group_start = true       # Silently ignore /start from non-allowed users in groups
 ```
 
+#### Telegram guest queries
+
+Telegram's Guest Mode (Bot API 10.0) lets someone tag your bot in a chat it is **not** a member of, and bot API method `answerGuestQuery` posts one reply right there. OpenCrabs supports it, off by default:
+
+```toml
+[channels.telegram]
+guest_queries = true             # default false: guest tags are ignored
+```
+
+A guest reply answers a stranger in a chat you were never invited to, so the gate is deliberately narrow. The caller must be the `bot_owner`, an admin (`allowed_users`), or listed for **that** chat (`[channels.telegram.groups.<chat_id>].allowed_users`), and only when `guest_queries = true`. A group's `open = true` grants nothing here: it opens that group to the bot, it does not authorize answering guest tags from its members. Refused queries are logged with `guest_query_id`, the caller and the chat; nothing is posted.
+
+What the guest turn sees and sends:
+
+- Only the tagged message. No history from the chat, and nothing from the guest turn enters that group's history either.
+- A single reply, posted as soon as the turn starts and then **edited in place** while it runs: the caller watches the same status block a regular chat shows, with the tools the agent is using, the tool count, the context budget and the settled footer. `answerGuestQuery` returns the reply's `inline_message_id` and every later edit goes through `editMessageText` with that id, which is Telegram's own recommendation for this ("reporting its progress back to the chat or group"). Sent with `parse_mode=HTML` so the block keeps its formatting.
+- Clamped to Telegram's 4096-character limit, counted the way Telegram counts it (UTF-16 units, so an emoji is 2). An overlong answer is cut and marked, and if the block would leave too little room for a real answer the answer ships alone.
+- Secrets are scrubbed, always: a guest reply goes to a chat you do not control, so it never takes the DM branch that shows credentials.
+- Channel directives are stripped, so a local file path can never leak into a stranger's chat.
+- No typing indicator is possible (the bot is not a member of the chat, so there is nothing to type in), and no per-tool messages: the API gives one reply per summon.
+- Tools that need approval are denied: approvals are buttons in a chat, and the caller is not the machine's owner.
+
+Guest queries land on the raw `getUpdates` layer (`allowed_updates` includes `guest_message`), the same path `message_reaction` used before teloxide grew a typed variant for it. The pinned `teloxide-core` has no guest variant, so a guest update is never dispatched as a normal message.
+
 #### Bot owner and owner-only commands
 
 Every channel has a `bot_owner` field (`[channels.telegram]`, `[channels.discord]`, `[channels.slack]`, `[channels.whatsapp]`, `[channels.trello]`). It names the user ID(s) (phone for WhatsApp) treated as the bot owner. On first-run setup the owner is seeded automatically from the first entry in your allow list (`allowed_users`, or `allowed_phones` for WhatsApp), and existing configs are migrated on load. Set `bot_owner` explicitly to pin the owner instead of relying on list order.

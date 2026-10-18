@@ -442,6 +442,28 @@ pub(crate) async fn handle_channel_command(
                     .await?;
                 return Ok(CommandOutcome::Handled);
             }
+            ChannelCommand::StopSession {
+                session_id: target,
+                label,
+            } => {
+                // Probe the turn BEFORE cancelling: a delivered cancel also
+                // clears the active marker, so asking afterwards would report
+                // "idle" for exactly the case the operator wanted stopped.
+                let was_active = telegram_state.is_turn_active(target);
+                let cancelled = telegram_state.cancel_session(target).await;
+                telegram_state.clear_pending_followups(target).await;
+                tracing::info!(
+                    target_session = %target,
+                    cancelled,
+                    was_active,
+                    "Telegram: targeted stop"
+                );
+                let outcome = crate::channels::stop_target::classify(cancelled, was_active);
+                let reply = crate::channels::stop_target::receipt(outcome, &label, target);
+                super::ephemeral::send_ack(bot, msg.chat.id, thread_id, ephemeral_rx, &reply)
+                    .await?;
+                return Ok(CommandOutcome::Handled);
+            }
             ChannelCommand::ChangeDir(resp) => {
                 // Store the browsing state for this chat
                 telegram_state

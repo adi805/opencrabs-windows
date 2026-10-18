@@ -542,6 +542,17 @@ pub enum MigrationSource {
     Hermes,
 }
 
+/// Whether the startup path seeds the documented `config.toml` for this
+/// command.
+///
+/// `init` is exempt (#2093). Seeding runs before the subcommand dispatch, so
+/// `cmd_init` found a file that already existed and refused to run on a fresh
+/// install. `init` creates that same documented file itself, from the same
+/// example, in `commands::cmd_init`.
+pub(crate) fn seeds_config_on_startup(command: Option<&Commands>) -> bool {
+    !matches!(command, Some(Commands::Init { .. }))
+}
+
 /// Main CLI entry point
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -585,8 +596,19 @@ pub async fn run() -> Result<()> {
     // status` reported `Provider: none`, and the wizard had no documented
     // file to write its answers into. `seed_if_absent` never touches a file
     // that is already there, so this only ever fills a blank home.
-    let config_seeded = crate::config::seed::ensure_config_seeded();
-    crate::config::seed::ensure_keys_seeded();
+    // `init` is exempt (#2093): creating that config is the command's whole
+    // job, and seeding it here first meant `init` found its own output and
+    // refused to run on a fresh install. It writes the same documented
+    // example itself.
+    let seeds_config = seeds_config_on_startup(cli.command.as_ref());
+    let config_seeded = if seeds_config {
+        crate::config::seed::ensure_config_seeded()
+    } else {
+        false
+    };
+    if seeds_config {
+        crate::config::seed::ensure_keys_seeded();
+    }
 
     // With keys in the environment and a config we just seeded, enable what
     // there are keys for, so the wizard does not ask for a provider the user

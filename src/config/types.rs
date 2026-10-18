@@ -543,6 +543,17 @@ pub struct TelegramConfig {
     /// Idle session timeout in hours for non-owner sessions.
     #[serde(default)]
     pub session_idle_hours: Option<f64>,
+    /// Answer guest queries: `@botname` tags in chats the bot is NOT a member
+    /// of (Bot API 10.0 guest mode, #2087). Off by default: this is the one
+    /// inbound surface where someone can reach the bot in a chat it was never
+    /// invited to, so it is opt-in. Even when on, the caller must be the
+    /// owner, an admin (`allowed_users`), or listed in that chat's
+    /// `groups.<chat_id>.allowed_users`. A group's `open` flag grants nothing
+    /// here, because it records the owner opening THAT chat for the bot, not
+    /// permission to answer wherever that group's members tag it. See
+    /// `TelegramConfig::guest_allowed`.
+    #[serde(default)]
+    pub guest_queries: bool,
     /// Send structured replies and flow blocks as native Telegram rich
     /// messages (Bot API 10.1: tables, headings, lists, math, collapsible
     /// details). On by default (#425). Older clients and Telegram Web show
@@ -617,6 +628,7 @@ impl Default for TelegramConfig {
             allowed_channels: Vec::new(),
             respond_to: RespondTo::default(),
             session_idle_hours: None,
+            guest_queries: false,
             rich_messages: true,
             inline_markdown_documents: false,
             mermaid_render: true,
@@ -886,6 +898,28 @@ impl TelegramConfig {
         self.groups
             .get(chat_id)
             .is_some_and(|g| g.open || Self::id_in(&g.allowed_users, uid))
+    }
+
+    /// Guest mode access (#2087): may this user get an answer to a tag placed
+    /// in a chat the bot is not a member of?
+    ///
+    /// Deliberately stricter than `user_allowed`. That one answers "may this
+    /// person talk to the bot HERE", so a group that is `open` passes. This
+    /// one answers "may the bot be pulled into a chat it was never invited
+    /// to", and there the `open` flag is no consent at all: it was given for
+    /// one chat, not for every chat that chat's members happen to tag the bot
+    /// in. Owner and admins act anywhere; everyone else needs an explicit
+    /// listing for the chat the tag came from, and a missing chat id means no
+    /// listing can match, so the query is refused.
+    pub fn guest_allowed(&self, user_id: &str, caller_chat_id: Option<&str>) -> bool {
+        if !self.guest_queries {
+            return false;
+        }
+        let uid = user_id.trim_start_matches('+');
+        if self.is_admin_or_owner(uid) {
+            return true;
+        }
+        caller_chat_id.is_some_and(|chat| self.group_has_user(chat, uid))
     }
 
     /// Respond mode for a chat: the group's override if set, else the global.
@@ -3461,13 +3495,17 @@ pub struct ProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation_model: Option<String>,
 
-    /// Speech-to-text model for this provider's [OI]-compatible
-    /// `/v1/audio/transcriptions` route. Set it and voice notes transcribe
-    /// through the active provider, the same way `vision_model` drives image
-    /// understanding and `generation_model` drives image creation. The
-    /// endpoint is the provider's own (`base_url`, or its known default), so
-    /// any [OI]-compatible provider can serve transcription, not only the
-    /// built-in one.
+    /// Speech-to-text model for this provider. Set it and voice notes
+    /// transcribe through the active provider, the same way `vision_model`
+    /// drives image understanding and `generation_model` drives image
+    /// creation.
+    ///
+    /// The request shape follows the provider: an [OI]-compatible engine
+    /// (Groq, LocalAI, Ollama, an [OI] gateway) answers
+    /// `POST /v1/audio/transcriptions` with a multipart body, while the
+    /// built-in provider serves transcription on the CHAT route as an
+    /// `input_audio` part and answers 404 on every `/v1/audio/*` path. The
+    /// route is chosen from the base URL, so both work off this one key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stt_model: Option<String>,
 

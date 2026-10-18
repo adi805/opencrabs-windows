@@ -18,6 +18,7 @@ pub(crate) mod respond_to_scope;
 pub mod session_init;
 pub mod session_resolve;
 pub mod single_flight;
+pub mod stop_target;
 pub mod target_resolver;
 pub(crate) mod transport_ready;
 pub(crate) mod typing_tick;

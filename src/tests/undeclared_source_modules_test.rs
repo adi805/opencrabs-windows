@@ -50,6 +50,13 @@ const HELD_BACK_CHANNEL_MODULES: &[&str] = &[
 
 /// Test modules the sync left undeclared and `#264` deliberately did not wire.
 ///
+/// `#2103` deleted four files that had been commented out since 2026-02-22 and
+/// imported APIs removed in `07939b551` (`src/llm/`) and before: 1,626 lines and
+/// 37 async tests that had not compiled for eight months, so re-enabling a
+/// declaration was a compile error rather than a test run. Deleting them is the
+/// honest option; the next sync from upstream will re-add the files, and the
+/// port decision comes back with them.
+///
 /// `#264` restored the 23 it could verify statically and recorded a reason for
 /// each group it deferred: the channel-dependent ones exercise the fork's own
 /// turn engine (which differs by design), four are commented out upstream and
@@ -71,14 +78,10 @@ const DEFERRED_TEST_MODULES: &[&str] = &[
     "src/tests/discord_options_host_test.rs",
     "src/tests/discord_plan_board_test.rs",
     "src/tests/discord_resume_turn_tracking_test.rs",
-    "src/tests/error_scenarios_test.rs",
     "src/tests/generate_image_multi_input_test.rs",
-    "src/tests/integration_test.rs",
     "src/tests/onboarding_welcome_send_test.rs",
-    "src/tests/plan_mode_integration_test.rs",
     "src/tests/slack_options_host_test.rs",
     "src/tests/slack_resume_turn_test.rs",
-    "src/tests/streaming_test.rs",
     "src/tests/whatsapp_composing_parity_test.rs",
     "src/tests/whatsapp_flow_options_test.rs",
     "src/tests/whatsapp_flow_render_test.rs",

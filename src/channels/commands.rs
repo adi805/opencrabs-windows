@@ -6,6 +6,7 @@
 use uuid::Uuid;
 
 use crate::brain::agent::AgentService;
+use crate::channels::stop_target;
 use crate::config::Config;
 use crate::db::repository::SessionListOptions;
 use crate::services::SessionService;
@@ -217,6 +218,10 @@ pub enum ChannelCommand {
     Sessions(SessionsResponse),
     /// `/stop` — cancel the running agent task
     Stop,
+    /// `/stop --session <id>`: cancel a turn running in ANOTHER session
+    /// (#2108). The receipt names the target, because the operator firing
+    /// this is not looking at the session that gets cancelled.
+    StopSession { session_id: Uuid, label: String },
     /// `/compact` — trigger context compaction via the agent
     Compact,
     /// `/clear` — cut the agent's context here without a summariser call;
@@ -565,11 +570,22 @@ pub async fn handle_command(
                 ChannelCommand::Sessions(format_sessions(session_id, session_svc, query).await)
             }
         }
-        "/stop" => {
+        cmd if cmd == "/stop" || cmd.starts_with("/stop ") => {
             if !is_owner {
                 ChannelCommand::UnknownCommand("🔒 Owner-only command.".to_string())
             } else {
-                ChannelCommand::Stop
+                let args = cmd.strip_prefix("/stop").unwrap_or("").trim();
+                if args.is_empty() {
+                    ChannelCommand::Stop
+                } else {
+                    match resolve_stop_target(args, session_svc).await {
+                        Ok(target) => ChannelCommand::StopSession {
+                            session_id: target.id,
+                            label: target.label,
+                        },
+                        Err(message) => ChannelCommand::UnknownCommand(message),
+                    }
+                }
             }
         }
         cmd if cmd == "/usage" || cmd.starts_with("/usage ") => {
@@ -788,6 +804,9 @@ pub async fn handle_command(
         // Handled (and persisted) by the channel handler: busy check +
         // seed dispatch / cancel + cleanup happen there.
         ChannelCommand::ExecutePlan | ChannelCommand::DiscardPlan => None,
+        // The channel handler cancels and replies with the three-state
+        // receipt, so a generic ack here would be a second, poorer message.
+        ChannelCommand::StopSession { .. } => None,
     };
 
     if let Some(response) = response_text {
@@ -946,7 +965,10 @@ pub(crate) fn format_help() -> String {
             "/sessions",
             "Switch between sessions (`/sessions:<query>` to filter)",
         ),
-        ("/stop", "Abort current operation"),
+        (
+            "/stop",
+            "Abort current operation (`/stop --session <id>` for another session)",
+        ),
         (
             "/architecture",
             "Directory tree of a path (mechanical, no API cost)",
@@ -1693,6 +1715,42 @@ pub(crate) async fn format_profiles_browser() -> ProfilesResponse {
 }
 
 // ── /sessions ──────────────────────────────────────────────────────────────
+
+/// Resolve the target of `/stop --session <token>` (#2108).
+///
+/// A malformed argument list, or an id matching zero or several sessions,
+/// comes back as the operator-facing message: the caller only has to choose
+/// between "cancel this one" and "say why not".
+async fn resolve_stop_target(
+    args: &str,
+    session_svc: &SessionService,
+) -> Result<stop_target::StopTarget, String> {
+    let token = stop_target::parse_target(args).map_err(|e| stop_target::usage_error(&e))?;
+    let sessions = session_svc
+        .list_sessions(SessionListOptions {
+            include_archived: false,
+            // Wider than the 10 the /sessions picker shows: a prefix typed
+            // from memory can point at a session that has scrolled out of it.
+            limit: Some(200),
+            offset: 0,
+            query: None,
+            // A subagent turn is exactly the kind that runs long with no topic
+            // of its own, so it has to be reachable here.
+            include_subagents: true,
+        })
+        .await
+        .unwrap_or_default();
+    let candidates: Vec<(Uuid, String)> = sessions
+        .iter()
+        .map(|s| {
+            (
+                s.id,
+                s.title.clone().unwrap_or_else(|| "Untitled".to_string()),
+            )
+        })
+        .collect();
+    stop_target::resolve(token, &candidates).map_err(|e| stop_target::target_error(&e))
+}
 
 async fn format_sessions(
     current_session_id: Uuid,

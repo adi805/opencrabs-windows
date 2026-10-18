@@ -1156,6 +1156,20 @@ pub(crate) async fn handle_message(
                 }
                 return;
             }
+            ChannelCommand::StopSession {
+                session_id: target,
+                label,
+            } => {
+                // No separate activity probe here: an absent cancel token is
+                // the only "nothing to cancel" signal Discord has (#2108).
+                let cancelled = discord_state.cancel_session(target).await;
+                let outcome = crate::channels::stop_target::classify(cancelled, false);
+                let reply = crate::channels::stop_target::receipt(outcome, &label, target);
+                if let Err(e) = writes::say(&ctx.http, msg.channel_id, &reply, Class::Final).await {
+                    tracing::warn!(error = %e, "failed to send Discord message");
+                }
+                return;
+            }
             ChannelCommand::Compact => {
                 if let Err(e) = writes::say(
                     &ctx.http,

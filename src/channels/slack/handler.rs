@@ -1756,6 +1756,28 @@ async fn handle_message(
                 }
                 return;
             }
+            ChannelCommand::StopSession {
+                session_id: target,
+                label,
+            } => {
+                // Slack's cancel registry has no separate activity probe, so
+                // an absent token is the only "nothing to cancel" signal it
+                // has; the receipt still names the target (#2108).
+                let cancelled = state.slack_state.cancel_session(target).await;
+                state.slack_state.clear_pending_followups(target).await;
+                let outcome = crate::channels::stop_target::classify(cancelled, false);
+                let reply = crate::channels::stop_target::receipt(outcome, &label, target);
+                let token = SlackApiToken::new(SlackApiTokenValue::from(state.current_bot_token()));
+                let session = client.open_session(&token);
+                let request = SlackApiChatPostMessageRequest::new(
+                    SlackChannelId::new(channel_id),
+                    SlackMessageContent::new().with_text(reply),
+                );
+                if let Err(e) = session.post(&request).await {
+                    tracing::warn!(error = %e, "failed to post Slack message");
+                }
+                return;
+            }
             ChannelCommand::Compact => {
                 let token = SlackApiToken::new(SlackApiTokenValue::from(state.current_bot_token()));
                 let session = client.open_session(&token);
@@ -2161,7 +2183,7 @@ async fn handle_message(
                     // tools-v2 wrapper rendered as raw HTML in Slack
                     // because the streaming chunk never hit the final
                     // response cleanup path.
-                    let text = crate::utils::sanitize::strip_llm_artifacts(&text);
+                    let text = crate::utils::sanitize::sanitize_outbound(&text);
                     // Strip <<IMG:path>> markers — the final-response handler
                     // extracts these and uploads via files_upload, but if the
                     // LLM emits the marker mid-stream the intermediate path
@@ -2916,7 +2938,7 @@ async fn run_followup_turn(
                 ProgressEvent::IntermediateText { text, .. } => {
                     // Same cleaning as handle_message's fold path: artifacts
                     // and media markers must not leak into the note.
-                    let text = crate::utils::sanitize::strip_llm_artifacts(&text);
+                    let text = crate::utils::sanitize::sanitize_outbound(&text);
                     let (text_clean, _img) = crate::utils::extract_img_markers(&text);
                     let (text_clean, _vid) = crate::utils::extract_vid_markers(&text_clean);
                     if text_clean.trim().is_empty() {
