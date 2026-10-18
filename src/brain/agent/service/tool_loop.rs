@@ -1542,6 +1542,7 @@ impl AgentService {
         // #129 belt-and-braces: interactive-only tools check this flag and
         // hard-error instead of parking a verdict nobody sees.
         tool_context.headless = self.headless;
+        tool_context.plan_gate_exempt = self.plan_gate_exempt;
 
         // Tool execution loop
         let mut iteration = 0;
@@ -6843,6 +6844,10 @@ impl AgentService {
                 // Save tool input for progress reporting (before it's moved to execute)
                 let tool_input_for_progress = tool_input.clone();
                 turn_tool_input.push(tool_input.to_string());
+                // Stamp the running turn count for the mechanical plan
+                // requirement: it is counted per turn, not per iteration, so a
+                // turn cannot dodge it by spreading calls over iterations.
+                tool_context.turn_tool_calls = turn_tool_input.len();
 
                 // Build short description for DB persistence
                 tool_descriptions.push(Self::format_tool_summary(&tool_name, &tool_input));

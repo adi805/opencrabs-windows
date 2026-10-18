@@ -1810,6 +1810,23 @@ pub struct AgentConfig {
     #[serde(default = "default_skill_glob_gate")]
     pub skill_glob_gate: bool,
 
+    /// Mechanical plan requirement. **On by default, 12 calls.**
+    ///
+    /// After this many tool calls in a single turn with no plan for the
+    /// session, every further call is refused until the agent calls `plan`
+    /// init. Prose in the brain files was the only thing asking for a plan
+    /// before, and it was routinely skipped on research, audits and multi-file
+    /// fixes; the gate makes the requirement mechanical instead of advisory.
+    ///
+    /// `plan` and `tool_search` always pass, so the agent can always reach the
+    /// tool that unblocks it. Sub-agent sessions and cron runs are exempt: they
+    /// execute a task someone else already planned, and a throwaway child plan
+    /// nobody sees would be worse than no plan.
+    ///
+    /// Set 0 to disable the gate entirely.
+    #[serde(default = "default_plan_gate_after_tool_calls")]
+    pub plan_gate_after_tool_calls: usize,
+
     /// Lazy tool-schema loading. **On by default.** A request ships only the
     /// CORE tool schemas (~4k tokens) plus `tool_search`, instead of all ~95
     /// (~20k counted in every request's input); the agent calls `tool_search`
@@ -1954,6 +1971,13 @@ fn default_skill_glob_gate() -> bool {
     true
 }
 
+/// Twelve calls is roughly where a turn stops being one step. Below it a
+/// read-edit-verify cycle is still a single action; above it the turn is
+/// doing multi-step work that belongs in a checklist.
+fn default_plan_gate_after_tool_calls() -> usize {
+    12
+}
+
 fn default_lazy_tools() -> bool {
     true
 }
@@ -2064,6 +2088,7 @@ impl Default for AgentConfig {
             compaction_notice: false,
             background_compaction: default_background_compaction(),
             skill_glob_gate: default_skill_glob_gate(),
+            plan_gate_after_tool_calls: default_plan_gate_after_tool_calls(),
             lazy_tools: default_lazy_tools(),
             redact_sensitive_data: default_redact_sensitive_data(),
             redact_group: None,

@@ -89,6 +89,9 @@ pub struct ToolRegistry {
     /// Skill glob gate master switch (`[agent] skill_glob_gate`, #150).
     /// Default true; the AgentService wiring sets this from config.
     skill_gate_enabled: bool,
+    /// Mechanical plan requirement (`[agent] plan_gate_after_tool_calls`).
+    /// 0 disables it; the AgentService wiring sets this from config.
+    plan_gate_after_tool_calls: usize,
 }
 
 impl ToolRegistry {
@@ -99,7 +102,14 @@ impl ToolRegistry {
             session_active: RwLock::new(HashMap::new()),
             activation_seq: std::sync::atomic::AtomicU64::new(0),
             skill_gate_enabled: true,
+            plan_gate_after_tool_calls: 12,
         }
+    }
+
+    /// Set the mechanical plan requirement (`[agent] plan_gate_after_tool_calls`).
+    /// Called by the AgentService wiring with the config value; 0 disables it.
+    pub fn set_plan_gate_after_tool_calls(&mut self, calls: usize) {
+        self.plan_gate_after_tool_calls = calls;
     }
 
     /// Set the skill glob gate master switch (#150). Called by the
@@ -369,6 +379,36 @@ impl ToolRegistry {
                     );
                     return Err(ToolError::ApprovalRequired(reason));
                 }
+            }
+        }
+
+        // Mechanical plan requirement. Distinct from the plan-MODE gate
+        // above: that one governs writes while a plan is being drafted or
+        // executed, this one decides that a long ad-hoc turn must have a plan
+        // at all. Checked here so every dispatch path (sequential, parallel,
+        // sub-agent) passes through the same choke point, and before approval
+        // so the user is never prompted for a call that cannot run.
+        match super::plan_gate::check_plan_requirement(
+            plan_sid,
+            name,
+            context.turn_tool_calls,
+            self.plan_gate_after_tool_calls,
+            context.plan_gate_exempt,
+        )
+        .await
+        {
+            super::plan_gate::GateDecision::Allow => { /* proceed */ }
+            super::plan_gate::GateDecision::Deny(reason) => {
+                tracing::info!(
+                    "Plan requirement denied tool '{}' at {} calls this turn",
+                    name,
+                    context.turn_tool_calls
+                );
+                return Ok(ToolResult::error(reason));
+            }
+            super::plan_gate::GateDecision::RequireApproval(_) => {
+                // This gate never asks for approval: the requirement is
+                // "create a plan", not "confirm this call".
             }
         }
 

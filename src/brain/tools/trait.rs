@@ -138,6 +138,18 @@ pub struct ToolExecutionContext {
     /// ever see. `false` by default (interactive).
     pub headless: bool,
 
+    /// Tool calls already made in the CURRENT turn, stamped per call by the
+    /// tool loop. The plan requirement gate reads this to decide that a turn
+    /// has grown past the point where ad-hoc work is acceptable. `0` on
+    /// surfaces that build a context outside a turn (tests, one-shot tools).
+    pub turn_tool_calls: usize,
+
+    /// Skip the mechanical plan requirement for this execution. Set for
+    /// sub-agent sessions and cron runs: they execute a task someone else
+    /// already planned, so forcing a throwaway child plan would be worse than
+    /// no plan. Stamped from `AgentService::plan_gate_exempt`.
+    pub plan_gate_exempt: bool,
+
     /// session_notify kill switch (issue #1802, owner order). Default OFF:
     /// cross-session notification is an explicit operator opt-in read from
     /// `[agent] session_notify_enabled`. Stamped per execution by the same
@@ -188,6 +200,8 @@ impl ToolExecutionContext {
             world: None,
             parent_tool_registry: None,
             headless: false,
+            turn_tool_calls: 0,
+            plan_gate_exempt: false,
             session_notify_enabled: false,
             provider_override: None,
         }

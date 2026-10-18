@@ -471,6 +471,13 @@ pub struct AgentService {
     /// checklist while their own session stays fresh. `None` — the normal
     /// case — resolves against the session's own id.
     pub(super) plan_session_override: Option<Uuid>,
+
+    /// Skip the mechanical plan requirement (`[agent] plan_gate_after_tool_calls`)
+    /// for every tool call this agent makes. Set for sub-agent sessions and
+    /// cron runs: they execute a task someone else already planned, so a
+    /// throwaway child plan nobody sees would be worse than no plan. `false`
+    /// on interactive surfaces, where the gate applies.
+    pub(super) plan_gate_exempt: bool,
 }
 
 impl AgentService {
@@ -511,6 +518,10 @@ impl AgentService {
                 // Skill glob gate master switch (#150) — resolved from
                 // config once at construction.
                 registry.set_skill_gate_enabled(config.agent.skill_glob_gate);
+                // Mechanical plan requirement: after N calls in a turn with no
+                // plan, further calls are refused until `plan` init runs.
+                registry
+                    .set_plan_gate_after_tool_calls(config.agent.plan_gate_after_tool_calls);
                 Arc::new(registry)
             },
             max_tool_iterations: 0, // 0 = unlimited (loop detection is the safety net)
@@ -556,6 +567,7 @@ impl AgentService {
             subagent_manager: None,
             channel_manager: None,
             plan_session_override: None,
+            plan_gate_exempt: false,
         }
     }
 
@@ -1077,6 +1089,15 @@ impl AgentService {
     /// default) keeps plan state session-local.
     pub fn with_plan_session_override(mut self, plan_session: Option<Uuid>) -> Self {
         self.plan_session_override = plan_session;
+        self
+    }
+
+    /// Skip the mechanical plan requirement for this agent's tool calls.
+    ///
+    /// Set on surfaces that execute a task someone else already planned:
+    /// spawned sub-agents and cron runs. Interactive surfaces keep the gate.
+    pub fn with_plan_gate_exempt(mut self, exempt: bool) -> Self {
+        self.plan_gate_exempt = exempt;
         self
     }
 

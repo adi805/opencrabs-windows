@@ -697,6 +697,10 @@ async fn resolve_job_agent(
     // #129: cron execution is headless — backstop flag on the agent so
     // interactive-only tools hard-error even if re-registered.
     builder = builder.with_headless(true);
+    // A scheduled job is a task already defined by its prompt: there is no
+    // user in the loop to approve a plan, and refusing call 13 would strand
+    // the run mid-job. The mechanical plan requirement does not apply.
+    builder = builder.with_plan_gate_exempt(true);
     Ok((config, Arc::new(builder)))
 }
 
