@@ -7,18 +7,19 @@ use super::SlackState;
 
 impl SlackState {
     /// Store a cancel token for a session (before starting agent call).
-    /// If a token already exists for this session, cancel it first to abort the
-    /// previous in-flight agent call — prevents concurrent uncancellable agents.
+    ///
+    /// Overwrites any prior token WITHOUT cancelling it (#652's rule, the
+    /// Slack twin, ported by #298). The cancel that used to live here predates
+    /// the atomic `try_begin_turn` gate (`turns.rs`), which is now the single
+    /// source of truth for one-turn-per-session, so all it could still reach
+    /// was the token a COMPLETED turn left behind: a finished turn never
+    /// cancels its own token, `remove_cancel_token` keeps non-cancelled ones
+    /// on purpose, and so every new turn logged "cancelling previous in-flight
+    /// agent call" for a turn that had ended minutes earlier while killing
+    /// nothing. A genuine cancellation goes through `cancel_session` (/stop),
+    /// never here.
     pub async fn store_cancel_token(&self, session_id: Uuid, token: CancellationToken) {
-        let mut tokens = self.cancel_tokens.lock().await;
-        if let Some(old) = tokens.remove(&session_id) {
-            tracing::warn!(
-                "Slack: cancelling previous in-flight agent call for session {}",
-                session_id
-            );
-            old.cancel();
-        }
-        tokens.insert(session_id, token);
+        self.cancel_tokens.lock().await.insert(session_id, token);
     }
 
     /// Cancel and remove the token for a session. Returns true if a token existed.

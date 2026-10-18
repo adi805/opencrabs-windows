@@ -9,7 +9,8 @@
 //! tool-group methods in `tool_group`); `agent` runs Socket Mode,
 //! `handler` routes inbound messages, `blocks` / `final_body` /
 //! `formatting_prompt` / `table_convert` shape output, `reactions` /
-//! `suggest_options` / `upload` handle their surfaces and `resume`
+//! `suggest_options` / `upload` handle their surfaces, `turns` owns the
+//! per-session turn slot and mid-turn queue (#298) and `resume`
 //! re-delivers background results. This file is declarations only — no
 //! function definitions live here (CONTRIBUTING.md).
 
@@ -30,6 +31,7 @@ mod state;
 pub(crate) mod suggest_options;
 pub(crate) mod table_convert;
 pub(crate) mod tool_group;
+pub(crate) mod turns;
 pub(crate) mod upload;
 
 pub use agent::SlackAgent;

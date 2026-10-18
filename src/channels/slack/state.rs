@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::tool_group;
+use crate::brain::agent::QueuedUserMessage;
 
 /// Shared Slack state for proactive messaging.
 ///
@@ -61,6 +62,20 @@ pub struct SlackState {
     /// absent for top-level turns. The background-resume reply posts into
     /// this thread instead of at the channel top level.
     pub(super) session_threads: Mutex<HashMap<Uuid, String>>,
+    /// Sessions with a turn in flight (#298). The slot is claimed atomically
+    /// by `try_begin_turn` and released on guard drop, so a second inbound
+    /// message queues instead of forking a second loop. A `std::sync::Mutex`
+    /// because the claim is a pure in-memory set operation: no `.await` runs
+    /// under it. See `turns.rs`.
+    pub(super) active_turns: std::sync::Mutex<std::collections::HashSet<Uuid>>,
+    /// Messages that arrived while their session's slot was held (#298),
+    /// keyed per session, FIFO. Drained between tool rounds by the queue
+    /// callback wired in `manager.rs`, or flushed into a fresh turn at the end
+    /// of the turn that held the slot. Named `pending_turns`, NOT
+    /// `pending_followups`: that name is spent on the `suggest_options`
+    /// buttons (#599) above, a different concern with a different value type.
+    pub(super) pending_turns:
+        std::sync::Mutex<HashMap<Uuid, std::collections::VecDeque<QueuedUserMessage>>>,
 }
 
 impl Default for SlackState {
@@ -83,6 +98,8 @@ impl SlackState {
             tool_groups: Mutex::new((Vec::new(), HashMap::new())),
             waiting_groups: Mutex::new(HashMap::new()),
             session_threads: Mutex::new(HashMap::new()),
+            active_turns: std::sync::Mutex::new(std::collections::HashSet::new()),
+            pending_turns: std::sync::Mutex::new(HashMap::new()),
         }
     }
 }

@@ -1942,6 +1942,31 @@ async fn handle_message(
         )
         .await;
 
+    // Mid-turn follow-up claim (#298): if a turn already owns this session,
+    // this message must NOT fork a second concurrent loop. Queue it and let
+    // the live loop inject it between rounds (the queue callback wired in
+    // manager.rs) or this turn's end-of-turn flush pick it up. The claim
+    // precedes `store_cancel_token` below on purpose: a lost claim must never
+    // replace the live turn's cancel token, or /stop would reach a turn that
+    // is not the one running.
+    //
+    // The `cancel_session` that used to sit here is gone with it: it killed
+    // the live turn before the token even existed, and the slot now decides
+    // who runs.
+    let Some(_turn_guard) = state.slack_state.try_begin_turn(session_id) else {
+        tracing::info!("Slack: mid-turn follow-up queued for session {session_id} (#298)");
+        state.slack_state.enqueue_turn(
+            session_id,
+            crate::brain::agent::QueuedUserMessage {
+                context_text: agent_input.clone(),
+                display_text: display_text.clone(),
+                origin: crate::brain::agent::PushOrigin::Ingress,
+                bg_meta: None,
+            },
+        );
+        return;
+    };
+
     // Claim this session's background-task completions for Slack: a completion
     // must be delivered by the surface that OWNS the session, not by whichever
     // service happened to run the command (#940).
@@ -1950,9 +1975,6 @@ async fn handle_message(
         state.agent.message_enqueue_callback(),
     );
     let approval_cb = make_approval_callback(state.slack_state.clone());
-
-    // Follow-up interrupt: cancel any running agent for this session before starting new work
-    state.slack_state.cancel_session(session_id).await;
 
     let cancel_token = tokio_util::sync::CancellationToken::new();
     state
@@ -2659,6 +2681,83 @@ async fn handle_message(
             .await;
         }
     }
+
+    // End-of-turn flush (#298, Telegram's #201 rule, Discord's #1990 twin): a
+    // message enqueued after the loop's last between-rounds drain has no
+    // consumer left on this path. Release the slot first so the flushed turn
+    // can claim it.
+    drop(_turn_guard);
+    flush_queued_turns(
+        state.clone(),
+        client.clone(),
+        session_id,
+        channel_id.clone(),
+        thread_ts.clone(),
+    );
+}
+
+/// Flush anything queued while a turn held its session's slot (#298).
+///
+/// The between-rounds drain (the `MessageQueueCallback` wired in `manager.rs`)
+/// answers a follow-up that lands early in a turn. One that lands after the
+/// last round has no consumer left, so every turn-start path calls this once
+/// the guard has dropped: it claims the slot back, runs the joined leftovers
+/// as their own turn, and posts the answer. If a newer turn won the released
+/// slot first, the message goes back on the queue so nothing is ever dropped.
+fn flush_queued_turns(
+    state: Arc<HandlerState>,
+    client: Arc<SlackHyperClient>,
+    session_id: Uuid,
+    channel_id: String,
+    thread_ts: Option<SlackTs>,
+) {
+    let Some(joined) = state.slack_state.drain_turns(session_id) else {
+        return;
+    };
+    tokio::spawn(async move {
+        let Some(_flush_guard) = state.slack_state.try_begin_turn(session_id) else {
+            state.slack_state.enqueue_turn(session_id, joined);
+            return;
+        };
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        state
+            .slack_state
+            .store_cancel_token(session_id, cancel_token.clone())
+            .await;
+        let thread_arg = thread_ts.as_ref().map(|ts| ts.to_string());
+        let outcome = state
+            .agent
+            .send_push_turn(
+                session_id,
+                joined.context_text,
+                None,
+                Some(cancel_token),
+                Some(make_approval_callback(state.slack_state.clone())),
+                None,
+                "slack",
+                Some(&channel_id),
+                thread_arg.as_deref(),
+            )
+            .await;
+        state.slack_state.remove_cancel_token(session_id).await;
+        let answer = match outcome {
+            Ok(response) => crate::utils::sanitize::strip_llm_artifacts(&response.content),
+            Err(e) => format!("❌ Error\n\n{}", crate::brain::agent::format_user_error(&e)),
+        };
+        let answer = redact_secrets(&answer);
+        let token = SlackApiToken::new(SlackApiTokenValue::from(state.current_bot_token()));
+        let session = client.open_session(&token);
+        let mut request = SlackApiChatPostMessageRequest::new(
+            SlackChannelId::new(channel_id),
+            SlackMessageContent::new().with_text(answer),
+        );
+        if let Some(ts) = thread_ts {
+            request = request.with_thread_ts(ts);
+        }
+        if let Err(e) = session.post(&request).await {
+            tracing::warn!(error = %e, "Slack: failed to post the flushed follow-up answer");
+        }
+    });
 }
 
 /// Run the turn a follow-up suggestion tap started (#1838).
@@ -2682,9 +2781,23 @@ async fn run_followup_turn(
 
     let channel = SlackChannelId::new(channel_id.clone());
 
-    // Follow-up interrupt (handle_message parity): cancel any turn still
-    // running for this session before starting new work.
-    state.slack_state.cancel_session(session_id).await;
+    // Mid-turn claim (#298): a tap is a turn like any other, so it must not
+    // fork a second loop on a busy session. Queue it instead; the live turn's
+    // between-rounds drain or its end-of-turn flush answers it. The
+    // `cancel_session` that used to sit here killed that live turn.
+    let Some(_turn_guard) = state.slack_state.try_begin_turn(session_id) else {
+        tracing::info!("Slack tap: mid-turn follow-up queued for session {session_id} (#298)");
+        state.slack_state.enqueue_turn(
+            session_id,
+            crate::brain::agent::QueuedUserMessage {
+                context_text: text.clone(),
+                display_text: text.clone(),
+                origin: crate::brain::agent::PushOrigin::Ingress,
+                bg_meta: None,
+            },
+        );
+        return;
+    };
     let cancel_token = tokio_util::sync::CancellationToken::new();
     state
         .slack_state
@@ -3106,6 +3219,17 @@ async fn run_followup_turn(
             .await;
         }
     }
+
+    // End-of-turn flush (#298): leftovers enqueued while this tap held the
+    // slot. Same rule as `handle_message`.
+    drop(_turn_guard);
+    flush_queued_turns(
+        state.clone(),
+        client.clone(),
+        session_id,
+        channel_id.clone(),
+        None,
+    );
 }
 
 /// Build an `ApprovalCallback` that sends a Slack Block Kit message with 3 buttons
