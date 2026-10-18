@@ -410,8 +410,9 @@ fn slack_chat_writes_only_leave_through_the_governor() {
         // site inside it is absent. The #2013 /respond_to reply, which the
         // merge had left calling chat_post_message raw, takes that slot.
         // #298 adds one: the end-of-turn flush posts the answer its queued
-        // follow-up earned. Every site that does exist pays.
-        33,
+        // follow-up earned. #2108 adds one: the `/stop --session` receipt
+        // names the target it cancelled. Every site that does exist pays.
+        34,
         "every new-message site pays the budget: the count is the coverage"
     );
     assert_eq!(
