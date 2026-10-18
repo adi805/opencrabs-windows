@@ -36,12 +36,10 @@ fn an_unrecorded_tag_is_treated_as_stale() {
 
 #[test]
 fn a_broken_file_is_refreshed_even_when_the_tag_matches() {
-    for ok in [false] {
-        assert!(
-            needs_refresh(Some("v0.1.23"), "v0.1.23", ok),
-            "a zero-byte or non-executable cache must not be handed to Command::new"
-        );
-    }
+    assert!(
+        needs_refresh(Some("v0.1.23"), "v0.1.23", false),
+        "a zero-byte or non-executable cache must not be handed to Command::new"
+    );
 }
 
 #[test]
