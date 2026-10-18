@@ -399,6 +399,18 @@ impl Tool for BashTool {
     async fn execute(&self, input: Value, context: &ToolExecutionContext) -> Result<ToolResult> {
         let input: BashInput = serde_json::from_value(input)?;
 
+        // #2123: no counter-waiting while this session has a detached task in
+        // flight. Such a task resumes the session by itself on completion, so
+        // a `sleep` only burns time that belongs to other work. Checked here
+        // and not in `validate_input`, because only the execution context can
+        // see the background manager. With nothing detached the command runs
+        // as ordinary shell, which is what `sleep` is normally for.
+        if let Some(mgr) = context.background_manager.as_ref()
+            && let Some(msg) = sleep_refusal(&input.command, mgr.running_for(context.session_id))
+        {
+            return Ok(ToolResult::error(msg));
+        }
+
         // Determine working directory
         let working_dir = if let Some(ref dir) = input.working_dir {
             // Expand a leading `~` before the exists-check: PathBuf::from("~")
@@ -1505,6 +1517,77 @@ pub(crate) fn split_command_segments(command: &str) -> Vec<String> {
 /// `'git'` commit is still matched.
 fn strip_quotes(s: &str) -> String {
     s.chars().filter(|&c| c != '\'' && c != '"').collect()
+}
+
+/// The `sleep` invocation in `command`, if it makes one (#2123).
+///
+/// Matches the first word of each command segment, skipping the wrappers a
+/// shell allows in front of it (`sudo`, `command`, `exec`, `nohup`, `env`,
+/// `timeout <duration>`) plus leading `VAR=value` assignments. Deliberately
+/// positional: a substring rule would refuse `grep -rn "sleep" logs/`, which
+/// is a legitimate search for this very rule.
+pub(crate) fn sleeping_segment(command: &str) -> Option<String> {
+    const WRAPPERS: [&str; 5] = ["sudo", "command", "exec", "nohup", "env"];
+
+    for seg in split_command_segments(command) {
+        let toks: Vec<&str> = seg.split_whitespace().collect();
+        let mut i = 0;
+        while i < toks.len() {
+            let raw = toks[i];
+            // `FOO=bar sleep 1`: the assignment is not the command.
+            if !raw.starts_with('-') && raw.contains('=') {
+                i += 1;
+                continue;
+            }
+            let word = strip_quotes(raw).to_lowercase();
+            if WRAPPERS.contains(&word.as_str()) {
+                i += 1;
+                continue;
+            }
+            if word == "timeout" {
+                i += 1;
+                // The wrapper's own flags, e.g. `-s KILL` / `--signal=KILL`.
+                while i < toks.len() && toks[i].starts_with('-') {
+                    let flag = toks[i];
+                    i += 1;
+                    if flag == "-s" || flag == "--signal" {
+                        i += 1;
+                    }
+                }
+                i += 1; // the duration, then the wrapped command
+                continue;
+            }
+            // `do sleep 1` / `then sleep 1` inside a loop or conditional body.
+            if word == "do" || word == "then" {
+                i += 1;
+                continue;
+            }
+            if word == "sleep" {
+                return Some(seg);
+            }
+            break;
+        }
+    }
+    None
+}
+
+/// Why a `sleep` is refused right now, or `None` to let it run (#2123).
+///
+/// Scoped to sessions that actually have a detached task in flight: such a
+/// task resumes the session on its own completion, so waiting on a counter
+/// only burns time that belongs to other work. With nothing detached the
+/// command is ordinary shell and stays available.
+pub(crate) fn sleep_refusal(command: &str, running: usize) -> Option<String> {
+    if running == 0 {
+        return None;
+    }
+    let seg = sleeping_segment(command)?;
+    Some(format!(
+        "Blocked: `{}` waits on a counter, but {} detached task(s) are still running for this session. \
+         A detached task reports back on its own when it finishes. Do other work, or end the turn and \
+         the completion will start the next one.",
+        seg, running
+    ))
 }
 
 /// fail *silently*: stdin=/dev/null returns EOF, the program exits with

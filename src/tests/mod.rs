@@ -474,6 +474,7 @@ pub mod session_search_tail_test;
 pub mod session_search_tokenized_test;
 pub mod shared_session_memory_gate_test;
 pub mod shutdown_recovery_row_test;
+pub mod sleep_gate_test;
 pub mod sources_footer_test;
 #[cfg(feature = "telegram")]
 #[cfg(feature = "telegram")]
