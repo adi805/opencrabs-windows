@@ -368,9 +368,13 @@ impl ChannelManager {
                     agent_holder.clone(),
                     wa.clone(),
                 );
+                // Mid-turn follow-up drain (#299): the tool loop calls this
+                // between rounds, so a message that arrived while the turn was
+                // running is injected instead of waiting for the turn to end.
+                let followup_cb = self.whatsapp_state.followup_queue_callback();
                 let wa_agent_service = self
                     .channel_factory
-                    .create_agent_service_full(None, Some(enqueue_cb))
+                    .create_agent_service_full(Some(followup_cb), Some(enqueue_cb))
                     .await;
                 crate::channels::bg_resume::fill(&agent_holder, &wa_agent_service);
                 // A WhatsApp ban or lock cannot be reported over WhatsApp, so
