@@ -573,9 +573,12 @@ pub(crate) async fn cmd_init(_config: &crate::config::Config, force: bool) -> Re
         );
     }
 
-    // Save default configuration
-    let default_config = Config::default();
-    default_config.save(&config_path)?;
+    // Write the shipped example, not the in-memory default (#2093). `init` is
+    // the command that owns creating this file, and what it leaves behind has
+    // to be the documented one: a section per provider, disabled, with its
+    // options inline (#2079). `Config::default().save()` wrote the handful of
+    // sections that happened to be set and dropped every comment with them.
+    crate::config::seed::write_config_example(&config_path)?;
 
     println!("✅ Configuration initialized at: {}", config_path.display());
     println!("\n📝 Next steps:");
