@@ -811,6 +811,7 @@ pub mod sanitize_quoted_secret_test;
 pub mod sanitize_reasoning_leak_test;
 pub mod sanitize_redaction_test;
 pub mod stop_intent_test;
+pub mod stop_session_target_test;
 pub mod stream_cancel_test;
 pub mod stream_total_wall_clock_test;
 pub mod telegram_apply_all_confirm_test;

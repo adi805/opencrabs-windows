@@ -1756,6 +1756,28 @@ async fn handle_message(
                 }
                 return;
             }
+            ChannelCommand::StopSession {
+                session_id: target,
+                label,
+            } => {
+                // Slack's cancel registry has no separate activity probe, so
+                // an absent token is the only "nothing to cancel" signal it
+                // has; the receipt still names the target (#2108).
+                let cancelled = state.slack_state.cancel_session(target).await;
+                state.slack_state.clear_pending_followups(target).await;
+                let outcome = crate::channels::stop_target::classify(cancelled, false);
+                let reply = crate::channels::stop_target::receipt(outcome, &label, target);
+                let token = SlackApiToken::new(SlackApiTokenValue::from(state.current_bot_token()));
+                let session = client.open_session(&token);
+                let request = SlackApiChatPostMessageRequest::new(
+                    SlackChannelId::new(channel_id),
+                    SlackMessageContent::new().with_text(reply),
+                );
+                if let Err(e) = session.post(&request).await {
+                    tracing::warn!(error = %e, "failed to post Slack message");
+                }
+                return;
+            }
             ChannelCommand::Compact => {
                 let token = SlackApiToken::new(SlackApiTokenValue::from(state.current_bot_token()));
                 let session = client.open_session(&token);

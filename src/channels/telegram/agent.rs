@@ -2712,7 +2712,7 @@ pub(crate) fn collect_command_catalog() -> Vec<teloxide::types::BotCommand> {
         BotCommand::new("new", "Start a new session"),
         BotCommand::new("cd", "Change working directory"),
         BotCommand::new("sessions", "List and switch sessions"),
-        BotCommand::new("stop", "Cancel the current operation"),
+        BotCommand::new("stop", "Cancel a turn (--session <id> for another)"),
         BotCommand::new("help", "Show available commands"),
         BotCommand::new("models", "Switch AI model or provider"),
         BotCommand::new("usage", "Session token and cost stats"),
