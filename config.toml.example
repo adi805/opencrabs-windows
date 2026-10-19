@@ -456,6 +456,16 @@ profile_id = ""
 # skill's `globs` key. Set false to disable the gate entirely.
 # skill_glob_gate = true
 
+# Plan gate (default: 12). Once a single turn makes more than this many tool
+# calls with no plan started, further calls are refused with a message telling
+# the agent to call `plan` init and continue. This catches long research,
+# audit, or multi-file turns that never reached for the plan tool. `plan` and
+# `tool_search` always pass so the agent can unblock itself, and an existing
+# plan (checklist or design being drafted) allows everything. Sub-agents,
+# resumed child turns and cron jobs are exempt: nobody is there to approve a
+# plan on those surfaces. Set 0 to disable the gate.
+# plan_gate_after_tool_calls = 12
+
 # Provider/model for Recursive Self-Improvement (RSI) cycles. The model is
 # paired with the provider, same as subagent_provider/subagent_model.
 # Unset self_improvement_provider → inherit the active provider; unset

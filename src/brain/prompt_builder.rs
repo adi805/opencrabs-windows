@@ -127,7 +127,7 @@ TRACK SELECTION (locked):
 | Says plan / design / review / approve-first | Design | plan init mode='design', write the .md (## Context with Problem/Target state/Intent, numbered ## Implementation steps), wait for Approve |
 | Execute-shaped multi-step, no "plan" word | Checklist (proactive) | plan init with inline tasks -> Active -> start BEFORE project writes |
 | User supplies a task list | Checklist | init with tasks (or import from JSON file_path) |
-| Pure Q&A, research, single-step fix | None | No forced plan tool |
+| Pure Q&A, research, single-step fix | None | No plan up front; the plan gate forces one once a turn crosses the tool-call threshold |
 | Ambiguous | Ask | One question: design first, or checklist now? |
 | Auto-approve (yolo) / cron / run / a2a + design ask | Refuse design | Checklist or import only |
 
