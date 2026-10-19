@@ -4,14 +4,14 @@
 
 OpenCrabs is community funded. No venture capital, no investors, no company behind it. The people listed here pay for the subscriptions, the inference and the credits that keep the agent running, and some of them also write the code.
 
-Numbers below are derived from [`sponsors.json`](sponsors.json) as of **October 17, 2026**. Currencies are never converted, so each one is totalled on its own.
+Numbers below are derived from [`sponsors.json`](sponsors.json) as of **October 19, 2026**. Currencies are never converted, so each one is totalled on its own.
 
 ## Totals
 
 | Type | Total | How it is counted |
 |---|---|---|
 | Cash | **€30** | Transferred, not converted |
-| Cash | **$48** | Transferred, not converted |
+| Cash | **$65.12** | Transferred, not converted |
 | In kind | **$450** | Subscription rate times billings to date |
 | Credits | **8B to 9B tokens** | Qwen Ambassador programme: Magic Cubes credits and early access. No money value recorded |
 
@@ -32,6 +32,7 @@ Numbers below are derived from [`sponsors.json`](sponsors.json) as of **October 
 | October 2026 | Adolfo Usier | $8 | Free model access for every user, built-in provider | Initial inference credits, split across three accounts |
 | October 2026 | Adolfo Usier | $20 | Free model access for every user, built-in provider | Further top-ups of 10 USD on two accounts |
 | October 15, 2026 | Daniel Carneiro | $20 | Free model access for every user, built-in provider | Top-ups of 10 USD on two of the same accounts |
+| October 19, 2026 | Adolfo Usier | $17.12 | Free model access for every user, built-in provider | Transfer from account balance to API balance |
 
 ## Subscriptions paid directly
 

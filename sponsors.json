@@ -3,7 +3,7 @@
   "repository": "opencrabs/opencrabs",
   "inception": "2026-02-14",
   "billing_day": 14,
-  "updated": "2026-10-17",
+  "updated": "2026-10-19",
   "notes": {
     "currency": "Amounts are never converted. Each currency is totalled on its own, so no exchange rate can go stale in this file.",
     "credits": "Credit and access grants carry no money amount on purpose. Nobody paid a rate for them, so any figure would be invented. Usage is recorded instead.",
@@ -148,6 +148,20 @@
       "amount": 20,
       "currency": "USD",
       "purpose": "Free model access for every user, built-in provider",
+      "public": true
+    },
+    {
+      "id": "adolfo-2026-10-19-inference",
+      "sponsor": "adolfousier",
+      "kind": "cash",
+      "category": "inference",
+      "description": "Transfer from account balance to API balance",
+      "date": "2026-10-19",
+      "date_precision": "day",
+      "amount": 17.117013,
+      "currency": "USD",
+      "purpose": "Free model access for every user, built-in provider",
+      "note": "Moved from the account's own USDC balance into the API balance that serves users.",
       "public": true
     },
     {
