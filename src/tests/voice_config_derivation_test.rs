@@ -136,7 +136,37 @@ fn active_provider_audio_models_turn_voice_on_with_no_stt_blocks() {
     // Out of the box: the session's provider carries `stt_model` /
     // `tts_model`, exactly as it carries `vision_model` and
     // `generation_model`. No `[providers.stt.*]` block is written, and
-    // voice still works.
+    // voice still works. The provider here is a normal [OI]-compatible
+    // endpoint that serves both audio routes, which is what the mechanism
+    // is about; the built-in endpoint is covered separately below.
+    let vc = cfg(r#"
+[providers.custom.lm-studio]
+enabled = true
+base_url = "http://localhost:1234/v1"
+api_key = "local-key"
+default_model = "some-chat-model"
+stt_model = "whisper-large-v3-turbo"
+tts_model = "tts-1"
+"#)
+    .voice_config();
+    assert!(
+        vc.stt_enabled,
+        "provider stt_model must enable transcription"
+    );
+    assert!(vc.tts_enabled, "provider tts_model must enable synthesis");
+    assert_eq!(vc.stt_base_url.as_deref(), Some("http://localhost:1234"));
+    assert_eq!(vc.tts_base_url.as_deref(), Some("http://localhost:1234"));
+    assert_eq!(vc.stt_model.as_deref(), Some("whisper-large-v3-turbo"));
+    assert_eq!(vc.tts_model, "tts-1");
+    assert_eq!(vc.stt_api_key.as_deref(), Some("local-key"));
+    assert_eq!(vc.tts_api_key.as_deref(), Some("local-key"));
+}
+
+/// The built-in endpoint serves transcription on the chat route and no speech
+/// route at all, so its `stt_model` must turn voice input on while its
+/// `tts_model` must not turn synthesis on (#2107).
+#[test]
+fn built_in_provider_enables_transcription_but_never_synthesis() {
     let vc = cfg(r#"
 [providers.opencrabs]
 enabled = true
@@ -148,22 +178,21 @@ tts_model = "qwen3.8-omni-flash"
     .voice_config();
     assert!(
         vc.stt_enabled,
-        "provider stt_model must enable transcription"
+        "the built-in provider transcribes on stt_model"
     );
-    assert!(vc.tts_enabled, "provider tts_model must enable synthesis");
-    // Host root: the [OI] audio clients append `v1/audio/...` themselves.
+    // Host root: the [OI] audio client appends `v1/chat/completions` itself.
     assert_eq!(
         vc.stt_base_url.as_deref(),
         Some("https://inference.opencrabs.com")
     );
-    assert_eq!(
-        vc.tts_base_url.as_deref(),
-        Some("https://inference.opencrabs.com")
-    );
     assert_eq!(vc.stt_model.as_deref(), Some("qwen3.8-omni-flash"));
-    assert_eq!(vc.tts_model, "qwen3.8-omni-flash");
     assert_eq!(vc.stt_api_key.as_deref(), Some("ocp_test_token"));
-    assert_eq!(vc.tts_api_key.as_deref(), Some("ocp_test_token"));
+
+    assert!(
+        !vc.tts_enabled,
+        "the endpoint answers no /v1/audio/speech route, so a tts_model here must not enable synthesis"
+    );
+    assert_eq!(vc.tts_base_url, None);
 }
 
 #[test]
@@ -173,26 +202,21 @@ fn provider_audio_models_win_over_a_user_fallback_chain() {
     // the global `image.generation.model`. The chain itself survives, so
     // the dispatcher can still fall back to it.
     let vc = cfg(r#"
-[providers.opencrabs]
+[providers.custom.lm-studio]
 enabled = true
-api_key = "ocp_test_token"
-default_model = "deepseek-v4.1-flash"
-stt_model = "qwen3.8-omni-flash"
-tts_model = "qwen3.8-omni-flash"
+base_url = "http://localhost:1234/v1"
+api_key = "local-key"
+default_model = "some-chat-model"
+stt_model = "whisper-large-v3-turbo"
+tts_model = "tts-1"
 [providers.stt]
 fallback_chain = ["groq"]
 [providers.tts]
 fallback_chain = ["openai"]
 "#)
     .voice_config();
-    assert_eq!(
-        vc.stt_base_url.as_deref(),
-        Some("https://inference.opencrabs.com")
-    );
-    assert_eq!(
-        vc.tts_base_url.as_deref(),
-        Some("https://inference.opencrabs.com")
-    );
+    assert_eq!(vc.stt_base_url.as_deref(), Some("http://localhost:1234"));
+    assert_eq!(vc.tts_base_url.as_deref(), Some("http://localhost:1234"));
     assert_eq!(vc.stt_fallback_chain, vec!["groq"]);
     assert_eq!(vc.tts_fallback_chain, vec!["openai"]);
 }
@@ -202,11 +226,12 @@ fn keyless_provider_audio_models_do_not_enable_voice() {
     // Same #1792 gate as the vision candidates: a remote endpoint we hold
     // no key for is a guaranteed 401, not a working out-of-the-box path.
     let vc = cfg(r#"
-[providers.opencrabs]
+[providers.custom.remote]
 enabled = true
-default_model = "deepseek-v4.1-flash"
-stt_model = "qwen3.8-omni-flash"
-tts_model = "qwen3.8-omni-flash"
+base_url = "https://api.example.com/v1"
+default_model = "some-chat-model"
+stt_model = "whisper-large-v3-turbo"
+tts_model = "tts-1"
 "#)
     .voice_config();
     assert!(

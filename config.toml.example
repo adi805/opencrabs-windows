@@ -35,11 +35,12 @@ models = ["deepseek-v4.1-flash"]
 # at 200k, so any value set in this section is ignored.
 vision_model = "deepseek-v4.1-flash"  # Multimodal: attached images work on day 0
 generation_model = "gemini-2.5-flash-image"  # Image generation on day 0, served only on the image route (/v1/images/generations), never as chat
-# Voice is not served by this provider yet: it answers no /v1/audio/* route, so
-# leave stt_model and tts_model unset here. A voice note still transcribes and
-# still gets a text reply through your STT engine in /voice; only a spoken reply
-# needs a TTS engine. Set these on a provider that exposes the routes: a set
-# field becomes the primary candidate and pays a failed round trip first.
+stt_model = "qwen3.8-omni-flash"  # Transcription on day 0: a voice note goes out as an audio-carrying chat request, which is the shape this endpoint serves
+# Speech is not served by this provider: it answers no /v1/audio/speech route, so
+# a speech model declared here is ignored rather than paying a failed round trip.
+# A spoken reply still works through the built-in local voice, a [providers.tts.*]
+# block, or Voicebox. Transcription needs nothing set on those: a voice note
+# transcribes on stt_model above and gets a text reply as usual.
 
 # ========================================
 # Xiaomi MiMo

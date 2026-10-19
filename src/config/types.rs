@@ -3243,18 +3243,25 @@ pub struct ProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation_model: Option<String>,
 
-    /// Speech-to-text model for this provider's [OI]-compatible
-    /// `/v1/audio/transcriptions` route. Set it and voice notes transcribe
-    /// through the active provider, the same way `vision_model` drives image
-    /// understanding and `generation_model` drives image creation. The
+    /// Speech-to-text model for the active provider. Set it and voice notes
+    /// transcribe through that provider, the same way `vision_model` drives
+    /// image understanding and `generation_model` drives image creation. The
     /// endpoint is the provider's own (`base_url`, or its known default), so
-    /// any [OI]-compatible provider can serve transcription, not only the
-    /// built-in one.
+    /// any [OI]-compatible provider can serve transcription.
+    ///
+    /// The wire depends on the endpoint. The built-in endpoint takes the audio
+    /// as an `input_audio` part on `/v1/chat/completions` and serves no
+    /// `/v1/audio/transcriptions` route at all; every other provider gets the
+    /// multipart transcription request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stt_model: Option<String>,
 
     /// Text-to-speech model for this provider's [OI]-compatible
     /// `/v1/audio/speech` route. See `stt_model`.
+    ///
+    /// The built-in endpoint serves no speech route in any shape, so setting
+    /// this on it has no effect: synthesis falls through to the built-in local
+    /// voice, a `[providers.tts.*]` block, or Voicebox.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tts_model: Option<String>,
 

@@ -1309,7 +1309,23 @@ pub fn active_provider_stt(config: &Config) -> Option<(String, String, String)> 
 /// `(api_key, base_url, model)` for the active provider's `tts_model`, when
 /// it declares one. The synthesis twin of [`active_provider_stt`].
 pub fn active_provider_tts(config: &Config) -> Option<(String, String, String)> {
-    active_provider_audio(config, |c| c.tts_model.as_deref())
+    let (api_key, base_url, model) = active_provider_audio(config, |c| c.tts_model.as_deref())?;
+    // The built-in endpoint serves no speech route in any shape:
+    // `/v1/audio/speech` falls through to a 404. A `tts_model` declared on it
+    // would therefore turn every spoken reply into a guaranteed failed round
+    // trip, so skip the candidate and let the resolver fall through to the
+    // built-in local voice, a `[providers.tts.*]` block, or Voicebox, all of
+    // which keep working. Any other [OI]-compatible endpoint keeps the
+    // `/v1/audio/speech` request it has always used.
+    if super::opencrabs_install::is_opencrabs_endpoint(Some(&base_url)) {
+        tracing::debug!(
+            base_url = %base_url,
+            model = %model,
+            "voice: built-in endpoint serves no speech route, skipping TTS candidate"
+        );
+        return None;
+    }
+    Some((api_key, base_url, model))
 }
 
 /// Shared resolution behind [`active_provider_stt`] and [`active_provider_tts`]:

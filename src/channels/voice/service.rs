@@ -188,7 +188,14 @@ async fn try_stt(kind: SttProviderKind, audio_bytes: Vec<u8>, cfg: &VoiceConfig)
                 .stt_api_key
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("openai-compatible STT missing api_key"))?;
-            super::openai_stt::transcribe_audio(audio_bytes, key, model, base).await
+            // The built-in endpoint serves transcription on the chat route and
+            // answers no /v1/audio/* path at all; every other [OI]-compatible
+            // endpoint keeps the multipart request it has always used (#2107).
+            if super::openai_stt::serves_audio_on_chat_route(base) {
+                super::openai_stt::transcribe_audio_chat(audio_bytes, key, model, base).await
+            } else {
+                super::openai_stt::transcribe_audio(audio_bytes, key, model, base).await
+            }
         }
         SttProviderKind::Groq => {
             let key = cfg

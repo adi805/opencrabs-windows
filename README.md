@@ -1850,14 +1850,20 @@ Voice follows the same shape. Set `stt_model` and/or `tts_model` on a provider a
 
 ```toml
 [providers.opencrabs]
-# The built-in provider answers no /v1/audio/* route yet, so leave these unset here.
-# A voice note still transcribes and gets a text reply through your STT engine.
-# On a provider that does expose them:
+# Transcription works on day 0. A voice note goes out as an audio-carrying chat
+# request, which is the shape the built-in endpoint serves.
+stt_model = "qwen3.8-omni-flash"
+# Speech is not served by the built-in endpoint, so a tts_model here is ignored
+# rather than paying a failed round trip. A spoken reply still works through the
+# built-in local voice, a [providers.tts.*] block, or Voicebox.
+# tts_model = "qwen3.8-omni-flash"
+
+# On any other provider that exposes the [OI] audio routes:
 # stt_model = "whisper-large-v3-turbo"  # /v1/audio/transcriptions
 # tts_model = "gpt-4o-mini-tts"         # /v1/audio/speech
 ```
 
-Works with any [OI]-compatible provider that exposes those two routes, not only the built-in one. The active provider's route is the primary one; `[providers.stt].fallback_chain` / `[providers.tts].fallback_chain` still apply behind it, and the standalone `[providers.stt.openai_compatible]` / `[providers.tts.openai_compatible]` blocks keep working unchanged. A remote endpoint with no stored key is not a candidate — the same gate `vision_model` uses.
+Works with any [OI]-compatible provider that exposes those two routes, not only the built-in one. The wire follows the endpoint: the built-in endpoint takes the audio as an `input_audio` part on `/v1/chat/completions` and answers no `/v1/audio/transcriptions` route at all, while every other provider keeps the multipart request it has always used. The active provider's route is the primary one; `[providers.stt].fallback_chain` / `[providers.tts].fallback_chain` still apply behind it, and the standalone `[providers.stt.openai_compatible]` / `[providers.tts.openai_compatible]` blocks keep working unchanged. A remote endpoint with no stored key is not a candidate — the same gate `vision_model` uses.
 
 ---
 
