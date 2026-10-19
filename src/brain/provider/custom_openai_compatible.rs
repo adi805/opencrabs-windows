@@ -3581,6 +3581,7 @@ impl OpenAIProvider {
                 output_tokens: response.usage.completion_tokens.unwrap_or(0),
                 cache_creation_tokens: response.usage.cache_creation_input_tokens.unwrap_or(0),
                 cache_read_tokens: response.usage.effective_cache_read(),
+                cache_read_unreported: response.usage.cache_read_absent(),
                 cost_usd: response.usage.cost,
                 ..Default::default()
             },
@@ -5290,6 +5291,7 @@ impl Provider for OpenAIProvider {
                                                             reasoning_tokens: reasoning,
                                                             cache_creation_tokens: cache_create,
                                                             cache_read_tokens: cache_read,
+                                                            cache_read_unreported: usage.cache_read_absent(),
                                                             cost_usd: usage.cost,
                                                             ..Default::default()
                                                         },
@@ -5738,6 +5740,18 @@ pub(crate) struct OpenAIUsage {
 }
 
 impl OpenAIUsage {
+    /// True when the response carried no cache-read field at all (#2139): the
+    /// zero from `effective_cache_read` then means "not reported".
+    pub(crate) fn cache_read_absent(&self) -> bool {
+        self.cache_read_input_tokens.is_none()
+            && self
+                .prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens)
+                .is_none()
+            && self.prompt_cache_hit_tokens.is_none()
+    }
+
     /// Effective cache-read tokens, merging the Anthropic field and the
     /// OpenAI/DashScope `prompt_tokens_details.cached_tokens` field.
     pub(crate) fn effective_cache_read(&self) -> u32 {

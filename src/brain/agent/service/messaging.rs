@@ -104,7 +104,11 @@ impl AgentService {
                 cost,
                 &self.provider_name_for_session(session_id),
                 &self.provider_model_for_session(session_id),
-                Some(response.usage.cache_read_tokens as i64),
+                if response.usage.cache_read_unreported {
+                    None
+                } else {
+                    Some(response.usage.cache_read_tokens as i64)
+                },
                 Some(billable_input as i64),
             )
             .await

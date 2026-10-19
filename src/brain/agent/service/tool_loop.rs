@@ -1611,6 +1611,8 @@ impl AgentService {
         let mut total_output_tokens = 0u32;
         let mut total_cache_creation = 0u32;
         let mut total_cache_read = 0u32;
+        // Whether any iteration's provider reported a cache-read field (#2139).
+        let mut cache_read_reported = false;
         // Sum of per-iteration active-streaming time, used as the tok/s
         // denominator. Replaces the previous `turn_start.elapsed()`
         // wall-clock which silently halved the displayed rate on every
@@ -4057,6 +4059,9 @@ impl AgentService {
             } else {
                 response.usage.cache_creation_tokens
             };
+            if !response.usage.cache_read_unreported {
+                cache_read_reported = true;
+            }
             total_cache_read += if response.usage.billing_cache_read > 0 {
                 response.usage.billing_cache_read
             } else {
@@ -8215,7 +8220,11 @@ impl AgentService {
                 cost,
                 &self.provider_name_for_session(session_id),
                 &self.provider_model_for_session(session_id),
-                Some(total_cache_read as i64),
+                if cache_read_reported {
+                    Some(total_cache_read as i64)
+                } else {
+                    None
+                },
                 Some(billable_input as i64),
             )
             .await
