@@ -41,6 +41,17 @@
 //! the block, the tool lines, the counters and the settled footer are the same
 //! code as a normal session rather than a guest-shaped copy.
 //!
+//! # Rich when the user enabled it (#2127 follow-up)
+//!
+//! `channels.telegram.rich_messages` is one setting, so it governs guest
+//! replies too. With it on, the reply goes out as `InputRichMessageContent`
+//! (Bot API lists it among the `InputMessageContent` types an inline or guest
+//! result may carry) and is edited with `rich_message`, which raises the
+//! ceiling from 4096 characters to 32768 and renders the markdown instead of
+//! showing its asterisks. With it off, the reply is the same plain
+//! `message_text` payload it always was. A refused rich edit falls back to the
+//! HTML text edit rather than stranding the placeholder.
+//!
 //! Two things this deliberately does NOT copy from the regular path: the
 //! typing indicator (the bot is not a member, so there is nothing to type in)
 //! and the per-tool messages (one reply is all the API gives).
@@ -66,12 +77,17 @@ use crate::services::SessionService;
 
 /// Telegram's ceiling for `InputTextMessageContent.message_text`.
 const GUEST_TEXT_LIMIT: usize = 4096;
+/// Telegram's ceiling for a rich message: "Up to 32768 UTF-8 characters in the
+/// rich message text" (Bot API, Rich Message Limits). Eight times the plain
+/// text ceiling, which is why the rich path never needs a truncation marker.
+const GUEST_RICH_TEXT_LIMIT: usize = 32768;
 /// Inline result id, kept well under Telegram's 64-byte cap.
 const GUEST_RESULT_ID: &str = "opencrabs-guest";
 /// Appended when a reply has to be cut to fit the message ceiling.
 const TRUNCATION_MARKER: &str = "\n\n[truncated]";
-/// What the reply says between being posted and the first real edit. Plain
-/// text on purpose: the opening `answerGuestQuery` carries no parse mode.
+/// What the reply says between being posted and the first real edit. One line
+/// of plain text, so it reads the same whether the reply is opened as
+/// `message_text` or as a rich message.
 const GUEST_PLACEHOLDER: &str = "⏳ Working on it…";
 /// How often the open reply is edited while the turn runs. Same cadence as
 /// the regular chat's edit loop.
@@ -224,25 +240,58 @@ fn clamp_guest_text(text: &str) -> String {
     fit_text(text, GUEST_TEXT_LIMIT)
 }
 
+/// Fit `text` into `room` UTF-8 characters without a truncation marker.
+///
+/// The rich path measures characters, not UTF-16 units: the Bot API states its
+/// ceiling as "32768 UTF-8 characters". This ceiling is a safety valve so an
+/// oversized payload is never sent, not a limit a real answer meets.
+fn fit_rich_text(text: &str, room: usize) -> String {
+    if text.chars().count() <= room {
+        return text.to_string();
+    }
+    text.chars().take(room).collect()
+}
+
+/// Trim a reply to the rich ceiling. No marker: the whole point of the rich
+/// path is that a long answer arrives whole, so stamping `[truncated]` here is
+/// the bug this exists to avoid.
+fn clamp_guest_rich_text(text: &str) -> String {
+    fit_rich_text(text, GUEST_RICH_TEXT_LIMIT)
+}
+
 /// The one message a guest reply can be: the turn's block (tool lines plus the
 /// settled footer) with the answer under it.
 ///
-/// Always inside [`GUEST_TEXT_LIMIT`]. When the block leaves too little room
-/// for a real answer the answer ships alone, because the block is chrome and
-/// the answer is the point.
-pub(crate) fn compose_guest_message(block_html: &str, answer_markdown: &str) -> String {
-    let answer = clamp_guest_text(answer_markdown.trim());
-    let room = GUEST_TEXT_LIMIT.saturating_sub(visible_len(block_html) + 2);
+/// Always inside the ceiling that applies: [`GUEST_TEXT_LIMIT`] for a plain
+/// text reply, [`GUEST_RICH_TEXT_LIMIT`] when the reply goes out rich. When the
+/// block leaves too little room for a real answer the answer ships alone,
+/// because the block is chrome and the answer is the point.
+pub(crate) fn compose_guest_message(block_html: &str, answer_markdown: &str, rich: bool) -> String {
+    let limit = if rich {
+        GUEST_RICH_TEXT_LIMIT
+    } else {
+        GUEST_TEXT_LIMIT
+    };
+    let answer = if rich {
+        clamp_guest_rich_text(answer_markdown.trim())
+    } else {
+        clamp_guest_text(answer_markdown.trim())
+    };
+    let room = limit.saturating_sub(visible_len(block_html) + 2);
     if block_html.is_empty() || room < MIN_ANSWER_ROOM {
         return answer;
     }
-    let fitted = fit_text(answer_markdown.trim(), room);
+    let fitted = if rich {
+        fit_rich_text(answer_markdown.trim(), room)
+    } else {
+        fit_text(answer_markdown.trim(), room)
+    };
     let composed = if fitted.is_empty() {
         block_html.to_string()
     } else {
         format!("{block_html}\n\n{}", markdown_to_telegram_html(&fitted))
     };
-    if visible_len(&composed) > GUEST_TEXT_LIMIT {
+    if visible_len(&composed) > limit {
         return answer;
     }
     composed
@@ -324,18 +373,29 @@ fn guest_title(text: &str) -> String {
 /// The `answerGuestQuery` request body: the query id plus one
 /// `InlineQueryResultArticle` carrying the reply as its message content.
 ///
-/// No `parse_mode` is set, so the reply arrives as plain text. Guest replies
-/// are not routed through the rich-message or HTML paths: those exist to shape
-/// a bot message the client renders, and this is one text payload handed to
-/// the API.
-pub(crate) fn answer_guest_query_body(query_id: &str, text: &str) -> Value {
+/// Two shapes, chosen by `channels.telegram.rich_messages`:
+///
+/// - rich: `InputRichMessageContent` with `rich_message.markdown`. The Bot API
+///   lists `InputRichMessageContent` among the `InputMessageContent` types a
+///   result may carry, and a rich message takes up to 32768 characters, so a
+///   long answer arrives whole instead of being cut at 4096 with
+///   `[truncated]` on the end.
+/// - plain: `message_text`, unchanged. Telegram caps that at 4096 characters
+///   and has no other field to put the overflow in, so the classic path keeps
+///   the marker.
+pub(crate) fn answer_guest_query_body(query_id: &str, text: &str, rich: bool) -> Value {
+    let content = if rich {
+        json!({ "rich_message": { "markdown": clamp_guest_rich_text(text) } })
+    } else {
+        json!({ "message_text": clamp_guest_text(text) })
+    };
     json!({
         "guest_query_id": query_id,
         "result": {
             "type": "article",
             "id": GUEST_RESULT_ID,
             "title": guest_title(text),
-            "input_message_content": { "message_text": clamp_guest_text(text) },
+            "input_message_content": content,
         }
     })
 }
@@ -445,6 +505,9 @@ impl GuestRunner {
 
     async fn answer(self: &Arc<Self>, query: GuestQuery) {
         let cfg = self.config_rx.borrow().clone();
+        // One decision for the whole turn: the reply is opened, edited and
+        // settled in the same mode, so a rich reply is never half plain.
+        let rich = cfg.channels.telegram.rich_messages;
         let chat_key = query.chat_id.map(|c| c.to_string());
         if !cfg
             .channels
@@ -498,7 +561,11 @@ impl GuestRunner {
         // progress surface (#2109). A failure here is not fatal: the turn
         // still runs and the answer is posted in one piece at the end.
         let opened = match self
-            .post_answer(&answer_guest_query_body(&query.query_id, GUEST_PLACEHOLDER))
+            .post_answer(&answer_guest_query_body(
+                &query.query_id,
+                GUEST_PLACEHOLDER,
+                rich,
+            ))
             .await
         {
             Ok(inline_message_id) => Some(inline_message_id),
@@ -519,6 +586,7 @@ impl GuestRunner {
                 Arc::clone(&state),
                 inline_message_id.clone(),
                 cancel.clone(),
+                rich,
             ))
         });
 
@@ -568,7 +636,7 @@ impl GuestRunner {
                 // than leaving a stranger watching a live footer.
                 if let Some(inline_message_id) = edit_target.as_deref() {
                     let block = settle_block(&state, FlowOutcome::Failed, None);
-                    if let Err(e) = self.edit_answer(inline_message_id, &block).await {
+                    if let Err(e) = self.edit_answer(inline_message_id, &block, rich).await {
                         tracing::debug!(
                             "Telegram guest: could not settle the failed reply for query {}: {e}",
                             query.query_id
@@ -597,7 +665,7 @@ impl GuestRunner {
             ctx_max,
             response.tokens_per_second,
         );
-        let (message, reply) = settled_guest_message(&state, &content, ctx);
+        let (message, reply) = settled_guest_message(&state, &content, ctx, rich);
         if reply.is_empty() {
             tracing::warn!(
                 "Telegram guest: query {} produced an empty reply, sending the block alone",
@@ -610,6 +678,7 @@ impl GuestRunner {
             edit_target.as_deref(),
             &message,
             &reply,
+            rich,
         )
         .await;
     }
@@ -629,21 +698,24 @@ impl GuestRunner {
         edit_target: Option<&str>,
         message: &str,
         plain: &str,
+        rich: bool,
     ) {
         match edit_target {
-            Some(inline_message_id) => match self.edit_answer(inline_message_id, message).await {
-                Ok(()) => tracing::info!(
-                    "Telegram guest: answered query {query_id} by editing the open reply"
-                ),
-                Err(e) => {
-                    tracing::warn!(
-                        "Telegram guest: final edit failed for query {query_id} ({e}); posting \
+            Some(inline_message_id) => {
+                match self.edit_answer(inline_message_id, message, rich).await {
+                    Ok(()) => tracing::info!(
+                        "Telegram guest: answered query {query_id} by editing the open reply"
+                    ),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Telegram guest: final edit failed for query {query_id} ({e}); posting \
                          the answer in one piece instead"
-                    );
-                    self.post_once(query_id, plain).await;
+                        );
+                        self.post_once(query_id, plain, rich).await;
+                    }
                 }
-            },
-            None if opened.is_none() => self.post_once(query_id, plain).await,
+            }
+            None if opened.is_none() => self.post_once(query_id, plain, rich).await,
             None => tracing::warn!(
                 "Telegram guest: query {query_id} has an open reply but no inline_message_id \
                  to edit it by; leaving the reply as posted"
@@ -653,13 +725,13 @@ impl GuestRunner {
 
     /// Post the answer as its own message. Used when the reply could not be
     /// opened, and after a refused final edit.
-    async fn post_once(&self, query_id: &str, plain: &str) {
+    async fn post_once(&self, query_id: &str, plain: &str, rich: bool) {
         if plain.is_empty() {
             tracing::warn!("Telegram guest: query {query_id} has no text to post");
             return;
         }
         match self
-            .post_answer(&answer_guest_query_body(query_id, plain))
+            .post_answer(&answer_guest_query_body(query_id, plain, rich))
             .await
         {
             Ok(_) => tracing::info!("Telegram guest: answered query {query_id} in one piece"),
@@ -709,16 +781,39 @@ impl GuestRunner {
 
     /// Edit the open reply in place. The twin of the regular path's
     /// `edit_rich_html` / HTML edit, one API method over.
-    async fn edit_answer(&self, inline_message_id: &str, html: &str) -> Result<(), String> {
+    ///
+    /// Rich first when the reply went out rich: `editMessageText` takes
+    /// `rich_message` alongside `inline_message_id`, so the edit carries the
+    /// same rich content the reply was opened with. A refusal falls back to the
+    /// HTML text edit rather than leaving a stranger staring at the placeholder.
+    async fn edit_answer(
+        &self,
+        inline_message_id: &str,
+        html: &str,
+        rich: bool,
+    ) -> Result<(), String> {
+        if rich {
+            match self
+                .post_edit(&edit_rich_body(inline_message_id, html))
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) => tracing::warn!(
+                    "Telegram guest: rich edit refused ({e}); falling back to the HTML edit"
+                ),
+            }
+        }
+        self.post_edit(&edit_html_body(inline_message_id, html))
+            .await
+    }
+
+    /// POST one `editMessageText` body and read the response the same way for
+    /// both shapes.
+    async fn post_edit(&self, body: &Value) -> Result<(), String> {
         let url = format!("https://api.telegram.org/bot{}/editMessageText", self.token);
-        let body = json!({
-            "inline_message_id": inline_message_id,
-            "text": html,
-            "parse_mode": "HTML",
-        });
         let resp = reqwest::Client::new()
             .post(&url)
-            .json(&body)
+            .json(body)
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -733,6 +828,29 @@ impl GuestRunner {
             crate::utils::truncate_str(&text, 300)
         ))
     }
+}
+
+/// The `editMessageText` body for a rich guest edit.
+///
+/// `html` rather than `markdown`: the guest reply is composed as HTML (the
+/// block comes from `render_flow` and the answer is converted), so handing the
+/// API markdown would render the tags literally. `InputRichMessage` accepts
+/// exactly one of `html`, `markdown` or `blocks`.
+pub(crate) fn edit_rich_body(inline_message_id: &str, html: &str) -> Value {
+    json!({
+        "inline_message_id": inline_message_id,
+        "rich_message": { "html": html },
+    })
+}
+
+/// The `editMessageText` body for a plain guest edit: unchanged, and still the
+/// fallback when a rich edit is refused.
+pub(crate) fn edit_html_body(inline_message_id: &str, html: &str) -> Value {
+    json!({
+        "inline_message_id": inline_message_id,
+        "text": html,
+        "parse_mode": "HTML",
+    })
 }
 
 /// Whether an `editMessageText` response means the edit landed.
@@ -837,6 +955,7 @@ pub(crate) fn settled_guest_message(
     state: &Arc<Mutex<StreamingState>>,
     content: &str,
     ctx: String,
+    rich: bool,
 ) -> (String, String) {
     let reply = settle_reply(state, content);
     let has_log = {
@@ -848,7 +967,7 @@ pub(crate) fn settled_guest_message(
     } else {
         String::new()
     };
-    (compose_guest_message(&block, &reply), reply)
+    (compose_guest_message(&block, &reply, rich), reply)
 }
 
 /// Edit the open reply on the regular cadence until the turn ends.
@@ -857,6 +976,7 @@ async fn edit_tick_loop(
     state: Arc<Mutex<StreamingState>>,
     inline_message_id: String,
     cancel: CancellationToken,
+    rich: bool,
 ) {
     let mut last = String::new();
     loop {
@@ -868,7 +988,7 @@ async fn edit_tick_loop(
         if html.is_empty() || html == last {
             continue;
         }
-        match me.edit_answer(&inline_message_id, &html).await {
+        match me.edit_answer(&inline_message_id, &html, rich).await {
             Ok(()) => last = html,
             // A live edit is cosmetic: a rate limit or a dropped socket must
             // not end the turn, so it is logged and the next tick renders the

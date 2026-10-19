@@ -132,7 +132,7 @@ fn a_message_without_a_query_id_does_not_take_the_guest_path() {
 
 #[test]
 fn answer_body_is_a_wellformed_guest_result_and_honours_the_text_ceiling() {
-    let body = answer_guest_query_body("gq-1", "Hello there\nsecond line");
+    let body = answer_guest_query_body("gq-1", "Hello there\nsecond line", false);
     assert_eq!(body["guest_query_id"], json!("gq-1"));
     assert_eq!(body["result"]["type"], json!("article"));
     assert_eq!(body["result"]["id"], json!("opencrabs-guest"));
@@ -154,7 +154,7 @@ fn answer_body_is_a_wellformed_guest_result_and_honours_the_text_ceiling() {
 
     // Telegram rejects message_text past 4096; long replies get cut, not lost.
     let long = "x".repeat(5000);
-    let clamped = answer_guest_query_body("gq-2", &long);
+    let clamped = answer_guest_query_body("gq-2", &long, false);
     let text = clamped["result"]["input_message_content"]["message_text"]
         .as_str()
         .expect("message_text is a string");
@@ -166,7 +166,7 @@ fn answer_body_is_a_wellformed_guest_result_and_honours_the_text_ceiling() {
     // room sooner than a character count suggests (a crab is 2 units) and a
     // glyph is never split in half.
     let emoji = "\u{1F980}".repeat(5000);
-    let multibyte = answer_guest_query_body("gq-3", &emoji);
+    let multibyte = answer_guest_query_body("gq-3", &emoji, false);
     let text = multibyte["result"]["input_message_content"]["message_text"]
         .as_str()
         .expect("message_text is a string");
@@ -231,8 +231,8 @@ use crate::channels::telegram::flow::{
     FlowEntry, StreamingState, drain_display_queue, render_flow,
 };
 use crate::channels::telegram::guest::{
-    compose_guest_message, edit_response_ok, guest_sanitize, settle_guest_answer,
-    settled_guest_message, utf16_len, visible_len,
+    compose_guest_message, edit_html_body, edit_response_ok, edit_rich_body, guest_sanitize,
+    settle_guest_answer, settled_guest_message, utf16_len, visible_len,
 };
 use crate::channels::telegram::handler::thinking_status_excerpt;
 use crate::channels::telegram::progress::apply_progress_event;
@@ -277,7 +277,7 @@ fn settled_block() -> String {
 #[test]
 fn a_settled_guest_reply_carries_the_block_the_footer_and_the_answer() {
     let block = settled_block();
-    let message = compose_guest_message(&block, "Here is the answer.");
+    let message = compose_guest_message(&block, "Here is the answer.", false);
 
     assert!(
         message.contains("✅ Finished"),
@@ -337,7 +337,7 @@ fn a_live_guest_reply_shows_activity_and_no_settled_chrome() {
 fn a_guest_reply_never_exceeds_the_edit_ceiling() {
     let block = settled_block();
     let answer = "x".repeat(9000);
-    let message = compose_guest_message(&block, &answer);
+    let message = compose_guest_message(&block, &answer, false);
 
     assert!(
         visible_len(&message) <= 4096,
@@ -354,7 +354,7 @@ fn a_guest_reply_never_exceeds_the_edit_ceiling() {
 #[test]
 fn a_block_that_leaves_no_room_drops_out_of_the_reply() {
     let block = format!("<blockquote>{}</blockquote>", "x".repeat(5000));
-    let message = compose_guest_message(&block, "short answer");
+    let message = compose_guest_message(&block, "short answer", false);
 
     assert_eq!(
         message, "short answer",
@@ -366,7 +366,7 @@ fn a_block_that_leaves_no_room_drops_out_of_the_reply() {
 fn the_ceiling_counts_utf16_units_not_chars() {
     // 4096 crab emoji are 8192 UTF-16 units, which is what Telegram counts.
     // A character count lets this through to a "message is too long" error.
-    let body = answer_guest_query_body("gq-crabs", &"🦀".repeat(4096));
+    let body = answer_guest_query_body("gq-crabs", &"🦀".repeat(4096), false);
     let sent = body["result"]["input_message_content"]["message_text"]
         .as_str()
         .expect("message_text");
@@ -552,7 +552,8 @@ fn a_no_tool_guest_turn_renders_the_footer_and_the_answer_and_nothing_else() {
         },
     );
     // The whole settle step, exactly as the runner runs it.
-    let (message, reply) = settled_guest_message(&state, answer, "ctx: 48K/200K 24%".to_string());
+    let (message, reply) =
+        settled_guest_message(&state, answer, "ctx: 48K/200K 24%".to_string(), false);
     eprintln!("--- 0-tool guest reply ---\n{message}\n--- end ---");
 
     assert_eq!(reply, answer, "the reply is the answer, unchanged");
@@ -565,4 +566,115 @@ fn a_no_tool_guest_turn_renders_the_footer_and_the_answer_and_nothing_else() {
         "a zero-log turn is the answer and nothing else, the shape a regular \
          turn lands on when it opens no block: {message}"
     );
+}
+
+#[test]
+fn a_rich_guest_body_carries_the_rich_message_markdown() {
+    let body = answer_guest_query_body("gq-rich", "**bold** and `code`", true);
+    let content = &body["result"]["input_message_content"];
+
+    assert_eq!(
+        content["rich_message"]["markdown"],
+        json!("**bold** and `code`"),
+        "a rich reply hands Telegram the markdown to render: {content}"
+    );
+    assert!(
+        content.get("message_text").is_none(),
+        "one content shape per reply, never both: {content}"
+    );
+    assert!(
+        content.get("parse_mode").is_none(),
+        "rich content carries no parse mode: {content}"
+    );
+    assert_eq!(body["result"]["type"], json!("article"));
+    assert_eq!(body["guest_query_id"], json!("gq-rich"));
+    assert_eq!(body["result"]["title"], json!("**bold** and `code`"));
+}
+
+#[test]
+fn a_classic_guest_body_still_carries_message_text() {
+    let body = answer_guest_query_body("gq-plain", "**not** rendered", false);
+    let content = &body["result"]["input_message_content"];
+
+    assert_eq!(
+        content["message_text"],
+        json!("**not** rendered"),
+        "rich off is the classic payload, unchanged: {content}"
+    );
+    assert!(
+        content.get("rich_message").is_none(),
+        "no rich content when the setting is off: {content}"
+    );
+}
+
+#[test]
+fn a_rich_guest_edit_carries_the_rich_message_and_the_inline_id() {
+    let body = edit_rich_body("inline-42", "<b>answer</b>");
+
+    assert_eq!(body["inline_message_id"], json!("inline-42"));
+    assert_eq!(
+        body["rich_message"]["html"],
+        json!("<b>answer</b>"),
+        "the composed reply is HTML, so the rich edit hands it over as HTML"
+    );
+    assert!(
+        body.get("text").is_none(),
+        "one content shape per edit, never both: {body}"
+    );
+}
+
+#[test]
+fn the_html_fallback_edit_body_is_unchanged() {
+    let body = edit_html_body("inline-42", "<b>answer</b>");
+
+    assert_eq!(body["inline_message_id"], json!("inline-42"));
+    assert_eq!(body["text"], json!("<b>answer</b>"));
+    assert_eq!(body["parse_mode"], json!("HTML"));
+    assert!(
+        body.get("rich_message").is_none(),
+        "the fallback is the plain text edit: {body}"
+    );
+}
+
+#[test]
+fn a_long_answer_ships_whole_when_rich_is_enabled() {
+    let answer = "x".repeat(20_000);
+
+    // The body: 20000 characters is far past the 4096 text ceiling and well
+    // inside the 32768 rich one.
+    let body = answer_guest_query_body("gq-long", &answer, true);
+    let sent = body["result"]["input_message_content"]["rich_message"]["markdown"]
+        .as_str()
+        .expect("markdown");
+    assert_eq!(sent.chars().count(), 20_000, "the whole answer, no cut");
+    assert!(
+        !sent.contains("[truncated]"),
+        "the rich path never stamps a truncation marker"
+    );
+
+    // And the composed reply, block included.
+    let block = settled_block();
+    let message = compose_guest_message(&block, &answer, true);
+    assert!(
+        !message.contains("[truncated]"),
+        "a 20000-char answer is not truncated on the rich path: {} chars",
+        message.chars().count()
+    );
+    assert!(
+        message.contains(&"x".repeat(1000)),
+        "the answer body survived the compose"
+    );
+}
+
+#[test]
+fn the_classic_path_still_marks_its_cut() {
+    // The plain field really is capped at 4096 by Telegram, so the marker is
+    // honest there and must stay.
+    let body = answer_guest_query_body("gq-classic-long", &"y".repeat(20_000), false);
+    let sent = body["result"]["input_message_content"]["message_text"]
+        .as_str()
+        .expect("message_text");
+
+    assert!(utf16_len(sent) <= 4096, "{} units", utf16_len(sent));
+    assert!(sent.ends_with("[truncated]"), "the plain cut is marked");
 }
