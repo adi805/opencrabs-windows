@@ -38,7 +38,15 @@ async fn model_rows(usage: Vec<(i64, f64, Option<i64>)>) -> Vec<ModelEntry> {
             .expect("session");
         for (tokens, cost, cache_read) in usage {
             service
-                .update_session_usage(session.id, tokens, cost, "zai", "glm-5.3-flash", cache_read)
+                .update_session_usage(
+                    session.id,
+                    tokens,
+                    cost,
+                    "zai",
+                    "glm-5.3-flash",
+                    cache_read,
+                    cache_read.map(|_| tokens),
+                )
                 .await
                 .expect("record usage");
         }

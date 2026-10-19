@@ -685,8 +685,8 @@ async fn fetch_model_entries(pool: &Pool, since: Option<i64>) -> Result<Vec<Mode
                COALESCE(SUM(token_count), 0), \
                COUNT(*), \
                COALESCE(SUM(cost), 0.0), \
-               SUM(cache_read_tokens), \
-               COALESCE(SUM(CASE WHEN cache_read_tokens IS NOT NULL THEN token_count ELSE 0 END), 0) \
+               SUM(CASE WHEN prompt_tokens IS NOT NULL THEN cache_read_tokens END), \
+               COALESCE(SUM(CASE WHEN prompt_tokens IS NOT NULL THEN prompt_tokens ELSE 0 END), 0) \
              FROM spaced \
              GROUP BY normalized_model, m3 \
              ORDER BY SUM(token_count) DESC"

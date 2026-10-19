@@ -1202,3 +1202,4 @@ pub mod zhipu_endpoint_test;
 
 pub mod option_halt_turn_test;
 pub mod phantom_question_offer_test;
+pub mod usage_prompt_share_test;

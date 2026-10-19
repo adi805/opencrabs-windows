@@ -174,6 +174,7 @@ impl SessionService {
     /// same turn. It rides along to the ledger so the By Model card can show
     /// the cache share of a model's tokens (#2027); `None` means the turn
     /// reported no cache usage, which is a different fact from a zero.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_session_usage(
         &self,
         id: Uuid,
@@ -182,6 +183,7 @@ impl SessionService {
         provider: &str,
         model: &str,
         cache_read_tokens: Option<i64>,
+        prompt_tokens: Option<i64>,
     ) -> Result<()> {
         let mut session = self.get_session_required(id).await?;
         session.token_count += token_count;
@@ -203,6 +205,7 @@ impl SessionService {
                 token_count,
                 cost,
                 cache_read_tokens,
+                prompt_tokens,
             )
             .await
         {

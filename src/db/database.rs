@@ -155,6 +155,7 @@ pub(crate) const MIGRATION_SQL: &[&str] = &[
     // list invariant above.
     include_str!("../migrations/20261015000001_add_usage_ledger_cache_read_tokens.sql"),
     include_str!("../migrations/20261016000001_add_discord_tool_cards.sql"),
+    include_str!("../migrations/20261019000001_add_usage_ledger_prompt_tokens.sql"),
 ];
 
 pub(crate) fn build_migrations() -> Migrations<'static> {

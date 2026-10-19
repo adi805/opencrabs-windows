@@ -5706,7 +5706,7 @@ struct OpenAIChoice {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct OpenAIUsage {
+pub(crate) struct OpenAIUsage {
     #[serde(rename = "prompt_tokens")]
     prompt_tokens: Option<u32>,
     #[serde(rename = "completion_tokens")]
@@ -5720,6 +5720,11 @@ struct OpenAIUsage {
     /// `usage.prompt_tokens_details.cached_tokens`.
     #[serde(default)]
     prompt_tokens_details: Option<OpenAIPromptTokensDetails>,
+    /// DeepSeek's own cache reporting: `usage.prompt_cache_hit_tokens`, the prompt
+    /// tokens served from cache (#2136). Read next to the OpenAI field, so a
+    /// DeepSeek call records its hits instead of zero.
+    #[serde(default)]
+    prompt_cache_hit_tokens: Option<u32>,
     /// OpenAI/DashScope-style reasoning token reporting:
     /// `usage.completion_tokens_details.reasoning_tokens`.
     #[serde(default)]
@@ -5735,13 +5740,14 @@ struct OpenAIUsage {
 impl OpenAIUsage {
     /// Effective cache-read tokens, merging the Anthropic field and the
     /// OpenAI/DashScope `prompt_tokens_details.cached_tokens` field.
-    fn effective_cache_read(&self) -> u32 {
+    pub(crate) fn effective_cache_read(&self) -> u32 {
         self.cache_read_input_tokens
             .or_else(|| {
                 self.prompt_tokens_details
                     .as_ref()
                     .and_then(|d| d.cached_tokens)
             })
+            .or(self.prompt_cache_hit_tokens)
             .unwrap_or(0)
     }
 

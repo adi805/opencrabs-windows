@@ -105,6 +105,7 @@ impl AgentService {
                 &self.provider_name_for_session(session_id),
                 &self.provider_model_for_session(session_id),
                 Some(response.usage.cache_read_tokens as i64),
+                Some(billable_input as i64),
             )
             .await
             .map_err(AgentError::db)?;
