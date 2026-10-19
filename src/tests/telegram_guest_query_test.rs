@@ -609,13 +609,17 @@ fn a_classic_guest_body_still_carries_message_text() {
 
 #[test]
 fn a_rich_guest_edit_carries_the_rich_message_and_the_inline_id() {
-    let body = edit_rich_body("inline-42", "<b>answer</b>");
+    let body = edit_rich_body("inline-42", "**answer**");
 
     assert_eq!(body["inline_message_id"], json!("inline-42"));
     assert_eq!(
-        body["rich_message"]["html"],
-        json!("<b>answer</b>"),
-        "the composed reply is HTML, so the rich edit hands it over as HTML"
+        body["rich_message"]["markdown"],
+        json!("**answer**"),
+        "the composed reply is markdown, so the rich edit hands it over as markdown"
+    );
+    assert!(
+        body["rich_message"].get("html").is_none(),
+        "one input mode per rich message: {body}"
     );
     assert!(
         body.get("text").is_none(),
@@ -633,6 +637,37 @@ fn the_html_fallback_edit_body_is_unchanged() {
     assert!(
         body.get("rich_message").is_none(),
         "the fallback is the plain text edit: {body}"
+    );
+}
+
+#[test]
+fn a_rich_reply_keeps_the_markdown_its_html_plane_would_have_collapsed() {
+    let answer = "## Findings\n\n| tool | setup |\n|---|---|\n| ob1 | brew |\n\n- one\n- two";
+    let message = compose_guest_message("", answer, true);
+
+    assert_eq!(
+        message, answer,
+        "the rich path ships the answer's own markdown untouched"
+    );
+    assert!(
+        message.contains("\n\n"),
+        "blank lines survive, so paragraphs do not collapse into a wall: {message:?}"
+    );
+    assert!(
+        !message.contains("<b>") && !message.contains("<code>"),
+        "no Telegram HTML on the markdown plane: {message}"
+    );
+}
+
+#[test]
+fn a_rich_reply_joins_its_block_as_markdown() {
+    let block = "**✅ Finished (1 tool calls, 3s)**\n\n**✅ bash** `git status`";
+    let message = compose_guest_message(block, "**answer**", true);
+
+    assert_eq!(
+        message,
+        format!("{block}\n\n**answer**"),
+        "block and answer share the markdown plane, separated by one blank line"
     );
 }
 

@@ -52,6 +52,13 @@
 //! `message_text` payload it always was. A refused rich edit falls back to the
 //! HTML text edit rather than stranding the placeholder.
 //!
+//! Both planes carry MARKDOWN on a rich reply, never the Telegram-HTML the
+//! classic path builds. The markdown plane is the one whose server-side render
+//! keeps headings, lists and pipe tables native (#679: the html plane flattens
+//! tables), and our HTML conversion leans on `\n` for line breaks, which a
+//! markdown parse collapses into a single unbroken paragraph. That collapse is
+//! exactly what a guest reply looked like when the rich path shipped HTML.
+//!
 //! Two things this deliberately does NOT copy from the regular path: the
 //! typing indicator (the bot is not a member, so there is nothing to type in)
 //! and the per-tool messages (one reply is all the API gives).
@@ -67,6 +74,7 @@ use uuid::Uuid;
 use super::flow::{
     FlowEntry, FlowOutcome, StreamingState, drain_display_queue, folded_duplicates_final,
     humanize_duration, last_folded_text, pop_trailing_folded_texts, render_flow,
+    render_flow_rich_state,
 };
 use super::handler::thinking_status_excerpt;
 use super::markdown::markdown_to_telegram_html;
@@ -266,32 +274,44 @@ fn clamp_guest_rich_text(text: &str) -> String {
 /// text reply, [`GUEST_RICH_TEXT_LIMIT`] when the reply goes out rich. When the
 /// block leaves too little room for a real answer the answer ships alone,
 /// because the block is chrome and the answer is the point.
-pub(crate) fn compose_guest_message(block_html: &str, answer_markdown: &str, rich: bool) -> String {
-    let limit = if rich {
-        GUEST_RICH_TEXT_LIMIT
-    } else {
-        GUEST_TEXT_LIMIT
-    };
-    let answer = if rich {
-        clamp_guest_rich_text(answer_markdown.trim())
-    } else {
-        clamp_guest_text(answer_markdown.trim())
-    };
-    let room = limit.saturating_sub(visible_len(block_html) + 2);
-    if block_html.is_empty() || room < MIN_ANSWER_ROOM {
+///
+/// The two paths take different markup, and that is the whole point. A plain
+/// reply is Telegram HTML, because `parse_mode` on the classic content is the
+/// only thing that can render it. A rich reply is MARKDOWN on both halves: the
+/// rich API parses the source itself, so headings, lists and pipe tables come
+/// out native. Handing it HTML instead lands on the html plane, which flattens
+/// tables (#679), and the HTML we build relies on `\n` for line breaks, so a
+/// markdown parse collapses the whole answer into one unbroken wall.
+pub(crate) fn compose_guest_message(block: &str, answer_markdown: &str, rich: bool) -> String {
+    if rich {
+        let answer = clamp_guest_rich_text(answer_markdown.trim());
+        let room = GUEST_RICH_TEXT_LIMIT.saturating_sub(block.chars().count() + 2);
+        if block.is_empty() || room < MIN_ANSWER_ROOM {
+            return answer;
+        }
+        let fitted = fit_rich_text(answer_markdown.trim(), room);
+        let composed = if fitted.is_empty() {
+            block.to_string()
+        } else {
+            format!("{block}\n\n{fitted}")
+        };
+        if composed.chars().count() > GUEST_RICH_TEXT_LIMIT {
+            return answer;
+        }
+        return composed;
+    }
+    let answer = clamp_guest_text(answer_markdown.trim());
+    let room = GUEST_TEXT_LIMIT.saturating_sub(visible_len(block) + 2);
+    if block.is_empty() || room < MIN_ANSWER_ROOM {
         return answer;
     }
-    let fitted = if rich {
-        fit_rich_text(answer_markdown.trim(), room)
-    } else {
-        fit_text(answer_markdown.trim(), room)
-    };
+    let fitted = fit_text(answer_markdown.trim(), room);
     let composed = if fitted.is_empty() {
-        block_html.to_string()
+        block.to_string()
     } else {
-        format!("{block_html}\n\n{}", markdown_to_telegram_html(&fitted))
+        format!("{block}\n\n{}", markdown_to_telegram_html(&fitted))
     };
-    if visible_len(&composed) > limit {
+    if visible_len(&composed) > GUEST_TEXT_LIMIT {
         return answer;
     }
     composed
@@ -375,11 +395,13 @@ fn guest_title(text: &str) -> String {
 ///
 /// Two shapes, chosen by `channels.telegram.rich_messages`:
 ///
-/// - rich: `InputRichMessageContent` with `rich_message.markdown`. The Bot API
-///   lists `InputRichMessageContent` among the `InputMessageContent` types a
-///   result may carry, and a rich message takes up to 32768 characters, so a
-///   long answer arrives whole instead of being cut at 4096 with
-///   `[truncated]` on the end.
+/// - rich: `InputRichMessageContent` with `rich_message.markdown`, carrying the
+///   MARKDOWN source (never our Telegram-HTML conversion). The Bot API lists
+///   `InputRichMessageContent` among the `InputMessageContent` types a result
+///   may carry, its markdown plane is the one that renders headings, lists and
+///   native tables, and a rich message takes up to 32768 characters, so a long
+///   answer arrives whole instead of being cut at 4096 with `[truncated]` on
+///   the end.
 /// - plain: `message_text`, unchanged. Telegram caps that at 4096 characters
 ///   and has no other field to put the overflow in, so the classic path keeps
 ///   the marker.
@@ -635,7 +657,7 @@ impl GuestRunner {
                 // The reply is already in the chat: settle it as failed rather
                 // than leaving a stranger watching a live footer.
                 if let Some(inline_message_id) = edit_target.as_deref() {
-                    let block = settle_block(&state, FlowOutcome::Failed, None);
+                    let block = settle_block(&state, FlowOutcome::Failed, None, rich);
                     if let Err(e) = self.edit_answer(inline_message_id, &block, rich).await {
                         tracing::debug!(
                             "Telegram guest: could not settle the failed reply for query {}: {e}",
@@ -780,21 +802,22 @@ impl GuestRunner {
     }
 
     /// Edit the open reply in place. The twin of the regular path's
-    /// `edit_rich_html` / HTML edit, one API method over.
+    /// `edit_rich_markdown` / HTML edit, one API method over.
     ///
     /// Rich first when the reply went out rich: `editMessageText` takes
     /// `rich_message` alongside `inline_message_id`, so the edit carries the
-    /// same rich content the reply was opened with. A refusal falls back to the
-    /// HTML text edit rather than leaving a stranger staring at the placeholder.
+    /// same markdown the reply was opened with. A refusal falls back to the
+    /// HTML text edit rather than leaving a stranger staring at the placeholder,
+    /// which is the one place the markdown still has to be converted.
     async fn edit_answer(
         &self,
         inline_message_id: &str,
-        html: &str,
+        text: &str,
         rich: bool,
     ) -> Result<(), String> {
         if rich {
             match self
-                .post_edit(&edit_rich_body(inline_message_id, html))
+                .post_edit(&edit_rich_body(inline_message_id, text))
                 .await
             {
                 Ok(()) => return Ok(()),
@@ -802,8 +825,12 @@ impl GuestRunner {
                     "Telegram guest: rich edit refused ({e}); falling back to the HTML edit"
                 ),
             }
+            let html = markdown_to_telegram_html(text);
+            return self
+                .post_edit(&edit_html_body(inline_message_id, &html))
+                .await;
         }
-        self.post_edit(&edit_html_body(inline_message_id, html))
+        self.post_edit(&edit_html_body(inline_message_id, text))
             .await
     }
 
@@ -832,14 +859,14 @@ impl GuestRunner {
 
 /// The `editMessageText` body for a rich guest edit.
 ///
-/// `html` rather than `markdown`: the guest reply is composed as HTML (the
-/// block comes from `render_flow` and the answer is converted), so handing the
-/// API markdown would render the tags literally. `InputRichMessage` accepts
-/// exactly one of `html`, `markdown` or `blocks`.
-pub(crate) fn edit_rich_body(inline_message_id: &str, html: &str) -> Value {
+/// `markdown`, not `html`: the guest reply is composed as markdown on both
+/// halves (see [`compose_guest_message`]), and the markdown plane is the one
+/// whose server-side render keeps pipe tables native (#679). `InputRichMessage`
+/// accepts exactly one of `html`, `markdown` or `blocks`.
+pub(crate) fn edit_rich_body(inline_message_id: &str, markdown: &str) -> Value {
     json!({
         "inline_message_id": inline_message_id,
-        "rich_message": { "html": html },
+        "rich_message": { "markdown": markdown },
     })
 }
 
@@ -890,14 +917,22 @@ pub(crate) fn guest_sanitize(text: &str, system: bool) -> String {
 
 /// Render the live reply: drain the queue, advance the clock and the status
 /// line, then render exactly what a regular chat renders.
-fn pump(state: &Arc<Mutex<StreamingState>>) -> String {
+///
+/// `rich` picks the plane, same as [`settle_block`]: a live edit on a rich
+/// reply carries markdown, so the streamed block renders as the real thing
+/// instead of flashing raw tags on the way to the final answer.
+fn pump(state: &Arc<Mutex<StreamingState>>, rich: bool) -> String {
     let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
     drain_display_queue(&mut s, guest_sanitize);
     let elapsed = s.turn_started_at.elapsed().as_secs();
     // Mirrors `tick_flow_header`: no duration at 0s, then the humanized one.
     s.flow_status = (elapsed > 0).then(|| humanize_duration(elapsed));
     s.header_preview = thinking_status_excerpt(&s.thinking);
-    render_flow(&s)
+    if rich {
+        render_flow_rich_state(&s)
+    } else {
+        render_flow(&s)
+    }
 }
 
 /// Fold the finished turn's queued display items into the log, then take the
@@ -921,10 +956,16 @@ pub(crate) fn settle_reply(state: &Arc<Mutex<StreamingState>>, content: &str) ->
 
 /// Settle the turn's block and render it. `ctx` is display-only chrome set at
 /// settle time, matching the regular delivery path.
+///
+/// `rich` picks the plane the block is rendered on, because the guest reply
+/// carries the block and the answer in one message: markdown for a rich reply
+/// (the plane that renders headings and native tables), Telegram HTML for the
+/// classic one.
 fn settle_block(
     state: &Arc<Mutex<StreamingState>>,
     outcome: FlowOutcome,
     ctx: Option<String>,
+    rich: bool,
 ) -> String {
     let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
     drain_display_queue(&mut s, guest_sanitize);
@@ -933,7 +974,11 @@ fn settle_block(
     if ctx.is_some() {
         s.sections.ctx = ctx;
     }
-    render_flow(&s)
+    if rich {
+        render_flow_rich_state(&s)
+    } else {
+        render_flow(&s)
+    }
 }
 
 /// The finished guest reply: the turn's block, when it has one, with the answer
@@ -963,7 +1008,7 @@ pub(crate) fn settled_guest_message(
         !s.flow_entries.is_empty()
     };
     let block = if has_log {
-        settle_block(state, FlowOutcome::Finished, Some(ctx))
+        settle_block(state, FlowOutcome::Finished, Some(ctx), rich)
     } else {
         String::new()
     };
@@ -984,12 +1029,12 @@ async fn edit_tick_loop(
             () = cancel.cancelled() => break,
             () = tokio::time::sleep(GUEST_EDIT_INTERVAL) => {}
         }
-        let html = pump(&state);
-        if html.is_empty() || html == last {
+        let body = pump(&state, rich);
+        if body.is_empty() || body == last {
             continue;
         }
-        match me.edit_answer(&inline_message_id, &html, rich).await {
-            Ok(()) => last = html,
+        match me.edit_answer(&inline_message_id, &body, rich).await {
+            Ok(()) => last = body,
             // A live edit is cosmetic: a rate limit or a dropped socket must
             // not end the turn, so it is logged and the next tick renders the
             // newer state anyway.

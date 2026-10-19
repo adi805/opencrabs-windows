@@ -749,13 +749,22 @@ pub(crate) fn render_flow_details_chrome_pref(
 /// so long tool chains fit in a single message without splitting (#393).
 /// Output is markdown — send via `send_rich_markdown` / `edit_rich_markdown`.
 /// Falls back to `render_flow_html` on rich API failure.
-// Channel-unused since the #421 revert (the rich flow path shipped with no
-// collapse); kept because #420 reuses this renderer once RichBlockDetails
-// serialization lands, and its tests pin the markdown contract meanwhile.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn render_flow_rich(
     lines: &[FlowLine],
     live_status: Option<&str>,
+    compacting: bool,
+) -> String {
+    render_flow_rich_with(lines, &FlowHeader::Live(live_status), compacting)
+}
+
+/// [`render_flow_rich`] with an explicit header.
+///
+/// The guest path needs the settled header on the markdown plane: a guest
+/// reply is ONE message carrying the block and the answer, and the answer only
+/// renders as a real grid there (#679: the HTML plane flattens tables).
+pub(crate) fn render_flow_rich_with(
+    lines: &[FlowLine],
+    header: &FlowHeader,
     compacting: bool,
 ) -> String {
     let mut out: Vec<String> = Vec::new();
@@ -781,38 +790,60 @@ pub(crate) fn render_flow_rich(
     if out.is_empty() {
         // Header-only render: the markdown path allows empty entries too so
         // the three renderers agree on the header-only contract.
-        return flow_header_text(
-            tool_count,
-            &FlowHeader::Live(live_status),
-            None,
-            HeaderMarkup::Markdown,
-        );
+        return flow_header_text(tool_count, header, None, HeaderMarkup::Markdown);
     }
-    if out.len() == 1 && tool_count == 1 {
+    if let FlowHeader::Live(live_status) = header
+        && out.len() == 1
+        && tool_count == 1
+    {
         // Lone tool line stays plain (#296); the live status rides on it so
         // the single surface still shows progress from the first call (#360).
+        // A settled header always renders: its tool count and duration are the
+        // point, so collapsing to the bare line would hide them.
         return match live_status {
             Some(st) => format!("{} • {}", out.remove(0), st),
             None => out.remove(0),
         };
     }
     // Same latest-activity preview as the HTML renderer (#405), leading the
-    // header status-first (#509); this markdown path is always live. Raw text,
-    // no escaping — the markdown dialect keeps narration verbatim. Dedupe
-    // (#29): while the compacting flag is set the newest line is the ⏳ body
-    // entry — suppress it here too so the three renderers never drift.
-    let status_msg = if compacting {
-        None
-    } else {
-        latest_activity_preview(lines)
+    // header status-first (#509). Raw text, no escaping: the markdown dialect
+    // keeps narration verbatim. Dedupe (#29): while the compacting flag is set
+    // the newest line is the ⏳ body entry, so suppress it here too and the
+    // three renderers never drift. A settled render drops it, matching the
+    // HTML path.
+    let status_msg = match header {
+        FlowHeader::Live(_) if !compacting => latest_activity_preview(lines),
+        _ => None,
     };
-    let header = flow_header_text(
+    let header_text = flow_header_text(
         tool_count,
-        &FlowHeader::Live(live_status),
+        header,
         status_msg.as_deref(),
         HeaderMarkup::Markdown,
     );
-    format!("{header}\n\n{}", out.join("\n\n"))
+    format!("{header_text}\n\n{}", out.join("\n\n"))
+}
+
+/// Resolve the flow into markdown for the rich API's markdown plane, with the
+/// same live/settled header split as [`render_flow`].
+pub(crate) fn render_flow_rich_state(s: &StreamingState) -> String {
+    let lines = flow_lines(s);
+    match s.flow_outcome {
+        Some(outcome) => {
+            let (icon, verb) = settled_icon_verb(s.bg_count, s.subagent_counts, outcome);
+            let duration = humanize_duration(s.turn_started_at.elapsed().as_secs());
+            render_flow_rich_with(
+                &lines,
+                &FlowHeader::Settled {
+                    icon,
+                    verb: verb.as_str(),
+                    duration: &duration,
+                },
+                false,
+            )
+        }
+        None => render_flow_rich(&lines, s.flow_status.as_deref(), s.compacting),
+    }
 }
 
 /// Wall-clock duration for the flow-block header (#480): precise seconds under
