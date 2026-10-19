@@ -134,6 +134,7 @@
       "date_precision": "month",
       "amount": 8,
       "currency": "USD",
+      "source": "Inference top-up",
       "purpose": "Free model access for every user, built-in provider",
       "public": true
     },
@@ -147,6 +148,7 @@
       "date_precision": "month",
       "amount": 20,
       "currency": "USD",
+      "source": "Inference top-up",
       "purpose": "Free model access for every user, built-in provider",
       "public": true
     },
@@ -155,13 +157,14 @@
       "sponsor": "adolfousier",
       "kind": "cash",
       "category": "inference",
-      "description": "Transfer from account balance to API balance",
+      "description": "Partial withdrawal of account earnings into the API balance",
       "date": "2026-10-19",
       "date_precision": "day",
       "amount": 17.117013,
       "currency": "USD",
+      "source": "Account earnings",
       "purpose": "Free model access for every user, built-in provider",
-      "note": "Moved from the account's own USDC balance into the API balance that serves users.",
+      "note": "The account earned 17.31 USD from the subscriptions and withdrew 17.12 USD of it into the API balance that serves users, leaving the rest in place. Revenue moved back into inference instead of being withdrawn.",
       "public": true
     },
     {
@@ -174,6 +177,7 @@
       "date_precision": "day",
       "amount": 20,
       "currency": "EUR",
+      "source": "Buy Me a Coffee",
       "purpose": "Subscriptions",
       "public": true
     },
@@ -187,6 +191,7 @@
       "date_precision": "day",
       "amount": 10,
       "currency": "EUR",
+      "source": "Buy Me a Coffee",
       "purpose": "Subscriptions",
       "public": true
     },
@@ -200,6 +205,7 @@
       "date_precision": "day",
       "amount": 20,
       "currency": "USD",
+      "source": "Inference top-up",
       "purpose": "Free model access for every user, built-in provider",
       "public": true
     }

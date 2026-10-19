@@ -25,14 +25,16 @@ Numbers below are derived from [`sponsors.json`](sponsors.json) as of **October 
 
 ## Cash
 
-| Date | Sponsor | Amount | For | Detail |
+| Date | Sponsor | Amount | Source | For |
 |---|---|---|---|---|
-| August 12, 2026 | Daniel Carneiro | €20 | Subscriptions | Buy Me a Coffee |
-| August 12, 2026 | Miguel Carneiro | €10 | Subscriptions | Buy Me a Coffee |
-| October 2026 | Adolfo Usier | $8 | Free model access for every user, built-in provider | Initial inference credits, split across three accounts |
-| October 2026 | Adolfo Usier | $20 | Free model access for every user, built-in provider | Further top-ups of 10 USD on two accounts |
-| October 15, 2026 | Daniel Carneiro | $20 | Free model access for every user, built-in provider | Top-ups of 10 USD on two of the same accounts |
-| October 19, 2026 | Adolfo Usier | $17.12 | Free model access for every user, built-in provider | Transfer from account balance to API balance |
+| August 12, 2026 | Daniel Carneiro | €20 | Buy Me a Coffee | Subscriptions |
+| August 12, 2026 | Miguel Carneiro | €10 | Buy Me a Coffee | Subscriptions |
+| October 2026 | Adolfo Usier | $8 | Inference top-up | Free model access for every user, built-in provider |
+| October 2026 | Adolfo Usier | $20 | Inference top-up | Free model access for every user, built-in provider |
+| October 15, 2026 | Daniel Carneiro | $20 | Inference top-up | Free model access for every user, built-in provider |
+| October 19, 2026 | Adolfo Usier | $17.12 | Account earnings | Free model access for every user, built-in provider |
+
+Of the cash above, $17.12 is money the account had already earned, moved back into inference rather than taken out. The rest is paid from a sponsor's own pocket.
 
 ## Subscriptions paid directly
 

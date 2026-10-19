@@ -5840,7 +5840,7 @@ OpenCrabs has no investors. The people below cover the subscriptions, the infere
 | Daniel Carneiro | Core maintainer | August 12, 2026 |
 | Miguel Carneiro | Financial sponsor | August 12, 2026 |
 
-To date: **€30** in cash, **$65.12** in cash, **$450** in subscriptions, **8B to 9B tokens** of granted credits.
+To date: **€30** + **$65.12** in cash, **$450** in subscriptions, **8B to 9B tokens** of granted credits.
 
 Full ledger: [SPONSORS.md](SPONSORS.md)
 <!-- sponsors:end -->
