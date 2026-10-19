@@ -1634,6 +1634,23 @@ async fn handle_message(
                 }
                 return;
             }
+            ChannelCommand::StopTarget(_) => {
+                // #2108: targeting another session is Telegram-only for now.
+                // Answer explicitly instead of falling through to the agent,
+                // which would look like the command ran. Reuses the gated
+                // final-text helper, so this arm adds no new write site of
+                // its own and the governor's coverage count stays honest.
+                let token = SlackApiToken::new(SlackApiTokenValue::from(state.current_bot_token()));
+                let session = client.open_session(&token);
+                post_final_text(
+                    &session,
+                    &channel_id,
+                    msg.origin.thread_ts.as_ref(),
+                    "Targeted stop is Telegram-only. Use /stop here.",
+                )
+                .await;
+                return;
+            }
             ChannelCommand::Compact => {
                 let token = SlackApiToken::new(SlackApiTokenValue::from(state.current_bot_token()));
                 let session = client.open_session(&token);

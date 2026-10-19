@@ -1368,6 +1368,21 @@ pub(crate) async fn handle_message(
                 }
                 return;
             }
+            ChannelCommand::StopTarget(_) => {
+                // #2108: targeting another session is Telegram-only for now.
+                // Answer explicitly instead of falling through to the agent,
+                // which would look like the command ran.
+                let reply = waproto::whatsapp::Message {
+                    conversation: Some(
+                        "Targeted stop is Telegram-only. Use /stop here.".to_string(),
+                    ),
+                    ..Default::default()
+                };
+                if let Err(e) = client.send_message(reply_target.clone(), reply).await {
+                    tracing::warn!(error = %e, "failed to send WhatsApp message");
+                }
+                return;
+            }
             ChannelCommand::Compact => {
                 let status = waproto::whatsapp::Message {
                     conversation: Some("⏳ Compacting context...".to_string()),

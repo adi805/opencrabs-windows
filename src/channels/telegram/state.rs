@@ -65,6 +65,21 @@ pub(crate) enum BubbleBody {
     Markdown(String),
 }
 
+/// What a targeted `/stop <id>` actually found (#2108).
+///
+/// Three states, because "no operation in progress" is a lie in two of them:
+/// a turn can be running, or nothing can be running while messages still sit
+/// queued behind the last one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetStop {
+    /// A turn was running; its token is cancelled.
+    Delivered { queued_dropped: usize },
+    /// Nothing was running, but follow-ups were queued and are now dropped.
+    Queued { dropped: usize },
+    /// Nothing to do: idle, nothing queued.
+    Idle,
+}
+
 /// One registered follow-up suggestion keyboard: which session it belongs to,
 /// the options it offered, and — when the buttons were merged onto the answer
 /// bubble (#tg-suggest-merge) — that bubble. Keyed by an opaque short token,
@@ -1107,6 +1122,45 @@ impl TelegramState {
             true
         } else {
             false
+        }
+    }
+
+    /// Session ids with a turn in flight right now, sorted for stable output.
+    ///
+    /// `active_turns` is the authority: `cancel_tokens` keeps a completed,
+    /// non-cancelled token until the next turn, so its keys alone would report
+    /// idle sessions as running. Used by `/stop <id>` to resolve a target and
+    /// by the ambiguous-prose guard to know whether a targeted stop is even
+    /// relevant (#2108).
+    pub(crate) fn running_session_ids(&self) -> Vec<Uuid> {
+        let mut ids: Vec<Uuid> = self
+            .active_turns
+            .lock()
+            .map(|set| set.iter().copied().collect())
+            .unwrap_or_default();
+        ids.sort();
+        ids
+    }
+
+    /// Stop another session's turn from here: cancel its token, drop whatever
+    /// was queued behind it, and report which of the three states it was in
+    /// (#2108).
+    ///
+    /// The order matters. `is_turn_active` is read BEFORE the drain, because
+    /// draining is what makes the queue empty and would otherwise erase the
+    /// evidence that this session had anything to cancel.
+    pub(crate) async fn stop_session_target(&self, session_id: Uuid) -> TargetStop {
+        let was_running = self.is_turn_active(session_id);
+        let token_cancelled = self.cancel_session(session_id).await;
+        let dropped = self.drain_queued_items(session_id).len();
+        if was_running || token_cancelled {
+            TargetStop::Delivered {
+                queued_dropped: dropped,
+            }
+        } else if dropped > 0 {
+            TargetStop::Queued { dropped }
+        } else {
+            TargetStop::Idle
         }
     }
 

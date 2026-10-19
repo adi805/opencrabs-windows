@@ -1088,6 +1088,23 @@ pub(crate) async fn handle_message(
                 }
                 return;
             }
+            ChannelCommand::StopTarget(_) => {
+                // #2108: targeting another session is Telegram-only for now.
+                // Answer explicitly instead of letting the message fall through
+                // to the agent as prose, which would look like the command ran.
+                if let Err(e) = super::governor::say(
+                    &discord_state.governor,
+                    msg.channel_id,
+                    &ctx.http,
+                    super::governor::Surface::Send,
+                    "Targeted stop is Telegram-only. Use /stop here.",
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, "failed to send Discord message");
+                }
+                return;
+            }
             ChannelCommand::Compact => {
                 if let Err(e) = super::governor::say(
                     &discord_state.governor,
