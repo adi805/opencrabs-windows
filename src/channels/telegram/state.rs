@@ -222,6 +222,15 @@ pub struct TelegramState {
     menu_skills_sig: Mutex<Option<u64>>,
     /// Per-session cancel tokens for aborting in-flight agent tasks via /stop
     cancel_tokens: Mutex<HashMap<Uuid, CancellationToken>>,
+    /// Who started each live guest turn, keyed by session (#2143).
+    ///
+    /// A guest turn's session belongs to a chat the bot is not in, so the
+    /// caller can only type `/stop` somewhere else: in a DM, or in a group
+    /// where the bot IS a member. Plain `/stop` there resolves its target from
+    /// the message's own session, which is not the guest one, so without this
+    /// map a guest turn had no kill switch from chat at all. std lock because
+    /// the write happens on the turn's own path and must not await.
+    guest_owners: std::sync::Mutex<HashMap<Uuid, i64>>,
     /// Persistent plan-card message per session (#580): the single Telegram
     /// message that shows the plan title + checklist and the Approve/Discard
     /// keyboard, edited in place across the creation/execution/completion turns
@@ -453,6 +462,7 @@ impl TelegramState {
             solo_evaluated: Mutex::new(HashMap::new()),
             menu_skills_sig: Mutex::new(None),
             cancel_tokens: Mutex::new(HashMap::new()),
+            guest_owners: std::sync::Mutex::new(HashMap::new()),
             plan_cards: Mutex::new(HashMap::new()),
             plan_card_store: Mutex::new(None),
             channel_message_store: Mutex::new(None),
@@ -1123,6 +1133,65 @@ impl TelegramState {
         } else {
             false
         }
+    }
+
+    /// Record who started a guest turn, so plain `/stop` typed anywhere by the
+    /// same person can reach it (#2143). See `guest_owners`.
+    pub(crate) fn register_guest_owner(&self, session_id: Uuid, user_id: i64) {
+        if let Ok(mut owners) = self.guest_owners.lock() {
+            owners.insert(session_id, user_id);
+        }
+    }
+
+    /// Drop the ownership record once the guest turn is over, so a later
+    /// `/stop` cannot cancel a finished turn by accident.
+    pub(crate) fn forget_guest_owner(&self, session_id: Uuid) {
+        if let Ok(mut owners) = self.guest_owners.lock() {
+            owners.remove(&session_id);
+        }
+    }
+
+    /// Cancel every live guest turn `user_id` started, returning how many were
+    /// stopped (#2143).
+    ///
+    /// Plain `/stop` resolves its target from the message's own session, and a
+    /// guest turn's session belongs to a chat the bot is not in, so that lookup
+    /// could never find one. A caller who summoned the bot and then wanted it
+    /// to stop had no reachable kill switch: the turn kept editing a stranger's
+    /// reply until it ran out of query lifetime. This is the missing link.
+    ///
+    /// Only sessions with a turn in flight are touched, and the queue behind
+    /// each is dropped the same way `stop_other_session` does it, so a stopped
+    /// turn does not leave a follow-up to start a new one.
+    pub(crate) async fn cancel_guest_turns_for(&self, user_id: i64) -> usize {
+        let sessions: Vec<Uuid> = match self.guest_owners.lock() {
+            Ok(owners) => owners
+                .iter()
+                .filter(|(_, owner)| **owner == user_id)
+                .map(|(session_id, _)| *session_id)
+                .collect(),
+            Err(e) => {
+                tracing::error!("Telegram: could not read guest turn owners: {e}");
+                return 0;
+            }
+        };
+        let mut cancelled = 0;
+        for session_id in sessions {
+            if !self.is_turn_active(session_id) {
+                self.forget_guest_owner(session_id);
+                continue;
+            }
+            if self.cancel_session(session_id).await {
+                self.drain_queued_items(session_id);
+                self.forget_guest_owner(session_id);
+                cancelled += 1;
+                tracing::info!(
+                    "Telegram guest: /stop from the caller cancelled the guest turn on session \
+                     {session_id}"
+                );
+            }
+        }
+        cancelled
     }
 
     /// Session ids with a turn in flight right now, sorted for stable output.

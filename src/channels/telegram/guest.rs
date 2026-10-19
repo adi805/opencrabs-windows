@@ -76,10 +76,11 @@ use super::flow::{
     humanize_duration, last_folded_text, pop_trailing_folded_texts, render_flow,
     render_flow_rich_state,
 };
-use super::handler::thinking_status_excerpt;
+use super::handler::{build_midturn_queued_message, thinking_status_excerpt};
 use super::markdown::markdown_to_telegram_html;
 use super::progress::apply_progress_event;
 use crate::brain::agent::AgentService;
+use crate::channels::telegram::TelegramState;
 use crate::config::Config;
 use crate::services::SessionService;
 
@@ -100,6 +101,14 @@ const GUEST_PLACEHOLDER: &str = "⏳ Working on it…";
 /// How often the open reply is edited while the turn runs. Same cadence as
 /// the regular chat's edit loop.
 const GUEST_EDIT_INTERVAL: Duration = Duration::from_millis(1500);
+/// What a guest follow-up gets back when the turn it belongs to is still
+/// running. One line, because the running turn owns the reply that carries
+/// the work: this only exists so the query id is answered before it expires.
+const GUEST_FOLDED_NOTE: &str = "⏳ Added to the turn already running.";
+/// How many leftover follow-ups one guest turn answers before it stops.
+/// Each round is a full model call, so the cap keeps a chatty caller from
+/// turning one summon into an unbounded loop.
+const GUEST_FOLD_MAX_ROUNDS: usize = 3;
 /// Below this much room left for the answer, the block is not worth showing:
 /// a footer with three words under it helps nobody, so the answer ships alone.
 const MIN_ANSWER_ROOM: usize = 200;
@@ -470,10 +479,38 @@ pub(crate) struct GuestRunner {
     agent: Arc<AgentService>,
     session_svc: SessionService,
     config_rx: tokio::sync::watch::Receiver<Config>,
+    /// Shared with the regular chat path. A guest turn claims its session here
+    /// before it starts, so a follow-up folds into the running turn instead of
+    /// spawning a second one, and it registers its cancel token here so
+    /// `/stop` can reach it.
+    state: Arc<TelegramState>,
     /// One session per (caller, caller chat). In memory only: guest content
     /// never enters the group history store, and a restart giving the same
     /// caller a fresh session costs one turn of context, not correctness.
     sessions: Mutex<HashMap<(i64, i64), Uuid>>,
+    /// Serializes the miss-then-create path in [`GuestRunner::session_for`].
+    /// Two summons landing together both miss the cache, so without this they
+    /// create two sessions and each claims its own, which is the concurrency
+    /// this file exists to stop.
+    session_init: tokio::sync::Mutex<()>,
+}
+
+/// Drops a guest turn's ownership record when the turn ends, whatever path it
+/// ends on (#2143).
+///
+/// The failed-turn path returns early, so cleanup written at the bottom of
+/// `answer` would never run for exactly the turns a caller most wants stopped:
+/// the session would stay in `guest_owners` and a later `/stop` would report a
+/// cancellation that cancelled nothing.
+struct GuestOwnerGuard {
+    state: Arc<TelegramState>,
+    session_id: Uuid,
+}
+
+impl Drop for GuestOwnerGuard {
+    fn drop(&mut self) {
+        self.state.forget_guest_owner(self.session_id);
+    }
 }
 
 impl GuestRunner {
@@ -482,13 +519,16 @@ impl GuestRunner {
         agent: Arc<AgentService>,
         session_svc: SessionService,
         config_rx: tokio::sync::watch::Receiver<Config>,
+        state: Arc<TelegramState>,
     ) -> Arc<Self> {
         Arc::new(Self {
             token,
             agent,
             session_svc,
             config_rx,
+            state,
             sessions: Mutex::new(HashMap::new()),
+            session_init: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -502,6 +542,19 @@ impl GuestRunner {
     /// Session for this caller pair, created on first use.
     async fn session_for(&self, query: &GuestQuery) -> Uuid {
         let key = (query.user_id, query.chat_id.unwrap_or(i64::MIN));
+        if let Some(id) = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .copied()
+        {
+            return id;
+        }
+        // Miss: hold the create path so two summons arriving together cannot
+        // both create a session for the same caller pair (and then each claim
+        // its own, which is a second concurrent turn).
+        let _creating = self.session_init.lock().await;
         if let Some(id) = self
             .sessions
             .lock()
@@ -579,6 +632,40 @@ impl GuestRunner {
             query.chat_title.as_deref().unwrap_or("unknown"),
         );
         let session_id = self.session_for(&query).await;
+        // One turn per guest session, through the same gate a regular chat
+        // uses (#501). Without it every summon spawned its own task, so a
+        // follow-up 27 seconds later started a SECOND agent turn over the same
+        // history: two concurrent loops interleaving tool calls, and one reply
+        // budget spent twice.
+        let _turn_guard = match self.state.try_begin_turn(session_id) {
+            Some(guard) => guard,
+            None => {
+                tracing::info!(
+                    "Telegram guest: query {} arrived mid-turn on session {session_id} — folded \
+                     into the running turn instead of starting a second one",
+                    query.query_id
+                );
+                let queued = build_midturn_queued_message(None, &query.text, &query.text);
+                self.state.enqueue_reaction(session_id, queued);
+                // The query id can only be answered once and it expires, so a
+                // folded query still gets an answer of its own. One line: the
+                // running turn owns the reply that carries the work.
+                if let Err(e) = self
+                    .post_answer(&answer_guest_query_body(
+                        &query.query_id,
+                        GUEST_FOLDED_NOTE,
+                        rich,
+                    ))
+                    .await
+                {
+                    tracing::warn!(
+                        "Telegram guest: could not answer folded query {}: {e}",
+                        query.query_id
+                    );
+                }
+                return;
+            }
+        };
         // Never a DM: a guest reply lands in a chat we do not control, so the
         // state is built in the scrubbing scope and both surfaces (the block
         // and the answer) are redacted before they reach the wire.
@@ -589,6 +676,22 @@ impl GuestRunner {
                 .cli_handles_tools(),
         )));
         let cancel = CancellationToken::new();
+        // Register the token where `/stop` looks. It used to be a local nobody
+        // could reach, so a runaway guest turn had no kill switch: `/stop
+        // <prefix>` resolves its target from the state's live turns, and this
+        // is what puts the guest session in that list.
+        self.state
+            .store_cancel_token(session_id, cancel.clone())
+            .await;
+        // And record who started it, so plain `/stop` typed by the same caller
+        // in a chat where the bot IS a member reaches this turn. The session
+        // itself lives in a chat the bot is not in, so `/stop` there could
+        // never resolve to it (#2143).
+        self.state.register_guest_owner(session_id, query.user_id);
+        let _owner = GuestOwnerGuard {
+            state: Arc::clone(&self.state),
+            session_id,
+        };
 
         // Open the reply before the turn runs. Guest mode gives the bot one
         // reply per summon and nothing else, so the message has to exist
@@ -637,7 +740,7 @@ impl GuestRunner {
             chat_key.as_deref().unwrap_or("unknown"),
             query.text,
         );
-        let response = self
+        let mut response = self
             .agent
             .send_message_with_tools_and_display(
                 session_id,
@@ -653,6 +756,44 @@ impl GuestRunner {
             )
             .await;
 
+        // A follow-up that landed after the loop's last between-round drain has
+        // no consumer left, and the regular path flushes it in
+        // `flush_queued_after_turn`. The guest equivalent is to answer it in
+        // the SAME reply: leaving it queued means the caller's follow-up goes
+        // unanswered until they summon the bot again, which is the second
+        // request they never asked for.
+        for round in 1..=GUEST_FOLD_MAX_ROUNDS {
+            if response.is_err() {
+                break;
+            }
+            let Some(extra) = self.state.drain_reaction(session_id) else {
+                break;
+            };
+            tracing::info!(
+                "Telegram guest: a follow-up was still queued when session {session_id} finished \
+                 its round — continuing the same turn (round {round})"
+            );
+            response = self
+                .agent
+                .send_message_with_tools_and_display(
+                    session_id,
+                    extra.context_text,
+                    Some(extra.display_text),
+                    None,
+                    Some(cancel.clone()),
+                    Some(guest_approval_callback()),
+                    Some(guest_progress_cb(&state)),
+                    "telegram",
+                    None,
+                    None,
+                )
+                .await;
+        }
+
+        // Read before the tick loop is stopped below: from here on the token is
+        // cancelled on every path, so asking later cannot tell a `/stop` from a
+        // turn that simply ended.
+        let was_cancelled = cancel.is_cancelled();
         // The turn is over: stop ticking before the terminal render, so a live
         // edit can never land after the settled one.
         cancel.cancel();
@@ -664,14 +805,20 @@ impl GuestRunner {
             Ok(response) => response,
             Err(e) => {
                 tracing::warn!(
-                    "Telegram guest: turn failed for query {} (session {}): {e}",
-                    query.query_id,
-                    session_id
+                    "Telegram guest: turn {} for query {} (session {session_id}): {e}",
+                    if was_cancelled { "cancelled" } else { "failed" },
+                    query.query_id
                 );
-                // The reply is already in the chat: settle it as failed rather
-                // than leaving a stranger watching a live footer.
+                // The reply is already in the chat: settle it rather than
+                // leaving a stranger watching a live footer, and say which of
+                // the two happened instead of reporting a `/stop` as a crash.
                 if let Some(inline_message_id) = edit_target.as_deref() {
-                    let block = settle_block(&state, FlowOutcome::Failed, None, rich);
+                    let outcome = if was_cancelled {
+                        FlowOutcome::Cancelled
+                    } else {
+                        FlowOutcome::Failed
+                    };
+                    let block = settle_block(&state, outcome, None, rich);
                     if let Err(e) = self.edit_answer(inline_message_id, &block, rich).await {
                         tracing::debug!(
                             "Telegram guest: could not settle the failed reply for query {}: {e}",
@@ -746,18 +893,45 @@ impl GuestRunner {
     ) {
         match edit_target {
             Some(inline_message_id) => {
-                match self.edit_answer(inline_message_id, message, rich).await {
-                    Ok(()) => tracing::info!(
-                        "Telegram guest: answered query {query_id} by editing the open reply"
-                    ),
-                    Err(e) => {
-                        tracing::warn!(
-                            "Telegram guest: final edit failed for query {query_id} ({e}); posting \
-                         the answer in one piece instead"
-                        );
-                        self.post_once(query_id, plain, rich).await;
+                // The placeholder already consumed the query id, so
+                // `answerGuestQuery` cannot answer it a second time: the answer
+                // has to land through an edit. A rate limit therefore waits out
+                // the window Telegram named and retries the SAME reply, instead
+                // of falling through to a post that is guaranteed to be refused
+                // as "query is too old".
+                let mut last: Option<String> = None;
+                for _ in 0..2 {
+                    match self.edit_answer(inline_message_id, message, rich).await {
+                        Ok(()) => {
+                            tracing::info!(
+                                "Telegram guest: answered query {query_id} by editing the open reply"
+                            );
+                            return;
+                        }
+                        Err(e @ EditError::RateLimited(_)) => {
+                            let waited = super::rate_limit::wait_global_cooldown().await;
+                            tracing::warn!(
+                                "Telegram guest: final edit for query {query_id} rate-limited \
+                                 ({e}); waited {}s and retrying the same reply",
+                                waited.as_secs()
+                            );
+                            last = Some(e.to_string());
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Telegram guest: final edit for query {query_id} failed ({e}); \
+                                 retrying once"
+                            );
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                            last = Some(e.to_string());
+                        }
                     }
                 }
+                tracing::error!(
+                    "Telegram guest: could not deliver the answer for query {query_id} into the \
+                     open reply ({}); the reply keeps its last live state",
+                    last.unwrap_or_default()
+                );
             }
             None if opened.is_none() => self.post_once(query_id, plain, rich).await,
             None => tracing::warn!(
@@ -817,6 +991,13 @@ impl GuestRunner {
                 .unwrap_or("")
                 .to_string());
         }
+        if status.as_u16() == 429 {
+            // Same rule as the edit path: the guest call is raw HTTP, so the
+            // cooldown has to be armed here or nothing else in the bot sees it.
+            let window =
+                super::rate_limit::parse_retry_after(&text).unwrap_or(Duration::from_secs(5));
+            super::rate_limit::record_global_429(window);
+        }
         Err(format!(
             "status {status}: {}",
             crate::utils::truncate_str(&text, 300)
@@ -836,7 +1017,7 @@ impl GuestRunner {
         inline_message_id: &str,
         text: &str,
         rich: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), EditError> {
         if rich {
             match self
                 .post_edit(&edit_rich_body(inline_message_id, text))
@@ -858,12 +1039,18 @@ impl GuestRunner {
                         .await
                     {
                         Ok(()) => return Ok(()),
-                        Err(EditError::Transport(e2)) => return Err(e2),
+                        Err(EditError::Transport(e2)) => return Err(EditError::Transport(e2)),
+                        // A rate limit is not a verdict on the body either, and
+                        // the classifier already armed the cooldown: retrying on
+                        // the HTML plane now would only spend another call from
+                        // the same exhausted budget.
+                        Err(e2 @ EditError::RateLimited(_)) => return Err(e2),
                         Err(EditError::Refused(e2)) => tracing::warn!(
                             "Telegram guest: rich edit refused on retry ({e2}); falling back to the HTML edit"
                         ),
                     }
                 }
+                Err(e @ EditError::RateLimited(_)) => return Err(e),
                 Err(EditError::Refused(e)) => tracing::warn!(
                     "Telegram guest: rich edit refused ({e}); falling back to the HTML edit"
                 ),
@@ -871,12 +1058,10 @@ impl GuestRunner {
             let html = markdown_to_telegram_html(text);
             return self
                 .post_edit(&edit_html_body(inline_message_id, &html))
-                .await
-                .map_err(|e| e.to_string());
+                .await;
         }
         self.post_edit(&edit_html_body(inline_message_id, text))
             .await
-            .map_err(|e| e.to_string())
     }
 
     /// POST one `editMessageText` body and read the response the same way for
@@ -891,7 +1076,17 @@ impl GuestRunner {
             .map_err(|e| EditError::Transport(e.to_string()))?;
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
-        classify_edit_reply(status, &text)
+        let outcome = classify_edit_reply(status, &text);
+        if matches!(outcome, Err(EditError::RateLimited(_))) {
+            // Arm the process-wide cooldown from the window Telegram names, the
+            // same deadline every other send path waits out (#814). This path
+            // goes over raw HTTP, so without this its 429s were invisible to
+            // the rest of the bot and each 1.5s tick kept the penalty alive.
+            let window =
+                super::rate_limit::parse_retry_after(&text).unwrap_or(Duration::from_secs(5));
+            super::rate_limit::record_global_429(window);
+        }
+        outcome
     }
 }
 
@@ -906,10 +1101,15 @@ pub(crate) fn classify_edit_reply(status: u16, body: &str) -> Result<(), EditErr
     if edit_response_ok(&value) {
         return Ok(());
     }
-    Err(EditError::Refused(format!(
-        "status {status}: {}",
-        crate::utils::truncate_str(body, 300)
-    )))
+    let message = format!("status {status}: {}", crate::utils::truncate_str(body, 300));
+    // 429 is a pause, not a verdict on the body: it gets its own class so the
+    // rich path never answers it by dropping to the HTML plane, which is what
+    // flattened rich guest replies into a wall of text during a rate-limit
+    // storm. Arming the cooldown is `post_edit`'s job, so this stays pure.
+    if status == 429 {
+        return Err(EditError::RateLimited(message));
+    }
+    Err(EditError::Refused(message))
 }
 
 /// Why an `editMessageText` call did not land.
@@ -926,6 +1126,12 @@ pub(crate) enum EditError {
     Transport(String),
     /// Telegram answered, and the answer was not a success.
     Refused(String),
+    /// Telegram answered 429: it asked for a pause, it did not judge the body.
+    /// This must never move the reply to the HTML plane: doing that is what
+    /// turned rich guest replies into a flat wall of text during a rate-limit
+    /// storm, and the window it names is already recorded in the process-wide
+    /// cooldown by the classifier.
+    RateLimited(String),
 }
 
 impl std::fmt::Display for EditError {
@@ -933,6 +1139,7 @@ impl std::fmt::Display for EditError {
         match self {
             EditError::Transport(e) => write!(f, "transport: {e}"),
             EditError::Refused(e) => write!(f, "refused: {e}"),
+            EditError::RateLimited(e) => write!(f, "rate limited: {e}"),
         }
     }
 }
@@ -1108,6 +1315,12 @@ async fn edit_tick_loop(
         tokio::select! {
             () = cancel.cancelled() => break,
             () = tokio::time::sleep(GUEST_EDIT_INTERVAL) => {}
+        }
+        // A live edit is cosmetic. During a 429 cooldown it is dropped rather
+        // than attempted: every rejected call risks extending the window
+        // (#814), and the settled render at the end still carries the answer.
+        if super::rate_limit::is_global_cooldown_active() {
+            continue;
         }
         let body = pump(&state, rich);
         if body.is_empty() || body == last {

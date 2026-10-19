@@ -2180,6 +2180,7 @@ impl TelegramAgent {
                 deps.agent.clone(),
                 deps.session_svc.clone(),
                 deps.config_rx.clone(),
+                deps.telegram_state.clone(),
             );
 
             // Retry loop: if the dispatcher exits (network hiccup, Telegram conflict

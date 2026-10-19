@@ -364,7 +364,12 @@ pub(crate) async fn handle_channel_command(
                 return Ok(CommandOutcome::Handled);
             }
             ChannelCommand::Stop => {
-                let cancelled = telegram_state.cancel_session(session_id).await;
+                // The message's own session first, then any guest turn the
+                // same caller started elsewhere (#2143). A guest session lives
+                // in a chat the bot is not in, so this lookup could never find
+                // it: the turn kept running with no reachable kill switch.
+                let cancelled = telegram_state.cancel_session(session_id).await
+                    | (telegram_state.cancel_guest_turns_for(user_id).await > 0);
                 let reply = if cancelled {
                     "Operation cancelled."
                 } else {

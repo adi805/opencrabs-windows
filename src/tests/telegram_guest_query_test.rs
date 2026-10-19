@@ -906,3 +906,138 @@ fn a_transport_error_keeps_the_plane_and_a_rich_shape_refusal_does_not() {
         "writing identical text is what the caller wanted, not a failure"
     );
 }
+
+// ── turn lifecycle parity: one turn per guest session (#2143) ────────────
+//
+// A guest summon used to spawn its own task unconditionally, so a follow-up
+// arriving while the first turn was still running started a SECOND agent turn
+// over the same history: two loops interleaving tool calls on one reply. The
+// fix is the gate a regular chat already uses, so the behaviour is tested
+// against the real `TelegramState` rather than a stand-in.
+
+use crate::channels::telegram::TelegramState;
+use crate::channels::telegram::handler::build_midturn_queued_message;
+use uuid::Uuid;
+
+#[test]
+fn a_second_guest_query_on_the_same_session_cannot_claim_a_turn() {
+    let state = Arc::new(TelegramState::new());
+    let sid = Uuid::new_v4();
+
+    let first = state
+        .try_begin_turn(sid)
+        .expect("the first guest query claims the session");
+    assert!(
+        state.try_begin_turn(sid).is_none(),
+        "a follow-up landing mid-turn must NOT start a second concurrent turn"
+    );
+
+    // The fold: the follow-up is queued for the running loop instead, framed
+    // as something to factor into the current task rather than restart.
+    let queued =
+        build_midturn_queued_message(None, "and also check the tests", "and also check the tests");
+    state.enqueue_reaction(sid, queued);
+    let drained = state
+        .drain_reaction(sid)
+        .expect("the running loop must be able to drain the folded follow-up");
+    assert!(
+        drained.context_text.contains("and also check the tests"),
+        "the folded text reaches the running turn: {}",
+        drained.context_text
+    );
+    assert!(
+        drained.context_text.contains("do not restart"),
+        "a plain follow-up is folded into the current task, not framed as a new one: {}",
+        drained.context_text
+    );
+
+    // Once the turn ends the session is claimable again.
+    drop(first);
+    assert!(
+        state.try_begin_turn(sid).is_some(),
+        "the next summon runs normally after the previous turn settled"
+    );
+}
+
+#[tokio::test]
+async fn a_running_guest_turn_is_listed_and_stoppable() {
+    let state = Arc::new(TelegramState::new());
+    let sid = Uuid::new_v4();
+    let cancel = tokio_util::sync::CancellationToken::new();
+
+    // What `GuestRunner::answer` now does before it calls the model.
+    let _guard = state.try_begin_turn(sid).expect("claim");
+    state.store_cancel_token(sid, cancel.clone()).await;
+
+    // `/stop <prefix>` resolves its target from this list (#2108), so a guest
+    // session has to appear in it or the turn has no kill switch at all.
+    assert!(
+        state.running_session_ids().contains(&sid),
+        "a live guest turn must be visible to /stop"
+    );
+    assert!(
+        state.cancel_session(sid).await,
+        "the stored token must be reachable by session id"
+    );
+    assert!(
+        cancel.is_cancelled(),
+        "cancelling the session must cancel the guest turn's token"
+    );
+}
+
+#[test]
+fn a_rate_limit_is_its_own_class_so_the_rich_reply_never_flattens() {
+    // The exact body from the 429 storm that flattened a rich guest reply.
+    let body = r#"{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 29","parameters":{"retry_after":29}}"#;
+    let refused = classify_edit_reply(429, body).expect_err("a 429 did not land");
+    assert!(
+        matches!(&refused, EditError::RateLimited(_)),
+        "a 429 is a pause, not a verdict on the body: {refused}"
+    );
+    assert!(
+        !matches!(&refused, EditError::Refused(_)),
+        "treating a 429 as a refusal is what moved the reply to the HTML plane"
+    );
+
+    // The window Telegram names is readable from the same body.
+    assert_eq!(
+        crate::channels::telegram::rate_limit::parse_retry_after(body),
+        Some(std::time::Duration::from_secs(29)),
+        "the cooldown must wait the window Telegram asked for"
+    );
+}
+
+#[tokio::test]
+async fn plain_stop_reaches_a_guest_turn_its_caller_started_elsewhere() {
+    let state = Arc::new(TelegramState::new());
+    let sid = Uuid::new_v4();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let _guard = state.try_begin_turn(sid).expect("claim");
+    state.store_cancel_token(sid, cancel.clone()).await;
+    state.register_guest_owner(sid, 4242);
+
+    // A guest session lives in a chat the bot is not in, so plain `/stop`
+    // there can never resolve to it. It has to be reachable by WHO started it,
+    // and only by them.
+    assert_eq!(
+        state.cancel_guest_turns_for(9999).await,
+        0,
+        "somebody else's /stop must not reach this turn"
+    );
+    assert!(!cancel.is_cancelled());
+
+    assert_eq!(
+        state.cancel_guest_turns_for(4242).await,
+        1,
+        "the caller's /stop must reach the guest turn they started"
+    );
+    assert!(
+        cancel.is_cancelled(),
+        "cancelling by owner must cancel the turn's own token"
+    );
+    assert_eq!(
+        state.cancel_guest_turns_for(4242).await,
+        0,
+        "the record is dropped with the turn, so a second /stop reports nothing to cancel"
+    );
+}
