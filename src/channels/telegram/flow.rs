@@ -559,6 +559,36 @@ fn flow_body_entries(lines: &[FlowLine], narration_cap: usize) -> (Vec<String>, 
     (out, tool_count)
 }
 
+/// [`flow_body_entries`] in the rich API's markdown dialect: same entries, same
+/// narration cap, `**bold**` / backtick markup instead of `<b>` / `<code>`.
+///
+/// The rich API parses markdown itself, so the same list that renders inside an
+/// HTML `<details>` body renders here, on the plane whose server-side parse
+/// keeps pipe tables native (#679).
+fn flow_body_entries_markdown(lines: &[FlowLine], narration_cap: usize) -> (Vec<String>, usize) {
+    let mut out: Vec<String> = Vec::new();
+    let mut tool_count = 0usize;
+    for line in lines {
+        match line {
+            FlowLine::Tool { label, context, .. } => {
+                tool_count += 1;
+                if context.is_empty() {
+                    out.push(format!("**{label}**"));
+                } else {
+                    out.push(format!("**{label}** `{context}`"));
+                }
+            }
+            FlowLine::Text(text) => {
+                let text = text.trim();
+                if !text.is_empty() {
+                    out.push(cap_narration(text, narration_cap));
+                }
+            }
+        }
+    }
+    (out, tool_count)
+}
+
 /// Classic HTML flow message (ADR 0005): an uncollapsed shell, never one outer
 /// expandable. The always-visible plan chrome (title / progress / goal) leads;
 /// the processing log, when it has entries, sits in its own
@@ -749,6 +779,12 @@ pub(crate) fn render_flow_details_chrome_pref(
 /// so long tool chains fit in a single message without splitting (#393).
 /// Output is markdown — send via `send_rich_markdown` / `edit_rich_markdown`.
 /// Falls back to `render_flow_html` on rich API failure.
+///
+/// The bare header-plus-entries render: no chrome, no footer, no collapse.
+/// Every shipping surface now goes through
+/// [`render_flow_rich_details_chrome_pref`] (via [`render_flow_rich_state`]),
+/// so this stays as the primitive its tests pin.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn render_flow_rich(
     lines: &[FlowLine],
     live_status: Option<&str>,
@@ -762,6 +798,7 @@ pub(crate) fn render_flow_rich(
 /// The guest path needs the settled header on the markdown plane: a guest
 /// reply is ONE message carrying the block and the answer, and the answer only
 /// renders as a real grid there (#679: the HTML plane flattens tables).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn render_flow_rich_with(
     lines: &[FlowLine],
     header: &FlowHeader,
@@ -824,25 +861,110 @@ pub(crate) fn render_flow_rich_with(
     format!("{header_text}\n\n{}", out.join("\n\n"))
 }
 
+/// [`render_flow_details_chrome_pref`] on the MARKDOWN plane.
+///
+/// Same sections, same footer segments, same collapse: only the dialect
+/// changes. The rich API's markdown parser reads `<details>` / `<summary>`
+/// natively (`rich::parse`), so a guest reply keeps the collapsible processing
+/// log AND the markdown answer whose pipe tables render as a real grid (#679).
+/// The HTML renderer cannot be reused for it: its `<p>` / `<hr>` wrappers are
+/// not part of the markdown dialect and would land as literal text.
+#[allow(clippy::too_many_arguments)] // same shape as the HTML chrome-pref
+pub(crate) fn render_flow_rich_details_chrome_pref(
+    lines: &[FlowLine],
+    header: &FlowHeader,
+    fallback_status: Option<&str>,
+    sections: &super::flow_chrome::FlowSections,
+    narration_cap: usize,
+    elapsed_secs: u64,
+    bg: Option<&str>,
+    compacting: bool,
+) -> String {
+    let (out, tool_count) = flow_body_entries_markdown(lines, narration_cap);
+    let has_log = !out.is_empty();
+    // Dedupe (#29): the compacting flag kills the activity segment here too, so
+    // no surface can drift from the others (ADR 0005 Decision 12).
+    let activity = if compacting {
+        None
+    } else {
+        latest_activity_preview(lines)
+    };
+    let footer = super::flow_chrome::merged_footer(
+        &footer_parts(
+            header,
+            fallback_status,
+            sections,
+            activity.as_deref(),
+            tool_count,
+            has_log,
+            elapsed_secs,
+            bg,
+        ),
+        HeaderMarkup::Markdown,
+    );
+
+    let mut msg = String::new();
+    let chrome = sections.chrome_markdown(matches!(header, FlowHeader::Settled { .. }));
+    if !chrome.is_empty() {
+        msg.push_str(&chrome);
+        msg.push_str("\n\n");
+    }
+    if has_log {
+        // The merged footer is the summary; the body is the full entry list.
+        // Blank lines between entries keep each one its own markdown block.
+        msg.push_str(&format!(
+            "<details><summary><sub>{footer}</sub></summary>\n\n{}\n\n</details>",
+            out.join("\n\n")
+        ));
+    } else {
+        // No log yet: a plain small-text footer line.
+        msg.push_str(&format!("<sub>{footer}</sub>"));
+    }
+    msg
+}
+
 /// Resolve the flow into markdown for the rich API's markdown plane, with the
-/// same live/settled header split as [`render_flow`].
+/// same live/settled header split as [`render_flow`] and the same chrome and
+/// footer as [`render_flow_details_state`].
+///
+/// This is the guest surface's block: one message carries the block and the
+/// answer, so the block has to be collapsible, carry the ctx / tok-s footer and
+/// the plan chrome exactly like a regular chat's block does, while the answer
+/// stays markdown so tables render. [`render_flow_rich_with`] renders the bare
+/// header plus entries, which is what the older markdown path shipped; that is
+/// why a guest block looked like a stripped-down copy of a real one.
 pub(crate) fn render_flow_rich_state(s: &StreamingState) -> String {
-    let lines = flow_lines(s);
+    let narration_cap = narration_cap_for(s.is_cli);
+    let elapsed = s.turn_started_at.elapsed().as_secs();
     match s.flow_outcome {
         Some(outcome) => {
             let (icon, verb) = settled_icon_verb(s.bg_count, s.subagent_counts, outcome);
-            let duration = humanize_duration(s.turn_started_at.elapsed().as_secs());
-            render_flow_rich_with(
-                &lines,
+            let duration = humanize_duration(elapsed);
+            render_flow_rich_details_chrome_pref(
+                &flow_lines(s),
                 &FlowHeader::Settled {
                     icon,
                     verb: verb.as_str(),
                     duration: &duration,
                 },
-                false,
+                None,
+                &s.sections,
+                narration_cap,
+                elapsed,
+                s.bg_indicator.as_deref(),
+                false, // settled renders drop the activity segment regardless
             )
         }
-        None => render_flow_rich(&lines, s.flow_status.as_deref(), s.compacting),
+        None => render_flow_rich_details_chrome_pref(
+            &flow_lines(s),
+            &FlowHeader::Live(s.flow_status.as_deref()),
+            s.header_preview.as_deref(),
+            &s.sections,
+            narration_cap,
+            elapsed,
+            s.bg_indicator.as_deref(),
+            s.compacting,
+        ),
     }
 }
 

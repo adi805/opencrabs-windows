@@ -228,11 +228,12 @@ use std::sync::{Arc, Mutex};
 use crate::brain::agent::ProgressEvent;
 use crate::channels::background_work::FlowOutcome;
 use crate::channels::telegram::flow::{
-    FlowEntry, StreamingState, drain_display_queue, render_flow,
+    FlowEntry, StreamingState, drain_display_queue, render_flow, render_flow_rich_state,
 };
 use crate::channels::telegram::guest::{
-    compose_guest_message, edit_html_body, edit_response_ok, edit_rich_body, guest_sanitize,
-    settle_guest_answer, settled_guest_message, utf16_len, visible_len,
+    EditError, classify_edit_reply, compose_guest_message, edit_html_body, edit_response_ok,
+    edit_rich_body, guest_approval_callback, guest_sanitize, settle_guest_answer,
+    settled_guest_message, utf16_len, visible_len,
 };
 use crate::channels::telegram::handler::thinking_status_excerpt;
 use crate::channels::telegram::progress::apply_progress_event;
@@ -712,4 +713,196 @@ fn the_classic_path_still_marks_its_cut() {
 
     assert!(utf16_len(sent) <= 4096, "{} units", utf16_len(sent));
     assert!(sent.ends_with("[truncated]"), "the plain cut is marked");
+}
+
+// ── guest tool approval: the policy decides, not the surface ──────────────
+
+fn approval_info() -> crate::brain::agent::ToolApprovalInfo {
+    crate::brain::agent::ToolApprovalInfo {
+        session_id: uuid::Uuid::nil(),
+        tool_name: "bash".to_string(),
+        tool_description: "run a shell command".to_string(),
+        tool_input: json!({"command": "ls"}),
+        capabilities: vec!["Execute".to_string()],
+    }
+}
+
+/// Seed a throwaway home carrying `policy` and run `f` against it.
+///
+/// The callback reads config from disk on every request, so a test that wants
+/// a policy has to own the home it reads. This never touches the live one.
+async fn with_policy<T, F>(policy: &str, f: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path().join(".opencrabs");
+    std::fs::create_dir_all(&home).expect("create .opencrabs");
+    let policy = policy.to_string();
+    crate::config::profile::with_home_override_async(home, async move {
+        crate::config::Config::write_key("agent", "approval_policy", &policy).expect("seed policy");
+        f.await
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_guest_turn_inherits_auto_always_instead_of_denying_every_tool() {
+    // 2026-10-19, guest session f2e2a4ba: five `bash` calls logged
+    // "Requesting user approval for tool 'bash'" then "User denied approval"
+    // while the owner's policy was auto-always. The guest path passed a
+    // deny-all callback, and a non-None callback also flips the tool loop's
+    // `has_override_approval` flag, which forces `needs_approval` on even
+    // under auto-always. Every gated tool was denied on every guest turn, so
+    // the guest agent had no files, no shell and no way to check anything.
+    let verdict = with_policy("auto-always", async {
+        guest_approval_callback()(approval_info()).await
+    })
+    .await
+    .expect("the callback always answers");
+
+    assert!(
+        verdict.0,
+        "auto-always grants execution on a guest turn exactly as it does in a regular chat"
+    );
+    assert!(
+        verdict.1,
+        "and it grants it for the rest of the turn, same as the regular callback"
+    );
+}
+
+#[tokio::test]
+async fn a_gating_policy_still_denies_on_a_guest_turn() {
+    // The other half of the contract: there is no button to press in a chat
+    // the bot is not a member of, so a policy that asks a human must deny
+    // rather than silently execute on a stranger's behalf.
+    let verdict = with_policy("ask", async {
+        guest_approval_callback()(approval_info()).await
+    })
+    .await
+    .expect("the callback always answers");
+
+    assert_eq!(
+        verdict,
+        (false, false),
+        "a gating policy denies, and never grants 'always' on a surface with no one to ask"
+    );
+}
+
+// ── rich block parity with a regular chat ────────────────────────────────
+
+/// The settled block a regular chat renders, on the rich markdown plane.
+fn settled_rich_block() -> String {
+    let state = turn_state();
+    apply_progress_event(
+        &state,
+        ProgressEvent::ToolStarted {
+            tool_name: "bash".to_string(),
+            tool_input: json!({"command": "ls"}),
+            tool_call_id: "call-1".to_string(),
+        },
+    );
+    apply_progress_event(
+        &state,
+        ProgressEvent::ToolCompleted {
+            tool_name: "bash".to_string(),
+            tool_input: json!({"command": "ls"}),
+            success: true,
+            summary: "ok".to_string(),
+            tool_call_id: "call-1".to_string(),
+        },
+    );
+    let mut s = state.lock().unwrap();
+    drain_display_queue(&mut s, |text, _| text.to_string());
+    s.flow_outcome = Some(FlowOutcome::Finished);
+    s.tools_started_at = None;
+    s.sections.ctx = Some("ctx: 1.2K/128K 1% | 233 tok/s".to_string());
+    render_flow_rich_state(&s)
+}
+
+#[test]
+fn a_rich_guest_block_collapses_and_carries_the_ctx_footer_like_a_regular_one() {
+    // 2026-10-19, the screenshots: the regular chat showed
+    // "Finished • 6 tool calls • ctx: 73K/200K 36% | 233 tok/s • ⏱ 1:03"
+    // inside a collapsible block, while the guest reply showed a bare
+    // "Finished (5 tool calls, 27s)". The markdown renderer was only ever
+    // producing a header plus entries: no collapse, no ctx, no tok/s. A guest
+    // block has to be the same block a regular turn shows.
+    let block = settled_rich_block();
+
+    assert!(
+        block.contains("✅ Finished"),
+        "the settled outcome leads the block: {block}"
+    );
+    assert!(
+        block.contains("<details><summary>"),
+        "the log collapses exactly like a regular chat's block: {block}"
+    );
+    assert!(
+        block.contains("ctx: 1.2K/128K 1% | 233 tok/s"),
+        "the ctx and tok/s footer rides the summary, not just the tool count: {block}"
+    );
+    assert!(
+        block.contains("1 tool calls"),
+        "the count is still there: {block}"
+    );
+    assert!(block.contains("⏱"), "the clock closes the footer: {block}");
+}
+
+#[test]
+fn a_rich_guest_block_stays_markdown_so_tables_survive() {
+    let block = settled_rich_block();
+
+    assert!(
+        !block.contains("<b>") && !block.contains("<code>"),
+        "no Telegram HTML tags on the markdown plane: {block}"
+    );
+    assert!(
+        block.contains("**"),
+        "entries are bold markdown, the dialect the rich parser reads: {block}"
+    );
+}
+
+// ── rich edit failure classes: only a refusal may change the plane ────────
+
+#[test]
+fn a_transport_error_keeps_the_plane_and_a_rich_shape_refusal_does_not() {
+    // 2026-10-19 05:58:56, log line 127993: the rich edit failed with
+    // "error sending request for url (.../editMessageText)" — a dropped
+    // socket, no answer from Telegram — and the old code treated it as a
+    // refusal, converting the whole reply to Telegram HTML. That is the wall
+    // of text in the screenshot: the reply was healthy, the plane was not.
+    let transport = EditError::Transport(
+        "error sending request for url (https://api.telegram.org/bot<token>/editMessageText)"
+            .to_string(),
+    );
+    assert!(
+        matches!(&transport, EditError::Transport(_)),
+        "no HTTP answer means the body was never judged: {transport}"
+    );
+
+    // A real refusal: Telegram read the rich body and rejected its shape.
+    let refused = classify_edit_reply(
+        400,
+        r#"{"ok":false,"error_code":400,"description":"Bad Request: RICH_MESSAGE_CONTENT_REQUIRED"}"#,
+    )
+    .expect_err("a 400 rich-shape rejection is not a success");
+    assert!(
+        matches!(&refused, EditError::Refused(_)),
+        "a refusal is the one case allowed to fall back to HTML: {refused}"
+    );
+
+    // And the two answers that are not failures at all.
+    assert!(
+        classify_edit_reply(200, r#"{"ok":true,"result":true}"#).is_ok(),
+        "a landed edit is a success"
+    );
+    assert!(
+        classify_edit_reply(
+            400,
+            r#"{"ok":false,"error_code":400,"description":"Bad Request: message is not modified"}"#
+        )
+        .is_ok(),
+        "writing identical text is what the caller wanted, not a failure"
+    );
 }

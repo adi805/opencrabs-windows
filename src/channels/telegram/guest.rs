@@ -434,10 +434,24 @@ pub(crate) fn prepare_guest_text(reply: &str) -> String {
     crate::utils::redact_secrets_scoped(&stripped, false)
 }
 
-/// Deny every approval. See the module docs: a guest turn has no chat to put
-/// an approval button in, and the caller is not the machine's owner.
-fn deny_all_approvals() -> crate::brain::agent::ApprovalCallback {
-    Arc::new(|_info| Box::pin(async { Ok((false, false)) }))
+/// Approval callback for a guest turn.
+///
+/// A guest surface has no chat to put an approval button in and the caller is
+/// not the machine's owner, so anything that still needs a human is denied.
+/// What it must NOT do is deny a call the machine's policy already approved:
+/// passing a deny-all callback here also flipped the tool loop's
+/// `has_override_approval` flag, which forces `needs_approval` on even under
+/// `auto-always`, so every gated tool was denied on every guest turn no matter
+/// how the owner had configured the box.
+pub(crate) fn guest_approval_callback() -> crate::brain::agent::ApprovalCallback {
+    Arc::new(|_info| {
+        Box::pin(async {
+            match crate::utils::check_approval_policy() {
+                Some(verdict) => Ok(verdict),
+                None => Ok((false, false)),
+            }
+        })
+    })
 }
 
 /// Fold progress events into the turn's state.
@@ -631,7 +645,7 @@ impl GuestRunner {
                 Some(query.text.clone()),
                 None,
                 Some(cancel.clone()),
-                Some(deny_all_approvals()),
+                Some(guest_approval_callback()),
                 Some(guest_progress_cb(&state)),
                 "telegram",
                 None,
@@ -687,6 +701,14 @@ impl GuestRunner {
             ctx_max,
             response.tokens_per_second,
         );
+        // Quiet ❕ while the context-pressure hint is active, same as the
+        // regular delivery path: the footer mirrors the nudge that is in the
+        // prompt, so a guest sees the same signal an owner does.
+        let ctx = if !ctx.is_empty() && self.agent.pressure_warning_active(session_id) {
+            format!("{ctx} ❕")
+        } else {
+            ctx
+        };
         let (message, reply) = settled_guest_message(&state, &content, ctx, rich);
         if reply.is_empty() {
             tracing::warn!(
@@ -821,39 +843,97 @@ impl GuestRunner {
                 .await
             {
                 Ok(()) => return Ok(()),
-                Err(e) => tracing::warn!(
+                // A transport failure says nothing about the body: Telegram
+                // never judged it. Falling back here moves a healthy rich reply
+                // onto the HTML plane, which flattens tables (#679), and a
+                // reply already on screen flips to a wall of text because of a
+                // dropped socket. So the SAME body goes out once more, and if
+                // that also fails the caller decides, never the plane.
+                Err(EditError::Transport(e)) => {
+                    tracing::warn!(
+                        "Telegram guest: rich edit hit a transport error ({e}); retrying the same body"
+                    );
+                    match self
+                        .post_edit(&edit_rich_body(inline_message_id, text))
+                        .await
+                    {
+                        Ok(()) => return Ok(()),
+                        Err(EditError::Transport(e2)) => return Err(e2),
+                        Err(EditError::Refused(e2)) => tracing::warn!(
+                            "Telegram guest: rich edit refused on retry ({e2}); falling back to the HTML edit"
+                        ),
+                    }
+                }
+                Err(EditError::Refused(e)) => tracing::warn!(
                     "Telegram guest: rich edit refused ({e}); falling back to the HTML edit"
                 ),
             }
             let html = markdown_to_telegram_html(text);
             return self
                 .post_edit(&edit_html_body(inline_message_id, &html))
-                .await;
+                .await
+                .map_err(|e| e.to_string());
         }
         self.post_edit(&edit_html_body(inline_message_id, text))
             .await
+            .map_err(|e| e.to_string())
     }
 
     /// POST one `editMessageText` body and read the response the same way for
     /// both shapes.
-    async fn post_edit(&self, body: &Value) -> Result<(), String> {
+    async fn post_edit(&self, body: &Value) -> Result<(), EditError> {
         let url = format!("https://api.telegram.org/bot{}/editMessageText", self.token);
         let resp = reqwest::Client::new()
             .post(&url)
             .json(body)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
-        let status = resp.status();
+            .map_err(|e| EditError::Transport(e.to_string()))?;
+        let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
-        let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        if edit_response_ok(&value) {
-            return Ok(());
+        classify_edit_reply(status, &text)
+    }
+}
+
+/// Read one `editMessageText` reply and say whether the edit landed.
+///
+/// Pure so the two failure classes can be told apart in a test: a transport
+/// error never reaches here (there is no reply to read), while an answer with
+/// a non-2xx status and a rich-shape rejection is a refusal, which is the only
+/// case that may move the reply to the HTML plane.
+pub(crate) fn classify_edit_reply(status: u16, body: &str) -> Result<(), EditError> {
+    let value: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    if edit_response_ok(&value) {
+        return Ok(());
+    }
+    Err(EditError::Refused(format!(
+        "status {status}: {}",
+        crate::utils::truncate_str(body, 300)
+    )))
+}
+
+/// Why an `editMessageText` call did not land.
+///
+/// The two cases are not interchangeable, and the rich path turns on the
+/// difference: a refusal means Telegram parsed the body and rejected it, so
+/// retrying the same body is pointless and the HTML plane is the way to keep
+/// the reply readable. A transport error means the request never got an answer,
+/// so the body was never judged and the reply must keep the plane it was
+/// opened on.
+#[derive(Debug)]
+pub(crate) enum EditError {
+    /// The request produced no HTTP answer (connect, timeout, TLS, reset).
+    Transport(String),
+    /// Telegram answered, and the answer was not a success.
+    Refused(String),
+}
+
+impl std::fmt::Display for EditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EditError::Transport(e) => write!(f, "transport: {e}"),
+            EditError::Refused(e) => write!(f, "refused: {e}"),
         }
-        Err(format!(
-            "status {status}: {}",
-            crate::utils::truncate_str(&text, 300)
-        ))
     }
 }
 
