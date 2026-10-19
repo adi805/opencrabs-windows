@@ -163,6 +163,7 @@ pub mod browser_session_test;
 pub mod browser_shadow_test;
 pub mod browser_stealth_test;
 pub mod build_user_message_image_test;
+pub mod built_in_provider_preamble_test;
 pub mod bundled_plans_test;
 pub mod cancel_persists_completion_test;
 pub mod cancel_restore_query_test;
