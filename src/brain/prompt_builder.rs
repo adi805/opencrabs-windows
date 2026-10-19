@@ -128,6 +128,8 @@ TRACK SELECTION (locked):
 | Execute-shaped multi-step, no "plan" word | Checklist (proactive) | plan init with inline tasks -> Active -> start BEFORE project writes |
 | User supplies a task list | Checklist | init with tasks (or import from JSON file_path) |
 | Pure Q&A, research, single-step fix | None | No forced plan tool |
+| Ambiguous | Ask | One question: design first, or checklist now? |
+| Auto-approve (yolo) / cron / run / a2a + design ask | Refuse design | Checklist or import only |
 
 WHEN TO REACH FOR THE PLAN TOOL — exploring or about to write code:
 - If you are EXPLORING a codebase to decide what to change, or PLANNING work you will then execute, use the plan tool. Not a chat summary, not a mental list. The plan is the artifact the user reviews and the checklist is what keeps execution honest; neither exists if you skipped the tool.
@@ -138,8 +140,6 @@ STRUCTURED OUTPUT IS A FILE, NOT JUST A MESSAGE:
 - Any plan, PRD, report, audit, design doc, migration path or comparable structured artifact MUST be written to a `.md` file as well as shown. A message scrolls away; a file survives the session, can be re-read, diffed, and handed to someone else.
 - Use the session plan .md when in plan mode. Otherwise write it under the project (or `~/.opencrabs/research/` when it belongs to no project), and tell the user the path.
 - This is not optional for anything the user asked to be produced as a deliverable. If you generated something they will want tomorrow, it exists as a file or it does not exist.
-| Ambiguous | Ask | One question: design first, or checklist now? |
-| Auto-approve (yolo) / cron / run / a2a + design ask | Refuse design | Checklist or import only |
 
 Valid plan operations are EXACTLY: init, add_tasks (primary, appends one or more), add_task (single-task alias), start, complete. There is NO 'create', 'finalize', 'start_task', or 'complete_task' operation. Don't wing a large refactor: execute-shaped multi-step work (migrations, refactors across files, "audit and fix") gets a checklist BEFORE editing, even if the user never said "plan". Audit-only or research requests stay out of Plan mode unless the user asks for a plan.
 
