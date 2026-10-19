@@ -589,7 +589,10 @@ pub mod tool_description_redaction_test;
 pub mod tool_execution_stats_test;
 pub mod tool_process_kill_on_drop_test;
 pub mod tool_repeat_test;
-//pub mod error_scenarios_test;
+// Dead test modules were deleted in #2103: error_scenarios_test,
+// integration_test, plan_mode_integration_test and streaming_test all
+// imported `opencrabs::llm`, removed in 2026-02, so they could never
+// compile. test_module_declarations_test keeps the list honest.
 pub mod evolve_verify_test;
 pub mod execution_blocklist_floor_test;
 pub mod failure_window_test;
@@ -613,7 +616,8 @@ pub mod provider_complete_retry_notice_test;
 pub mod provider_never_ignored_test;
 pub mod rate_limit_reporting_test;
 pub mod stream_cancel_test;
-//pub mod integration_test;
+pub mod test_module_declarations_test;
+// integration_test deleted in #2103 (never compiled); see test_module_declarations_test.
 pub mod announcement_loop_trip_log_test;
 pub mod channel_route_expectation_test;
 pub mod cli_context_window_test;
@@ -827,7 +831,7 @@ pub mod vba_modules_test;
 mod xiaomi_config_default_test;
 mod xiaomi_keyed_provider_regression_test;
 mod xiaomi_onboarding_test;
-//pub mod plan_mode_integration_test;
+// plan_mode_integration_test deleted in #2103 (never compiled); see test_module_declarations_test.
 pub mod scope_all_recency_test;
 pub mod session_cwd_restore_test;
 pub mod session_enqueue_callback_test;
@@ -856,7 +860,7 @@ pub mod telegram_reply_context_recovery_test;
 pub mod tts_fallback_chain_test;
 pub mod voice_openai_compatible_test;
 pub mod voice_voicebox_test;
-//pub mod streaming_test;
+// streaming_test deleted in #2103 (never compiled); see test_module_declarations_test.
 pub mod channel_chat_key_test;
 pub mod drop_landing_test;
 pub mod drop_transfer_test;
