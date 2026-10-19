@@ -579,6 +579,7 @@ pub mod read_resume_offset_test;
 pub mod recent_paths_test;
 pub mod redact_scope_test;
 pub mod sanitize_code_edit_block_test;
+pub mod sanitize_outbound_test;
 pub mod sanitize_quoted_secret_test;
 pub mod sanitize_reasoning_leak_test;
 pub mod sanitize_redaction_test;

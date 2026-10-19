@@ -890,7 +890,7 @@ impl TelegramAgent {
                                         tokio::spawn(async move {
                                             match agent_clone.send_message(sid, prompt, None).await {
                                                 Ok(resp) => {
-                                                    let clean = crate::utils::sanitize::strip_llm_artifacts(&resp.content);
+                                                    let clean = crate::utils::sanitize::sanitize_outbound(&resp.content);
                                                     let html = crate::channels::telegram::markdown::md_to_html(&clean);
                                                     crate::channels::telegram::send::best_effort_note(
                                                         &bot_clone, chat_id, thread_id, &html,

@@ -2023,7 +2023,7 @@ async fn handle_message(
                     // tools-v2 wrapper rendered as raw HTML in Slack
                     // because the streaming chunk never hit the final
                     // response cleanup path.
-                    let text = crate::utils::sanitize::strip_llm_artifacts(&text);
+                    let text = crate::utils::sanitize::sanitize_outbound(&text);
                     // Strip <<IMG:path>> markers — the final-response handler
                     // extracts these and uploads via files_upload, but if the
                     // LLM emits the marker mid-stream the intermediate path
