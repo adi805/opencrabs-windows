@@ -5727,6 +5727,11 @@ pub(crate) struct OpenAIUsage {
     /// DeepSeek call records its hits instead of zero.
     #[serde(default)]
     prompt_cache_hit_tokens: Option<u32>,
+    /// Top-level `usage.cached_tokens`, used by some OpenAI-compatible providers
+    /// (Moonshot, per third-party docs; not confirmed against a live response,
+    /// #2140). Read only when no other cache field is present.
+    #[serde(default)]
+    cached_tokens: Option<u32>,
     /// OpenAI/DashScope-style reasoning token reporting:
     /// `usage.completion_tokens_details.reasoning_tokens`.
     #[serde(default)]
@@ -5750,6 +5755,7 @@ impl OpenAIUsage {
                 .and_then(|d| d.cached_tokens)
                 .is_none()
             && self.prompt_cache_hit_tokens.is_none()
+            && self.cached_tokens.is_none()
     }
 
     /// Effective cache-read tokens, merging the Anthropic field and the
@@ -5762,6 +5768,7 @@ impl OpenAIUsage {
                     .and_then(|d| d.cached_tokens)
             })
             .or(self.prompt_cache_hit_tokens)
+            .or(self.cached_tokens)
             .unwrap_or(0)
     }
 

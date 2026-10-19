@@ -43,3 +43,13 @@ fn a_provider_usage_defaults_to_reported() {
     let usage = crate::brain::provider::types::TokenUsage::default();
     assert!(!usage.cache_read_unreported);
 }
+
+#[test]
+fn a_top_level_cached_tokens_field_is_read_when_nothing_else_is_present() {
+    // Moonshot-style usage: cached_tokens at the top of the usage object (#2140).
+    let usage: OpenAIUsage =
+        serde_json::from_str(r#"{"prompt_tokens": 1000, "cached_tokens": 700}"#)
+            .expect("usage parses");
+    assert_eq!(usage.effective_cache_read(), 700);
+    assert!(!usage.cache_read_absent());
+}
