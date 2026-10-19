@@ -119,6 +119,22 @@ feat core(memory): expose vector index stats to /doctor
 
 `fix core` and `feat core` are the two core prefixes; every other change uses the plain type.
 
+### Issue references in code
+
+A code comment explains what the code does and why, in words. An issue number can be added to that explanation, but it cannot replace it: a reader should understand the code without opening the ticket.
+
+- A bare `#N` in source means an issue on `opencrabs/opencrabs`. Check that the issue exists there before you cite it.
+- Do not cite numbers from the historical fork tracker. If the history behind a comment matters, recreate that issue on `opencrabs/opencrabs` and cite the new number.
+
+```rust
+// Before: the number is the only explanation
+// #2027: the per-row cache-read count behind the By Model cache share.
+
+// After: the reason is in the comment; the number is optional
+// The per-row cache-read count behind the By Model cache share. Rows
+// written before the column existed carry no count, so they are left out.
+```
+
 ## Issue & PR Lifecycle
 
 1. **File one atomic issue** — one issue, one piece of work (see above).
