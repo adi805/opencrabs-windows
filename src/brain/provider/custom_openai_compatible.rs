@@ -3830,7 +3830,9 @@ impl Provider for OpenAIProvider {
                 // is read.
                 let request_id = provider_request_id(response.headers());
 
-                let openai_response: OpenAIResponse = response.json().await?;
+                let body = response.text().await?;
+                log_usage_keys(&body);
+                let openai_response: OpenAIResponse = serde_json::from_str(&body)?;
                 let model_for_response = model.clone();
                 let llm_response = self.from_openai_response(openai_response, &model_for_response);
 
@@ -4595,6 +4597,7 @@ impl Provider for OpenAIProvider {
                                     continue;
                                 }
 
+                                log_usage_keys(json_str);
                                 match serde_json::from_str::<OpenAIStreamChunk>(json_str) {
                                     Ok(chunk) => {
                                         // Emit MessageStart on first chunk with id
@@ -6058,4 +6061,27 @@ impl Utf8Carry {
         }
         out
     }
+}
+
+/// Debug-log the key names of a response's `usage` object, and of any object
+/// inside it, so the cache-read field a provider actually sends can be read
+/// from normal traffic (#2152). Never logs a value or any prompt content.
+fn log_usage_keys(body: &str) {
+    if !tracing::enabled!(tracing::Level::DEBUG) || !body.contains("\"usage\"") {
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return;
+    };
+    let Some(usage) = value.get("usage").and_then(|u| u.as_object()) else {
+        return;
+    };
+    let mut keys: Vec<String> = Vec::new();
+    for (key, val) in usage {
+        keys.push(key.clone());
+        if let Some(inner) = val.as_object() {
+            keys.extend(inner.keys().map(|sub| format!("{key}.{sub}")));
+        }
+    }
+    tracing::debug!(usage_keys = ?keys, "provider usage object key names");
 }
