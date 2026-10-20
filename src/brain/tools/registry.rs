@@ -191,16 +191,14 @@ impl ToolRegistry {
 
     /// Get tool definitions in LLM format
     pub fn get_tool_definitions(&self) -> Vec<crate::brain::provider::Tool> {
-        self.tools
-            .read()
-            .unwrap()
-            .values()
-            .map(|tool| crate::brain::provider::Tool {
-                name: tool.name().to_string(),
-                description: tool.description().to_string(),
-                input_schema: tool.input_schema(),
-            })
-            .collect()
+        self.collect_definitions(false, None)
+    }
+
+    /// The guest-scoped set (#2134): the allowlist only, regardless of the
+    /// lazy-tools mode. Used when lazy tools are OFF, where the normal path
+    /// ships every schema, but a guest must still see only what it may call.
+    pub fn get_tool_definitions_for_guest(&self) -> Vec<crate::brain::provider::Tool> {
+        self.collect_definitions(true, None)
     }
 
     /// Lazy-tools mode: only the schemas for the CORE set plus any EXTENDED
@@ -212,6 +210,31 @@ impl ToolRegistry {
         &self,
         active_extended: &std::collections::HashSet<String>,
     ) -> Vec<crate::brain::provider::Tool> {
+        self.collect_definitions(false, Some(active_extended))
+    }
+
+    /// Lazy-tools filtering plus the per-caller scope (#2134).
+    ///
+    /// `guest_scope` narrows the set to [`super::scope::GUEST_ALLOWED_TOOLS`]
+    /// BEFORE the core/extended split, so a stranger's turn is never even shown
+    /// a schema it would be refused for calling. Default-deny: a tool added
+    /// later stays out of reach until it is listed.
+    pub fn get_tool_definitions_scoped(
+        &self,
+        active_extended: &std::collections::HashSet<String>,
+        guest_scope: bool,
+    ) -> Vec<crate::brain::provider::Tool> {
+        self.collect_definitions(guest_scope, Some(active_extended))
+    }
+
+    /// One filter, three public shapes. `lazy` is `Some(active_extended)` when
+    /// lazy tools are on (core plus what the session activated) and `None` when
+    /// every registered tool should ride.
+    fn collect_definitions(
+        &self,
+        guest_scope: bool,
+        lazy: Option<&std::collections::HashSet<String>>,
+    ) -> Vec<crate::brain::provider::Tool> {
         use crate::brain::tools::catalog;
         self.tools
             .read()
@@ -219,7 +242,13 @@ impl ToolRegistry {
             .values()
             .filter(|tool| {
                 let name = tool.name();
-                catalog::is_core(name) || active_extended.contains(name)
+                if guest_scope && !super::scope::guest_allows(name) {
+                    return false;
+                }
+                match lazy {
+                    Some(active) => catalog::is_core(name) || active.contains(name),
+                    None => true,
+                }
             })
             .map(|tool| crate::brain::provider::Tool {
                 name: tool.name().to_string(),
@@ -323,6 +352,21 @@ impl ToolRegistry {
             }
         };
         let name = resolved_name.as_str();
+
+        // Per-caller scope (#2134). The schema filter already hides these from
+        // a guest's tool list, so reaching this branch means the model called a
+        // tool it was never shown (a remembered name, or a `tool_search` result
+        // from a shared session). Refuse before validation, before activation,
+        // and before any approval prompt: a guest must never learn what a
+        // refused tool would have done.
+        if context.is_guest() && !super::scope::guest_allows(name) {
+            tracing::info!(
+                "Guest scope refused tool '{}' for session {}",
+                name,
+                context.session_id
+            );
+            return Ok(ToolResult::error(super::scope::guest_refusal(name)));
+        }
 
         // JIT discovery (#214): when lazy_tools is on, a tool the model called
         // by name but never surfaced via `tool_search` is absent from the

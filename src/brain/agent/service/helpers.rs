@@ -319,9 +319,15 @@ impl AgentService {
         &self,
         session_id: uuid::Uuid,
     ) -> Vec<crate::brain::provider::Tool> {
+        // #2134: a guest turn is scoped before the lazy split, so a stranger is
+        // never shown a schema the registry would refuse.
+        let guest_scope = self.is_guest_session(session_id);
         let mut defs = if self.lazy_tools {
             let active = self.tool_registry.active_tools(session_id);
-            self.tool_registry.get_tool_definitions_filtered(&active)
+            self.tool_registry
+                .get_tool_definitions_scoped(&active, guest_scope)
+        } else if guest_scope {
+            self.tool_registry.get_tool_definitions_for_guest()
         } else {
             self.tool_registry.get_tool_definitions()
         };

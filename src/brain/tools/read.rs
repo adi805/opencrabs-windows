@@ -145,6 +145,23 @@ impl Tool for ReadTool {
             Err(msg) => return Ok(ToolResult::error(msg)),
         };
 
+        // Guest scope (#2134): a stranger's read is confined to the session
+        // working directory. The confidential denylist below already covers
+        // keys and .env files; it never covered the rest of the disk, so an
+        // absolute path outside the tree reached the owner's home, their
+        // projects and anything else readable.
+        if context.is_guest() {
+            let root = context.working_dir();
+            if !super::scope::path_stays_inside(&root, &path) {
+                return Ok(ToolResult::error(format!(
+                    "read_file refused: this is a guest turn and {} is outside the working \
+                     directory ({}). Guest reads are confined to it.",
+                    path.display(),
+                    root.display()
+                )));
+            }
+        }
+
         // Confidential-path deny (OC-08): keys.toml, SSH private keys, .env,
         // .pem, /etc/shadow and friends are refused at the harness, not left to
         // a brain-file instruction the model may ignore. Reading them would put

@@ -1543,6 +1543,12 @@ impl AgentService {
         // hard-error instead of parking a verdict nobody sees.
         tool_context.headless = self.headless;
         tool_context.plan_gate_exempt = self.plan_gate_exempt;
+        // #2134: a turn serving a stranger carries that fact on the context, so
+        // the registry can refuse tools outside the guest allowlist and
+        // `read_file` can stay inside the working directory. Stamped here, at
+        // the single context-construction site, so sequential, parallel and
+        // sub-agent dispatch all inherit it.
+        tool_context.guest_scope = self.is_guest_session(session_id);
 
         // Tool execution loop
         let mut iteration = 0;

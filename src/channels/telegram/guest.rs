@@ -589,6 +589,16 @@ impl GuestRunner {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(key, session_id);
+        // #2134: the session belongs to a stranger, not the owner. Recording it
+        // here, the one place a guest session comes into being, is what makes
+        // every later turn of it carry the guest tool scope.
+        self.agent.mark_guest_session(session_id);
+        // Belt and braces: the same session is marked shared, so every surface
+        // that already gates personal context on `internal_content_blocked`
+        // (per-turn MEMORY.md recall, the external memory index, personal brain
+        // files) treats a stranger's turn as a group chat even if a new read
+        // path appears that the guest allowlist does not know about yet.
+        crate::memory::mark_session_shared(session_id);
         session_id
     }
 
@@ -735,9 +745,13 @@ impl GuestRunner {
              the caller sees a status block listing the tools you use; that block is edited in \
              place, so do not narrate your own progress, just do the work. The caller sees no \
              tool output and has no access to that chat's history, so keep the answer short and \
-             self-contained. Do NOT call telegram_send; this conversation has no chat id.]\n\n{}",
+             self-contained. This turn serves someone who is not the owner, so your tools are \
+             scoped to {} and a file read stays inside the working directory; do not reach for \
+             anything else, it will be refused. Do NOT call telegram_send; this conversation has \
+             no chat id.]\n\n{}",
             query.chat_title.as_deref().unwrap_or("a chat"),
             chat_key.as_deref().unwrap_or("unknown"),
+            crate::brain::tools::scope::GUEST_ALLOWED_TOOLS.join(", "),
             query.text,
         );
         let mut response = self

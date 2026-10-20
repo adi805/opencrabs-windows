@@ -163,6 +163,19 @@ pub struct ToolExecutionContext {
     /// hot reload keeps working. Tests inject a stub so a suite never reaches
     /// the network. Same shape `DecideCachedTool::provider_override` uses.
     pub provider_override: Option<Arc<dyn crate::brain::provider::Provider>>,
+
+    /// This turn is serving a stranger (#2134).
+    ///
+    /// The guest allowlist answers who may ASK; this flag answers what the turn
+    /// may REACH. `channel` cannot carry it, because a guest turn and a normal
+    /// group turn both say `"telegram"`, so it rides the turn and is stamped by
+    /// the tool loop from the service's guest-session registry, the same single
+    /// site that stamps `session_provider`.
+    ///
+    /// Read it through [`ToolExecutionContext::is_guest`]: the registry refuses
+    /// a non-allowlisted tool outright and `read_file` confines itself to the
+    /// working directory. `false` everywhere else, including tests and cron.
+    pub guest_scope: bool,
 }
 
 impl std::fmt::Debug for ToolExecutionContext {
@@ -204,7 +217,23 @@ impl ToolExecutionContext {
             plan_gate_exempt: false,
             session_notify_enabled: false,
             provider_override: None,
+            guest_scope: false,
         }
+    }
+
+    /// Mark this turn as serving a stranger (#2134).
+    ///
+    /// Stamped by the tool loop from the service's guest-session registry, so
+    /// every dispatch path in a guest turn (sequential, parallel, sub-agent)
+    /// inherits it without each caller remembering to pass it.
+    pub fn with_guest_scope(mut self, guest_scope: bool) -> Self {
+        self.guest_scope = guest_scope;
+        self
+    }
+
+    /// True when this turn is serving someone who is not the owner (#2134).
+    pub fn is_guest(&self) -> bool {
+        self.guest_scope
     }
 
     /// Inject a provider for a one-shot model call (#2063). Tests only.

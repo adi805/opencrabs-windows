@@ -203,6 +203,16 @@ pub struct AgentService {
     /// the other session had saved (2026-04-17 17:01 logs).
     pub(super) session_providers: std::sync::RwLock<HashMap<Uuid, Arc<dyn Provider>>>,
 
+    /// Sessions that serve a stranger (#2134).
+    ///
+    /// `TelegramConfig::guest_allowed` admits a caller; this records that the
+    /// session it produced belongs to that caller and not to the owner, so the
+    /// tool loop can stamp `ToolExecutionContext::guest_scope` on every turn of
+    /// it. In memory only and never removed: a guest session stays a guest
+    /// session for its whole life, and the set is a few ids, one per (caller,
+    /// chat) pair the bot has answered.
+    pub(super) guest_sessions: std::sync::RwLock<std::collections::HashSet<Uuid>>,
+
     /// Per-session model name overrides. `swap_provider_for_session`
     /// installs a fresh provider whose `default_model()` reflects the
     /// global config rather than the model the session actually wants
@@ -490,6 +500,7 @@ impl AgentService {
         Self {
             provider: std::sync::RwLock::new(provider),
             session_providers: std::sync::RwLock::new(HashMap::new()),
+            guest_sessions: std::sync::RwLock::new(std::collections::HashSet::new()),
             session_models: std::sync::RwLock::new(HashMap::new()),
             manual_switch: std::sync::RwLock::new(HashMap::new()),
             plan_mode_swap: std::sync::RwLock::new(HashMap::new()),
@@ -1408,6 +1419,28 @@ impl AgentService {
             .read()
             .expect("provider lock poisoned")
             .clone()
+    }
+
+    /// Record that `session_id` serves a stranger (#2134).
+    ///
+    /// Called once, by the guest runner, when it creates the session. Every
+    /// turn of that session then stamps `guest_scope` on its tool context, so
+    /// the registry refuses anything outside `scope::GUEST_ALLOWED_TOOLS` and
+    /// `read_file` stays inside the working directory. The channel cannot carry
+    /// this: a guest turn and a normal group turn both say `"telegram"`.
+    pub fn mark_guest_session(&self, session_id: Uuid) {
+        self.guest_sessions
+            .write()
+            .expect("guest session lock poisoned")
+            .insert(session_id);
+    }
+
+    /// True when this session belongs to a guest (#2134).
+    pub fn is_guest_session(&self, session_id: Uuid) -> bool {
+        self.guest_sessions
+            .read()
+            .map(|set| set.contains(&session_id))
+            .unwrap_or(false)
     }
 
     /// Restore a session's saved provider into `session_providers` before a

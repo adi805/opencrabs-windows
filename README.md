@@ -508,6 +508,7 @@ What the guest turn sees and sends:
 - Channel directives are stripped, so a local file path can never leak into a stranger's chat.
 - No typing indicator is possible (the bot is not a member of the chat, so there is nothing to type in), and no per-tool messages: the API gives one reply per summon.
 - Tools that need approval are denied: approvals are buttons in a chat, and the caller is not the machine's owner.
+- The tool surface is **scoped**, not the owner's. A guest turn may only reach `web_search`, `exa_search`, `brave_search`, `read_file` and `tool_search`; anything else is refused before it runs, and `tool_search` will not advertise it. `read_file` stays inside the session working directory, so an absolute path elsewhere on disk, or a symlink pointing out of it, is refused. The allowlist is default-deny on purpose: a tool added in a later release stays out of a stranger's reach until it is listed.
 
 Guest queries land on the raw `getUpdates` layer (`allowed_updates` includes `guest_message`), the same path `message_reaction` used before teloxide grew a typed variant for it. The pinned `teloxide-core` has no guest variant, so a guest update is never dispatched as a normal message.
 
