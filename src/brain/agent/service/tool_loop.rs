@@ -8093,6 +8093,14 @@ impl AgentService {
                 Some(super::announcement_loop::TextLoopAction::Continue) | None => {}
             }
         }
+        // Close the turn for the guard (#2129): a turn that never tripped
+        // forgets its nudges, so an occasional repeat in an otherwise clean
+        // session does not accumulate toward the abort, while consecutive
+        // tripping turns still do.
+        {
+            let mut rings = self.session_outgoing_text_ring.write().unwrap();
+            rings.entry(session_id).or_default().end_turn();
+        }
 
         // Turn-end phantom verdict (#752): a turn that ran ZERO tools and ends
         // with a narration promising or claiming action ("On it, filing the

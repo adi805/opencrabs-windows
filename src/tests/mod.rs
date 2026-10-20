@@ -619,6 +619,7 @@ pub mod rate_limit_reporting_test;
 pub mod stream_cancel_test;
 pub mod test_module_declarations_test;
 // integration_test deleted in #2103 (never compiled); see test_module_declarations_test.
+pub mod announcement_loop_react_test;
 pub mod announcement_loop_trip_log_test;
 pub mod channel_route_expectation_test;
 pub mod cli_context_window_test;
