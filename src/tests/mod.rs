@@ -681,6 +681,7 @@ pub mod phantom_branch_class_test;
 pub mod phantom_clause_boundary_test;
 pub mod phantom_cleanup_intent_test;
 pub mod phantom_compound_gerund_test;
+pub mod phantom_contraction_claim_test;
 pub mod phantom_db_persistence_test;
 pub mod phantom_deferment_test;
 pub mod phantom_dotted_command_test;

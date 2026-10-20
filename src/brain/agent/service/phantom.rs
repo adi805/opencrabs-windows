@@ -126,9 +126,13 @@ fn prose_tail(text: &str) -> &str {
 /// `"Migration created."` — sentences that announce an action's done without
 /// having executed any tool. Only used in the zero-tool-call path; loose
 /// matching elsewhere would false-positive on conversational recaps.
-fn has_past_tense_action_claim(lower: &str, action_verbs: &[String]) -> bool {
+pub(crate) fn has_past_tense_action_claim(lower: &str, action_verbs: &[String]) -> bool {
     for raw_sentence in lower.split(['.', '\n', '!']) {
-        let s = raw_sentence.trim();
+        // Models type the curly apostrophe as often as the straight one, and
+        // a contraction spelled `it’s` has to reach the guard spelled the way
+        // the list below holds it. Normalise before the word split.
+        let normalized = raw_sentence.replace('\u{2019}', "'");
+        let s = normalized.trim();
         if s.is_empty() || s.len() > 80 {
             continue;
         }
@@ -143,9 +147,29 @@ fn has_past_tense_action_claim(lower: &str, action_verbs: &[String]) -> bool {
                 // disk") is prose about state, not a completion claim —
                 // only an ACTIVE claim ("Loaded.", "Both loaded properly")
                 // counts. Guard on the auxiliary right before the verb.
+                //
+                // Contractions are auxiliaries too, and leaving them out made
+                // ordinary prose read as a completed action: "everything i'm
+                // tagged in" matched `tagged`, the phantom gate replaced a
+                // real answer with its canned note, and the reply never
+                // reached the chat (#2110). The word trim above only strips
+                // the ENDS of a word, so an internal apostrophe survives and
+                // the literal contractions are what the list needs; the
+                // stripped spellings are listed as well because a model drops
+                // the apostrophe often enough to matter. Negated copulas are
+                // the same shape ("it isn't loaded yet") and are listed for
+                // the same reason.
+                //
+                // The perfect auxiliaries (`i've`, `we've`, `you've`,
+                // `they've`) are deliberately absent: they precede an ACTIVE
+                // claim ("I've pushed it"), which is exactly what this guard
+                // exists to catch.
                 const AUX: &[&str] = &[
-                    "is", "are", "was", "were", "been", "be", "being", "gets", "get", "got",
-                    "está", "están", "foi", "é", "est", "sont",
+                    "is", "are", "was", "were", "been", "be", "being", "gets", "get", "got", "i'm",
+                    "im", "am", "we're", "you're", "they're", "it's", "youre", "theyre", "its",
+                    "he's", "she's", "hes", "shes", "that's", "there's", "what's", "thats",
+                    "theres", "whats", "isn't", "aren't", "wasn't", "weren't", "isnt", "arent",
+                    "wasnt", "werent", "está", "están", "foi", "é", "est", "sont",
                 ];
                 let passive = pos > 0 && AUX.contains(&words[pos - 1]);
                 if !passive {
@@ -237,7 +261,11 @@ pub fn has_forward_intent_post_success(text: &str) -> bool {
 
 /// Remove inline channel directives (`<<react:🔥>>`, `<<IMG:path>>`, …)
 /// so anchored phantom patterns see the narration, not the marker (#464).
-fn strip_inline_directives(text: &str) -> String {
+///
+/// Shared with the announcement guard (#2129): a directive is an instruction
+/// to the channel layer, never prose, so it must not reach a text-similarity
+/// check either.
+pub(crate) fn strip_inline_directives(text: &str) -> String {
     static DIRECTIVE_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"<<[^<>\n]{1,120}>>").expect("directive regex"));
     DIRECTIVE_RE.replace_all(text, "").into_owned()
