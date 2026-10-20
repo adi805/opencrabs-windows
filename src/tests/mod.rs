@@ -860,6 +860,7 @@ pub mod streaming_tps_accumulator_test;
 pub mod stt_fallback_chain_test;
 pub mod system_continuation_test;
 pub mod telegram_reply_context_recovery_test;
+pub mod telegram_reply_media_2121_test;
 pub mod tts_fallback_chain_test;
 pub mod voice_openai_compatible_test;
 pub mod voice_voicebox_test;
