@@ -35,12 +35,12 @@ const BANNED_IMPORTED_DOC: &[&str] = &[
     "thinkingDefault",
     "health --json",
     "opencrabs setup",
+    // Commands from the same imported doc. They used to need a per-file
+    // carve-out because WIZARD.md still carried them; that file is gone
+    // (#2153), so they are banned everywhere like the rest.
+    "opencrabs gateway",
+    "opencrabs dashboard",
 ];
-
-/// Commands that exist only in the imported doc. Banned in OPENCRABS.md
-/// itself; GETTING_STARTED.md and WIZARD.md still carry related fiction
-/// tracked in #1650 (follow-up), so the tree-wide sweep must skip them.
-const BANNED_IN_OPENCRABS_MD: &[&str] = &["opencrabs gateway", "opencrabs dashboard"];
 
 fn scanned_docs() -> Vec<(String, String)> {
     let mut out = vec![(
@@ -96,15 +96,6 @@ fn docs_never_carry_the_imported_doc_fiction() {
                  product (see #1650). The binary has no such command, config key, \
                  media syntax, or log path."
             );
-        }
-        if name.ends_with("OPENCRABS.md") {
-            for banned in BANNED_IN_OPENCRABS_MD {
-                assert!(
-                    !content.contains(banned),
-                    "OPENCRABS.md advertises '{banned}' — no such CLI command \
-                     exists (see #1650)."
-                );
-            }
         }
     }
 }
