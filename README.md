@@ -91,7 +91,7 @@
 The docs and the landing at [opencrabs.com](https://opencrabs.com) are available in six languages: English, Português (PT-PT), Español, Français, Русский and Bahasa Indonesia. Pick one from the language switcher in the menu bar; untranslated paragraphs fall back to English rather than going missing.
 
 ### Getting Started
-- [Installation & Quick Start](src/docs/start/GETTING_STARTED.md)
+- [Installation & Quick Start](https://docs.opencrabs.com/getting-started/installation.html)
 - [Onboarding Wizard](src/docs/start/ONBOARDING.md)
 - [OpenCrabs Overview](src/docs/start/OPENCRABS.md)
 
@@ -2084,6 +2084,29 @@ OpenCrabs supports multi-agent structured debate via the **Bee Colony** protocol
 ---
 
 ## 🚀 Quick Start
+
+### Option 0: One-line installer (easiest, and what an agent should use)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/opencrabs/opencrabs/main/src/scripts/install.sh | bash
+```
+
+It picks the right archive for your OS and architecture, verifies the download against the release's `SHA256SUMS` before unpacking, installs the CLI plus `rtk`, and sets up poppler so scanned PDFs can be read. On macOS it handles both archive layouts: releases that ship `OpenCrabs.app` land the bundle in `~/Applications` with the CLI linked onto your PATH, and older ones install the bare binary.
+
+It is safe to run with nobody watching, which is the point for scripted and agent-driven installs: it never prompts for a password. If the target directory needs root and there is no terminal, it fails immediately and names the fix instead of hanging forever.
+
+| Flag | What it does |
+|---|---|
+| `--dir <path>` | Install the CLI somewhere else, for example `--dir "$HOME/.local/bin"` |
+| `--version <tag>` | Pin a release instead of taking the latest |
+| `--dry-run` | Resolve and print the plan, install nothing |
+| `--no-deps` | Leave the system package manager alone (skips poppler) |
+
+```bash
+# Inspect first, then install without touching system packages
+curl -fsSL https://raw.githubusercontent.com/opencrabs/opencrabs/main/src/scripts/install.sh \
+  | bash -s -- --dry-run --no-deps
+```
 
 ### Option 1: Download Binary (just run it)
 
@@ -4484,7 +4507,6 @@ After=network.target
 ExecStart=%h/.cargo/bin/opencrabs daemon
 Restart=on-failure
 RestartSec=5
-Environment=OPENCRABS_HOME=%h/.opencrabs
 
 [Install]
 WantedBy=default.target

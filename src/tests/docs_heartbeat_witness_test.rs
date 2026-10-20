@@ -42,6 +42,17 @@ const BANNED_IMPORTED_DOC: &[&str] = &[
     "opencrabs dashboard",
 ];
 
+/// Environment variables the binary has never read. They came from the
+/// imported docs, where they looked plausible enough to be copied into a
+/// systemd unit and an installation page. The real set is whatever
+/// `std::env::var` actually asks for, so these are banned tree-wide: a
+/// dead variable in a unit file is a service that quietly ignores it.
+const BANNED_ENV_VARS: &[&str] = &[
+    "OPENCRABS_HOME",
+    "OPENCRABS_STATE_DIR",
+    "OPENCRABS_CONFIG_PATH",
+];
+
 fn scanned_docs() -> Vec<(String, String)> {
     let mut out = vec![(
         "README.md".to_string(),
@@ -95,6 +106,23 @@ fn docs_never_carry_the_imported_doc_fiction() {
                 "{name} contains '{banned}' — imported-doc fiction from another \
                  product (see #1650). The binary has no such command, config key, \
                  media syntax, or log path."
+            );
+        }
+    }
+}
+
+#[test]
+fn docs_never_name_environment_variables_the_binary_does_not_read() {
+    let docs = scanned_docs();
+    for (name, content) in &docs {
+        for banned in BANNED_ENV_VARS {
+            assert!(
+                !content.contains(banned),
+                "{name} names {banned}, but the binary never reads it (see \
+                 #2142). A dead variable in a systemd unit is a service that \
+                 silently ignores what it was told. Real ones: \
+                 OPENCRABS_PROFILE, OPENCRABS_DB_PATH, OPENCRABS_LOG_LEVEL, \
+                 OPENCRABS_LOG_FILE."
             );
         }
     }
