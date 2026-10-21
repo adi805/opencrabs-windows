@@ -32,6 +32,10 @@ fn code_lines() -> Vec<String> {
         .collect()
 }
 
+// Unix only: this one shells out to `bash -n`, and `bash` is not guaranteed
+// on a Windows host. Every other test in this file is a string assertion
+// against install.sh, so they stay portable.
+#[cfg(unix)]
 #[test]
 fn the_installer_parses_as_bash() {
     let out = std::process::Command::new("bash")
