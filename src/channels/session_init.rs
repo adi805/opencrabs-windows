@@ -60,10 +60,23 @@ pub async fn create_channel_session(
             _ => (None, None),
         };
 
+    // A provider the config does not enable is never carried forward (#2158):
+    // a disabled provider would otherwise spread into every new session.
+    let config = Config::load().ok();
+    if let (Some(name), Some(cfg)) = (inherited_provider.as_deref(), config.as_ref())
+        && !provider_enabled(cfg, name)
+    {
+        tracing::info!(
+            "Channel session: not inheriting disabled provider {name:?}; using [agent] defaults"
+        );
+        inherited_provider = None;
+        inherited_model = None;
+    }
+
     // If no recent session exists, check if [agent] has default_provider/default_model set.
     // This lets config drive the fallback instead of relying on the config priority list.
     if inherited_provider.is_none()
-        && let Ok(config) = Config::load()
+        && let Some(config) = config.as_ref()
         && config.agent.default_provider.is_some()
     {
         inherited_provider = config.agent.default_provider.clone();
@@ -127,4 +140,10 @@ async fn create_with_chat_identity(
                 .await
         }
     }
+}
+
+/// Whether `name` is a provider the config enables (#2158).
+fn provider_enabled(config: &Config, name: &str) -> bool {
+    crate::brain::provider::factory::provider_config_by_name(config, name)
+        .is_some_and(|p| p.enabled)
 }
