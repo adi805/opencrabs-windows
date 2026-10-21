@@ -633,10 +633,11 @@ jobs:
         #                      It never had an ignore: audit does not fail on
         #                      yanked, so it had been passing silently.
         #
-        # The nine below are each at their upstream's LATEST published release,
-        # verified against crates.io on 2026-09-04, so there is no version to
-        # move to from here. A routine `cargo update` will not shift them; only
-        # an upstream release or dropping the dependency will.
+        # The ten below are all blocked upstream: either the crate is at its
+        # latest published release (checked against crates.io on 2026-10-21) or
+        # the release that would fix it cannot be reached from this tree. A
+        # routine `cargo update` will not shift them; only an upstream release
+        # or dropping the dependency will.
         # zip (RUSTSEC-2026-0367/0368/0369, #2091, #2092): fixed in zip 9.0.0
         #   upstream, but this tree still carries a zip 8.6.0 copy, so the three
         #   ignores stay until `cargo tree -i zip@8.6.0` prints nothing. Our
@@ -647,7 +648,17 @@ jobs:
         #   0.99.1. The third copy, zip 1.1.4, arrives through candle-core 0.8.4
         #   via rwhisper 0.4.1 (latest), which pins candle 0.8, so that one is an
         #   upstream wait too. Remove each ignore the day its blocker moves.
-        run: cargo audit --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2025-0119 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2025-0141 --ignore RUSTSEC-2026-0002 --ignore RUSTSEC-2026-0173 --ignore RUSTSEC-2026-0192 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2026-0258 --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369
+        # webpki-roots 0.26.11 (RUSTSEC-2026-0381): patched in >=1.0.10, and the
+        #   tree now carries 1.0.10. The flagged copy is the 0.26 line, which is
+        #   a semver-trick shim with no certificate data of its own: its entire
+        #   library is `pub use parent::TLS_SERVER_ROOTS` over `webpki-roots
+        #   ^1`, so it serves the patched 1.0.10 roots. It arrives via hf-hub
+        #   0.3.2 -> ureq 2.12.1, and 2.12.1 is the last of the 2.x line, which
+        #   pins webpki-roots ^0.26. hf-hub 0.5.0 would use ureq ^3 and drop the
+        #   0.26 line entirely, but kalosm-common 0.4.0 (latest) pins hf-hub
+        #   ^0.3.0, so that move needs kalosm to release first. Remove this
+        #   ignore when `cargo tree -i webpki-roots@0.26.11` prints nothing.
+        run: cargo audit --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2025-0119 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2025-0141 --ignore RUSTSEC-2026-0002 --ignore RUSTSEC-2026-0173 --ignore RUSTSEC-2026-0192 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2026-0258 --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369 --ignore RUSTSEC-2026-0381
 
   # ── Stage 5: Coverage (on-demand only) ───────────────────────────────────
   # Tarpaulin is the slowest job (~12 min). Running it on every main push
