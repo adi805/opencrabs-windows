@@ -63,7 +63,6 @@
 //! typing indicator (the bot is not a member, so there is nothing to type in)
 //! and the per-tool messages (one reply is all the API gives).
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -484,15 +483,6 @@ pub(crate) struct GuestRunner {
     /// spawning a second one, and it registers its cancel token here so
     /// `/stop` can reach it.
     state: Arc<TelegramState>,
-    /// One session per (caller, caller chat). In memory only: guest content
-    /// never enters the group history store, and a restart giving the same
-    /// caller a fresh session costs one turn of context, not correctness.
-    sessions: Mutex<HashMap<(i64, i64), Uuid>>,
-    /// Serializes the miss-then-create path in [`GuestRunner::session_for`].
-    /// Two summons landing together both miss the cache, so without this they
-    /// create two sessions and each claims its own, which is the concurrency
-    /// this file exists to stop.
-    session_init: tokio::sync::Mutex<()>,
 }
 
 /// Drops a guest turn's ownership record when the turn ends, whatever path it
@@ -527,8 +517,6 @@ impl GuestRunner {
             session_svc,
             config_rx,
             state,
-            sessions: Mutex::new(HashMap::new()),
-            session_init: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -539,65 +527,41 @@ impl GuestRunner {
         tokio::spawn(async move { me.answer(query).await });
     }
 
-    /// Session for this caller pair, created on first use.
+    /// Session for this guest chat, resolved from the database the way a
+    /// regular Telegram chat is (#2159): look up the row by its stable suffix,
+    /// create it only when nothing matches. One session per group, shared by
+    /// its guests. The suffix is `[guest:<chat>]`, never the owner's
+    /// `[chat:<chat>]`, so a guest can never land in the owner's session.
     async fn session_for(&self, query: &GuestQuery) -> Uuid {
-        let key = (query.user_id, query.chat_id.unwrap_or(i64::MIN));
-        if let Some(id) = self
-            .sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&key)
-            .copied()
-        {
-            return id;
-        }
-        // Miss: hold the create path so two summons arriving together cannot
-        // both create a session for the same caller pair (and then each claim
-        // its own, which is a second concurrent turn).
-        let _creating = self.session_init.lock().await;
-        if let Some(id) = self
-            .sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&key)
-            .copied()
-        {
-            return id;
-        }
-        let title = match (&query.chat_title, query.chat_id) {
+        let chat = query.chat_id.unwrap_or(query.user_id);
+        let suffix = format!("[guest:{chat}]");
+        let base = match (&query.chat_title, query.chat_id) {
             (Some(t), Some(c)) => format!("Guest: {t} ({c})"),
             (Some(t), None) => format!("Guest: {t}"),
             (None, Some(c)) => format!("Guest chat {c}"),
             (None, None) => "Guest chat".to_string(),
         };
-        let session_id = match crate::channels::session_init::create_channel_session(
+        let current_title = format!("{base} {suffix}");
+        let session_id = match crate::channels::session_resolve::resolve_or_create_channel_session(
             &self.session_svc,
-            Some(title),
+            &suffix,
+            &base,
+            &current_title,
             None,
+            "Telegram guest",
         )
         .await
         {
-            Ok(s) => s.id,
+            Ok(id) => id,
             Err(e) => {
-                // Not cached: the next query retries rather than binding
-                // this pair to a session that does not exist.
-                tracing::warn!("Telegram guest: session create failed: {e}");
+                // Not bound to a fresh id silently: the query is dropped with a
+                // log line, so the next query retries the lookup.
+                tracing::warn!("Telegram guest: session resolve failed: {e:#}");
                 return Uuid::new_v4();
             }
         };
-        self.sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(key, session_id);
-        // #2134: the session belongs to a stranger, not the owner. Recording it
-        // here, the one place a guest session comes into being, is what makes
-        // every later turn of it carry the guest tool scope.
+        // Guest scope is re-applied on every resolve, so a restart cannot drop it.
         self.agent.mark_guest_session(session_id);
-        // Belt and braces: the same session is marked shared, so every surface
-        // that already gates personal context on `internal_content_blocked`
-        // (per-turn MEMORY.md recall, the external memory index, personal brain
-        // files) treats a stranger's turn as a group chat even if a new read
-        // path appears that the guest allowlist does not know about yet.
         crate::memory::mark_session_shared(session_id);
         session_id
     }
