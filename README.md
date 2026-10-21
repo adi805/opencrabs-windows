@@ -92,7 +92,7 @@ The docs and the landing at [opencrabs.com](https://opencrabs.com) are available
 
 ### Getting Started
 - [Installation & Quick Start](https://docs.opencrabs.com/getting-started/installation.html)
-- [Onboarding Wizard](src/docs/start/ONBOARDING.md)
+- [Onboarding Wizard](https://docs.opencrabs.com/getting-started/onboarding.html)
 - [OpenCrabs Overview](src/docs/start/OPENCRABS.md)
 
 ### Reference
