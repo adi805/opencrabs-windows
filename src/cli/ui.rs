@@ -238,7 +238,13 @@ pub(crate) async fn spawn_cron_scheduler_for_profile(profile_name: String) {
             // Each profile has its own config.toml, so it needs its own
             // migration pass — `load()` no longer does this implicitly (#912).
             crate::config::Config::migrate_config_files();
-            let config = crate::config::Config::load()?;
+            let mut config = crate::config::Config::load()?;
+            // #2151: an adopted profile never opened the TUI either, so its
+            // cron jobs hit the same empty-token wall as `run` did. Provision
+            // inside this profile's home scope. The global config mirror is
+            // deliberately left alone: it belongs to the active profile.
+            crate::brain::provider::opencrabs_acquire::provision_builtin_provider(&mut config)
+                .await;
             let db = Database::connect(&config.database.path).await?;
             db.run_migrations().await?;
             let service_context = ServiceContext::new(db.pool().clone());

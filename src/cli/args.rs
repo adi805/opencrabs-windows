@@ -553,6 +553,24 @@ pub(crate) fn seeds_config_on_startup(command: Option<&Commands>) -> bool {
     !matches!(command, Some(Commands::Init { .. }))
 }
 
+/// Commands that build a provider, and therefore need the built-in one
+/// provisioned on a home that has nothing else (#2151).
+///
+/// Deliberately not every command. `status`, `doctor`, `config` and the rest
+/// report on what is already there, and minting a token during a read-only
+/// report would be a network call nobody asked for. The TUI is absent too: it
+/// provisions itself in `App::provision_first_run`.
+fn command_builds_a_provider(command: Option<&Commands>) -> bool {
+    matches!(
+        command,
+        Some(Commands::Run { .. })
+            | Some(Commands::Agent { .. })
+            | Some(Commands::Acp { .. })
+            | Some(Commands::Daemon)
+            | Some(Commands::Cron { .. })
+    )
+}
+
 /// Main CLI entry point
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -637,6 +655,32 @@ pub async fn run() -> Result<()> {
     // must all leave the user with a working personality on first open.
     // Compiled-in templates, offline-safe, idempotent, never overwrites.
     crate::config::profile::ensure_brain_seeded();
+
+    // The config in hand was loaded before the documented example existed, so
+    // on a genuinely fresh home it carries no provider sections at all. Re-read
+    // it now that seeding has written them, or the provisioning below would
+    // find nothing to provision (#2151).
+    let mut config = if config_seeded {
+        let reloaded = commands::load_config(cli.config.as_deref()).await?;
+        Config::set_current(reloaded.clone());
+        reloaded
+    } else {
+        config
+    };
+
+    // #2151: a headless start never opens the TUI, so it never reached
+    // `provision_first_run` and never asked the proxy for this install's token.
+    // `run`, `agent`, `acp`, `daemon` and the cron scheduler all build a
+    // provider, so without this they died on a fresh home with "No provider
+    // configured" and no way out short of a TTY.
+    if command_builds_a_provider(cli.command.as_ref())
+        && crate::brain::provider::opencrabs_acquire::provision_builtin_provider(&mut config).await
+    {
+        // The token is in memory now too, so the global mirror has to agree
+        // with the config the command is about to receive.
+        Config::set_current(config.clone());
+        tracing::info!("First run: built-in provider token acquired");
+    }
 
     match cli.command {
         None | Some(Commands::Chat { .. }) => {
