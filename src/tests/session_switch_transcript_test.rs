@@ -21,7 +21,7 @@ use crate::services::ServiceContext;
 use crate::tests::agent_service_mocks::MockProvider;
 use crate::tui::app::App;
 use crate::tui::app::DisplayMessage;
-use crate::tui::render::chat::{turn_anchor, turn_folds_for_display, turn_is_folded};
+use crate::tui::render::chat::{turn_anchor, turn_is_folded};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -137,45 +137,21 @@ fn the_anchor_distinguishes_turns() {
 }
 
 /// While a turn runs there is no final answer yet, so folding it hides exactly
-/// what the user is watching. The live view must stay open until the turn
-/// settles, whatever the override map holds.
+/// A running turn folds like any other: its working-out rows sit in the turn's
+/// block, and only a click opens it (#2160). The streamed answer renders from
+/// the streaming buffer, so folding never hides it.
 #[test]
-fn a_running_turn_is_never_folded() {
+fn a_running_turn_folds_like_any_other() {
     let anchor = turn_anchor(&live("user", "build the thing", 1_760_000_000));
     let mut turn_expanded: HashMap<String, bool> = HashMap::new();
-
     assert!(
-        !turn_folds_for_display(&turn_expanded, &anchor, true, true),
-        "the newest turn is open while it is still processing"
-    );
-
-    // An explicit fold recorded earlier must not collapse the running turn.
-    turn_expanded.insert(anchor.clone(), false);
-    assert!(
-        !turn_folds_for_display(&turn_expanded, &anchor, true, true),
-        "a stale fold override must not hide the running turn"
-    );
-
-    // Once it settles the override applies again, so a click still works.
-    assert!(
-        turn_folds_for_display(&turn_expanded, &anchor, true, false),
-        "a settled turn honours the recorded fold"
+        turn_is_folded(&turn_expanded, &anchor),
+        "a running turn folds by default"
     );
     turn_expanded.insert(anchor.clone(), true);
     assert!(
-        !turn_folds_for_display(&turn_expanded, &anchor, true, false),
-        "a settled turn honours the recorded expand"
-    );
-}
-
-/// Only the newest turn can be running; every older turn keeps the normal rule.
-#[test]
-fn an_older_turn_stays_folded_while_another_one_runs() {
-    let anchor = turn_anchor(&live("user", "earlier question", 1_760_000_000));
-    let turn_expanded: HashMap<String, bool> = HashMap::new();
-    assert!(
-        turn_folds_for_display(&turn_expanded, &anchor, false, true),
-        "a turn that is not the running one is unaffected by is_processing"
+        !turn_is_folded(&turn_expanded, &anchor),
+        "a click opens a running turn"
     );
 }
 

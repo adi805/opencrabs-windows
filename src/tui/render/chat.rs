@@ -616,28 +616,6 @@ pub(crate) fn turn_anchor(msg: &DisplayMessage) -> String {
     format!("{}@{}", msg.role, msg.timestamp.timestamp())
 }
 
-/// Whether a turn renders folded, given whether it is the running one.
-///
-/// A running turn is NEVER folded, whatever the override map says. It has no
-/// final answer yet, so folding it is guaranteed to hide exactly what the user
-/// is watching: the transcript collapsed to a header plus a step count while
-/// the answer streamed behind it (#2155). Every settled turn keeps the normal
-/// rule, folded unless a click opened it.
-///
-/// This stays separate from [`turn_is_folded`], which answers what the override
-/// map says about one turn and has no opinion on a turn that has not finished.
-pub(crate) fn turn_folds_for_display(
-    overrides: &std::collections::HashMap<String, bool>,
-    anchor: &str,
-    is_newest: bool,
-    is_processing: bool,
-) -> bool {
-    if is_newest && is_processing {
-        return false;
-    }
-    turn_is_folded(overrides, anchor)
-}
-
 /// One turn's header row, resolved before the render loop walks the messages.
 struct TurnHeader {
     /// `✓ 39 tool calls · 3m 57s`
@@ -695,8 +673,7 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
         // The running turn is never folded: it has no final answer yet, so
         // folding it hides the very text the user is waiting on (#2155).
         let is_newest = newest_start == Some(t.start);
-        let folded =
-            turn_folds_for_display(&app.turn_expanded, &anchor, is_newest, app.is_processing);
+        let folded = turn_is_folded(&app.turn_expanded, &anchor);
         let summary = turn_summary(&app.messages, *t);
         let final_idx = settled_final_answer_idx(&app.messages, *t, is_newest, app.is_processing);
 
