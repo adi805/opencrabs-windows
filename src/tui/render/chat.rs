@@ -17,7 +17,6 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
-use uuid::Uuid;
 
 /// Render reasoning/thinking text as plain lines, preserving literal newlines.
 /// Unlike `parse_markdown`, single `\n` is honoured instead of being collapsed.
@@ -585,15 +584,58 @@ pub(crate) fn format_step_count(hidden: usize) -> String {
 /// from their own state after the message loop, not from these finalized rows.
 ///
 /// An explicit click on the header overrides this for one turn, in either
-/// direction, remembered by anchor id.
+/// direction, remembered by anchor.
 pub(crate) fn turn_is_folded(
-    overrides: &std::collections::HashMap<Uuid, bool>,
-    anchor_id: Uuid,
+    overrides: &std::collections::HashMap<String, bool>,
+    anchor: &str,
 ) -> bool {
-    match overrides.get(&anchor_id) {
+    match overrides.get(anchor) {
         Some(expanded) => !expanded,
         None => true,
     }
+}
+
+/// Stable identity for a turn, derived from its first message.
+///
+/// The fold override map used to be keyed by the message UUID, which does not
+/// survive a reload: live rows carry a random UUID minted as they stream, and
+/// `impl From<Message> for DisplayMessage` stamps every reloaded row with its
+/// database id. The two never match, so every turn the user had opened came
+/// back folded after a session switch (#2155).
+///
+/// Role and the message timestamp ARE preserved across that round trip: the
+/// row is persisted with `created_at.timestamp()` and read back into the same
+/// second. Content is deliberately excluded, because the persisted text
+/// rewrites `<<IMG:...>>` markers and so differs from what the live row holds.
+///
+/// A send that straddles a second boundary can still miss its own reload and
+/// come back folded. That is the pre-existing behaviour for every turn, so it
+/// is never a regression, and two turns of the same role inside one second
+/// would have to collide for the key to be ambiguous.
+pub(crate) fn turn_anchor(msg: &DisplayMessage) -> String {
+    format!("{}@{}", msg.role, msg.timestamp.timestamp())
+}
+
+/// Whether a turn renders folded, given whether it is the running one.
+///
+/// A running turn is NEVER folded, whatever the override map says. It has no
+/// final answer yet, so folding it is guaranteed to hide exactly what the user
+/// is watching: the transcript collapsed to a header plus a step count while
+/// the answer streamed behind it (#2155). Every settled turn keeps the normal
+/// rule, folded unless a click opened it.
+///
+/// This stays separate from [`turn_is_folded`], which answers what the override
+/// map says about one turn and has no opinion on a turn that has not finished.
+pub(crate) fn turn_folds_for_display(
+    overrides: &std::collections::HashMap<String, bool>,
+    anchor: &str,
+    is_newest: bool,
+    is_processing: bool,
+) -> bool {
+    if is_newest && is_processing {
+        return false;
+    }
+    turn_is_folded(overrides, anchor)
 }
 
 /// One turn's header row, resolved before the render loop walks the messages.
@@ -638,7 +680,7 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
         std::collections::HashMap::new();
     // ctrl+o acts on the newest turn only, so only its header may advertise it.
     let newest_start = all_turns.last().map(|t| t.start);
-    let mut header_anchor: std::collections::HashMap<usize, Uuid> =
+    let mut header_anchor: std::collections::HashMap<usize, String> =
         std::collections::HashMap::new();
     // idx → false when that row is folded away this frame.
     let mut row_visible: std::collections::HashMap<usize, bool> = std::collections::HashMap::new();
@@ -647,17 +689,16 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
     // paint a wall of intermediate narration however long the run was.
     let mut narration_rows: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for t in &all_turns {
-        let Some(anchor_id) = app.messages.get(t.start).map(|m| m.id) else {
+        let Some(anchor) = app.messages.get(t.start).map(turn_anchor) else {
             continue;
         };
-        let folded = turn_is_folded(&app.turn_expanded, anchor_id);
+        // The running turn is never folded: it has no final answer yet, so
+        // folding it hides the very text the user is waiting on (#2155).
+        let is_newest = newest_start == Some(t.start);
+        let folded =
+            turn_folds_for_display(&app.turn_expanded, &anchor, is_newest, app.is_processing);
         let summary = turn_summary(&app.messages, *t);
-        let final_idx = settled_final_answer_idx(
-            &app.messages,
-            *t,
-            newest_start == Some(t.start),
-            app.is_processing,
-        );
+        let final_idx = settled_final_answer_idx(&app.messages, *t, is_newest, app.is_processing);
 
         let hideable = turn_hideable_count(&app.messages, *t, final_idx);
 
@@ -704,11 +745,11 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
                             .flatten(),
                     },
                 );
-                header_anchor.insert(at, anchor_id);
+                header_anchor.insert(at, anchor);
             }
         }
     }
-    let mut line_to_turn: Vec<Option<Uuid>> = Vec::new();
+    let mut line_to_turn: Vec<Option<String>> = Vec::new();
 
     // Iterate by index to allow mutable access to render_cache while reading messages
     for msg_idx in 0..app.messages.len() {
@@ -741,7 +782,7 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
             if let (Some(anchor), Some(slot)) =
                 (header_anchor.get(&msg_idx), line_to_turn.last_mut())
             {
-                *slot = Some(*anchor);
+                *slot = Some(anchor.clone());
             }
             // Last call under the header, styled exactly like the collapsed
             // tool group's preview so folding loses no information.
@@ -766,7 +807,7 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
                 {
                     // The preview row toggles the turn too, so a click near the
                     // header does what it looks like it should.
-                    *slot = Some(*anchor);
+                    *slot = Some(anchor.clone());
                 }
             }
             // Breathing room: without it the header sits flush against the
@@ -1586,7 +1627,7 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
         && let Some(line_top) = app
             .chat_line_to_turn
             .iter()
-            .position(|t| *t == Some(anchor))
+            .position(|t| t.as_deref() == Some(anchor.as_str()))
     {
         let (offset, auto) = anchored_scroll_offset(line_top, anchor_row as usize, max_scroll);
         app.scroll_offset = offset;

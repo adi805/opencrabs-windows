@@ -294,20 +294,20 @@ fn every_turn_is_folded_by_default_including_a_running_one() {
     // Grouped-and-collapsed means always: no turn may render its working-out
     // as a wall, running or settled. Live progress still shows because
     // streaming text and the active tool group render from their own state.
-    let overrides: HashMap<uuid::Uuid, bool> = HashMap::new();
-    let a = uuid::Uuid::new_v4();
-    assert!(turn_is_folded(&overrides, a), "default is folded");
+    let overrides: HashMap<String, bool> = HashMap::new();
+    let a = "user@1760000000".to_string();
+    assert!(turn_is_folded(&overrides, &a), "default is folded");
 }
 
 #[test]
 fn an_explicit_click_overrides_the_default_either_way() {
-    let a = uuid::Uuid::new_v4();
+    let a = "user@1760000000".to_string();
     let mut overrides = HashMap::new();
     // Re-open an old turn.
-    overrides.insert(a, true);
-    assert!(!turn_is_folded(&overrides, a), "click opens it");
-    overrides.insert(a, false);
-    assert!(turn_is_folded(&overrides, a), "click folds it again");
+    overrides.insert(a.clone(), true);
+    assert!(!turn_is_folded(&overrides, &a), "click opens it");
+    overrides.insert(a.clone(), false);
+    assert!(turn_is_folded(&overrides, &a), "click folds it again");
 }
 
 // ── Folded-turn preview (#743 follow-up) ────────────────────────────────────

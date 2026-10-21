@@ -1218,3 +1218,5 @@ pub mod option_halt_turn_test;
 pub mod phantom_question_offer_test;
 pub mod usage_key_names_log_test;
 pub mod usage_prompt_share_test;
+
+pub mod session_switch_transcript_test;

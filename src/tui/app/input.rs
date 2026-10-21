@@ -319,23 +319,25 @@ impl App {
     ///
     /// The message-keyed [`Self::set_expand_anchor`] cannot do this: a header
     /// line maps to no message, so it is absent from `chat_line_to_msg`.
-    fn set_turn_expand_anchor(&mut self, anchor: Uuid) {
+    fn set_turn_expand_anchor(&mut self, anchor: &str) {
         if let Some(line_top) = self
             .chat_line_to_turn
             .iter()
-            .position(|t| *t == Some(anchor))
+            .position(|t| t.as_deref() == Some(anchor))
         {
             let row = line_top.saturating_sub(self.chat_render_scroll) as u16;
-            self.chat_expand_anchor_turn = Some((anchor, row));
+            self.chat_expand_anchor_turn = Some((anchor.to_string(), row));
         }
     }
 
     /// The newest turn's anchor id, if there is one. `ctrl+o` is scoped to this
     /// turn so a long transcript does not reflow under the user.
-    fn newest_turn_anchor(&self) -> Option<Uuid> {
+    fn newest_turn_anchor(&self) -> Option<String> {
         let turns = crate::tui::render::chat::turn_ranges(&self.messages);
         let last = turns.last()?;
-        self.messages.get(last.start).map(|m| m.id)
+        self.messages
+            .get(last.start)
+            .map(crate::tui::render::chat::turn_anchor)
     }
 
     /// `ctrl+o`: open or close the newest turn, working-out and all.
@@ -358,7 +360,7 @@ impl App {
             .next_back();
         let target = !self.turn_expanded.get(&anchor).copied().unwrap_or(false);
 
-        self.set_turn_expand_anchor(anchor);
+        self.set_turn_expand_anchor(&anchor);
         self.turn_expanded.insert(anchor, target);
 
         if let Some(ref mut group) = self.active_tool_group {
@@ -379,10 +381,10 @@ impl App {
     }
 
     /// The turn anchor whose HEADER sits on `row`, if any (#758).
-    fn row_to_turn_anchor(&self, row: u16) -> Option<Uuid> {
+    fn row_to_turn_anchor(&self, row: u16) -> Option<String> {
         let row_in_chat = row.saturating_sub(self.chat_area_y + 1) as usize;
         let line_idx = self.chat_render_scroll + row_in_chat;
-        self.chat_line_to_turn.get(line_idx).copied().flatten()
+        self.chat_line_to_turn.get(line_idx).cloned().flatten()
     }
 
     /// Left-click: select/highlight a message
@@ -398,7 +400,7 @@ impl App {
             // details paths below do. Without it, unfolding inserts the turn's
             // whole working-out above the fixed-from-bottom offset and the
             // view jumps pages away from what was clicked (#728).
-            self.set_turn_expand_anchor(anchor);
+            self.set_turn_expand_anchor(&anchor);
             // Folded is the default, so an unclicked header opens its turn.
             let currently_expanded = self.turn_expanded.get(&anchor).copied().unwrap_or(false);
             self.turn_expanded.insert(anchor, !currently_expanded);
@@ -1495,9 +1497,11 @@ impl App {
         if let Some(token) = &self.cancel_token {
             token.cancel();
         }
-        // Hard-abort the agent task as a backstop
-        if let Some(handle) = self.task_abort_handle.take() {
-            handle.abort();
+        // Hard-abort the agent task as a backstop. Only THIS session's task:
+        // the handle used to be app-level, so cancelling one session could
+        // kill a turn still running in another (#2155).
+        if let Some(sid) = self.current_session.as_ref().map(|s| s.id) {
+            self.abort_session_task(sid);
         }
         // Also cancel any stashed session token (e.g. from session switch)
         if let Some(ref session) = self.current_session {
@@ -2383,7 +2387,7 @@ impl App {
             );
             // Load more history when paging up if hidden messages exist
             if self.hidden_older_messages > 0
-                && self.display_token_count < 300_000
+                && self.messages.len() < Self::MAX_DISPLAYED_MESSAGES
                 && let Err(e) = self.load_more_history().await
             {
                 tracing::warn!(error = %e, "failed to load more history");

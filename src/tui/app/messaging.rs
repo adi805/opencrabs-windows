@@ -395,7 +395,8 @@ impl App {
         // Sync is_processing flag with per-session state
         self.is_processing = self.processing_sessions.contains(&session.id);
 
-        let (display, hidden) = Self::trim_messages_to_display_budget(&messages, 200_000);
+        let (display, hidden) =
+            Self::trim_messages_to_display_window(&messages, Self::DISPLAY_MESSAGE_WINDOW);
         self.hidden_older_messages = hidden;
         self.oldest_displayed_sequence = display.first().map(|m| m.sequence).unwrap_or(0);
         self.display_token_count = display
@@ -660,37 +661,48 @@ impl App {
             .list_messages_for_session(session_id)
             .await
             .unwrap_or_default();
-        let (display, _) = Self::trim_messages_to_display_budget(&messages, 200_000);
+        let (display, _) =
+            Self::trim_messages_to_display_window(&messages, Self::DISPLAY_MESSAGE_WINDOW);
         let expanded: Vec<DisplayMessage> =
             display.into_iter().flat_map(Self::expand_message).collect();
         self.pane_message_cache.insert(session_id, expanded);
     }
 
-    /// Trim a list of DB messages to fit within a token budget (newest messages kept).
+    /// How many of the newest database rows a reloaded pane displays.
+    ///
+    /// A count, not a token budget. The budget was measured over raw DB rows,
+    /// which include the persisted tool-ledger JSON: one such row can carry
+    /// hundreds of thousands of tokens on its own, so a couple of oversized
+    /// rows collapsed the visible history to two or three messages and a
+    /// session switch looked like it had wiped the transcript (#2155). No
+    /// single row can eat a count window.
+    ///
+    /// Anything older stays behind the "N older messages hidden" marker and
+    /// remains reachable through Ctrl+O paging.
+    pub(crate) const DISPLAY_MESSAGE_WINDOW: usize = 200;
+
+    /// Upper bound on how many rows Ctrl+O paging will load in total. A count
+    /// for the same reason the window is one: the old guard stopped paging
+    /// once `display_token_count` passed 300k, and a single tool-ledger row can
+    /// pass that on its own, which left every older message unreachable
+    /// (#2155). This bound still keeps a very long session from loading itself
+    /// entirely into memory.
+    pub(crate) const MAX_DISPLAYED_MESSAGES: usize = 2_000;
+
+    /// Keep the newest `window` rows of a session, dropping the rest.
     /// Returns (kept_messages, hidden_count).
     ///
-    /// The newest message is always kept, even if it alone exceeds the
-    /// budget: the walk breaks at the first over-budget row, and without
-    /// the floor a freshly-delivered 200k+ token answer got hidden behind
-    /// the "older messages hidden" marker on session switch: the report
-    /// vanished while the live view had just shown it (#1944). Hiding the
-    /// one row the user most recently received is never the trade we want.
-    pub(crate) fn trim_messages_to_display_budget(
+    /// The newest row is always kept when the history is non-empty: a window
+    /// of zero would otherwise blank a pane that has messages, and the row the
+    /// user most recently received is the last thing to hide (#1944).
+    pub(crate) fn trim_messages_to_display_window(
         msgs: &[crate::db::models::Message],
-        budget: usize,
+        window: usize,
     ) -> (Vec<crate::db::models::Message>, usize) {
-        let mut tokens = 0usize;
-        let mut keep = 0usize;
-        for msg in msgs.iter().rev() {
-            let t = crate::brain::tokenizer::count_tokens(&msg.content);
-            if tokens + t > budget {
-                break;
-            }
-            tokens += t;
-            keep += 1;
+        if msgs.is_empty() {
+            return (Vec::new(), 0);
         }
-        // Keep-newest floor: an over-budget newest row is still displayed.
-        keep = keep.max(if msgs.is_empty() { 0 } else { 1 });
+        let keep = window.clamp(1, msgs.len());
         let hidden = msgs.len() - keep;
         (msgs[hidden..].to_vec(), hidden)
     }
@@ -714,8 +726,13 @@ impl App {
         }
     }
 
-    /// Load an older batch of messages (up to 100k tokens) from the DB and prepend
-    /// them to the current display list.  Called by Ctrl+O when hidden_older_messages > 0.
+    /// Load one more window of older messages from the DB and prepend them to
+    /// the current display list. Called by Ctrl+O when `hidden_older_messages`
+    /// is above zero.
+    ///
+    /// A count, matching the display window: a token budget here measured raw
+    /// DB rows, and one persisted tool-ledger row could fill it on its own, so
+    /// every Ctrl+O added exactly one row (#2155).
     pub(crate) async fn load_more_history(&mut self) -> Result<()> {
         tracing::debug!(
             "[SCROLL] load_more_history called: hidden={}, display_tokens={}",
@@ -737,17 +754,11 @@ impl App {
             .filter(|m| m.sequence < self.oldest_displayed_sequence)
             .collect(); // already ordered ASC by sequence
 
-        let budget = 100_000usize;
-        let mut tokens = 0usize;
-        let mut keep = 0usize;
-        for msg in older.iter().rev() {
-            let t = crate::brain::tokenizer::count_tokens(&msg.content);
-            if tokens + t > budget {
-                break;
-            }
-            tokens += t;
-            keep += 1;
-        }
+        let keep = older.len().min(Self::DISPLAY_MESSAGE_WINDOW);
+        let tokens: usize = older[older.len() - keep..]
+            .iter()
+            .map(|m| crate::brain::tokenizer::count_tokens(&m.content))
+            .sum();
         let hidden_still = older.len().saturating_sub(keep);
         let to_add = &older[older.len() - keep..];
 
@@ -3128,14 +3139,15 @@ impl App {
                     if let Some(token) = self.cancel_token.take() {
                         token.cancel();
                     }
-                    if let Some(handle) = self.task_abort_handle.take() {
-                        handle.abort();
-                    }
-                    if let Some(ref session) = self.current_session {
-                        if let Some(stashed) = self.session_cancel_tokens.remove(&session.id) {
+                    if let Some(sid) = self.current_session.as_ref().map(|s| s.id) {
+                        // Only this session's task: the handle used to be a
+                        // single app-level slot, so "stop" in one session could
+                        // abort a turn running in another (#2155).
+                        self.abort_session_task(sid);
+                        if let Some(stashed) = self.session_cancel_tokens.remove(&sid) {
                             stashed.cancel();
                         }
-                        self.processing_sessions.remove(&session.id);
+                        self.processing_sessions.remove(&sid);
                     }
                     self.is_processing = false;
                     self.processing_started_at = None;
@@ -3143,7 +3155,6 @@ impl App {
                     self.streaming_reasoning = None;
                     self.streaming_render_cache = None;
                     self.cancel_token = None;
-                    self.task_abort_handle = None;
                     tracing::info!("Fast-cancel: active task killed by stop command");
                     return Ok(());
                 }
@@ -3203,8 +3214,10 @@ impl App {
                     }
                 }
             });
-            // Store abort handle so double-Escape can hard-kill the task
-            self.task_abort_handle = Some(handle.abort_handle());
+            // Store this session's abort handle so double-Escape hard-kills
+            // only the turn it is meant to kill (#2155).
+            self.task_abort_handles
+                .insert(session_id, handle.abort_handle());
 
             // Watch for panics — surface them in the UI instead of silent hang
             tokio::spawn(async move {
@@ -3351,7 +3364,9 @@ impl App {
         self.streaming_output_tokens = 0;
         let reasoning_details = self.streaming_reasoning.take();
         self.cancel_token = None;
-        self.task_abort_handle = None;
+        if let Some(sid) = self.current_session.as_ref().map(|s| s.id) {
+            self.task_abort_handles.remove(&sid);
+        }
         self.escape_pending_at = None; // Reset so abort hint doesn't leak to input clear
 
         // Clean up stale pending approvals — send deny so agent callbacks don't hang

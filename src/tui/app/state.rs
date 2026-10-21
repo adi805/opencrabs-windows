@@ -839,8 +839,12 @@ pub struct App {
     /// Cancellation token for aborting in-progress requests
     pub(crate) cancel_token: Option<CancellationToken>,
 
-    /// Abort handle for the active agent task — hard-kills the tokio task on cancel
-    pub(crate) task_abort_handle: Option<tokio::task::AbortHandle>,
+    /// Abort handles for in-flight agent tasks, keyed by the session that owns
+    /// them. Keyed rather than a single field so cancelling one session can
+    /// never kill another session's turn: the old app-level `Option` was
+    /// overwritten by whichever task started last, so a switch followed by a
+    /// double-Escape aborted a turn the user was not even looking at (#2155).
+    pub(crate) task_abort_handles: std::collections::HashMap<Uuid, tokio::task::AbortHandle>,
 
     /// Per-session queued message stack — single source of truth for both
     /// the UI's "Queued" indicator AND the agent's mid-tool injection
@@ -923,13 +927,15 @@ pub struct App {
     /// Rendered line → the turn whose HEADER that line is (#758). Lets a click
     /// on a turn header toggle the whole turn without disturbing the
     /// line→message routing everything else uses. Rebuilt each frame.
-    pub chat_line_to_turn: Vec<Option<Uuid>>,
-    /// Explicit per-turn expand overrides, keyed by the turn's anchor message
-    /// id (#758). A Uuid — not an index — because indices shift as messages
-    /// arrive and are meaningless across sessions, so this stays correct with
-    /// split panes. Absent = the default (the newest turn is expanded, older
-    /// turns are folded).
-    pub turn_expanded: std::collections::HashMap<Uuid, bool>,
+    pub chat_line_to_turn: Vec<Option<String>>,
+    /// Explicit per-turn expand overrides, keyed by [`turn_anchor`] (#758).
+    /// Not a Uuid: live rows mint a random one and a reload stamps the database
+    /// id, so a UUID key never survives a session switch and every opened turn
+    /// came back folded (#2155). Not an index either, because indices shift as
+    /// messages arrive. Absent = the default, which is folded.
+    ///
+    /// [`turn_anchor`]: crate::tui::render::chat::turn_anchor
+    pub turn_expanded: std::collections::HashMap<String, bool>,
     /// The scroll offset used during the last render (for coordinate mapping)
     pub chat_render_scroll: usize,
     /// The top-left Y coordinate of the chat area in the terminal
@@ -949,12 +955,12 @@ pub struct App {
     /// expanding a block grows it in place instead of jumping the viewport.
     /// Consumed (cleared) on the render that applies it.
     pub chat_expand_anchor: Option<(usize, u16)>,
-    /// The same pin for a turn header: `(turn anchor id, screen row)`.
+    /// The same pin for a turn header: `(turn anchor, screen row)`.
     /// Separate from `chat_expand_anchor` because a header line maps to no
     /// message. It populates `chat_line_to_turn`, not `chat_line_to_msg`, so
     /// the message-keyed anchor above can never resolve it and folding a turn
     /// would jump the viewport by however many rows it hid.
-    pub chat_expand_anchor_turn: Option<(Uuid, u16)>,
+    pub chat_expand_anchor_turn: Option<(String, u16)>,
 
     /// Drag selection: anchor point in terminal-screen coords (col, row), set on first drag event.
     pub drag_anchor: Option<(u16, u16)>,
@@ -1160,7 +1166,7 @@ impl App {
             sessions_with_pending_approval: HashSet::new(),
             provider_cache: HashMap::new(),
             cancel_token: None,
-            task_abort_handle: None,
+            task_abort_handles: std::collections::HashMap::new(),
             queued_messages: Arc::new(std::sync::Mutex::new(HashMap::new())),
             shared_session_id: Arc::new(tokio::sync::Mutex::new(None)),
             default_model_name: agent_service.provider_model(),
@@ -4016,6 +4022,17 @@ impl App {
         Ok(())
     }
 
+    /// Hard-abort the agent task belonging to `session_id`, if one is running.
+    ///
+    /// Scoped to the session on purpose: aborting by session means a cancel in
+    /// one pane can never kill a turn another session is still streaming, which
+    /// is what the old app-level `Option<AbortHandle>` allowed (#2155).
+    pub(crate) fn abort_session_task(&mut self, session_id: Uuid) {
+        if let Some(handle) = self.task_abort_handles.remove(&session_id) {
+            handle.abort();
+        }
+    }
+
     /// Show an error message
     pub(crate) fn show_error(&mut self, error: String) {
         self.is_processing = false;
@@ -4024,7 +4041,11 @@ impl App {
         self.streaming_render_cache = None;
         self.streaming_reasoning = None;
         self.cancel_token = None;
-        self.task_abort_handle = None;
+        // Drop only THIS session's abort handle: another session's turn may
+        // still be running and must survive an error shown here (#2155).
+        if let Some(sid) = self.current_session.as_ref().map(|s| s.id) {
+            self.task_abort_handles.remove(&sid);
+        }
         self.escape_pending_at = None;
         // Preserve context token count from real-time updates if we never got a complete response
         if self.last_input_tokens.is_none() && self.display_token_count > 0 {
