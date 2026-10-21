@@ -7,6 +7,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.12] - 2026-10-21
+
+78 commits since v0.5.11, 6 contributors. 180 files changed, +14,993 / -3,285 lines.
+
+Telegram guest queries went from a narrow reply path to a full surface. A tag in a chat the bot was never invited to now gets the same tools as a normal turn, the same live status block, the same rich rendering, one cancellable turn per guest session with rate limiting, and a tool set capped at what a stranger should reach. Two answer-duplication bugs went with it: a guest reply no longer carries the answer twice, and a reply with no tool calls is the answer alone. Separately, the agent now has to stop and write a plan once a turn crosses a threshold of tool calls, `browser_act` gained an `upload` action that attaches local files without putting their bytes in the context, and `bash` refuses `sleep` while a detached task is running and names the task it is waiting on. The TUI keeps the transcript visible across a session switch instead of folding every turn you had opened, and a headless install now provisions the built-in provider the way the TUI already did. Phantom detection got four corrections so a contraction, a question, a sign-off after a halt, or a denied tool call is no longer read as a promised action, and the option-surface halt path stopped issuing a follow-up request and stopped rendering the same answer twice. Usage accounting reads a top-level `cached_tokens` and records a missing cache field as not reported. Security tightened in four places: every outbound channel path sanitizes at one chokepoint, the http body is capped and its read bounded, string slicing can no longer land mid-character, and a config or keys write that would not parse is refused. Release packaging now ships `OpenCrabs.app` and a Linux desktop entry with a full-size icon ladder. The docs dropped two onboarding pages that documented a macOS GUI and a wizard this repo never had, the installer no longer prompts, and the sponsor table is generated from one ledger.
+
+### ✨ Features
+
+- `7c591584` **browser**: add an `upload` action to `browser_act` (#2112)
+- `5daad132` **plan**: require a plan after a threshold of tool calls in one turn (#2128)
+- `d04ea40d` **bash**: refuse `sleep` while a detached task is running (#2123)
+- `0b8d88da` **bash**: name the running task in the sleep refusal (#2123)
+- `05ece9eb` **telegram**: give a guest reply the live status block a normal session shows (#2109)
+- `3758e30b` **telegram**: answer guest queries so a tag works in chats the bot is not in (#2087)
+- `3373bc7d` **docs**: record the community sponsors and generate the docs from one ledger
+- `b612fe57` **prompt**: keyed and sensitive calls run from a Python script, never inside the session (#2094)
+
+### 🔧 Fixes
+
+- `4b44a5f5` **deps**: move `rustls-webpki` and `webpki-roots` to clear the audit red
+- `0d2e8faa` **provider**: provision the built-in provider on headless installs (#2151)
+- `d459beb4` **tui**: keep the transcript visible across a session switch (#2155)
+- `b1b6e96e` **docs**: replace the stale getting-started page and make the installer non-interactive (#2142)
+- `2d10534a` **telegram**: a guest reaches only the tools a stranger should (#2134)
+- `5b60f76d` **tui**: refresh whispercrabs instead of trusting the first download (#2114)
+- `f6386ba0` **telegram**: a reply to media keeps the file identity (#2121)
+- `f1c4be95` **agent**: nudge five times before a loop falls back (#2129)
+- `d5bebea5` **phantom**: a contraction is not a completed action (#2110)
+- `d473df93` **telegram**: one turn per guest session, cancellable and rate-limit aware (#2143)
+- `b88ce66c` **usage**: read a top-level `cached_tokens` field when no other cache field is present (#2140)
+- `f3cae9e6` **usage**: a response with no cache field is recorded as not reported (#2139)
+- `29df3a89` **telegram**: give a guest turn the same tools, block chrome and rich plane as a normal one (#2138)
+- `016eb2ce` **telegram**: owner-only targeted stop for another session (#2108)
+- `83cf936c` **onboard**: ask the image tool's resolver for the image gap (#2106)
+- `ac662707` **tools**: cap the http body and bound the read (#2104)
+- `d636a33f` **channels**: sanitize every outbound path at one chokepoint (#2102)
+- `e94568fc` **usage**: By Model cache share divides by prompt tokens, and DeepSeek hits are read (#2136)
+- `0b756926` **telegram**: render guest rich replies on the markdown plane (#2135)
+- `820aae3b` **telegram**: send and edit guest replies rich when enabled (#2133)
+- `640e9d1a` **voice**: send audio on the chat route and stop offering built-in speech (#2107)
+- `9bb6df69` **prompt**: drop the plan-tool prose the plan gate now enforces (#2131)
+- `a281c2db` **prompt**: rejoin the stranded TRACK SELECTION table rows (#2130)
+- `07a387ec` **tui**: bound cancel-persist to the in-flight turn (#2127)
+- `f433b8f9` **phantom**: flag denied tool calls and unbacked identifiers (#2122)
+- `d50dc3ad` **core**: stop slicing strings at byte offsets that can land mid-character (#2124)
+- `ea160668` **telegram**: one file occurrence carries one link (#2125)
+- `1559c9d1` **telegram**: locate a file marker by its own bytes, not a stale span
+- `32111403` **vision**: stop pinning the vision output cap at 1024 (#2120)
+- `a1b9487b` **release**: give the macOS icon the rounded tile shape (#2119)
+- `f5fab165` **homebrew**: state the cask path and the formula's missing icon (#2118)
+- `0308813f` **release**: ship a desktop entry and icon with the Linux build (#2116)
+- `b4d0d1af` **release**: ship `OpenCrabs.app` so macOS has an icon to show (#2115)
+- `0263383a` **assets**: rebuild `icon.icns` with the full size ladder (#2117)
+- `d1f29104` **telegram**: a guest reply with no tool calls is the answer alone (#2113)
+- `43ded2df` **telegram**: stop a guest reply carrying the answer twice (#2113)
+- `c3eed33b` **tui**: stop the same answer rendering twice on an option-surface halt (#2111)
+- `dc051e8d` **cli**: take the scheduler lock only when a scheduler is spawned (#2096)
+- `09f25a46` **cli**: write the documented example config on init (#2093)
+- `03e3ce6c` **profile**: stamp lock owners with their creation time (#2084)
+- `87864484` **config**: refuse a config or keys write that would not parse (#2099)
+- `a940d255` **phantom**: a sign-off after an option-surface halt is not a phantom (#2090)
+- `d031c074` **discord**: a follow-up tap never claims the turn slot, and the cancel token still cancels a turn that already ended (#2089)
+- `bbf021ce` **agent**: a `suggest_options` halt with no text still asks the model for a reply (#2088)
+- `da94e7d3` **agent**: an option-surface halt ends the turn with no follow-up request (#2086)
+- `470e12f4` **phantom**: a reply that asks the user something is not a promised action (#2083)
+
+### 📖 Documentation
+
+- `aeeeeeb9` delete the macOS GUI onboarding pages (#2154)
+- `8cea1f5e` delete the onboarding wizard page that documents commands we never had (#2153)
+- `f8da765f` record where each cash contribution came from
+- `82651cd1` record the October 19 inference top-up
+- `71aa1c02` say the built-in provider transcribes on day 0 (#2141)
+- `909f1b5c` say how issues are referenced in code comments (#2137)
+- `14df12ac` document the plan gate and align the TRACK SELECTION row (#2132)
+- `ee0f4816` name the three zip 8.6 blockers in the audit comment (#2092)
+- `3a5cc4ca` stop seeding an image id and speech fields the provider does not serve
+- `3784d4a3` add the contributor count to the v0.5.0 summary line
+- `aa04b7c3` add the named contributor list to v0.5.0
+- `14e6b078` add the named contributor lists to v0.5.5, v0.5.4 and v0.5.1
+- `cc85905e` credit the owner in the recent contributor lists
+
+### 🧹 Miscellaneous
+
+- `ffac6a3d` test(install): skip the bash parse check on Windows hosts
+- `90c63700` test(model): stop asserting the Claude label format on non-Claude ids
+- `6609b94c` chore(usage): log the key names of a provider usage object at debug (#2152)
+- `062187e4` test(suite): delete the four dead modules and guard the declaration list (#2103)
+- `f01ef0e0` style(plan): apply rustfmt to the plan requirement gate (#2128)
+- `d0fe0c56` test(phantom): pin the accepted trade for an unbacked kill claim (#2122)
+- `d8c47de6` test(bash): pin sleep running again after the task finishes (#2123)
+- `02bd841e` style(tests): format the three test files the fmt gate flags
+- `d44347af` test(brain): pin the anti-polling contract in the system prompt (#2101)
+- `2206bb88` chore(deps): move zip to 9 and rust_xlsxwriter to 0.99 (#2092)
+- `4e01b95d` ci(audit): ignore RUSTSEC-2026-0367/0368/0369 for zip until upgrades land (#2091)
+
+### 👥 Contributors
+
+6 contributors this release:
+
+- @adolfousier (Adolfo Usier)
+- @adi805 (Syafriadi)
+- @loonix (Daniel Carneiro)
+- @leshchenko1979 (Alexey Leshchenko)
+- @daeho-ro (Daeho Ro)
+- @moneyacademyKE (Moe)
+
+### 📊 Stats
+
+- 78 commits since v0.5.11
+- 180 files changed, +14,993 / -3,285 lines
+- 11,091 tests (11,053 passed, 0 failed, 38 ignored)
+
 ## [0.5.11] - 2026-10-16
 
 4 commits since v0.5.10, 2 contributors. 19 files changed, +1,361 / -349 lines.
@@ -9505,3 +9618,4 @@ fixes.
 [0.5.5]: https://github.com/opencrabs/opencrabs/compare/v0.5.4...v0.5.5
 [0.5.10]: https://github.com/opencrabs/opencrabs/compare/v0.5.5...v0.5.10
 [0.5.11]: https://github.com/opencrabs/opencrabs/compare/v0.5.10...v0.5.11
+[0.5.12]: https://github.com/opencrabs/opencrabs/compare/v0.5.11...v0.5.12
