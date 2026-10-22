@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use tokio_util::sync::CancellationToken;
 use wacore::types::message::MessageInfo;
+use wacore_binary::jid::JidExt;
 use waproto::whatsapp::Message;
 use whatsapp_rust::SendOptions;
 use whatsapp_rust::client::Client;
@@ -618,6 +619,28 @@ pub(crate) async fn handle_message(
         );
         return;
     }
+
+    // A status update is not a conversation. It arrives addressed to the
+    // `status@broadcast` pseudo-chat, which cannot receive a message, so
+    // answering one is an invalid request: `send_message to status@broadcast
+    // requires reaction_message.key.participant = status author`. The failure
+    // is not cheap either, because the reply is streamed: every composing tick
+    // retries the send, the turn runs to completion against a chat that cannot
+    // accept it, and the self-healing alert at the end fails the same way. One
+    // status image from an allow-listed contact cost a full agent turn plus
+    // ~19 error lines in a single morning.
+    //
+    // Dropping it at ingest is the only place that stops all of that: there is
+    // no chat to reply to, so no turn should ever start. Statuses are read-only
+    // for a companion device anyway; nothing downstream can act on one.
+    if info.source.chat.is_status_broadcast() {
+        tracing::debug!(
+            target: "whatsapp",
+            "ignoring status update: status@broadcast is not a chattable conversation"
+        );
+        return;
+    }
+
     tracing::debug!(
         "WhatsApp handler: from={}, is_from_me={}, has_text={}, has_image={}, has_audio={}",
         phone,
