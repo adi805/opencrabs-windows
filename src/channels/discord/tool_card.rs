@@ -25,6 +25,10 @@ pub(crate) struct CardRow {
     pub count: usize,
     /// None = running, Some(true) = all finished ok, Some(false) = any failed.
     pub status: Option<bool>,
+    /// Set only on a detached-task row (#2148). Two detached tasks can share a
+    /// label, so they must never collapse into one `x2` row: each settles on
+    /// its own.
+    pub task_id: Option<String>,
 }
 
 /// Whether a completion belongs to this row. By call id when both sides have
@@ -55,7 +59,12 @@ pub(crate) fn collapse_repeats(entries: &[GroupEntry]) -> Vec<CardRow> {
     let mut rows: Vec<CardRow> = Vec::new();
     for entry in entries {
         match rows.last_mut() {
-            Some(row) if row.name == entry.name && row.context == entry.context => {
+            Some(row)
+                if row.name == entry.name
+                    && row.context == entry.context
+                    && row.task_id.is_none()
+                    && entry.task_id.is_none() =>
+            {
                 row.count += 1;
                 row.status = merge_status(row.status, entry.status);
             }
@@ -64,6 +73,7 @@ pub(crate) fn collapse_repeats(entries: &[GroupEntry]) -> Vec<CardRow> {
                 context: entry.context.clone(),
                 count: 1,
                 status: entry.status,
+                task_id: entry.task_id.clone(),
             }),
         }
     }
@@ -113,8 +123,13 @@ pub(crate) fn row_line(row: &CardRow) -> String {
     } else {
         String::new()
     };
+    let label = crate::channels::background_work::detached_row_label(
+        &row.name,
+        row.task_id.as_deref(),
+        row.status,
+    );
     clip(
-        &format!("{icon} **{}**{}{repeats}", row.name, row.context),
+        &format!("{icon} **{label}**{}{repeats}", row.context),
         ROW_MAX_CHARS,
     )
 }

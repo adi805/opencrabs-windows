@@ -18,12 +18,14 @@ fn settled(outcome: Option<FlowOutcome>, waiting: Option<&str>) -> GroupState {
         entries: vec![
             GroupEntry {
                 call_id: String::new(),
+                task_id: None,
                 name: "bash".into(),
                 context: String::new(),
                 status: Some(true),
             },
             GroupEntry {
                 call_id: String::new(),
+                task_id: None,
                 name: "read_file".into(),
                 context: String::new(),
                 status: Some(true),

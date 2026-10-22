@@ -32,6 +32,87 @@ pub(crate) struct GroupEntry {
     pub call_id: String,
     /// None = running, Some(success) = finished.
     pub status: Option<bool>,
+    /// Set only on a detached-task row (#2148): the background task's id.
+    /// A detached task has no provider call id, and two of them can share a
+    /// label, so this is what a finish matches on.
+    pub task_id: Option<String>,
+}
+
+impl GroupEntry {
+    /// The label this row shows. A detached row says so and says whether it
+    /// is still running; a tool row shows its tool name.
+    pub(crate) fn display_name(&self) -> String {
+        crate::channels::background_work::detached_row_label(
+            &self.name,
+            self.task_id.as_deref(),
+            self.status,
+        )
+    }
+}
+
+/// What a detached-task event does to the turn's group message (#2148).
+/// Returned by [`detached_render`] so the caller never has to decide, which
+/// is what keeps a finish from ever posting a second block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DetachedRender {
+    /// No group message yet: post it, then edit it in place from then on.
+    Post,
+    /// Rewrite the block at this message id.
+    Edit(u64),
+    /// Nothing to render: an orphan finish, or a row that is not there.
+    Skip,
+}
+
+/// One detached-task event, in the shape the renderer needs.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DetachedEvent<'a> {
+    Started { task_id: &'a str, label: &'a str },
+    Finished { task_id: &'a str, success: bool },
+}
+
+/// Apply a detached-task event to the turn's rows and say where it renders.
+///
+/// Pure: no transport, no clock, no network. That is deliberate, because the
+/// contract worth testing is "start and finish share one message id" (#2148),
+/// and a bot cannot be stood up to prove it. A start posts only when the turn
+/// has no block yet; a finish only ever edits, so the block keeps one id for
+/// its whole life.
+pub(crate) fn detached_render(
+    entries: &mut Vec<GroupEntry>,
+    group_mid: Option<u64>,
+    event: DetachedEvent<'_>,
+) -> DetachedRender {
+    match event {
+        DetachedEvent::Started { task_id, label } => {
+            entries.push(GroupEntry {
+                name: label.to_string(),
+                context: String::new(),
+                call_id: String::new(),
+                status: None,
+                task_id: Some(task_id.to_string()),
+            });
+            match group_mid {
+                Some(mid) => DetachedRender::Edit(mid),
+                None => DetachedRender::Post,
+            }
+        }
+        DetachedEvent::Finished { task_id, success } => {
+            // Match by task id, never by label: two detached tasks can both
+            // be `cargo test`, and a label match would settle whichever row
+            // it hit first, leaving a finished task showing as running.
+            let Some(entry) = entries
+                .iter_mut()
+                .find(|e| e.task_id.as_deref() == Some(task_id))
+            else {
+                return DetachedRender::Skip;
+            };
+            entry.status = Some(success);
+            match group_mid {
+                Some(mid) => DetachedRender::Edit(mid),
+                None => DetachedRender::Skip,
+            }
+        }
+    }
 }
 
 /// A turn's tool group: contents plus display state.
@@ -184,11 +265,11 @@ fn latest_activity(group: &GroupState) -> Option<String> {
         .map(|e| {
             let ctx = e.context.trim_start();
             if ctx.is_empty() {
-                e.name.clone()
+                e.display_name()
             } else {
                 // Contexts are stored with a leading space (` (arg0)`): trim,
                 // then join with one canonical space (the #1809 double-space fix).
-                format!("{} {ctx}", e.name)
+                format!("{} {ctx}", e.display_name())
             }
         })
         .next()
@@ -282,7 +363,12 @@ pub(crate) fn render_content(group: &GroupState) -> String {
     // hid the Cancelled/Error/Waiting state from the user entirely.
     let tools_part = if group.entries.len() == 1 && !group.expanded && group.settled.is_none() {
         let e = &group.entries[0];
-        format!("{} **{}**{}", entry_icon(e.status), e.name, e.context)
+        format!(
+            "{} **{}**{}",
+            entry_icon(e.status),
+            e.display_name(),
+            e.context
+        )
     } else {
         summary_line(group)
     };
@@ -374,6 +460,106 @@ pub(crate) fn render_embeds(group: &GroupState) -> Vec<CreateEmbed> {
                 group.entries.len(),
             ))),
     ]
+}
+
+/// Render one detached-task event into the turn's group message (#2148).
+///
+/// A start draws its row and a finish settles the row it owns. Neither ever
+/// posts a second block once one exists: both edit the same message id, which
+/// is the whole contract. A finish with no block or no matching row does
+/// nothing rather than opening a new one.
+pub(crate) async fn apply_detached_event(
+    dstate: &DiscordState,
+    channel: serenity::model::id::ChannelId,
+    http: &serenity::http::Http,
+    tools: &tokio::sync::Mutex<Vec<GroupEntry>>,
+    gmid: &tokio::sync::Mutex<Option<serenity::model::id::MessageId>>,
+    event: DetachedEvent<'_>,
+) {
+    use serenity::builder::EditMessage;
+    use serenity::model::id::MessageId;
+
+    let (render, entries) = {
+        let mut t = tools.lock().await;
+        let mid = *gmid.lock().await;
+        let render = detached_render(&mut t, mid.map(|m| m.get()), event);
+        (render, t.clone())
+    };
+
+    match render {
+        DetachedRender::Skip => {}
+        DetachedRender::Edit(mid) => {
+            let group = dstate
+                .upsert_tool_group(
+                    mid,
+                    GroupState {
+                        page: 0,
+                        entries,
+                        notes: Vec::new(),
+                        expanded: false,
+                        started_at: Instant::now(),
+                        settled: None,
+                    },
+                )
+                .await;
+            let edit = EditMessage::new()
+                .content(render_content(&group))
+                .embeds(render_embeds(&group))
+                .components(render_components(&group, mid));
+            if let Some(Err(e)) = super::governor::edit_chrome(
+                &dstate.governor,
+                channel,
+                http,
+                MessageId::new(mid),
+                edit,
+            )
+            .await
+            {
+                tracing::warn!("Discord: detached row edit failed: {e}");
+            }
+        }
+        DetachedRender::Post => {
+            let group = GroupState {
+                page: 0,
+                entries,
+                notes: Vec::new(),
+                expanded: false,
+                started_at: Instant::now(),
+                settled: None,
+            };
+            let content = render_content(&group);
+            match super::governor::say(
+                &dstate.governor,
+                channel,
+                http,
+                super::governor::Surface::Send,
+                &content,
+            )
+            .await
+            {
+                Ok(sent) => {
+                    let comps = render_components(&group, sent.id.get());
+                    if !comps.is_empty()
+                        && let Some(Err(e)) = super::governor::edit_chrome(
+                            &dstate.governor,
+                            channel,
+                            http,
+                            sent.id,
+                            EditMessage::new()
+                                .embeds(render_embeds(&group))
+                                .components(comps),
+                        )
+                        .await
+                    {
+                        tracing::warn!("Discord: detached row component fixup failed: {e}");
+                    }
+                    dstate.upsert_tool_group(sent.id.get(), group).await;
+                    *gmid.lock().await = Some(sent.id);
+                }
+                Err(e) => tracing::warn!("Discord: failed to post detached row block: {e}"),
+            }
+        }
+    }
 }
 
 impl DiscordState {

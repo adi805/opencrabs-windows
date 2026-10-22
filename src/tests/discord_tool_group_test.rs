@@ -13,6 +13,7 @@ fn entries(n: usize, done: bool) -> Vec<GroupEntry> {
     (0..n)
         .map(|i| GroupEntry {
             call_id: String::new(),
+            task_id: None,
             name: format!("tool{i}"),
             context: format!(" (arg{i})"),
             status: if done { Some(true) } else { None },

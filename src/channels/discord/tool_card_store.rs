@@ -27,6 +27,10 @@ pub(crate) struct StoredEntry {
     pub context: String,
     pub call_id: String,
     pub status: Option<bool>,
+    /// Detached-task id (#2148). `default` so a snapshot written before the
+    /// field existed still restores.
+    #[serde(default)]
+    pub task_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -71,6 +75,7 @@ pub(crate) fn snapshot(group: &GroupState) -> StoredCard {
                 context: e.context.clone(),
                 call_id: e.call_id.clone(),
                 status: e.status,
+                task_id: e.task_id.clone(),
             })
             .collect(),
         notes: group.notes.clone(),
@@ -99,6 +104,7 @@ pub(crate) fn restore(stored: StoredCard) -> GroupState {
                 context: e.context,
                 call_id: e.call_id,
                 status: e.status,
+                task_id: e.task_id,
             })
             .collect(),
         notes: stored.notes,

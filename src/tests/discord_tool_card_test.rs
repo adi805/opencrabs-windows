@@ -10,6 +10,7 @@ use crate::channels::discord::tool_group::GroupEntry;
 fn entry(name: &str, context: &str, status: Option<bool>) -> GroupEntry {
     GroupEntry {
         call_id: String::new(),
+        task_id: None,
         name: name.to_string(),
         context: context.to_string(),
         status,
@@ -239,6 +240,7 @@ fn with_id(name: &str, context: &str, call_id: &str, status: Option<bool>) -> Gr
         name: name.to_string(),
         context: context.to_string(),
         call_id: call_id.to_string(),
+        task_id: None,
         status,
     }
 }

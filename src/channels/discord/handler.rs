@@ -1428,6 +1428,7 @@ pub(crate) async fn handle_message(
                                 name: tool_name,
                                 context: ctx_hint,
                                 call_id: tool_call_id.clone(),
+                                task_id: None,
                                 status: None,
                             });
                             t.clone()
@@ -1576,6 +1577,48 @@ pub(crate) async fn handle_message(
                                 tracing::warn!("Discord: tool group edit failed (status): {e}");
                             }
                         }
+                    });
+                }
+                // A detached task gets ONE row in the turn's block, and the
+                // finish edits that row rather than sending anything (#2148).
+                // `apply_detached_event` owns the decision, so a finish can
+                // never post a second block by accident.
+                ProgressEvent::DetachedTaskStarted { task_id, label } => {
+                    let gmid = group_msg_id.clone();
+                    let dstate = group_state_cb.clone();
+                    tokio::spawn(async move {
+                        super::tool_group::apply_detached_event(
+                            &dstate,
+                            channel,
+                            &http,
+                            &tools,
+                            &gmid,
+                            super::tool_group::DetachedEvent::Started {
+                                task_id: &task_id,
+                                label: &label,
+                            },
+                        )
+                        .await;
+                    });
+                }
+                ProgressEvent::DetachedTaskFinished {
+                    task_id, success, ..
+                } => {
+                    let gmid = group_msg_id.clone();
+                    let dstate = group_state_cb.clone();
+                    tokio::spawn(async move {
+                        super::tool_group::apply_detached_event(
+                            &dstate,
+                            channel,
+                            &http,
+                            &tools,
+                            &gmid,
+                            super::tool_group::DetachedEvent::Finished {
+                                task_id: &task_id,
+                                success,
+                            },
+                        )
+                        .await;
                     });
                 }
                 ProgressEvent::SelfHealingAlert { message } => {

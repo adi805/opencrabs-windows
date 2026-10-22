@@ -260,6 +260,7 @@ pub(crate) async fn route_followup_turn(
                                 name: tool_name,
                                 context: ctx_hint,
                                 call_id: tool_call_id.clone(),
+                                task_id: None,
                                 status: None,
                             });
                             t.clone()

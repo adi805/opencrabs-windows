@@ -14,6 +14,7 @@ fn live_group() -> GroupState {
         entries: (0..2)
             .map(|i| GroupEntry {
                 call_id: String::new(),
+                task_id: None,
                 name: format!("tool{i}"),
                 context: format!(" (arg{i})"),
                 status: None,
