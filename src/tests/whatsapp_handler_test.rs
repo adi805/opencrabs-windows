@@ -66,3 +66,37 @@ fn has_image_img_msg() {
     };
     assert!(has_image(&msg));
 }
+
+// ── status updates ────────────────────────────────────────────────────
+
+/// A status update is addressed to the `status@broadcast` pseudo-chat, which
+/// cannot receive a message. Without an ingest guard the handler starts a full
+/// turn for it and every send fails with `send_message to status@broadcast
+/// requires reaction_message.key.participant = status author`, once per
+/// composing tick plus once for the self-healing alert.
+///
+/// This is a shape test rather than a unit test on purpose: the guard lives at
+/// the top of the inbound handler, and nothing in this suite can build the
+/// client and state that handler needs. Asserting the guard is still there, and
+/// still ahead of the first call that writes into the chat, is the only check
+/// that fails when someone deletes it.
+#[test]
+fn status_broadcast_is_dropped_at_ingest() {
+    let src = include_str!("../channels/whatsapp/handler.rs");
+
+    let guard = src.find("is_status_broadcast()").expect(
+        "the inbound handler must drop status@broadcast: answering a status \
+         cannot succeed and costs a whole turn plus an error storm",
+    );
+
+    // `send_composing` writes into `info.source.chat`, so the guard has to run
+    // before the first one. Any later and the composing retry loop starts
+    // before the chat is known to be unreachable.
+    let first_write = src
+        .find("send_composing")
+        .expect("the handler is expected to signal composing somewhere");
+    assert!(
+        guard < first_write,
+        "the status@broadcast guard must run before the first write into the chat"
+    );
+}
