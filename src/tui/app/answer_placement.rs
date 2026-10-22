@@ -20,6 +20,20 @@ pub(crate) fn last_text_precedes_tool_group(messages: &[DisplayMessage]) -> bool
     }
 }
 
+/// True when `new` may be written over a row that already holds `existing`
+/// text.
+///
+/// Only an extension counts: the same text, or the same text with more behind
+/// it. A row holding a delivered report must never be replaced by a later,
+/// shorter closing line, because the report the user already read then reads as
+/// vanished while the database still holds it (#2165). When this returns false
+/// the answer becomes its own row instead, which loses nothing.
+pub(crate) fn answer_extends_row(existing: &str, new: &str) -> bool {
+    let existing = existing.trim();
+    let new = new.trim();
+    !existing.is_empty() && !new.is_empty() && new.starts_with(existing)
+}
+
 /// True when the response text is already on screen as this turn's assistant
 /// row, so appending it again would render the same answer twice.
 ///
@@ -33,12 +47,22 @@ pub(crate) fn last_text_precedes_tool_group(messages: &[DisplayMessage]) -> bool
 /// Only a row from the current turn counts. An assistant row that sits before
 /// the newest user row belongs to an earlier turn, and an answer that repeats
 /// it is a real answer, not a duplicate.
+///
+/// The row compared against is the last one that actually CARRIES TEXT, not the
+/// last assistant row outright. Most agentic turns push a reasoning-only row
+/// (`content` empty, the thinking in `details`) after the text and before the
+/// tool group, so comparing against that row compared against `""` and the
+/// dedupe never fired: the answer rendered twice, once capped as intermediate
+/// narration and once in full (#2165).
 pub(crate) fn answer_already_on_screen(messages: &[DisplayMessage], content: &str) -> bool {
     let trimmed = content.trim();
     if trimmed.is_empty() {
         return false;
     }
-    let Some(last_assistant) = messages.iter().rposition(|m| m.role == "assistant") else {
+    let Some(last_assistant) = messages
+        .iter()
+        .rposition(|m| m.role == "assistant" && !m.content.trim().is_empty())
+    else {
         return false;
     };
     if messages

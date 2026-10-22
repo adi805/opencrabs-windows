@@ -1,6 +1,8 @@
 //! Messaging — session CRUD, slash commands, message expansion, streaming.
 
-use super::answer_placement::{answer_already_on_screen, last_text_precedes_tool_group};
+use super::answer_placement::{
+    answer_already_on_screen, answer_extends_row, last_text_precedes_tool_group,
+};
 use super::dialogs::ensure_whispercrabs;
 use super::events::{AppMode, ToolApprovalResponse, TuiEvent};
 use super::onboarding::OnboardingWizard;
@@ -3451,61 +3453,60 @@ impl App {
         // where the fold hides it (see `answer_placement`).
         let answer_follows_tools =
             !response.content.is_empty() && last_text_precedes_tool_group(&self.messages);
-        if self.intermediate_text_received && !answer_follows_tools {
+        // This turn's rows only, so a stamp can never land on an earlier turn.
+        let turn_from = self.turn_start_len.min(self.messages.len());
+        // The row an answer may be written into: the last row of this turn that
+        // already carries text. Reasoning-only rows are skipped on purpose:
+        // their content is empty by design, so they are never the answer's home,
+        // and picking one left the answer sitting inside a thinking row.
+        let text_row = self.messages[turn_from..]
+            .iter()
+            .rposition(|m| m.role == "assistant" && !m.content.trim().is_empty())
+            .map(|i| i + turn_from);
+        // ... and the write only happens when the response EXTENDS what that row
+        // holds. Replacing a delivered report with a later, shorter closing line
+        // is how a report the user had already read came back as vanished while
+        // the database still held every character of it (#2165).
+        let write_row = if self.intermediate_text_received && !answer_follows_tools {
+            text_row.filter(|&i| answer_extends_row(&self.messages[i].content, &response.content))
+        } else {
+            None
+        };
+        if let Some(idx) = write_row {
             // IntermediateText only contained text BEFORE the last tool block.
             // The full response may have trailing text AFTER the last tool.
-            // Update the last intermediate assistant message with the full content
+            // Update the intermediate assistant message with the full content
             // so trailing text is not lost, and add cost/token metadata.
-            if let Some(last_assistant) = self
-                .messages
-                .iter_mut()
-                .rev()
-                .find(|m| m.role == "assistant")
-            {
-                let old_len = last_assistant.content.len();
-                // Only overwrite if the aggregated response actually has text.
-                // CLI providers (qwen-cli, opencode-cli) stream their full text
-                // through IntermediateText progress events and return an empty
-                // `response.content` at the end — blindly assigning would wipe
-                // the streamed text and make the reply vanish from the UI.
-                if !response.content.is_empty() {
-                    last_assistant.content = response.content.clone();
-                }
-                // Stamp the elapsed time before `processing_started_at` is
-                // cleared below (#964). Without this the settled header has
-                // nothing to show until the session is reloaded from the DB.
-                stamp_settled_metadata(
-                    last_assistant,
-                    &response,
-                    &reasoning_details,
-                    self.processing_started_at
-                        .map(|t| t.elapsed().as_secs() as i64),
-                );
-                tracing::debug!(
-                    "Updated intermediate assistant message: old_len={}, new_len={}",
-                    old_len,
-                    last_assistant.content.len()
-                );
-            } else {
-                // No intermediate message found (shouldn't happen), add as new
-                self.messages.push(DisplayMessage {
-                    id: response.message_id,
-                    role: "assistant".to_string(),
-                    content: response.content,
-                    timestamp: chrono::Utc::now(),
-                    token_count: Some(response.usage.output_tokens as i64),
-                    cost: Some(response.cost),
-                    approval: None,
-                    approve_menu: None,
-                    details: reasoning_details.clone(),
-                    expanded: false,
-                    expanded_full: false,
-                    tool_group: None,
-                    duration_secs: self
-                        .processing_started_at
-                        .map(|t| t.elapsed().as_secs() as i64),
-                });
-            }
+            let last_assistant = &mut self.messages[idx];
+            let old_len = last_assistant.content.len();
+            last_assistant.content = response.content.clone();
+            // Stamp the elapsed time before `processing_started_at` is
+            // cleared below (#964). Without this the settled header has
+            // nothing to show until the session is reloaded from the DB.
+            stamp_settled_metadata(
+                last_assistant,
+                &response,
+                &reasoning_details,
+                self.processing_started_at
+                    .map(|t| t.elapsed().as_secs() as i64),
+            );
+            tracing::debug!(
+                "Updated intermediate assistant message: old_len={}, new_len={}",
+                old_len,
+                last_assistant.content.len()
+            );
+        } else if let Some(idx) = text_row.filter(|_| response.content.is_empty()) {
+            // CLI providers (qwen-cli, opencode-cli) stream their full text
+            // through IntermediateText progress events and return an empty
+            // `response.content` at the end. Stamp the row that already holds
+            // the reply instead of adding a blank one.
+            stamp_settled_metadata(
+                &mut self.messages[idx],
+                &response,
+                &reasoning_details,
+                self.processing_started_at
+                    .map(|t| t.elapsed().as_secs() as i64),
+            );
         } else if answer_already_on_screen(&self.messages, &response.content) {
             // The answer text is already on screen as this turn's assistant row.
             // A turn that halts on an option-surface tool streams its answer and
@@ -3518,14 +3519,11 @@ impl App {
                 "[TUI] Duplicate answer row skipped: text already on screen (len={})",
                 response.content.len()
             );
-            if let Some(last_assistant) = self
-                .messages
-                .iter_mut()
-                .rev()
-                .find(|m| m.role == "assistant")
+            if let Some(idx) =
+                text_row.or_else(|| self.messages.iter().rposition(|m| m.role == "assistant"))
             {
                 stamp_settled_metadata(
-                    last_assistant,
+                    &mut self.messages[idx],
                     &response,
                     &reasoning_details,
                     self.processing_started_at
