@@ -44,6 +44,16 @@ fn paint_canvas(f: &mut Frame) {
     f.render_widget(Block::default().style(Style::default().bg(bg)), f.area());
 }
 
+/// Rows the chat transcript is guaranteed before the plan card takes any.
+///
+/// One number, one owner: the layout below asks for exactly this with
+/// `Constraint::Min`, so the card's budget and the layout's demand can never
+/// disagree. They used to (card reserved 6, layout demanded 10), and on a short
+/// terminal the solver satisfied the fixed card height by starving the
+/// transcript, which slid the live "thinking" row and the turn's answer under
+/// the checklist widget (#2165).
+pub(crate) const CHAT_FLOOR: u16 = 10;
+
 /// Budget the plan card against the real terminal rows (#1750).
 ///
 /// The card used to take `min(tasks + 2, 12)` unconditionally, so on a
@@ -63,14 +73,19 @@ pub(crate) fn plan_card_height(
     input_height: u16,
     queue_height: u16,
 ) -> u16 {
-    const CHAT_FLOOR: u16 = 6;
     const CARD_MIN: u16 = 3; // header + one windowed task row + footer
     const STATUS_BAR: u16 = 1;
     let reserved = STATUS_BAR
         .saturating_add(input_height)
         .saturating_add(queue_height)
         .saturating_add(CHAT_FLOOR);
-    let budget = area_height.saturating_sub(reserved).max(CARD_MIN);
+    // Not even the minimum card fits beside the chat floor: give the transcript
+    // the rows and draw no card. A three-row card on a screen this short buries
+    // the live turn, which is the thing being read.
+    if area_height < reserved.saturating_add(CARD_MIN) {
+        return 0;
+    }
+    let budget = area_height.saturating_sub(reserved);
     desired.min(budget).max(CARD_MIN)
 }
 
@@ -164,7 +179,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(10),              // [0] Chat messages
+            Constraint::Min(CHAT_FLOOR),      // [0] Chat messages
             Constraint::Length(plan_height),  // [1] Plan checklist (0 when no plan)
             Constraint::Length(queue_height), // [2] Queue preview (0 when no queue)
             Constraint::Length(input_height), // [3] Input (dynamic)
