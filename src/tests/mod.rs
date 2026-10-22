@@ -72,6 +72,7 @@ pub mod bash_interactive_reject_test;
 pub mod bash_posix_quote_test;
 pub mod bash_retry_loop_test;
 pub mod bash_ssh_detection_test;
+pub mod bash_sudo_detection_test;
 pub mod bash_toml_blocklist_test;
 pub mod bg_push_echo_test;
 pub mod bg_resume_test;

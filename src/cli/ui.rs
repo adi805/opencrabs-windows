@@ -1165,9 +1165,10 @@ async fn cmd_chat_inner(
                 tokio::time::timeout(std::time::Duration::from_secs(120), response_rx.recv())
                     .await
                     .map_err(|_| {
-                        crate::brain::agent::AgentError::Internal(
-                            "Sudo password request timed out (120s)".to_string(),
-                        )
+                        crate::brain::agent::AgentError::Internal(format!(
+                            "Sudo password request timed out (120s). {}",
+                            crate::brain::tools::bash::sudo_access_hint_cached()
+                        ))
                     })?
                     .ok_or_else(|| {
                         crate::brain::agent::AgentError::Internal(

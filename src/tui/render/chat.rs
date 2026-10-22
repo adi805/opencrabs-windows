@@ -1537,6 +1537,15 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
             ),
             Span::styled("\u{2588}", Style::default().fg(theme::role(Role::Gray))),
         ]));
+        // The one-time fix, so the prompt stops appearing at all (#2157). Dimmed:
+        // it is the answer to "why am I typing this every time", not part of the
+        // command the user is about to run.
+        for hint_line in crate::brain::tools::bash::sudo_access_hint_cached().lines() {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", hint_line),
+                Style::default().fg(theme::role(Role::GrayDim)),
+            )));
+        }
         // Help line
         lines.push(hints::footer_line(
             "  ",
