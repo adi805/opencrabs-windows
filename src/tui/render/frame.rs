@@ -215,11 +215,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
             }
         }
         AppMode::Sessions => {
-            // Clear the full area first to prevent artifacts from split panes
-            f.render_widget(Clear, full_content_area);
-            let (title_area, content_area) = split_title_area(full_content_area);
-            render_app_title(f, title_area);
-            render_sessions(f, app, content_area);
+            // Full-bleed (#2162): no app title row, no border, the whole
+            // terminal is the list. Clearing `f.area()` rather than
+            // `full_content_area` also repaints the bottom row that the
+            // latter excludes and this arm never drew, which used to leave
+            // stale chat pixels under the last session.
+            let area = f.area();
+            f.render_widget(Clear, area);
+            render_sessions(f, app, area);
         }
         AppMode::Help => {
             let (title_area, content_area) = split_title_area(full_content_area);

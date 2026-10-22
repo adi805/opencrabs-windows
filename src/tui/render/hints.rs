@@ -18,10 +18,11 @@ use crate::tui::app::dialog_keys::{DialogScope, dialog_keys};
 use super::chrome;
 use super::theme::{self, Role};
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 /// Footer key style: accent teal + bold, the /help key coloring the
 /// ticket locked as the reference.
@@ -70,6 +71,90 @@ pub fn render_footer(
         return;
     }
     frame.render_widget(Paragraph::new(footer_line("", keys)), area);
+}
+
+/// [`footer_line`] fitted to `width`.
+///
+/// Bindings that do not fit are dropped **whole**, in table order, so the
+/// row never ends on half a verb ("Searc"): a footer either says
+/// `/: search` or it says nothing about search. The first binding always
+/// renders, however narrow the terminal, because a footer with no keys at
+/// all is worse than a clipped one.
+pub fn footer_line_fitting(
+    indent: &str,
+    keys: &[crate::tui::app::dialog_keys::DialogKey],
+    width: u16,
+) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used = indent.width();
+    if !indent.is_empty() {
+        spans.push(Span::raw(indent.to_string()));
+    }
+    for (i, key) in keys.iter().enumerate() {
+        let binding = key.label.width() + 2 + key.verb.width();
+        if i > 0 && used + 2 + binding > width as usize {
+            break;
+        }
+        if i > 0 {
+            spans.push(Span::styled(
+                "  ",
+                Style::default().fg(theme::role(Role::GrayDim)),
+            ));
+            used += 2;
+        }
+        spans.push(Span::styled(key.label, key_style()));
+        spans.push(Span::styled(
+            format!(": {}", key.verb),
+            Style::default().fg(theme::role(Role::TextDim)),
+        ));
+        used += binding;
+    }
+    Line::from(spans)
+}
+
+/// Footer with a dim right-aligned context label ("38 sessions",
+/// "104 commands") on the same row.
+///
+/// The label is drawn only when it fits beside the fitted bindings with at
+/// least one blank cell between them, so the two can never collide or
+/// overwrite each other; when it does not fit the footer renders alone.
+pub fn render_footer_with_context(
+    frame: &mut Frame,
+    area: Rect,
+    keys: &[crate::tui::app::dialog_keys::DialogKey],
+    right_label: &str,
+) {
+    if area.width < 3 {
+        return;
+    }
+    let line = footer_line_fitting("", keys, area.width);
+    let footer_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
+    let label_width = right_label.width();
+    if right_label.is_empty() || footer_width + label_width + 2 > area.width as usize {
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
+
+    let label_width = label_width as u16;
+    frame.render_widget(
+        Paragraph::new(line),
+        Rect {
+            width: area.width - label_width - 2,
+            ..area
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            right_label.to_string(),
+            Style::default().fg(theme::role(Role::GrayDim)),
+        )))
+        .alignment(Alignment::Right),
+        Rect {
+            x: area.x + area.width - label_width,
+            width: label_width,
+            ..area
+        },
+    );
 }
 
 /// Render the expanded command panel for `scope` (#1775 Ctrl+C).

@@ -1467,14 +1467,15 @@ impl App {
             } else {
                 DialogScope::MissionControl
             }),
-            // Chat has no dialog chrome; Sessions/Projects/SessionFiles are
-            // deliberately outside the #1775 census; Onboarding keeps its
-            // contextual hints.
-            AppMode::Chat
-            | AppMode::Sessions
-            | AppMode::Projects
-            | AppMode::SessionFiles
-            | AppMode::Onboarding => None,
+            // The sessions list is a full-screen surface with its own keys,
+            // so it belongs in the census. Consequence: Ctrl+C inside it
+            // expands the command panel instead of starting the quit flow,
+            // which is what every other full-screen dialog already does;
+            // Esc still returns to chat.
+            AppMode::Sessions => Some(DialogScope::Sessions),
+            // Chat has no dialog chrome; Projects/SessionFiles stay outside
+            // the #1775 census; Onboarding keeps its contextual hints.
+            AppMode::Chat | AppMode::Projects | AppMode::SessionFiles | AppMode::Onboarding => None,
         }
     }
 

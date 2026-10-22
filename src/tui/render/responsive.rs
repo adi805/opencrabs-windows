@@ -37,3 +37,42 @@ pub const MC_WIDE_MIN: u16 = 120;
 pub fn mc_two_column(width: u16) -> bool {
     width >= MC_SPLIT_MIN
 }
+
+/// How much of a session row's metadata fits at the current width (#2162).
+///
+/// A session row is always exactly one terminal row. Which badges it can
+/// carry is decided here, once, so the row and any future consumer of the
+/// same data cannot disagree about what a 110 column terminal shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRowTier {
+    /// Under 100 columns: name, clock time, status glyph.
+    Narrow,
+    /// 100 to 119: full timestamp and the cumulative token count.
+    Medium,
+    /// 120 to 149: plus context usage and the provider/model pair.
+    Wide,
+    /// 150 and up: plus the project badge, working directory and branch.
+    ExtraWide,
+}
+
+/// Width at which a session row grows from clock-only to full timestamp.
+pub const SESSION_ROW_MEDIUM_MIN: u16 = 100;
+
+/// Width at which a session row adds context usage and provider/model.
+pub const SESSION_ROW_WIDE_MIN: u16 = 120;
+
+/// Width at which a session row adds project, working directory and branch.
+pub const SESSION_ROW_EXTRA_MIN: u16 = 150;
+
+/// Which badge tier a session row uses at `width` columns.
+pub fn session_row_tier(width: u16) -> SessionRowTier {
+    if width >= SESSION_ROW_EXTRA_MIN {
+        SessionRowTier::ExtraWide
+    } else if width >= SESSION_ROW_WIDE_MIN {
+        SessionRowTier::Wide
+    } else if width >= SESSION_ROW_MEDIUM_MIN {
+        SessionRowTier::Medium
+    } else {
+        SessionRowTier::Narrow
+    }
+}

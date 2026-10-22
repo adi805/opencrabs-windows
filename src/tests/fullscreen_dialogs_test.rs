@@ -1,0 +1,415 @@
+//! Full-bleed Sessions and Help (#2162).
+//!
+//! Both screens used to spend three rows on chrome (the app title row and a
+//! top plus bottom border) and both laid their content out with borders that
+//! stole two more columns. These are rendered-buffer assertions, not source
+//! scans: they prove the border is gone, the title row is gone, the footer
+//! owns the last row, and a session row is always exactly one row.
+
+use std::sync::Arc;
+
+use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+
+use crate::brain::agent::service::AgentService;
+use crate::db::Database;
+use crate::db::models::Session;
+use crate::services::ServiceContext;
+use crate::tests::agent_service_mocks::MockProvider;
+use crate::tui::app::App;
+use crate::tui::app::events::AppMode;
+use crate::tui::render::render;
+use crate::tui::render::theme::{self, Role};
+
+async fn app_in(mode: AppMode) -> App {
+    let db = Database::connect_in_memory().await.unwrap();
+    db.run_migrations().await.unwrap();
+    let context = ServiceContext::new(db.pool().clone());
+    let provider: Arc<dyn crate::brain::provider::Provider> = Arc::new(MockProvider);
+    let service = Arc::new(AgentService::new_for_test(provider, context.clone()).await);
+    #[cfg(feature = "whatsapp")]
+    let mut app = App::new(
+        service,
+        context,
+        Arc::new(crate::channels::whatsapp::WhatsAppState::new()),
+    );
+    #[cfg(not(feature = "whatsapp"))]
+    let mut app = App::new(service, context);
+    app.mode = mode;
+    // A real Sessions visit always arrives through a loaded session, and
+    // `load_session` binds the focused pane. An unbound pane renders the
+    // "select a session for the new pane" prompt on row 0, which would push
+    // every row down by one and quietly invalidate the row assertions.
+    if mode == AppMode::Sessions
+        && let Some(pane) = app.pane_manager.focused_pane_mut()
+    {
+        pane.session_id = Some(uuid::Uuid::new_v4());
+    }
+    app
+}
+
+fn session(title: &str) -> Session {
+    Session {
+        id: uuid::Uuid::new_v4(),
+        title: Some(title.to_string()),
+        model: None,
+        provider_name: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        archived_at: None,
+        token_count: 0,
+        total_cost: 0.0,
+        working_directory: None,
+        auto_title_attempted: false,
+        project_id: None,
+        channel_chat_key: None,
+    }
+}
+
+fn draw(app: &mut App, width: u16, height: u16) -> Buffer {
+    // A real Sessions visit always arrives with the focused pane bound to a
+    // session (`load_session` does the binding). An unbound pane correctly
+    // draws the "select a session for the new pane" prompt, which would push
+    // every row down by one and make the row assertions meaningless, so the
+    // fixture binds it here instead of pretending the prompt is not there.
+    if app.mode == AppMode::Sessions
+        && let Some(first) = app.sessions.first().map(|s| s.id)
+        && let Some(pane) = app.pane_manager.focused_pane_mut()
+    {
+        pane.session_id = Some(first);
+    }
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|f| render(f, app)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+fn row_text(buffer: &Buffer, y: u16, width: u16) -> String {
+    (0..width)
+        .map(|x| buffer[(x, y)].symbol().to_string())
+        .collect()
+}
+
+fn all_rows(buffer: &Buffer, width: u16, height: u16) -> Vec<String> {
+    (0..height).map(|y| row_text(buffer, y, width)).collect()
+}
+
+/// No border cell anywhere on screen: not a side, not a corner, not the
+/// rounded variant.
+fn assert_no_border(buffer: &Buffer, width: u16, height: u16) {
+    for y in 0..height {
+        for x in 0..width {
+            let sym = buffer[(x, y)].symbol();
+            assert!(
+                !matches!(
+                    sym,
+                    "│" | "┃" | "┌" | "┐" | "└" | "┘" | "╭" | "╮" | "╰" | "╯"
+                ),
+                "border cell {sym:?} at ({x},{y}) in a full-bleed screen"
+            );
+        }
+    }
+}
+
+/// The app title row (`🦀 OpenCrabs AI Agent vX.Y.Z`) is gone.
+fn assert_no_app_title(rows: &[String]) {
+    for row in rows {
+        assert!(
+            !row.contains("OpenCrabs AI Agent"),
+            "app title row still rendered: {row:?}"
+        );
+    }
+}
+
+// ── Sessions ────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn sessions_has_no_border_and_no_app_title() {
+    let mut app = app_in(AppMode::Sessions).await;
+    app.sessions = vec![session("CrabDev"), session("Crabsland")];
+
+    let (w, h) = (100u16, 30u16);
+    let buf = draw(&mut app, w, h);
+
+    assert_no_border(&buf, w, h);
+    let rows = all_rows(&buf, w, h);
+    assert_no_app_title(&rows);
+
+    // The very first row is content, not chrome.
+    assert!(
+        rows[0].contains("CrabDev"),
+        "first row must be the first session, got {:?}",
+        rows[0]
+    );
+}
+
+#[tokio::test]
+async fn sessions_row_never_wraps() {
+    let mut app = app_in(AppMode::Sessions).await;
+    // Far longer than the 60 columns it will be drawn in: if the row wrapped,
+    // the second session would land two or three rows below the first.
+    app.sessions = vec![
+        session(
+            &"Telegram: Open Crabs Official / OC Dev / a very long channel title that keeps going"
+                .repeat(2),
+        ),
+        session("Crabsland"),
+    ];
+
+    let (w, h) = (60u16, 20u16);
+    let buf = draw(&mut app, w, h);
+    let rows = all_rows(&buf, w, h);
+
+    let first = rows
+        .iter()
+        .position(|r| r.contains("Telegram"))
+        .unwrap_or_else(|| panic!("first session missing: {rows:?}"));
+    let second = rows
+        .iter()
+        .position(|r| r.contains("Crabsland"))
+        .unwrap_or_else(|| panic!("second session missing: {rows:?}"));
+    assert_eq!(
+        second,
+        first + 1,
+        "a long title wrapped instead of truncating: {rows:?}"
+    );
+    // Truncation is visible, not silent.
+    assert!(
+        rows[first].contains('…'),
+        "long name should be ellipsized: {:?}",
+        rows[first]
+    );
+}
+
+#[tokio::test]
+async fn sessions_selection_is_a_full_width_bar() {
+    let mut app = app_in(AppMode::Sessions).await;
+    app.sessions = vec![session("CrabDev"), session("Crabsland")];
+    app.selected_session_index = 1;
+
+    let (w, h) = (100u16, 20u16);
+    let buf = draw(&mut app, w, h);
+    let rows = all_rows(&buf, w, h);
+
+    let selected = rows
+        .iter()
+        .position(|r| r.contains("Crabsland"))
+        .unwrap_or_else(|| panic!("selected session missing: {rows:?}"));
+
+    let bar = theme::role(Role::SelectionBg);
+    for x in 0..w {
+        assert_eq!(
+            buf[(x, selected as u16)].bg,
+            bar,
+            "selection bar stops at column {x} of {w}"
+        );
+    }
+    // The row above is NOT selected, so the bar is the selection and not
+    // something every row carries.
+    let other = buf[(0, selected as u16 - 1)].bg;
+    assert_ne!(
+        other, bar,
+        "unselected row must not carry the selection bar"
+    );
+}
+
+#[tokio::test]
+async fn sessions_footer_is_the_last_row() {
+    let mut app = app_in(AppMode::Sessions).await;
+    app.sessions = vec![session("CrabDev")];
+
+    let (w, h) = (100u16, 20u16);
+    let buf = draw(&mut app, w, h);
+    let rows = all_rows(&buf, w, h);
+
+    let last = &rows[h as usize - 1];
+    assert!(
+        last.contains("↑↓: navigate"),
+        "footer missing from the last row: {last:?}"
+    );
+    assert!(
+        last.contains("Esc: back"),
+        "Esc must survive at 100 cols: {last:?}"
+    );
+    assert!(
+        !last.contains('['),
+        "bracket hint style leaked into the footer: {last:?}"
+    );
+    // Nothing below it: the footer really is the last row.
+    assert_eq!(rows.len(), h as usize);
+}
+
+#[tokio::test]
+async fn sessions_footer_drops_whole_bindings_when_narrow() {
+    let mut app = app_in(AppMode::Sessions).await;
+    app.sessions = vec![session("CrabDev")];
+
+    let wide = draw(&mut app, 200, 20);
+    let narrow = draw(&mut app, 44, 20);
+    let wide_footer = row_text(&wide, 19, 200);
+    let narrow_footer = row_text(&narrow, 19, 44).trim_end().to_string();
+
+    assert!(
+        wide_footer.trim_end().starts_with(&narrow_footer),
+        "narrow footer must be a prefix of the wide one\nwide:   {wide_footer:?}\nnarrow: {narrow_footer:?}"
+    );
+    // The last visible binding is whole: every verb in the narrow footer
+    // appears in the wide footer as a complete word followed by a separator
+    // or the end of the line.
+    for part in narrow_footer.split("  ") {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        assert!(
+            wide_footer.contains(part),
+            "binding {part:?} is cut mid-verb in the narrow footer"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sessions_row_badges_follow_width_tiers() {
+    let mut app = app_in(AppMode::Sessions).await;
+    let project_id = uuid::Uuid::new_v4();
+    let mut s = session("CrabDev");
+    s.provider_name = Some("opencrabs".to_string());
+    s.model = Some("flash".to_string());
+    s.token_count = 4_657_300;
+    s.project_id = Some(project_id);
+    app.sessions = vec![s];
+    app.project_name_cache
+        .insert(project_id, "crabsland".to_string());
+
+    // <100: name, clock time, status. No full date, no tokens, no provider.
+    let narrow = row_text(&draw(&mut app, 90, 20), 0, 90);
+    assert!(narrow.contains("CrabDev"), "{narrow:?}");
+    assert!(
+        !narrow.contains("2026-") && !narrow.contains("total"),
+        "90 cols must stay at clock-only: {narrow:?}"
+    );
+    assert!(
+        !narrow.contains("[opencrabs/flash]"),
+        "provider badge must not render at 90 cols: {narrow:?}"
+    );
+    assert!(
+        !narrow.contains("{.crabsland}"),
+        "project badge must not render at 90 cols: {narrow:?}"
+    );
+
+    // 100..119: full timestamp and cumulative tokens, still no provider.
+    let medium = row_text(&draw(&mut app, 110, 20), 0, 110);
+    assert!(
+        medium.contains("2026-") && medium.contains("total"),
+        "110 cols must show the full timestamp and total tokens: {medium:?}"
+    );
+    assert!(
+        !medium.contains("[opencrabs/flash]"),
+        "provider badge must not render at 110 cols: {medium:?}"
+    );
+
+    // 120..149: plus the provider/model pair, still no project badge.
+    let wide = row_text(&draw(&mut app, 130, 20), 0, 130);
+    assert!(
+        wide.contains("[opencrabs/flash]"),
+        "provider badge must render at 130 cols: {wide:?}"
+    );
+    assert!(
+        !wide.contains("{.crabsland}"),
+        "project badge must not render at 130 cols: {wide:?}"
+    );
+
+    // 150 and up: plus the project badge.
+    let extra = row_text(&draw(&mut app, 160, 20), 0, 160);
+    assert!(
+        extra.contains("[opencrabs/flash]"),
+        "provider badge must render at 160 cols: {extra:?}"
+    );
+    assert!(
+        extra.contains("{.crabsland}"),
+        "project badge must render at 160 cols: {extra:?}"
+    );
+
+    // Every tier keeps the name, whatever else it drops.
+    for row in [&narrow, &medium, &wide, &extra] {
+        assert!(row.contains("CrabDev"), "name lost: {row:?}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Footer drift: every binding the Sessions footer advertises must actually do
+// something. The footer is generated from `DialogScope::Sessions`, so a key
+// that stops being handled in `handle_sessions_key` would otherwise keep
+// rendering as a promise the screen no longer keeps (#2162).
+// ---------------------------------------------------------------------------
+
+use crate::tui::app::dialog_keys::{DialogScope, dialog_keys};
+use crossterm::event::KeyEvent;
+
+/// Everything a Sessions binding is allowed to move. A binding that changes
+/// none of these did nothing when pressed.
+#[derive(Debug, PartialEq, Eq)]
+struct SessionsProbe {
+    mode: AppMode,
+    selected: usize,
+    sessions: usize,
+    renaming: bool,
+    searching: bool,
+    panes: usize,
+}
+
+fn probe(app: &App) -> SessionsProbe {
+    SessionsProbe {
+        mode: app.mode,
+        selected: app.selected_session_index,
+        sessions: app.sessions.len(),
+        renaming: app.session_renaming,
+        searching: app.session_search_active,
+        panes: app.pane_manager.panes.len(),
+    }
+}
+
+/// Three real sessions in the DB and in the list, cursor in the middle so
+/// both Up and Down have somewhere to go.
+async fn sessions_app() -> App {
+    let mut app = app_in(AppMode::Sessions).await;
+    for i in 0..3 {
+        app.session_service
+            .create_session(Some(format!("drift session {i}")))
+            .await
+            .unwrap();
+    }
+    app.load_sessions().await.unwrap();
+    assert_eq!(app.sessions.len(), 3, "fixture did not load sessions");
+    app.selected_session_index = 1;
+    app
+}
+
+#[tokio::test]
+async fn every_sessions_footer_binding_is_handled() {
+    let table = dialog_keys(DialogScope::Sessions);
+    assert!(
+        table.len() >= 10,
+        "Sessions keymap shrank unexpectedly: {} bindings",
+        table.len()
+    );
+
+    for dialog_key in table {
+        for (code, mods) in dialog_key.events {
+            let mut app = sessions_app().await;
+            let before = probe(&app);
+            app.handle_sessions_key(KeyEvent::new(*code, *mods))
+                .await
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{}:{} ({code}) errored: {e}",
+                        dialog_key.label, dialog_key.verb
+                    )
+                });
+            let after = probe(&app);
+            assert_ne!(
+                before, after,
+                "{}:{} ({code}) is advertised in the footer but did nothing to the app state",
+                dialog_key.label, dialog_key.verb
+            );
+        }
+    }
+}

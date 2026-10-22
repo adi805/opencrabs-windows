@@ -798,6 +798,7 @@ pub mod tui_direct_model_switch_test;
 // Unix-only alongside the editor module it exercises (#1755).
 pub mod dialog_ctrl_c_panel_test;
 pub mod dialog_footer_batch_test;
+pub mod fullscreen_dialogs_test;
 pub mod help_responsive_test;
 pub mod tool_approval_hotkeys_test;
 pub mod tool_loop_rotation_rows_test;

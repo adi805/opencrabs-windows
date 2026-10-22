@@ -51,6 +51,9 @@ pub enum DialogScope {
     /// The SSH password prompt. No inline footer (it renders inside the
     /// input area); the scope exists so Ctrl+C can show its keys.
     SshPassword,
+    /// The `/sessions` list. A full-screen surface, so it belongs in the
+    /// census that `#1775` left it out of (#2162).
+    Sessions,
 }
 
 impl DialogScope {
@@ -76,6 +79,7 @@ impl DialogScope {
             DialogScope::ToolApproval => "Tool approval",
             DialogScope::ApprovePolicyMenu => "Approval policy",
             DialogScope::SshPassword => "SSH password",
+            DialogScope::Sessions => "Sessions",
         }
     }
 }
@@ -599,6 +603,70 @@ const TABLE_18: &[DialogKey] = &[DialogKey {
     verb: "close",
 }];
 
+/// The `/sessions` list (#2162). Display order is the footer's order AND
+/// its priority order: the footer drops bindings from the tail when the
+/// terminal is narrow, so the keys that matter most (navigate, open, get
+/// out) come first. Every event here is replayed into
+/// `handle_sessions_key` by the drift test, so a binding that stops being
+/// handled fails the build rather than sitting in the footer as a lie.
+const TABLE_19: &[DialogKey] = &[
+    DialogKey {
+        events: &[k(KeyCode::Up), k(KeyCode::Down)],
+        label: "↑↓",
+        verb: "navigate",
+    },
+    DialogKey {
+        events: &[k(KeyCode::Enter)],
+        label: "Enter",
+        verb: "select",
+    },
+    DialogKey {
+        events: &[k(KeyCode::Esc)],
+        label: "Esc",
+        verb: "back",
+    },
+    DialogKey {
+        events: &[k(KeyCode::Char('n'))],
+        label: "n",
+        verb: "new",
+    },
+    DialogKey {
+        events: &[k(KeyCode::Char('r'))],
+        label: "r",
+        verb: "rename",
+    },
+    DialogKey {
+        events: &[k(KeyCode::Char('d'))],
+        label: "d",
+        verb: "delete",
+    },
+    DialogKey {
+        events: &[k(KeyCode::Char('f'))],
+        label: "f",
+        verb: "files",
+    },
+    DialogKey {
+        events: &[k(KeyCode::Char('p'))],
+        label: "p",
+        verb: "projects",
+    },
+    DialogKey {
+        events: &[k(KeyCode::Char('|'))],
+        label: "|",
+        verb: "split h",
+    },
+    DialogKey {
+        events: &[k(KeyCode::Char('_'))],
+        label: "_",
+        verb: "split v",
+    },
+    DialogKey {
+        events: &[k(KeyCode::Char('/'))],
+        label: "/",
+        verb: "search",
+    },
+];
+
 pub fn dialog_keys(scope: DialogScope) -> &'static [DialogKey] {
     match scope {
         DialogScope::FilePicker => TABLE_1,
@@ -622,6 +690,7 @@ pub fn dialog_keys(scope: DialogScope) -> &'static [DialogKey] {
         DialogScope::ToolApproval => TABLE_15,
         DialogScope::ApprovePolicyMenu => TABLE_16,
         DialogScope::SshPassword => TABLE_17,
+        DialogScope::Sessions => TABLE_19,
     }
 }
 
@@ -674,6 +743,7 @@ mod tests {
             DialogScope::ToolApproval,
             DialogScope::ApprovePolicyMenu,
             DialogScope::SshPassword,
+            DialogScope::Sessions,
         ]
     }
 
