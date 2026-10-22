@@ -1193,6 +1193,7 @@ pub mod whatsapp_ban_visibility_test;
 pub mod whatsapp_blocklist_test;
 pub mod whatsapp_broadcast_test;
 pub mod whatsapp_composing_parity_test;
+pub mod whatsapp_detached_row_test;
 pub mod whatsapp_ephemeral_test;
 pub mod whatsapp_flow_options_test;
 pub mod whatsapp_flow_render_test;
