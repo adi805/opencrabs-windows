@@ -69,6 +69,67 @@ fn options_pending(streaming: &Arc<std::sync::Mutex<StreamingState>>) -> bool {
         .is_some()
 }
 
+/// Which intermediate bubbles does the final answer already deliver (#2156)?
+///
+/// Pure over the pairs so a test can assert on ids: the reported turn must
+/// yield the narration bubble and never the final bubble.
+///
+/// `final_id` is excluded from the candidates by construction, not by text
+/// comparison: the final bubble carries the answer verbatim, so a text-only
+/// predicate would flag it as a duplicate of itself and delete the very bubble
+/// the turn exists to deliver.
+pub(crate) fn duplicate_intermediate_ids(
+    final_text: &str,
+    final_id: MessageId,
+    bubbles: &[(MessageId, String)],
+) -> Vec<MessageId> {
+    bubbles
+        .iter()
+        .filter(|(id, _)| *id != final_id)
+        .filter(|(_, text)| super::flow::answer_already_delivers(final_text, text))
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+/// Delete the intermediate bubbles the final answer already delivers (#2156).
+///
+/// The dedup ladder above suppresses the FINAL when an intermediate equals it.
+/// A prefix never matched that comparison, so a 1962-char narration bubble
+/// survived above a 3761-char answer that opened with the same words. The
+/// answer is the complete copy, so the narration bubble is the duplicate and it
+/// is the one that goes.
+///
+/// Media-bearing intermediates are never touched: their bubble is the only copy
+/// of the documents it carries (#1939).
+///
+/// Returns the ids deleted, so a caller (and a test) can assert on addresses
+/// rather than on a count.
+pub(crate) async fn prune_delivered_intermediates(
+    bot: &Bot,
+    chat_id: ChatId,
+    streaming: &Arc<std::sync::Mutex<StreamingState>>,
+    final_text: &str,
+    final_id: MessageId,
+) -> Vec<MessageId> {
+    let doomed: Vec<MessageId> = {
+        let s = streaming.lock().unwrap_or_else(|e| e.into_inner());
+        duplicate_intermediate_ids(final_text, final_id, &s.intermediate_bubbles)
+    };
+    for mid in &doomed {
+        best_effort_delete(bot, chat_id, *mid, "duplicate intermediate").await;
+    }
+    if !doomed.is_empty() {
+        tracing::info!(
+            "Telegram: deleted {} intermediate bubble(s) the final already delivers (#2156)",
+            doomed.len()
+        );
+        let mut s = streaming.lock().unwrap_or_else(|e| e.into_inner());
+        s.intermediate_bubbles
+            .retain(|(id, _)| !doomed.contains(id));
+    }
+    doomed
+}
+
 /// True when a rich-send failure means Telegram could not fetch the embedded
 /// media (the mermaid.ink diagram) — a transient renderer or network window
 /// that a single re-send can sail (#tg-mermaid-delivery-hardening). Our
@@ -267,6 +328,36 @@ pub(crate) async fn deliver_final_response(
                     }
                 }
             } else {
+                // #2156: the final is non-empty, so it ships as its own bubble.
+                // A trailing folded run that the final already delivers must not
+                // stay in the block, or the turn ends with the answer twice: the
+                // resticked block above and the fresh bubble below.
+                let (redundant, trailer) = super::flow::take_folded_final_if_redundant(
+                    bot,
+                    chat_id,
+                    streaming,
+                    options_pending(streaming),
+                    &text_only,
+                )
+                .await;
+                if let Some(t) = trailer {
+                    let trailer_len = t.len();
+                    streaming
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .pending_trailer = Some(t);
+                    tracing::info!(
+                        "Telegram: stashed {trailer_len} trailer chars reclaimed from the \
+                         block before delivery (#2156)"
+                    );
+                }
+                if let Some(r) = redundant {
+                    tracing::info!(
+                        "Telegram: block trailing run ({} chars) is already delivered by \
+                         the final answer, reclaimed from the block (#2156)",
+                        r.len()
+                    );
+                }
                 text_only
             };
 
@@ -583,7 +674,7 @@ pub(crate) async fn deliver_final_response(
             // options_pending itself — same gate as the final-answer site
             // (#45) — or a fully-deduped buttons turn stays plain.
             // #1939: does a media-bearing intermediate already carry this
-            // exact body? Its bubble is not in `intermediate_msg_ids`, so
+            // exact body? Its bubble is not in `intermediate_bubbles`, so
             // the cleanup below cannot replace it: the arm would only
             // re-send the body the reader already has, and the copy's
             // markers would point at a bubble that holds nothing. Skipping
@@ -618,9 +709,9 @@ pub(crate) async fn deliver_final_response(
                 {
                     Ok(rich_msg_id) => {
                         // Delete the HTML intermediates now that rich message succeeded
-                        let intermediate_ids = {
+                        let intermediate_ids: Vec<MessageId> = {
                             let s = streaming.lock().unwrap_or_else(|e| e.into_inner());
-                            s.intermediate_msg_ids.clone()
+                            s.intermediate_bubbles.iter().map(|(id, _)| *id).collect()
                         };
                         for mid in &intermediate_ids {
                             best_effort_delete(bot, chat_id, *mid, "intermediate cleanup").await;
@@ -1101,6 +1192,22 @@ pub(crate) async fn deliver_final_response(
                 // flow message now, so just remove the now-empty streaming
                 // placeholder.
                 best_effort_delete(bot, chat_id, mid, "empty-final placeholder").await;
+            }
+
+            // #2156: the answer is in its own bubble now. Remove the
+            // intermediate bubbles whose text the answer already delivers, so
+            // the reader sees one answer instead of a narration bubble
+            // repeating it above. Deleting AFTER a successful send keeps the
+            // narration intact if delivery failed and had to degrade.
+            if let Some(final_mid) = sent_reply_id {
+                prune_delivered_intermediates(
+                    bot,
+                    chat_id,
+                    streaming,
+                    &text_only,
+                    MessageId(final_mid),
+                )
+                .await;
             }
 
             // Hand the merge candidate to the turn state (#tg-suggest-merge):

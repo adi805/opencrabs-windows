@@ -185,11 +185,13 @@ pub(crate) struct StreamingState {
     pub(crate) subagent_counts: SubagentCounts,
     /// Intermediate texts already sent — used to dedup final response
     pub(crate) sent_intermediates: Vec<String>,
-    /// Message IDs of every intermediate chunk delivered to Telegram, so a
-    /// cancelled in-flight call can clean up after itself. Without this, a
-    /// cancelled old call leaves its intermediate visible and the new call
-    /// re-sends the same text — the exact-match duplicate the user reported.
-    pub(crate) intermediate_msg_ids: Vec<MessageId>,
+    /// Every intermediate bubble delivered to Telegram this turn, as
+    /// (message id, text sent) pairs. The pairing is what makes cleanup
+    /// possible: a cancelled in-flight call deletes these bubbles, and the
+    /// final leg deletes the ones whose text the answer already delivers
+    /// (#2156). The ids alone could not answer "which bubble said this", so
+    /// a prefix duplicate had no address to remove.
+    pub(crate) intermediate_bubbles: Vec<(MessageId, String)>,
     /// Local files the intermediate plane already put in the chat, each
     /// with the id of the bubble that carries it (#1918). The final leg
     /// consumes these paths before shipping its own scan, so a reply that
@@ -200,7 +202,7 @@ pub(crate) struct StreamingState {
     /// Rich intermediates whose media array carried documents, as
     /// (bubble id, text sent) pairs (#1939). The array is the only copy of
     /// those documents in the chat, so these ids stay out of
-    /// `intermediate_msg_ids` (deleting them would destroy the file) and a
+    /// `intermediate_bubbles` (deleting them would destroy the file) and a
     /// body they already carry must not be re-sent by the rich fallback.
     pub(crate) media_intermediates: Vec<(teloxide::types::MessageId, String)>,
     /// Message IDs of every voice note delivered to Telegram via `send_voice`
@@ -274,7 +276,7 @@ impl StreamingState {
             bg_count: None,
             subagent_counts: Default::default(),
             sent_intermediates: Vec::new(),
-            intermediate_msg_ids: Vec::new(),
+            intermediate_bubbles: Vec::new(),
             voice_msg_ids: Vec::new(),
             processing: true,
             is_cli,
@@ -2161,6 +2163,90 @@ pub(crate) async fn take_folded_final(
     (host, trailer)
 }
 
+/// Normalize a body for duplicate comparison (#2156): collapse whitespace so a
+/// streamed run and the delivered answer compare on their words, not on where
+/// the line breaks fell.
+pub(crate) fn normalized_body(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Does `final_text` already deliver EVERY word of `candidate`? True when the
+/// candidate's normalized form is a prefix of the final's, which covers exact
+/// equality and the shape the reported turn hit: a 1962-char narration bubble
+/// sitting above a 3761-char answer that opens with the same words (#2156).
+///
+/// This is deliberately STRICTER than [`folded_duplicates_final`], which treats
+/// prefix overlap in EITHER direction as a duplicate. That symmetric form is
+/// right when the decision is "suppress the final, the text already went out",
+/// but it is unsafe for the two callers here, whose consequence is DELETION:
+/// when the candidate is LONGER than the final and merely starts with it, the
+/// candidate carries words the final never delivers, so removing it would drop
+/// content. Only the one direction that cannot lose anything is allowed.
+///
+/// Also deliberately not containment: a candidate that appears mid-answer is a
+/// separate report the final quotes, not a duplicate of it.
+pub(crate) fn answer_already_delivers(final_text: &str, candidate: &str) -> bool {
+    let cand = normalized_body(candidate);
+    if cand.is_empty() {
+        return false;
+    }
+    let fin = normalized_body(final_text);
+    if fin.is_empty() {
+        return false;
+    }
+    fin.starts_with(&cand)
+}
+
+/// Decide, and apply, the trailing-run reclaim for a NON-empty final (#2156).
+///
+/// Pops the trailing folded run and keeps the pop only when the final answer
+/// already delivers it; otherwise the entries are restored untouched, so
+/// narration the answer never repeats stays in the block. Pure over the entries
+/// so the decision is testable without a bot.
+pub(crate) fn pop_redundant_folded_texts(
+    entries: &mut Vec<FlowEntry>,
+    options_pending: bool,
+    final_text: &str,
+) -> (Option<String>, Option<String>) {
+    let snapshot = entries.clone();
+    let (host, trailer) = pop_trailing_folded_texts(entries, options_pending);
+    let redundant = host
+        .as_deref()
+        .is_some_and(|h| answer_already_delivers(final_text, h));
+    if redundant {
+        (host, trailer)
+    } else {
+        *entries = snapshot;
+        (None, None)
+    }
+}
+
+/// Reclaim the trailing folded run only when the final answer already delivers
+/// it (#2156). A NON-empty final ships as its own bubble, and the old code
+/// reclaimed nothing on that path, so the block kept its own copy of the
+/// answer: the reported turn ended with the resticked block (3651 chars) above
+/// a final bubble (3761) repeating it, and the block later grew to 5503.
+///
+/// The decision is made BEFORE the block is re-rendered: when the trailing run
+/// is narration the final never repeats, the entries are restored untouched and
+/// no edit is issued.
+pub(crate) async fn take_folded_final_if_redundant(
+    bot: &Bot,
+    chat: ChatId,
+    streaming: &Arc<std::sync::Mutex<StreamingState>>,
+    options_pending: bool,
+    final_text: &str,
+) -> (Option<String>, Option<String>) {
+    let kept = {
+        let mut s = streaming.lock().unwrap_or_else(|e| e.into_inner());
+        pop_redundant_folded_texts(&mut s.flow_entries, options_pending, final_text)
+    };
+    if kept.0.is_some() || kept.1.is_some() {
+        refresh_flow(bot, chat, streaming, super::governor::EditClass::Final).await;
+    }
+    kept
+}
+
 /// Pop the trailing folded `Text` runs, split into host and trailer runs
 /// (#478, #31). Mid-turn narration is always followed by more tool calls, so
 /// the trailing text run after the last tool IS the final answer — and
@@ -2295,8 +2381,8 @@ pub(crate) fn last_folded_text(entries: &[FlowEntry]) -> Option<&String> {
 /// short distinct narration line that merely shares an opening is not mistaken
 /// for the answer.
 pub(crate) fn folded_duplicates_final(folded: &str, final_text: &str) -> bool {
-    let norm_folded: String = folded.split_whitespace().collect::<Vec<_>>().join(" ");
-    let norm_final: String = final_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let norm_folded = normalized_body(folded);
+    let norm_final = normalized_body(final_text);
     if norm_folded.is_empty() || norm_final.is_empty() {
         return false;
     }

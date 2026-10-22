@@ -1093,6 +1093,7 @@ pub mod telegram_bg_resume_gate_test;
 pub mod telegram_caption_test;
 pub mod telegram_code_fence_balance_test;
 pub mod telegram_command_sanitize_test;
+pub mod telegram_double_answer_test;
 pub mod telegram_flow_chrome_test;
 pub mod telegram_followup_midturn_queue_test;
 pub mod telegram_followup_pick_test;

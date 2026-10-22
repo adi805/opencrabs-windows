@@ -1435,7 +1435,7 @@ mod intermediate {
             bg_count: None,
             subagent_counts: Default::default(),
             sent_intermediates: Vec::new(),
-            intermediate_msg_ids: Vec::new(),
+            intermediate_bubbles: Vec::new(),
             voice_msg_ids: Vec::new(),
             processing: true,
             is_cli: false,
@@ -1514,7 +1514,7 @@ mod intermediate {
             "the bubble is recorded as media-bearing"
         );
         assert!(
-            s.intermediate_msg_ids.is_empty(),
+            s.intermediate_bubbles.is_empty(),
             "a media-bearing bubble is never deletable"
         );
     }
@@ -1582,7 +1582,7 @@ mod intermediate {
         let s = st.lock().unwrap_or_else(|e| e.into_inner());
         // #1939: on this leg each document IS its own bubble, so the pair
         // points at the document itself, and that id never joins
-        // `intermediate_msg_ids` (only the text chunks do): the rich
+        // `intermediate_bubbles` (only the text chunks do): the rich
         // fallback deletes the text around the file, never the file.
         assert_eq!(
             s.delivered_files,
