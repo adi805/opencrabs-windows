@@ -239,10 +239,16 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App, area: Rect) {
         Line::from(""),
     ];
 
-    // Full-bleed (#2162): content fills everything above the last row, and
-    // the last row is the shared command footer. No border, no title row.
-    let [content_area, footer_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    // Full-bleed (#2162): content fills everything above the last two rows.
+    // The second to last is a dim rule and the last is the shared command
+    // footer, so the commands read as a footer instead of as two more
+    // entries in the catalog. No border, no title row.
+    let [content_area, separator_area, footer_area] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
 
     // The search row exists only while a filter is being typed or applied.
     // Idle Help has no header at all, which is the row that was eating space.
@@ -323,6 +329,7 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(Paragraph::new(combined).scroll((left_scroll, 0)), body);
     }
 
+    hints::render_separator(f, separator_area);
     hints::render_footer_with_context(
         f,
         footer_area,

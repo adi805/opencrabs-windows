@@ -371,12 +371,100 @@ async fn help_footer_is_the_last_row_and_content_fills_the_rest() {
         last.contains("Esc: back"),
         "help footer missing from the last row: {last:?}"
     );
-    // Content reaches the row directly above the footer: the second column
-    // band is occupied, not blank.
-    let above = &rows[h as usize - 2];
+    // The rule sits between the catalog and the footer, and it spans the
+    // whole width: that is what marks the footer as a footer.
+    assert_rule_row(&rows[h as usize - 2], w);
+    // Content reaches the bottom: the last non-blank row of the catalog sits
+    // within two rows of the rule. The catalog puts a single blank separator
+    // between sections, so demanding text on the exact row above the rule
+    // fails whenever a gap lands there; what must never happen is a blank
+    // band, which is what the old border plus its padding left behind.
+    let last_content = rows[..h as usize - 2]
+        .iter()
+        .rposition(|r| !r.trim().is_empty())
+        .unwrap_or_else(|| panic!("help content is empty: {rows:?}"));
     assert!(
-        !above.trim().is_empty(),
-        "row above the footer is blank, content is not filling the screen"
+        last_content + 2 >= h as usize - 2,
+        "blank band above the footer: last content row is {last_content}, rule is at {}",
+        h as usize - 2
+    );
+}
+
+/// A separator row: nothing but `─` across the full width.
+fn assert_rule_row(row: &str, width: u16) {
+    let trimmed = row.trim_end();
+    assert!(!trimmed.is_empty(), "expected a rule row, got a blank line");
+    assert!(
+        trimmed.chars().all(|c| c == '─'),
+        "expected a rule of `─` only, got {row:?}"
+    );
+    assert_eq!(
+        trimmed.chars().count(),
+        width as usize,
+        "the rule must span the full width: {row:?}"
+    );
+}
+
+#[tokio::test]
+async fn sessions_has_a_rule_between_list_and_footer() {
+    let mut app = app_in(AppMode::Sessions).await;
+    app.sessions = vec![session("CrabDev"), session("Crabsland")];
+
+    let (w, h) = (100u16, 20u16);
+    let buf = draw(&mut app, w, h);
+    let rows = all_rows(&buf, w, h);
+
+    assert_rule_row(&rows[h as usize - 2], w);
+    // The list stops above the rule: the last session is not on the rule row
+    // and the footer is not on the last content row.
+    assert!(
+        !rows[h as usize - 2].contains("CrabDev"),
+        "session row leaked onto the rule row"
+    );
+    assert!(
+        rows[h as usize - 1].contains("↑↓: navigate"),
+        "footer must still own the last row: {:?}",
+        rows[h as usize - 1]
+    );
+}
+
+#[tokio::test]
+async fn sessions_row_never_clips_a_badge() {
+    let mut app = app_in(AppMode::Sessions).await;
+    // A provider/model pair plus a working directory at a width whose tier
+    // would normally show them: the row has to drop whole badges rather than
+    // let the terminal cut one at the edge.
+    // The title is longer than the room the badges leave at this width, so the
+    // ellipsis path is genuinely exercised: a short title would fit and prove
+    // nothing about truncation.
+    let mut s = session(
+        "A session with a very long title that takes the room and then keeps going well past the edge of any sane terminal",
+    );
+    s.provider_name = Some("openrouter-with-a-long-name".to_string());
+    s.model = Some("anthropic/claude-sonnet-4-very-long-model-name".to_string());
+    s.token_count = 1_234_567;
+    s.working_directory =
+        Some("/Users/someone/srv/rs/opencrabs-a-really-deep-directory".to_string());
+    app.sessions = vec![s];
+
+    let (w, h) = (100u16, 20u16);
+    let buf = draw(&mut app, w, h);
+    let rows = all_rows(&buf, w, h);
+
+    let row = &rows[0];
+    // The row fits the terminal: no cell of it was pushed off the edge.
+    assert_eq!(row.chars().count(), w as usize, "row width changed");
+    // A badge that survived is whole: a provider badge opens and closes.
+    let opens = row.matches('[').count();
+    let closes = row.matches(']').count();
+    assert_eq!(
+        opens, closes,
+        "a badge was cut mid-token: {row:?} (the `[oper` bug)"
+    );
+    // And the name is still truncated with an ellipsis rather than dropped.
+    assert!(
+        row.contains('…'),
+        "the long name should be ellipsised, got {row:?}"
     );
 }
 

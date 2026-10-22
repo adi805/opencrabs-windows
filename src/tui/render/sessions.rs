@@ -38,12 +38,18 @@ fn project_badge_color(project_id: uuid::Uuid) -> Color {
 
 /// Render the sessions list.
 ///
-/// Content fills everything above the last row; the last row is the shared
-/// command footer. Nothing else is drawn, which is where the three rows the
-/// bordered version spent on chrome now go.
+/// Content fills everything above the last two rows; the second to last is a
+/// dim rule and the last is the shared command footer. Without the rule the
+/// footer sat flush under the final session and read as one more row, which
+/// is what made the screen hard to parse. Nothing else is drawn, which is
+/// where the three rows the bordered version spent on chrome now go.
 pub(super) fn render_sessions(f: &mut Frame, app: &App, area: Rect) {
-    let [content_area, footer_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    let [content_area, rule_area, footer_area] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
 
     // Compute filtered session indices based on search
     let visible_indices: Vec<usize> = if app.session_search.is_empty() {
@@ -161,6 +167,7 @@ pub(super) fn render_sessions(f: &mut Frame, app: &App, area: Rect) {
 
     f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), content_area);
 
+    hints::render_separator(f, rule_area);
     hints::render_footer_with_context(
         f,
         footer_area,
@@ -187,143 +194,168 @@ fn session_row(
     let mid = Style::default().fg(theme::role(Role::GrayMid));
     let gray = Style::default().fg(theme::role(Role::Gray));
 
-    // Everything to the right of the name. Built first because its width
-    // decides how much room the name gets.
-    let mut right: Vec<Span<'static>> = Vec::new();
+    // Everything to the right of the name, for one tier. Built first because
+    // its width decides how much room the name gets, and built as a closure
+    // because a tier whose badges do not fit is dropped for the next one
+    // down rather than clipped at the edge.
+    let build_right = |tier: SessionRowTier| -> Vec<Span<'static>> {
+        let mut right: Vec<Span<'static>> = Vec::new();
 
-    // Show LAST ACTIVITY, not creation. The list is ordered by
-    // `updated_at DESC` (`list_sessions`), so printing `created_at` made the
-    // rows look mis-sorted: a session last used minutes ago but opened in
-    // March rendered "2026-03-26" above one created yesterday.
-    match tier {
-        SessionRowTier::Narrow => right.push(Span::styled(
-            format!(" {}", session.updated_at.format("%H:%M")),
-            dim,
-        )),
-        _ => right.push(Span::styled(
-            format!(" {}", session.updated_at.format("%Y-%m-%d %H:%M")),
-            dim,
-        )),
-    }
+        // Show LAST ACTIVITY, not creation. The list is ordered by
+        // `updated_at DESC` (`list_sessions`), so printing `created_at` made the
+        // rows look mis-sorted: a session last used minutes ago but opened in
+        // March rendered "2026-03-26" above one created yesterday.
+        match tier {
+            SessionRowTier::Narrow => right.push(Span::styled(
+                format!(" {}", session.updated_at.format("%H:%M")),
+                dim,
+            )),
+            _ => right.push(Span::styled(
+                format!(" {}", session.updated_at.format("%Y-%m-%d %H:%M")),
+                dim,
+            )),
+        }
 
-    if tier != SessionRowTier::Narrow && session.token_count > 0 {
-        right.push(Span::styled(
-            format!(
-                "  {}",
-                format_token_count_with_label(session.token_count, "total")
-            ),
-            mid,
-        ));
-    }
-
-    if matches!(tier, SessionRowTier::Wide | SessionRowTier::ExtraWide) {
-        if is_current && let Some(input_tok) = app.last_input_tokens {
-            let pct = app.context_usage_percent();
-            let color = if pct > 80.0 {
-                theme::role(Role::Error)
-            } else if pct > 50.0 {
-                theme::role(Role::Accent)
-            } else {
-                theme::role(Role::AccentTeal)
-            };
+        if tier != SessionRowTier::Narrow && session.token_count > 0 {
             right.push(Span::styled(
                 format!(
-                    "  ctx {}/{} {:.0}%",
-                    format_token_count_raw(input_tok as i64),
-                    format_token_count_raw(app.context_max_tokens as i64),
-                    pct
+                    "  {}",
+                    format_token_count_with_label(session.token_count, "total")
                 ),
-                Style::default().fg(color),
+                mid,
             ));
         }
-        if let Some(prov) = session.provider_name.as_ref() {
-            let model = session.model.as_deref().unwrap_or("default");
-            right.push(Span::styled(format!("  [{prov}/{model}]"), gray));
-        }
-    }
 
-    if tier == SessionRowTier::ExtraWide {
-        if let Some(pid) = session.project_id {
-            let project_name = app
-                .project_name_cache
-                .get(&pid)
-                .map(|s| s.as_str())
-                .unwrap_or("?");
+        if matches!(tier, SessionRowTier::Wide | SessionRowTier::ExtraWide) {
+            if is_current && let Some(input_tok) = app.last_input_tokens {
+                let pct = app.context_usage_percent();
+                let color = if pct > 80.0 {
+                    theme::role(Role::Error)
+                } else if pct > 50.0 {
+                    theme::role(Role::Accent)
+                } else {
+                    theme::role(Role::AccentTeal)
+                };
+                right.push(Span::styled(
+                    format!(
+                        "  ctx {}/{} {:.0}%",
+                        format_token_count_raw(input_tok as i64),
+                        format_token_count_raw(app.context_max_tokens as i64),
+                        pct
+                    ),
+                    Style::default().fg(color),
+                ));
+            }
+            if let Some(prov) = session.provider_name.as_ref() {
+                let model = session.model.as_deref().unwrap_or("default");
+                right.push(Span::styled(format!("  [{prov}/{model}]"), gray));
+            }
+        }
+
+        if tier == SessionRowTier::ExtraWide {
+            if let Some(pid) = session.project_id {
+                let project_name = app
+                    .project_name_cache
+                    .get(&pid)
+                    .map(|s| s.as_str())
+                    .unwrap_or("?");
+                right.push(Span::styled(
+                    format!("  {{.{project_name}}}"),
+                    Style::default().fg(project_badge_color(pid)),
+                ));
+            }
+            if let Some(wd) = session.working_directory.as_ref() {
+                let home_dir = dirs::home_dir()
+                    .map(|h| h.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let short = if !home_dir.is_empty() && wd.starts_with(&home_dir) {
+                    format!("~{}", &wd[home_dir.len()..])
+                } else {
+                    wd.clone()
+                };
+                right.push(Span::styled(
+                    format!("  {short}"),
+                    Style::default().fg(theme::role(Role::BlueSteel)),
+                ));
+                if let Some(branch) =
+                    crate::utils::git_branch::current_branch(std::path::Path::new(wd))
+                {
+                    right.push(Span::styled(
+                        format!(" ({branch})"),
+                        Style::default().fg(theme::role(Role::AccentTeal)),
+                    ));
+                }
+            }
+        }
+
+        // Status is state, not decoration, so it renders at every width.
+        if app.processing_sessions.contains(&session.id) {
+            const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            let frame = app.animation_frame % SPINNER.len();
             right.push(Span::styled(
-                format!("  {{.{project_name}}}"),
-                Style::default().fg(project_badge_color(pid)),
+                format!(" {}", SPINNER[frame]),
+                Style::default().fg(theme::role(Role::Accent)),
+            ));
+        } else if app.sessions_with_pending_approval.contains(&session.id) {
+            right.push(Span::styled(
+                " !",
+                Style::default()
+                    .fg(theme::role(Role::Accent))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else if app.sessions_with_unread.contains(&session.id) {
+            right.push(Span::styled(
+                " ●",
+                Style::default().fg(theme::role(Role::AccentTeal)),
             ));
         }
-        if let Some(wd) = session.working_directory.as_ref() {
-            let home_dir = dirs::home_dir()
-                .map(|h| h.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let short = if !home_dir.is_empty() && wd.starts_with(&home_dir) {
-                format!("~{}", &wd[home_dir.len()..])
-            } else {
-                wd.clone()
-            };
+
+        if is_current {
             right.push(Span::styled(
-                format!("  {short}"),
-                Style::default().fg(theme::role(Role::BlueSteel)),
+                " *",
+                Style::default()
+                    .fg(theme::role(Role::Gray))
+                    .add_modifier(Modifier::BOLD),
             ));
-            if let Some(branch) = crate::utils::git_branch::current_branch(std::path::Path::new(wd))
-            {
+        }
+
+        // Pane indicator: which pane this session already occupies.
+        if app.pane_manager.is_split() {
+            let pane_ids = app.pane_manager.pane_ids_in_order();
+            if let Some(pos) = pane_ids.iter().position(|pid| {
+                app.pane_manager
+                    .get(*pid)
+                    .is_some_and(|p| p.session_id == Some(session.id))
+            }) {
                 right.push(Span::styled(
-                    format!(" ({branch})"),
-                    Style::default().fg(theme::role(Role::AccentTeal)),
+                    format!(" [pane {}]", pos + 1),
+                    Style::default().fg(theme::role(Role::Success)),
                 ));
             }
         }
-    }
 
-    // Status is state, not decoration, so it renders at every width.
-    if app.processing_sessions.contains(&session.id) {
-        const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let frame = app.animation_frame % SPINNER.len();
-        right.push(Span::styled(
-            format!(" {}", SPINNER[frame]),
-            Style::default().fg(theme::role(Role::Accent)),
-        ));
-    } else if app.sessions_with_pending_approval.contains(&session.id) {
-        right.push(Span::styled(
-            " !",
-            Style::default()
-                .fg(theme::role(Role::Accent))
-                .add_modifier(Modifier::BOLD),
-        ));
-    } else if app.sessions_with_unread.contains(&session.id) {
-        right.push(Span::styled(
-            " ●",
-            Style::default().fg(theme::role(Role::AccentTeal)),
-        ));
-    }
+        right
+    };
 
-    if is_current {
-        right.push(Span::styled(
-            " *",
-            Style::default()
-                .fg(theme::role(Role::Gray))
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-
-    // Pane indicator: which pane this session already occupies.
-    if app.pane_manager.is_split() {
-        let pane_ids = app.pane_manager.pane_ids_in_order();
-        if let Some(pos) = pane_ids.iter().position(|pid| {
-            app.pane_manager
-                .get(*pid)
-                .is_some_and(|p| p.session_id == Some(session.id))
-        }) {
-            right.push(Span::styled(
-                format!(" [pane {}]", pos + 1),
-                Style::default().fg(theme::role(Role::Success)),
-            ));
+    // The tier comes from the terminal width, but the badges themselves can
+    // still be wider than the terminal: a long provider/model pair or a deep
+    // working directory used to push the row past `width`, and the terminal
+    // then clipped it mid-token (the `[oper` at the right edge). Dropping
+    // whole tiers is how the row fits, so what is shown is never cut in half.
+    let gutter_width = "  ".len();
+    let mut tier = tier;
+    let mut right = build_right(tier);
+    let mut right_width: usize = right.iter().map(|s| s.content.width()).sum();
+    while gutter_width + 2 + right_width > width {
+        match tier.narrower() {
+            Some(next) => {
+                tier = next;
+                right = build_right(tier);
+                right_width = right.iter().map(|s| s.content.width()).sum();
+            }
+            None => break,
         }
     }
-
-    let right_width: usize = right.iter().map(|s| s.content.width()).sum();
 
     // Green marks a session already assigned to the project being assigned.
     let is_assigned_to_target = app

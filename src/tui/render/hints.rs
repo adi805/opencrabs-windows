@@ -73,6 +73,26 @@ pub fn render_footer(
     frame.render_widget(Paragraph::new(footer_line("", keys)), area);
 }
 
+/// A dim horizontal rule across `area`, drawn on the row above a footer.
+///
+/// The full-bleed dialogs have no border left (#2162), so without this the
+/// footer reads as one more row of the list: same background, same left
+/// edge, nothing marking where the content stops. One row of `─` in
+/// `GrayDim` is the whole cost, and it is the only chrome those screens
+/// keep. It is deliberately not a border: no corners, no sides, no title.
+pub fn render_separator(frame: &mut Frame, area: Rect) {
+    if area.width < 3 || area.height == 0 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(area.width as usize),
+            Style::default().fg(theme::role(Role::GrayDim)),
+        ))),
+        area,
+    );
+}
+
 /// [`footer_line`] fitted to `width`.
 ///
 /// Bindings that do not fit are dropped **whole**, in table order, so the

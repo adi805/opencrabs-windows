@@ -76,3 +76,20 @@ pub fn session_row_tier(width: u16) -> SessionRowTier {
         SessionRowTier::Narrow
     }
 }
+
+impl SessionRowTier {
+    /// The next tier down, or `None` at the narrowest one.
+    ///
+    /// The tier a row starts on comes from the terminal width, but a long
+    /// provider/model pair or a deep working directory can still be wider
+    /// than the terminal at that tier. Dropping a tier is how a row loses
+    /// whole badges instead of having one clipped mid-token at the edge.
+    pub fn narrower(self) -> Option<SessionRowTier> {
+        match self {
+            SessionRowTier::ExtraWide => Some(SessionRowTier::Wide),
+            SessionRowTier::Wide => Some(SessionRowTier::Medium),
+            SessionRowTier::Medium => Some(SessionRowTier::Narrow),
+            SessionRowTier::Narrow => None,
+        }
+    }
+}
