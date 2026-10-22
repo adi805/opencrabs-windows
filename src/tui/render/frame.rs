@@ -225,9 +225,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
             render_sessions(f, app, area);
         }
         AppMode::Help => {
-            let (title_area, content_area) = split_title_area(full_content_area);
-            render_app_title(f, title_area);
-            render_help(f, app, content_area);
+            // Full-bleed (#2162), same as Sessions: the border and the
+            // title row were spending three of the screen's rows.
+            let area = f.area();
+            f.render_widget(Clear, area);
+            render_help(f, app, area);
         }
         AppMode::PlanOverlay => {
             f.render_widget(Clear, full_content_area);

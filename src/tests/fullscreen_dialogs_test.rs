@@ -334,6 +334,136 @@ async fn sessions_row_badges_follow_width_tiers() {
     }
 }
 
+// ── Help ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn help_has_no_border_and_no_app_title() {
+    let mut app = app_in(AppMode::Help).await;
+
+    let (w, h) = (100u16, 30u16);
+    let buf = draw(&mut app, w, h);
+
+    assert_no_border(&buf, w, h);
+    let rows = all_rows(&buf, w, h);
+    assert_no_app_title(&rows);
+    assert!(
+        rows[0].contains("ABOUT"),
+        "idle help must start with content, got {:?}",
+        rows[0]
+    );
+    assert!(
+        !rows[0].contains('🔍'),
+        "idle help must not render a search row: {:?}",
+        rows[0]
+    );
+}
+
+#[tokio::test]
+async fn help_footer_is_the_last_row_and_content_fills_the_rest() {
+    let mut app = app_in(AppMode::Help).await;
+
+    let (w, h) = (100u16, 30u16);
+    let buf = draw(&mut app, w, h);
+    let rows = all_rows(&buf, w, h);
+
+    let last = &rows[h as usize - 1];
+    assert!(
+        last.contains("Esc: back"),
+        "help footer missing from the last row: {last:?}"
+    );
+    // Content reaches the row directly above the footer: the second column
+    // band is occupied, not blank.
+    let above = &rows[h as usize - 2];
+    assert!(
+        !above.trim().is_empty(),
+        "row above the footer is blank, content is not filling the screen"
+    );
+}
+
+#[tokio::test]
+async fn help_two_columns_only_when_wide() {
+    let mut app = app_in(AppMode::Help).await;
+
+    let wide = draw(&mut app, 120, 30);
+    // Single column stacks every right-hand section under the left ones, so
+    // SESSIONS only comes into view on a terminal tall enough to hold the
+    // whole stack.
+    let narrow = draw(&mut app, 80, 140);
+
+    let wide_rows = all_rows(&wide, 120, 30);
+    let sessions_wide = wide_rows
+        .iter()
+        .position(|r| r.contains("SESSIONS"))
+        .unwrap_or_else(|| panic!("SESSIONS missing at 120 cols: {wide_rows:?}"));
+    let col = wide_rows[sessions_wide].find("SESSIONS").unwrap();
+    assert!(
+        col > 60,
+        "at 120 cols SESSIONS must sit in the right column (col {col})"
+    );
+    // The separator that replaced the border is there.
+    assert!(
+        wide_rows[sessions_wide].contains('│'),
+        "two-column help must draw the rule: {:?}",
+        wide_rows[sessions_wide]
+    );
+
+    let narrow_rows = all_rows(&narrow, 80, 140);
+    let sessions_narrow = narrow_rows
+        .iter()
+        .position(|r| r.contains("SESSIONS"))
+        .unwrap_or_else(|| panic!("SESSIONS missing at 80 cols: {narrow_rows:?}"));
+    let col = narrow_rows[sessions_narrow].find("SESSIONS").unwrap();
+    assert!(
+        col < 40,
+        "at 80 cols the right column is stacked, so SESSIONS starts at the left (col {col})"
+    );
+    assert!(
+        !narrow_rows.iter().any(|r| r.contains('│')),
+        "single column must not draw a rule"
+    );
+}
+
+#[tokio::test]
+async fn help_scroll_clamps_each_column_independently() {
+    let mut app = app_in(AppMode::Help).await;
+
+    // Two columns on a terminal shorter than either one, so each column has
+    // its own maximum scroll and the two maxima differ. That difference is
+    // the whole point: one shared offset must not drag the short column past
+    // its end into blank space.
+    let (w, h) = (120u16, 24u16);
+    let _ = draw(&mut app, w, h);
+
+    let viewport = app.help_viewport_rows;
+    let left_rows = app.help_content_rows;
+    assert!(
+        viewport > 0 && left_rows > viewport,
+        "the left column must be taller than the viewport \
+         (left={left_rows}, viewport={viewport})"
+    );
+
+    // Scroll far past the end of both columns.
+    app.help_scroll_offset = 10_000;
+    let buf = draw(&mut app, w, h);
+    let rows = all_rows(&buf, w, h);
+
+    assert!(
+        !rows.iter().any(|r| r.contains("ABOUT")),
+        "left column should have scrolled past its first section: {rows:?}"
+    );
+    // The left column stops at ITS last line instead of continuing into
+    // blank rows, which is what an unclamped shared offset would do.
+    assert!(
+        rows.iter().any(|r| r.contains("docs.opencrabs.com")),
+        "left column ran past its own end into blank space: {rows:?}"
+    );
+    // The right column follows the offset to its own (different) end.
+    assert!(
+        rows.iter().any(|r| r.contains("FEATURES")),
+        "right column did not reach its own end: {rows:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Footer drift: every binding the Sessions footer advertises must actually do
 // something. The footer is generated from `DialogScope::Sessions`, so a key
