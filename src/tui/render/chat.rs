@@ -1713,7 +1713,13 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
     // Clear the area first to prevent stale buffer content from bleeding through.
     // Ratatui's Paragraph only writes cells where it has text; cells beyond line
     // ends or below the last line retain old content from the double-buffer.
+    // Clear to the canvas, not the terminal default: a plain Clear wipes the
+    // theme background that frame::paint_canvas painted, so the chat would
+    // ignore the theme while the rest of the frame showed it (#2163).
     f.render_widget(Clear, area);
+    if let Some(bg) = super::theme::background() {
+        f.render_widget(Block::default().style(Style::default().bg(bg)), area);
+    }
     f.render_widget(chat, area);
 
     // Drag-selection highlight overlay: invert fg/bg for cells inside the
