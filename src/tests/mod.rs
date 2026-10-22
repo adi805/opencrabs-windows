@@ -311,6 +311,8 @@ pub mod decide_cached_test;
 pub mod decision_cache_test;
 pub mod decisions_report_test;
 pub mod deepseek_reasoning_test;
+pub mod detached_task_row_test;
+pub mod detached_task_test;
 pub mod directive_discovery_test;
 pub mod discord_tool_group_test;
 pub mod discord_turn_start_group_test;

@@ -55,6 +55,37 @@ pub enum ProgressEvent {
         /// Same id as the matching `ToolStarted` (#1880). Empty when unknown.
         tool_call_id: String,
     },
+    /// A detached background task started (#2145).
+    ///
+    /// Emitted synchronously by the spawn call, while the turn that started
+    /// the task is still running, so a surface can draw the task as ONE row
+    /// inside that turn's existing tool block. Before this, a detach produced
+    /// no event at all: the turn ended, and the finish arrived later as a
+    /// separate push that opened its own block. `task_id` is the identity the
+    /// finish carries back, so the row is updated rather than duplicated.
+    DetachedTaskStarted {
+        /// Stable id for this task, matching the finish event.
+        task_id: String,
+        /// Short label the surface shows (`cargo test`, `npm run build`).
+        label: String,
+    },
+    /// A detached background task finished (#2145).
+    ///
+    /// Same `task_id` as the matching start, so the surface finds the row it
+    /// already drew and edits it in place. A finish with no matching row (the
+    /// process restarted, the callback was gone, an older binary parked the
+    /// push) is not an error: the surface falls back to its existing
+    /// announcement path.
+    DetachedTaskFinished {
+        /// Same id as the matching `DetachedTaskStarted`.
+        task_id: String,
+        /// Short label, repeated so a fallback can render without the start.
+        label: String,
+        /// Exit 0. The same outcome signal the receipt card shows.
+        success: bool,
+        /// Wall-clock runtime of the detached command, seconds.
+        elapsed_secs: f32,
+    },
     /// Intermediate text the agent sends between tool call batches
     IntermediateText {
         text: String,
@@ -245,6 +276,16 @@ pub enum PushOrigin {
 /// column.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BgTaskMeta {
+    /// Identity of the task this receipt belongs to (#2145).
+    ///
+    /// Lets a surface match the receipt to the row it already drew from
+    /// `DetachedTaskStarted` and edit that row, instead of posting the
+    /// outcome as a second message. Empty when unknown (a receipt persisted
+    /// by an older binary, or a task started without a progress callback), so
+    /// surfaces fall back to their announcement path rather than dropping the
+    /// result.
+    #[serde(default)]
+    pub task_id: String,
     /// Exit 0 — the sole outcome signal the receipt card shows (the exit
     /// code itself stays in the context text, for the model only).
     pub success: bool,

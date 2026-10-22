@@ -884,13 +884,20 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
                                         .fg(theme::role(Role::Error))
                                         .add_modifier(Modifier::ITALIC)
                                 };
-                                lines.push(Line::from(vec![
+                                let mut spans = vec![
                                     Span::styled(
                                         format!("    {} ", connector),
                                         Style::default().fg(theme::role(Role::GrayDim)),
                                     ),
                                     Span::styled(last.description.clone(), style),
-                                ]));
+                                ];
+                                if let Some(suffix) = super::tools::detached_state_suffix(last) {
+                                    spans.push(Span::styled(
+                                        suffix,
+                                        Style::default().fg(theme::role(Role::GrayMid)),
+                                    ));
+                                }
+                                lines.push(Line::from(spans));
                             }
                             group_idx += 1;
                         }
@@ -907,13 +914,20 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
                                 .fg(theme::role(Role::Error))
                                 .add_modifier(Modifier::ITALIC)
                         };
-                        lines.push(Line::from(vec![
+                        let mut spans = vec![
                             Span::styled(
                                 "    └─ ".to_string(),
                                 Style::default().fg(theme::role(Role::GrayDim)),
                             ),
                             Span::styled(last.description.clone(), style),
-                        ]));
+                        ];
+                        if let Some(suffix) = super::tools::detached_state_suffix(last) {
+                            spans.push(Span::styled(
+                                suffix,
+                                Style::default().fg(theme::role(Role::GrayMid)),
+                            ));
+                        }
+                        lines.push(Line::from(spans));
                     }
                 }
 

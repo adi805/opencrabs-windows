@@ -474,6 +474,11 @@ pub struct ToolCallEntry {
     pub completed: bool,
     /// Full raw tool input — shown untruncated in expanded view
     pub tool_input: serde_json::Value,
+    /// #2146: the id of the detached task this row tracks, when the row is a
+    /// detached-task row rather than a tool call. A finish event finds its row
+    /// by this id and not by description, because two detached tasks can carry
+    /// the same label and a description match would settle the wrong row.
+    pub task_id: Option<String>,
 }
 
 /// A group of tool calls displayed as a collapsible bullet
@@ -2446,6 +2451,7 @@ impl App {
                 // session rather than only for the focused one.
                 let desc = Self::format_tool_description(&tool_name, &tool_input);
                 let entry = ToolCallEntry {
+                    task_id: None,
                     description: desc,
                     success: true,
                     details: None,
@@ -2801,6 +2807,7 @@ impl App {
                     };
                     if !updated {
                         let entry = ToolCallEntry {
+                            task_id: None,
                             description: desc,
                             success,
                             details,
@@ -3075,6 +3082,67 @@ impl App {
                     self.turn_start_len = self.messages.len();
                 } else {
                     self.session_cancel_tokens.insert(session_id, cancel_token);
+                }
+            }
+
+            TuiEvent::DetachedTaskStarted {
+                session_id,
+                task_id,
+                label,
+            } => {
+                // #2146: the task gets ONE row in the turn's tool block, pushed
+                // synchronously while that turn is still live. The finish finds
+                // it again by `task_id`, so a task that takes a minute does not
+                // leave the block and come back as a second message.
+                let entry = ToolCallEntry {
+                    description: label,
+                    success: true,
+                    details: None,
+                    completed: false,
+                    tool_input: serde_json::Value::Null,
+                    task_id: Some(task_id),
+                };
+                let mut state = self.session_state_mut(session_id);
+                if let Some(group) = state.active_tool_group_mut() {
+                    group.calls.push(entry);
+                } else {
+                    state.set_active_tool_group(Some(ToolCallGroup {
+                        calls: vec![entry],
+                        expanded: false,
+                    }));
+                }
+                if self.is_current_session(session_id) && self.auto_scroll {
+                    self.scroll_offset = 0;
+                }
+            }
+
+            TuiEvent::DetachedTaskFinished {
+                session_id,
+                task_id,
+                label,
+                success,
+                elapsed_secs,
+            } => {
+                // #2146: settle the row the start already drew. A finish with no
+                // row is not an error: the turn may have been settled, or the
+                // task outlived a restart, and the result still arrives through
+                // `BackgroundTaskDone` below.
+                let found = {
+                    let mut state = self.session_state_mut(session_id);
+                    if let Some(row) = state.find_detached_row(&task_id) {
+                        row.success = success;
+                        row.completed = true;
+                        row.details = Some(format!("{label} finished in {elapsed_secs:.1}s"));
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if !found {
+                    tracing::debug!(
+                        "[TUI] DetachedTaskFinished for {task_id} has no row; \
+                         the completion still arrives via BackgroundTaskDone"
+                    );
                 }
             }
 

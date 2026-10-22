@@ -33,6 +33,7 @@ fn group_msg() -> DisplayMessage {
     let mut m = msg("tool_group", "1 tool call");
     m.tool_group = Some(ToolCallGroup {
         calls: vec![ToolCallEntry {
+            task_id: None,
             description: "suggest options".to_string(),
             success: true,
             details: None,

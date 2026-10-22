@@ -49,6 +49,8 @@ pub(crate) use input::{DropdownFit, dropdown_dimensions, fit_dropdown, truncate_
 #[cfg(test)]
 pub(crate) use tools::collapse_build_output;
 #[cfg(test)]
+pub(crate) use tools::detached_state_suffix;
+#[cfg(test)]
 pub(crate) use tools::unescape_display_string;
 
 pub use frame::render;

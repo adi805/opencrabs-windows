@@ -29,6 +29,7 @@ fn tail_keeps_last_n_lines() {
 #[test]
 fn completion_message_reflects_success_and_failure() {
     let ok = completion_message(
+        "t-ok",
         "cargo test",
         "cargo test --all-features",
         &CmdResult {
@@ -50,6 +51,7 @@ fn completion_message_reflects_success_and_failure() {
     assert_eq!(meta.tail, "test result: ok. 5 passed");
 
     let fail = completion_message(
+        "t-fail",
         "build",
         "cargo build",
         &CmdResult {
@@ -112,6 +114,7 @@ async fn spawn_command_enqueues_on_completion() {
         cwd,
         "echo probe".to_string(),
         "echo BG_DONE_MARKER".to_string(),
+        None,
     );
 
     // Wait (bounded) for the detached command to finish and enqueue.
@@ -168,6 +171,7 @@ async fn spawn_command_with_hook_replaces_generic_delivery() {
         "hook probe".to_string(),
         "echo HOOK_DONE_MARKER".to_string(),
         hook,
+        None,
     );
 
     // Wait (bounded) for the detached command to finish and fire the hook.

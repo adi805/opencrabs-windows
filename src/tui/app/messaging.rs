@@ -2077,6 +2077,7 @@ impl App {
                             .filter(|s| !s.is_empty());
                         let tool_input = entry.get("i").cloned().unwrap_or(serde_json::Value::Null);
                         ToolCallEntry {
+                            task_id: None,
                             description: desc,
                             success,
                             details: output,
@@ -2090,6 +2091,7 @@ impl App {
                 tools_str
                     .split(" | ")
                     .map(|desc| ToolCallEntry {
+                        task_id: None,
                         description: desc.to_string(),
                         success: true,
                         details: None,

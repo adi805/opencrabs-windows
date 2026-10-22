@@ -31,6 +31,7 @@ fn tool_group_msg(descriptions: &[&str]) -> DisplayMessage {
         calls: descriptions
             .iter()
             .map(|d| ToolCallEntry {
+                task_id: None,
                 description: d.to_string(),
                 success: true,
                 details: None,

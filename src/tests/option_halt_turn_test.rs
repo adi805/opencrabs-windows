@@ -27,6 +27,7 @@ fn option_surface_group() -> DisplayMessage {
     let mut m = msg("tool_group", "");
     m.tool_group = Some(ToolCallGroup {
         calls: vec![ToolCallEntry {
+            task_id: None,
             description: "suggest_options".to_string(),
             success: true,
             details: None,

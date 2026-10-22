@@ -27,6 +27,7 @@ fn tool_group_msg() -> DisplayMessage {
     let mut m = msg("tool_group", "1 tool call");
     m.tool_group = Some(ToolCallGroup {
         calls: vec![ToolCallEntry {
+            task_id: None,
             description: "read a file".to_string(),
             success: true,
             details: None,
@@ -143,6 +144,7 @@ fn tool_group_with(calls: &[bool]) -> DisplayMessage {
         calls: calls
             .iter()
             .map(|ok| ToolCallEntry {
+                task_id: None,
                 description: "did a thing".to_string(),
                 success: *ok,
                 details: None,
@@ -320,6 +322,7 @@ fn failing_tool_group_msg(description: &str) -> DisplayMessage {
     let mut m = msg("tool_group", "1 tool call");
     m.tool_group = Some(ToolCallGroup {
         calls: vec![ToolCallEntry {
+            task_id: None,
             description: description.to_string(),
             success: false,
             details: None,

@@ -828,6 +828,29 @@ async fn cmd_chat_inner(
                     success,
                     summary,
                 }),
+                // #2145: the core now emits these while the turn is live, so
+                // the TUI can draw a detached task as ONE row in the block
+                // that holds the `bash` call that detached it, then update
+                // that row when the finish arrives (#2146).
+                ProgressEvent::DetachedTaskStarted { task_id, label } => {
+                    progress_sender.send(TuiEvent::DetachedTaskStarted {
+                        session_id,
+                        task_id,
+                        label,
+                    })
+                }
+                ProgressEvent::DetachedTaskFinished {
+                    task_id,
+                    label,
+                    success,
+                    elapsed_secs,
+                } => progress_sender.send(TuiEvent::DetachedTaskFinished {
+                    session_id,
+                    task_id,
+                    label,
+                    success,
+                    elapsed_secs,
+                }),
                 ProgressEvent::IntermediateText { text, reasoning } => {
                     progress_sender.send(TuiEvent::IntermediateText {
                         session_id,
