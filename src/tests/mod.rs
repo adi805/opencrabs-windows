@@ -270,6 +270,7 @@ pub mod cron_error_chain_test;
 pub mod cron_liveness_test;
 pub mod cron_next_run_at_test;
 pub mod cron_no_op_evidence_test;
+pub mod cron_plan_gate_test;
 pub mod cron_profile_isolation_test;
 pub mod cron_run_stamp_test;
 pub mod cron_schedule_util_test;

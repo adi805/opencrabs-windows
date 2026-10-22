@@ -1092,6 +1092,22 @@ impl AgentService {
         self.subagent_manager.clone()
     }
 
+    /// Whether this service skips the mechanical plan requirement (#2161).
+    ///
+    /// Readable so a test can prove a factory-built agent carries the
+    /// exemption, and so a surface can explain why no plan card appeared.
+    pub fn plan_gate_exempt(&self) -> bool {
+        self.plan_gate_exempt
+    }
+
+    /// Whether this service is headless (#129).
+    ///
+    /// Readable so a test can prove the factory stamped both flags, rather
+    /// than asserting one and hoping the other followed.
+    pub fn headless(&self) -> bool {
+        self.headless
+    }
+
     /// Point this agent's plan state at another session (#908 option A).
     /// Plan-driven execution passes the parent's session id when spawning a
     /// task worker, so the worker's `plan` tool resolves the parent's
