@@ -1230,6 +1230,7 @@ pub mod chat_canvas_background_test;
 pub mod option_halt_turn_test;
 pub mod phantom_question_offer_test;
 pub mod telegram_guest_session_resolve_test;
+pub mod theme_boot_pack_test;
 pub mod usage_key_names_log_test;
 pub mod usage_prompt_share_test;
 
