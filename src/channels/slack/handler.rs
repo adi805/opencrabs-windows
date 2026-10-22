@@ -1956,6 +1956,7 @@ async fn handle_message(
                                 name: tool_name,
                                 context: ctx,
                                 status: None,
+                                task_id: None,
                             });
                             t.clone()
                         };
