@@ -88,6 +88,8 @@ refactor(memory): mod.rs is declarations-only
 
 A bare area prefix (`TUI:`, `z.ai:`, `Reasoning stream:`) is not the convention. The type makes the tracker filterable and lets the fixing commit reuse the title verbatim. Add labels on creation (`--label bug --label tui`), one for the type and one for the area.
 
+Both halves of the shape are enforced in CI: `.github/workflows/title-lint.yml` runs on issue and pull request open/edit and fails the check on a bare area prefix, using the same rule (`governance.toml` `[titles]`) that `scripts/policy-lint.py` applies to commit subjects. A title that is already wrong cannot become a compliant commit, because the fixing commit reuses it verbatim.
+
 ## Where Issues Go
 
 OpenCrabs is developed alongside a **dev factory** — the tooling, CI, and automation that build, test, and release the binary. Issues are split by what they describe:
