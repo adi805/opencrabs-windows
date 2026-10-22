@@ -858,6 +858,7 @@ pub(crate) async fn resume_session_inner(
                         raw_context: raw_ctx,
                         completed: None,
                         dirty: true,
+                        task_id: None,
                     });
                     s.display_queue.push(DisplayItem::NewTool(idx));
                 }

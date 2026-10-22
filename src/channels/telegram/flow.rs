@@ -30,6 +30,11 @@ pub(crate) struct ToolMsg {
     /// None = running, Some(true) = success, Some(false) = failed
     pub(crate) completed: Option<bool>,
     pub(crate) dirty: bool,
+    /// Detached-task identity (#2147). `Some` when this row was drawn from a
+    /// `DetachedTaskStarted` event, so the matching finish finds it by id and
+    /// edits this row instead of sending a second message. `None` for ordinary
+    /// tool calls, which are keyed by name and position in the turn.
+    pub(crate) task_id: Option<String>,
 }
 
 /// Per-message streaming state shared between the progress callback and the edit loop.
@@ -1201,6 +1206,20 @@ pub(crate) fn tool_status_icon(completed: Option<bool>) -> &'static str {
     }
 }
 
+/// The name a row shows. A detached task says so, and says whether it is
+/// still running, because a background task outlives the turn that started
+/// it: the row is the only place its liveness is visible (#2147).
+///
+/// The wording lives in [`crate::channels::background_work::detached_row_label`]
+/// so every surface renders the same string (#2148-#2150).
+pub(crate) fn row_display_name(
+    name: &str,
+    task_id: Option<&str>,
+    completed: Option<bool>,
+) -> String {
+    crate::channels::background_work::detached_row_label(name, task_id, completed)
+}
+
 /// Resolve the open processing-log flow (tool calls + intermediate text, in
 /// order) into renderable lines.
 pub(crate) fn flow_lines(s: &StreamingState) -> Vec<FlowLine> {
@@ -1208,7 +1227,11 @@ pub(crate) fn flow_lines(s: &StreamingState) -> Vec<FlowLine> {
         .iter()
         .filter_map(|entry| match entry {
             FlowEntry::Tool(idx) => s.tool_msgs.get(*idx).map(|t| FlowLine::Tool {
-                label: format!("{} {}", tool_status_icon(t.completed), t.name),
+                label: format!(
+                    "{} {}",
+                    tool_status_icon(t.completed),
+                    row_display_name(&t.name, t.task_id.as_deref(), t.completed)
+                ),
                 context: t.context.clone(),
                 raw_context: t.raw_context.clone(),
             }),

@@ -132,6 +132,7 @@ pub(crate) fn apply_progress_event(
                     raw_context: raw_ctx,
                     completed: None,
                     dirty: true,
+                    task_id: None,
                 });
                 s.display_queue.push(DisplayItem::NewTool(idx));
             }
@@ -155,6 +156,51 @@ pub(crate) fn apply_progress_event(
                 // the placeholder. The re-post happens where a message
                 // is actually SENT (fresh group in append_tool_group,
                 // and the IntermediateText arm below).
+            }
+        }
+        // Detached background task (#2147): draw it as ONE row inside the
+        // turn's existing tool block, so a task that outlives its turn is
+        // visible while it runs instead of appearing only as a receipt later.
+        ProgressEvent::DetachedTaskStarted { task_id, label } => {
+            if let Ok(mut s) = st.lock() {
+                s.thinking.clear();
+                if s.tools_started_at.is_none() {
+                    s.tools_started_at = Some(std::time::Instant::now());
+                }
+                let idx = s.tool_msgs.len();
+                s.tool_msgs.push(ToolMsg {
+                    msg_id: None,
+                    name: label,
+                    context: String::new(),
+                    raw_context: String::new(),
+                    completed: None,
+                    dirty: true,
+                    task_id: Some(task_id),
+                });
+                s.display_queue.push(DisplayItem::NewTool(idx));
+            }
+        }
+        // The finish only settles the row it started. It deliberately pushes
+        // NOTHING onto `display_queue`: a display item is what causes a new
+        // message, and the whole point (#2147) is that start and finish share
+        // one message id. Setting `dirty` is what the edit loop picks up to
+        // rewrite the existing block in place.
+        //
+        // A finish with no matching row is not an error: the process may have
+        // restarted, or the turn ended and the block settled. The receipt push
+        // in `background_tasks` still announces the outcome, so this arm stays
+        // silent rather than opening a duplicate block.
+        ProgressEvent::DetachedTaskFinished {
+            task_id, success, ..
+        } => {
+            if let Ok(mut s) = st.lock()
+                && let Some(tool) = s
+                    .tool_msgs
+                    .iter_mut()
+                    .find(|t| t.task_id.as_deref() == Some(task_id.as_str()))
+            {
+                tool.completed = Some(success);
+                tool.dirty = true;
             }
         }
         ProgressEvent::QueuedUserMessage { .. } => {
