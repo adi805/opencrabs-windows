@@ -179,7 +179,9 @@ pub(crate) fn flush_after_turn(
                     return;
                 };
                 let (text, _imgs) = crate::utils::extract_img_markers(&response.content);
-                let text = crate::utils::sanitize::strip_llm_artifacts(&text);
+                // Outbound text goes through the paired strip+redact, not the
+                // bare artifact strip: an answer can echo a key it read (#2196).
+                let text = crate::utils::sanitize::sanitize_outbound(&text);
                 if text.trim().is_empty() {
                     return;
                 }
