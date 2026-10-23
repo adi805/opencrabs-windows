@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.os.Build;
 import android.os.IBinder;
@@ -49,6 +50,9 @@ public class CoreService extends Service {
      * Two cores on one profile fight over the channel listeners and the database.
      */
     public static final String EXTRA_TUI_MODE = "io.opencrabs.mobile.TUI_MODE";
+    /** Where the start mode is kept, so a null-intent restart does not become a daemon. */
+    private static final String PREFS_NAME = "opencrabs-service";
+    private static final String PREF_TUI_MODE = "tui_mode";
 
 
     /** The core's config table for the loopback HTTP/JSON surface (PRD FR-006). */
@@ -100,12 +104,29 @@ public class CoreService extends Service {
         return null;
     }
 
+    /** Remembers the start mode across sticky restarts, which carry no intent. */
+    private SharedPreferences prefs() {
+        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         // A fresh start clears a stop left by a previous instance, otherwise a
         // sticky restart comes up believing it is shutting down and never spawns.
         stopping = false;
-        boolean tuiMode = intent != null && intent.getBooleanExtra(EXTRA_TUI_MODE, false);
+        // A START_STICKY restart arrives with a null intent, which used to mean
+        // "daemon": the platform would relaunch this service after the app's TUI was
+        // already running and spawn a second core on the same profile, colliding on the
+        // channel listeners and the sqlite database. The chosen mode is remembered so a
+        // restart resumes the mode the operator actually picked.
+        boolean tuiMode;
+        if (intent != null && intent.hasExtra(EXTRA_TUI_MODE)) {
+            tuiMode = intent.getBooleanExtra(EXTRA_TUI_MODE, false);
+            prefs().edit().putBoolean(PREF_TUI_MODE, tuiMode).apply();
+        } else {
+            tuiMode = prefs().getBoolean(PREF_TUI_MODE, false);
+            Log.i(TAG, "start without mode extra, resuming tuiMode=" + tuiMode);
+        }
         startForeground(NOTIFICATION_ID, buildNotification(tuiMode ? "terminal session" : "starting"));
         // Before the spawn, so the config the core reads already carries the
         // token. The surface starts listening during daemon boot.
