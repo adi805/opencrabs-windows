@@ -188,9 +188,7 @@ pub(crate) fn menu_body(text: &str, total: usize) -> String {
     if total <= MENU_BUTTON_CAP {
         return text.to_string();
     }
-    format!(
-        "{text}\n\nShowing 1-{shown} of {total}. The rest are reachable from the TUI."
-    )
+    format!("{text}\n\nShowing 1-{shown} of {total}. The rest are reachable from the TUI.")
 }
 
 /// Re-render the turn's flow group on an interval (#1843): the Discord twin
@@ -2559,6 +2557,11 @@ pub(crate) fn make_approval_callback(
                 Ok(m) => m,
                 Err(e) => {
                     tracing::error!("Discord approval: failed to send message: {}", e);
+                    // #2194: the registration went in before the send to avoid
+                    // a click race, so a failed send has to take it back out.
+                    // Otherwise an approval nobody ever saw waits out the full
+                    // five minutes and leaves its sender behind.
+                    state.drop_pending_approval(&approval_id).await;
                     return Ok((false, false));
                 }
             };
@@ -2568,7 +2571,20 @@ pub(crate) fn make_approval_callback(
                 approval_id
             );
 
-            match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
+            // #2194: the registration is dead the moment this wait returns,
+            // whichever way it returned. Dropping it here, once, is what makes
+            // it impossible for a branch to forget: the timeout and
+            // closed-channel paths used to return without cleaning up, leaking
+            // one sender per unanswered approval. A click already removed it
+            // through `resolve_pending_approval`, so this is a no-op then.
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(300), rx).await;
+            if state.drop_pending_approval(&approval_id).await {
+                tracing::debug!(
+                    "Discord approval: dropped unanswered registration id={}",
+                    approval_id
+                );
+            }
+            match outcome {
                 Ok(Ok((approved, always))) => {
                     tracing::info!(
                         "Discord approval: user responded id={}, approved={}, always={}",

@@ -1045,6 +1045,7 @@ pub mod discord_mention_only_test;
 pub mod discord_norm_key_test;
 pub mod discord_options_host_test;
 pub mod discord_pending_cap_test;
+pub mod discord_pending_approval_test;
 pub mod discord_plan_board_test;
 pub mod discord_resume_chunk_test;
 pub mod discord_resume_turn_tracking_test;
