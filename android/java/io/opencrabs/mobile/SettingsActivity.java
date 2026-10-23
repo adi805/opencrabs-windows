@@ -118,13 +118,13 @@ public class SettingsActivity extends Activity {
     }
 
     private void loadCurrent() {
-        String config = readText(new File(openCrabsHome(), "config.toml"));
+        String config = readText(new File(opencrabsHome(), "config.toml"));
         if (config == null) return;
-        String provider = firstValue(config, "default_provider");
+        String provider = firstValue(config, "agent", "default_provider");
         if (provider != null && provider.length() > 0) {
             providerField.setText(provider);
         }
-        String model = firstValue(config, "default_model");
+        String model = firstValue(config, "agent", "default_model");
         if (model != null && model.length() > 0) {
             modelField.setText(model);
         }
@@ -134,9 +134,19 @@ public class SettingsActivity extends Activity {
      * Pull the first {@code key = "value"} out of the text. Deliberately not a TOML
      * parser: this only pre-fills the form so the user sees what is already configured.
      */
-    private static String firstValue(String text, String key) {
+    private static String firstValue(String text, String section, String key) {
+        // Scoped to one section on purpose: "default_model" appears both in
+        // [agent] and in every [providers.<name>], and reading the provider's
+        // copy would pre-fill the form with a value that then gets written back
+        // as the agent default.
+        boolean inSection = false;
         for (String line : text.split("\n")) {
             String trimmed = line.trim();
+            if (trimmed.startsWith("[")) {
+                inSection = trimmed.equals("[" + section + "]");
+                continue;
+            }
+            if (!inSection) continue;
             if (!trimmed.startsWith(key)) continue;
             int eq = trimmed.indexOf('=');
             if (eq < 0) continue;
