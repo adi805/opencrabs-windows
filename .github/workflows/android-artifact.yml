@@ -23,6 +23,11 @@ name: Android binary (artifact)
 
 on:
   workflow_dispatch:
+  # Reusable so release-fork.yml can build the APK at the tag being published.
+  # Without this the release workflow has no way to produce an Android asset,
+  # and the only alternative is attaching an APK that some earlier branch run
+  # happened to leave behind, which is an artifact of unknown commit.
+  workflow_call:
   push:
     # main is included so the downloadable artifact tracks the branch that
     # ships. Without it the APK stays whatever the last feat-branch run

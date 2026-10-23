@@ -21,6 +21,14 @@ name: Release (fork)
 # aarch64 set-top box, an x86_64 VPS). macOS and Windows legs stay in
 # prerelease.yml for people who build from source; add them here if the fork
 # ever needs to auto-update those platforms.
+#
+# The Android APK rides along since v0.2.0, built by calling android-artifact.yml
+# as a reusable workflow. It has to be built HERE rather than lifted from an
+# earlier branch run: the release asset must correspond to the tagged commit,
+# and a stale APK from some feat branch is an artifact of unknown provenance
+# that still carries a valid checksum. It is also the reason the manifest below
+# globs *.apk and not just *.tar.gz: an asset that ships without a line in
+# SHA256SUMS is published and unchecked, which is worse than absent.
 
 on:
   push:
@@ -259,9 +267,20 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # Builds the APK at the tag, reusing the shipping workflow rather than
+  # duplicating javac/d8/aapt2 here. Nothing is passed in: the reusable workflow
+  # checks out the caller's ref, so the APK it produces is the tagged tree.
+  android-apk:
+    name: Build Android APK
+    uses: ./.github/workflows/android-artifact.yml
+    # No continue-on-error here: a reusable workflow call does not accept it
+    # (actionlint rejects it), and a silent Android failure would publish a
+    # release the publish step then refuses to complete. Failing loudly is the
+    # behaviour we want anyway.
+
   publish-release:
     name: Publish release
-    needs: [build-linux]
+    needs: [build-linux, android-apk]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -282,6 +301,15 @@ jobs:
         run: |
           mkdir -p release-assets
           find artifacts -type f -name '*.tar.gz' -exec cp {} release-assets/ \;
+          # The APK arrives as opencrabs-debug.apk. Rename it to carry the tag:
+          # a user holding two downloaded files has no other way to tell which
+          # release each came from, and the manifest lines would collide.
+          apk=$(find artifacts -type f -name '*.apk' | head -1)
+          if [ -z "$apk" ]; then
+            echo "::error::no .apk in the downloaded artifacts; the android-apk job did not upload one"
+            exit 1
+          fi
+          cp "$apk" "release-assets/opencrabs-${RELEASE_TAG}-android-arm64.apk"
           cd release-assets
           sha256sum -- * > SHA256SUMS
           ls -la
@@ -320,6 +348,7 @@ jobs:
           gh release view "$tag" --json assets --jq '.assets[].name' | sort
           for want in "opencrabs-${tag}-linux-arm64.tar.gz" \
                       "opencrabs-${tag}-linux-amd64.tar.gz" \
+                      "opencrabs-${tag}-android-arm64.apk" \
                       "SHA256SUMS"; do
             if ! gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx "$want"; then
               echo "::error::expected asset missing from $tag: $want"
