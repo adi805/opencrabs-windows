@@ -273,6 +273,13 @@ jobs:
   android-apk:
     name: Build Android APK
     uses: ./.github/workflows/android-artifact.yml
+    # Pass the tag explicitly. A reusable workflow otherwise checks out the
+    # caller's ref, which for a workflow_dispatch is the branch, so a manual
+    # release would ship an APK from that branch under the tag's filename next
+    # to Linux archives built from the tag. Same version, two different trees,
+    # and both checksums would verify.
+    with:
+      ref: ${{ github.event.inputs.tag || github.ref }}
     # No continue-on-error here: a reusable workflow call does not accept it
     # (actionlint rejects it), and a silent Android failure would publish a
     # release the publish step then refuses to complete. Failing loudly is the
