@@ -21,17 +21,10 @@ pub async fn sync_provider_for_session(
     session_provider: Option<&str>,
     session_model: Option<&str>,
 ) {
-    let config = match Config::load() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(
-                "sync_provider_for_session[{}]: Config::load failed: {} — skipping sync",
-                session_id,
-                e
-            );
-            return;
-        }
-    };
+    // The in-memory mirror, not `Config::load()`: this runs on every inbound
+    // channel message (#2184, #2188), and the watcher keeps the mirror current,
+    // so a disk read and TOML parse per message buys nothing.
+    let config = Config::current();
 
     // Try the session's stored provider/model first.
     // [agent] default_provider/default_model is ONLY a fallback when the session's
@@ -42,7 +35,14 @@ pub async fn sync_provider_for_session(
 
     // If the session has an explicit provider, restore it (ignoring global config)
     if let Some(sess_prov) = effective_provider {
-        let agent_provider = agent.provider_name_for_session(session_id);
+        // Compare against the provider the session is CONFIGURED with, not the
+        // entry a sticky fallback happens to be serving (#2184). The live name
+        // reports the promoted fallback, so it can never equal the pinned name:
+        // the fast path was unreachable for any session with a fallback chain,
+        // and every inbound message rebuilt the primary from config (0.6-1.9s),
+        // which also threw away the chain's cooldown record and made the failed
+        // primary get retried and re-promoted on every message.
+        let agent_provider = agent.configured_provider_name_for_session(session_id);
         let agent_model = agent.provider_model_for_session(session_id);
         let sess_prov_norm = normalize_provider_name(sess_prov);
         let agent_prov_norm = normalize_provider_name(&agent_provider);
@@ -158,7 +158,9 @@ pub async fn sync_provider_for_session(
             session_id
         );
         let (cfg_provider, cfg_model) = config.providers.active_provider_and_model();
-        let agent_provider = agent.provider_name_for_session(session_id);
+        // Same configured-vs-live distinction as above: a session riding the
+        // global chain's sticky fallback has not changed provider (#2184).
+        let agent_provider = agent.configured_provider_name_for_session(session_id);
         let agent_model = agent.provider_model_for_session(session_id);
 
         let cfg_provider_norm = normalize_provider_name(&cfg_provider);

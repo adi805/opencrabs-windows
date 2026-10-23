@@ -1931,6 +1931,19 @@ impl AgentService {
             .unwrap_or_else(|| p.name().to_string())
     }
 
+    /// The provider `session_id` is CONFIGURED with, ignoring whichever entry a
+    /// sticky fallback is serving right now (#2184).
+    ///
+    /// [`Self::provider_name_for_session`] answers "who is answering this
+    /// turn" for display, so it reports the promoted fallback while a chain is
+    /// working around a failed primary. That is the wrong question for a
+    /// routing decision: a promoted fallback is a temporary state, not a new
+    /// configuration, and `FallbackProvider::name()` already reports the
+    /// configured primary after a sticky swap.
+    pub fn configured_provider_name_for_session(&self, session_id: Uuid) -> String {
+        self.provider_for_session(session_id).name().to_string()
+    }
+
     /// Default model for a specific session, including sticky-fallback
     /// active sub-model. Resolution order:
     /// 1. The per-session override in `session_models` (set by

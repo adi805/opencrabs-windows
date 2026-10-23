@@ -1075,6 +1075,7 @@ pub mod pdf_to_images_test;
 pub mod pdf_vision_test;
 pub mod phantom_colon_announcement_midtext_test;
 pub mod provider_name_for_session_test;
+pub mod provider_sync_fast_path_test;
 pub mod question_common_test;
 pub mod quiet_delivery_test;
 pub mod read_lossy_overwrite_guard_test;
