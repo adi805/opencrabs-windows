@@ -507,3 +507,36 @@ fn build_post_with_no_body_is_refused() {
     let err = build_post(None, None).unwrap_err();
     assert!(err.contains("Nothing was sent"), "got: {err}");
 }
+
+// ── #2182: the revoke path goes through the send gate ────────────────
+
+/// `delete` revokes a message for everyone, the least reversible action in
+/// the surface, so it has to pass the same per-chat rate limiter and owner
+/// resolution as its 14 neighbours.
+///
+/// This is a wiring test, not a behavioural one, and the reason is
+/// structural: `execute` resolves the WhatsApp client at the top (before the
+/// action match), so with no live socket every action fails there and a
+/// refused-vs-ungated `delete` is indistinguishable. The defect this pins is
+/// itself a missing wire, so asserting the gate exists and precedes the
+/// revoke is the assertion that fails on the unfixed tree.
+#[test]
+fn delete_requires_send_gate() {
+    const SRC: &str = include_str!("../brain/tools/whatsapp_send.rs");
+    let (_, rest) = SRC
+        .split_once("\"delete\" =>")
+        .expect("delete arm not found");
+    let (arm, _) = rest
+        .split_once("\"pin\" | \"unpin\"")
+        .expect("pin arm not found");
+    assert!(
+        arm.contains("gate_send!"),
+        "delete arm revokes without the send gate"
+    );
+    let gate_at = arm.find("gate_send!").expect("gate missing");
+    let revoke_at = arm.find("revoke_message").expect("revoke call missing");
+    assert!(
+        gate_at < revoke_at,
+        "the gate must run before the revoke call, not after it"
+    );
+}

@@ -813,6 +813,8 @@ impl Tool for WhatsAppSendTool {
                 );
                 let msg_id = pget!(get_str(&input, "message_id")).to_string();
 
+                gate_send!(self, jid_str, "the message deletion");
+
                 match client
                     .revoke_message(jid, msg_id.clone(), Default::default())
                     .await
