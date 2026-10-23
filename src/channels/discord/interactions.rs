@@ -86,12 +86,28 @@ pub(crate) async fn route_interaction_turn(
     idle_hours: Option<f64>,
     context_text: String,
     display_tag: String,
+    discord_state: Arc<super::DiscordState>,
 ) {
     let Some(session_id) =
         resolve_interaction_session(&session_svc, is_dm, user_id, channel_id, idle_hours).await
     else {
         return;
     };
+
+    // Claim the session's turn slot before the turn runs (#2191). A select
+    // pick or a modal submit is not a user-intent turn, but it still starts a
+    // tool loop against the session, so it obeys the same rule the typed path
+    // and the tap follow (#1990). Losing the claim queues the interaction for
+    // the live turn: without this, a component interaction arriving mid-turn
+    // forked a second concurrent loop onto the same session row.
+    let Some(_turn_guard) = discord_state.claim_interaction_turn(
+        session_id,
+        context_text.clone(),
+        display_tag.clone(),
+    ) else {
+        return;
+    };
+
     let response = match agent
         .send_message_with_display(session_id, context_text, Some(display_tag), None)
         .await

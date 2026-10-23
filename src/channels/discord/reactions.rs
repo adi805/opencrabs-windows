@@ -145,6 +145,18 @@ pub(crate) async fn handle_reaction_add(
     // Turn-scoped scaffolding: full prompt for THIS turn only; history gets
     // the compact system tag (same contract as Telegram/Slack).
     let display = format!("[System: {user_name} reacted with {glyph}]");
+
+    // A reaction is the quietest way to start a turn: one click on an existing
+    // bot message, no visible "I am asking something" signal. It still obeys
+    // the session turn slot (#2191), so a reaction landing on a session that
+    // is mid-turn queues for the live turn instead of forking a second loop
+    // that reads a transcript the live one is still writing.
+    let Some(_turn_guard) =
+        discord_state.claim_interaction_turn(session_id, prompt.clone(), display.clone())
+    else {
+        return;
+    };
+
     let response = match agent
         .send_message_with_display(session_id, prompt, Some(display), None)
         .await

@@ -552,6 +552,7 @@ impl EventHandler for Handler {
                             filled.join("\n")
                         ),
                         format!("[System: {user_name} submitted the \"{title}\" form]"),
+                        dstate.clone(),
                     )
                     .await;
                 });
@@ -712,6 +713,7 @@ impl EventHandler for Handler {
                              continue accordingly]"
                         ),
                         format!("[System: {user_name} picked \"{choice}\"]"),
+                        dstate.clone(),
                     )
                     .await;
                 });

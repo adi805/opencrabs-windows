@@ -1042,6 +1042,7 @@ pub mod discord_group_bubble_test;
 pub mod discord_handler_test;
 pub mod discord_history_dedup_test;
 pub mod discord_interaction_ack_test;
+pub mod discord_interaction_turn_test;
 pub mod discord_mention_only_test;
 pub mod discord_norm_key_test;
 pub mod discord_options_host_test;
