@@ -1212,6 +1212,7 @@ pub mod whatsapp_history_test;
 pub mod whatsapp_identity_test;
 pub mod whatsapp_inbound_test;
 pub mod whatsapp_interactive_test;
+pub mod whatsapp_lid_migration_test;
 pub mod whatsapp_newsletter_test;
 pub mod whatsapp_outbox_test;
 pub mod whatsapp_owner_alert_test;
