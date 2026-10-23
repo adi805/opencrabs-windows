@@ -2143,19 +2143,29 @@ impl App {
                         .as_ref()
                         .map(|s| s.id)
                         .unwrap_or_else(uuid::Uuid::nil);
-                    // Editor handoff (#1744): vi/vim/nano/emacs need the real
-                    // tty — pipe-capturing them dumps escape sequences into
-                    // the chat. Park the request; the runner loop performs
-                    // the terminal handoff before its next draw. Unix only
+                    // Editor handoff (#1744): editors need the real tty.
+                    // Pipe-capturing them dumps escape sequences into the
+                    // chat. Park the request; the runner loop performs the
+                    // terminal handoff before its next draw. Unix only
                     // (#1755): Windows keeps the pipe path below.
+                    // $EDITOR/$VISUAL are honoured too (#2173): the user
+                    // chose that program, so a `!kak` matching their editor
+                    // gets the tty instead of dumping raw control codes.
                     #[cfg(unix)]
-                    if crate::tui::editor::handoff_target(&shell_cmd).is_some() {
-                        self.pending_editor_handoff = Some((shell_cmd, origin_session));
-                        self.input_buffer.clear();
-                        self.cursor_position = 0;
-                        self.slash_suggestions_active = false;
-                        self.dismiss_emoji_picker();
-                        return Ok(());
+                    {
+                        let env_editor = std::env::var("EDITOR")
+                            .ok()
+                            .or_else(|| std::env::var("VISUAL").ok());
+                        if crate::tui::editor::handoff_target(&shell_cmd, env_editor.as_deref())
+                            .is_some()
+                        {
+                            self.pending_editor_handoff = Some((shell_cmd, origin_session));
+                            self.input_buffer.clear();
+                            self.cursor_position = 0;
+                            self.slash_suggestions_active = false;
+                            self.dismiss_emoji_picker();
+                            return Ok(());
+                        }
                     }
                     tokio::spawn(async move {
                         use crate::utils::shell::PushShellCommand;
