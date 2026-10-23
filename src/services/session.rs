@@ -217,13 +217,14 @@ impl SessionService {
         cache_read_tokens: Option<i64>,
         prompt_tokens: Option<i64>,
     ) -> Result<()> {
-        let mut session = self.get_session_required(id).await?;
-        session.token_count += token_count;
-        session.total_cost += cost;
-        session.updated_at = Utc::now();
-
+        // Atomic increment, not read-modify-write (#2180). The old shape loaded
+        // the row, added in Rust and wrote the whole row back, so two turns
+        // finishing on the same session at the same time lost one increment
+        // with no error. Overlapping inbound turns are exactly when that
+        // happens, which is why the loss went unnoticed for so long: the
+        // counter just came out lower than the ledger said.
         let repo = SessionRepository::new(self.context.pool());
-        repo.update(&session)
+        repo.update_stats(id, token_count, cost)
             .await
             .context("Failed to update session usage")?;
 

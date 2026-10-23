@@ -627,11 +627,22 @@ impl SessionRepository {
     }
 
     /// Update session statistics
-    pub async fn update_stats(&self, id: Uuid, token_delta: i32, cost_delta: f64) -> Result<()> {
+    ///
+    /// Atomic by construction: the increments happen in one SQL statement, so
+    /// two turns finishing on the same session at the same time cannot lose
+    /// one of the two (#2180). The old caller read the row, added in Rust and
+    /// wrote the whole row back, which silently dropped one increment whenever
+    /// a second turn landed inside that window.
+    ///
+    /// `token_delta` is `i64` because the column is: a session's lifetime
+    /// counter passed `i32::MAX` on a long-lived install, and a narrower delta
+    /// would truncate or overflow on the way in.
+    pub async fn update_stats(&self, id: Uuid, token_delta: i64, cost_delta: f64) -> Result<()> {
         let updated_at = Utc::now();
         let id_str = id.to_string();
 
-        self.pool
+        let updated = self
+            .pool
             .get()
             .await
             .context("Failed to get connection")?
@@ -648,6 +659,14 @@ impl SessionRepository {
             .await
             .map_err(interact_err)?
             .context("Failed to update session stats")?;
+
+        // A delta that matched no row means the caller believes a session
+        // exists and it does not. The old read-modify-write surfaced that as a
+        // "session not found" error; an UPDATE that quietly matches nothing
+        // would lose the usage instead (#2180).
+        if updated == 0 {
+            anyhow::bail!("Session {id} not found while updating its usage");
+        }
 
         Ok(())
     }
