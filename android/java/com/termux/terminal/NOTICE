@@ -1,0 +1,59 @@
+# Vendored terminal emulator
+
+The files in this directory are not written by this project. They come from
+[termux/termux-app](https://github.com/termux/termux-app), module
+`terminal-emulator`, at `master` as fetched on 2026-10-23.
+
+## License
+
+Apache License 2.0. This is not an assumption: termux-app's own `LICENSE.md`
+states it explicitly.
+
+> The `termux/termux-app` repository is released under GPLv3 only license.
+>
+> ### Exceptions
+>
+> - Terminal Emulator for Android code is used which is released under
+>   Apache 2.0 license. Check `terminal-view` and `terminal-emulator` libraries.
+
+The rest of termux-app (including `jni/termux.c`, the app module) is GPLv3 and
+is **not** used here. The pty binding this project ships is
+`android/jni/pty.c`, written from scratch against the POSIX `forkpty` API.
+
+`terminal-view` is deliberately not vendored: it depends on the annotation and support libraries and on
+Gradle-resolved AARs, while this APK is assembled by `android/assemble-apk.sh`
+with plain `javac` + `d8`. The renderer is `io.opencrabs.mobile.TerminalPane`
+instead.
+
+A copy of the Apache License 2.0 is at https://www.apache.org/licenses/LICENSE-2.0
+
+## Files and modifications
+
+Vendored unchanged:
+
+- `AndroidUtils.java`
+- `ByteQueue.java`
+- `ITermImage.java`
+- `KeyHandler.java`
+- `Logger.java`
+- `TerminalBitmap.java`
+- `TerminalBuffer.java`
+- `TerminalColorScheme.java`
+- `TerminalColors.java`
+- `TerminalEmulator.java`
+- `TerminalOutput.java`
+- `TerminalRow.java`
+- `TerminalSession.java`
+- `TerminalSixel.java`
+- `TextStyle.java`
+- `WcWidth.java`
+
+Modified, each with a `MODIFIED for OpenCrabs` note in its own header:
+
+- `TerminalSessionClient.java` - `@NonNull` and `@Nullable` annotations from the annotation library
+  removed. They are compile-time hints with CLASS retention, and they are the
+  only external annotation reference in the module. Keeping them would force the hand-rolled
+  build to unpack an AAR for no runtime effect.
+- `JNI.java` - no longer a `System.loadLibrary("termux")` binding, because that
+  library's source is GPLv3. Method signatures are unchanged so every other
+  vendored file compiles as-is; the bodies forward to `io.opencrabs.mobile.Pty`.

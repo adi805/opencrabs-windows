@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.os.Build;
 import android.os.IBinder;
@@ -42,6 +43,17 @@ public class CoreService extends Service {
     private static final String CHANNEL_ID = "opencrabs-core";
     private static final int NOTIFICATION_ID = 1;
     private static final String BINARY_NAME = "libopencrabs.so";
+
+    /**
+     * Intent extra: the activity owns the core (it runs the TUI under a pty), so this
+     * service must hold the foreground notification without spawning a second core.
+     * Two cores on one profile fight over the channel listeners and the database.
+     */
+    public static final String EXTRA_TUI_MODE = "io.opencrabs.mobile.TUI_MODE";
+    /** Where the start mode is kept, so a null-intent restart does not become a daemon. */
+    private static final String PREFS_NAME = "opencrabs-service";
+    private static final String PREF_TUI_MODE = "tui_mode";
+
 
     /** The core's config table for the loopback HTTP/JSON surface (PRD FR-006). */
     private static final String SURFACE_TABLE = "[session_surface]";
@@ -92,15 +104,43 @@ public class CoreService extends Service {
         return null;
     }
 
+    /** Remembers the start mode across sticky restarts, which carry no intent. */
+    private SharedPreferences prefs() {
+        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         // A fresh start clears a stop left by a previous instance, otherwise a
         // sticky restart comes up believing it is shutting down and never spawns.
         stopping = false;
-        startForeground(NOTIFICATION_ID, buildNotification("starting"));
+        // A START_STICKY restart arrives with a null intent, which used to mean
+        // "daemon": the platform would relaunch this service after the app's TUI was
+        // already running and spawn a second core on the same profile, colliding on the
+        // channel listeners and the sqlite database. The chosen mode is remembered so a
+        // restart resumes the mode the operator actually picked.
+        boolean tuiMode;
+        if (intent != null && intent.hasExtra(EXTRA_TUI_MODE)) {
+            tuiMode = intent.getBooleanExtra(EXTRA_TUI_MODE, false);
+            prefs().edit().putBoolean(PREF_TUI_MODE, tuiMode).apply();
+        } else {
+            tuiMode = prefs().getBoolean(PREF_TUI_MODE, false);
+            Log.i(TAG, "start without mode extra, resuming tuiMode=" + tuiMode);
+        }
+        startForeground(NOTIFICATION_ID, buildNotification(tuiMode ? "terminal session" : "starting"));
         // Before the spawn, so the config the core reads already carries the
         // token. The surface starts listening during daemon boot.
         ensureSurfaceToken(this);
+        if (tuiMode) {
+            // The activity runs the TUI under a pty and owns the core process.
+            // Spawning `daemon` here as well would put two cores on one profile:
+            // they collide on the channel listeners and on the sqlite database.
+            // This service then only holds the foreground notification so the
+            // process survives being backgrounded.
+            Log.i(TAG, "TUI mode: not spawning a daemon, the terminal owns the core");
+            setState("terminal session");
+            return START_STICKY;
+        }
         spawnCore();
         // START_STICKY: if the platform reclaims us under memory pressure it
         // restarts the service, which is the behaviour the operator expects
@@ -147,8 +187,13 @@ public class CoreService extends Service {
     private synchronized void spawnCore() {
         Log.i(TAG, "runtime sdk=" + Build.VERSION.SDK_INT
                 + " processPidMethod=" + hasProcessPid());
+        // A second start (activity onCreate, then the POST_NOTIFICATIONS callback)
+        // resets the label to "starting" a few lines above. So an already-live core
+        // has to republish its real state here, or the notification stays stuck on
+        // "starting" and reads exactly like a hang.
         if (isAlive(core)) {
             Log.i(TAG, "core already running, pid=" + pidText(core));
+            setState("running, pid " + pidText(core));
             return;
         }
         File exe = coreBinary(this);
