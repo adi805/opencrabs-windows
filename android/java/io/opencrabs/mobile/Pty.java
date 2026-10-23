@@ -15,7 +15,7 @@ package io.opencrabs.mobile;
  * escape sequences into a log file. A pty is not a nicety here, it is the
  * precondition for the TUI existing at all.
  */
-final class Pty {
+public final class Pty {
 
     static {
         System.loadLibrary("opencrabspty");
