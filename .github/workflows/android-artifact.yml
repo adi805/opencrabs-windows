@@ -318,6 +318,39 @@ jobs:
           fi
           echo "BootReceiver: present in the dex"
 
+          # The automation bridge has two failure modes that both build fine:
+          # the service class missing from the dex (the source glob dropped it),
+          # and the service declared in the manifest without
+          # BIND_ACCESSIBILITY_SERVICE, which would let ANY app on the device
+          # bind it and drive the phone. Both are asserted, because neither
+          # shows up as a build error.
+          for CLS in CrabsAccessibilityService AutomationServer; do
+            if ! grep -qF "Lio/opencrabs/mobile/${CLS};" <<< "$STRINGS"; then
+              echo "::error::${CLS} is not in the dex: the automation bridge would be missing at runtime."
+              exit 1
+            fi
+            echo "${CLS}: present in the dex"
+          done
+
+          MANIFEST_XML="$("$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml 2>/dev/null || true)"
+          if [ -z "$MANIFEST_XML" ]; then
+            # Distinguish "the dump tool failed" from "the service is missing":
+            # an empty dump means the verification itself is broken, and calling
+            # that a manifest problem would send the next reader hunting in the
+            # wrong file.
+            echo "::error::aapt2 could not dump the packaged AndroidManifest.xml, so the service declaration cannot be verified."
+            exit 1
+          fi
+          if ! grep -qF 'CrabsAccessibilityService' <<< "$MANIFEST_XML"; then
+            echo "::error::CrabsAccessibilityService is not declared in the packaged manifest."
+            exit 1
+          fi
+          if ! grep -qF 'android.permission.BIND_ACCESSIBILITY_SERVICE' <<< "$MANIFEST_XML"; then
+            echo "::error::the accessibility service is declared without BIND_ACCESSIBILITY_SERVICE, so any app could bind it and drive the device."
+            exit 1
+          fi
+          echo "accessibility service: declared with BIND_ACCESSIBILITY_SERVICE"
+
       - name: Upload the APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
