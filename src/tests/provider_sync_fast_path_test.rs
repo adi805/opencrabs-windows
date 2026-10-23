@@ -122,8 +122,17 @@ async fn sticky_on_fallback() -> (crate::brain::agent::AgentService, uuid::Uuid)
     (svc, sid)
 }
 
+// `Config::current()` is one process-wide mirror, so a test that swaps it has
+// to serialize against every other swapper in the suite, not just against its
+// neighbours in this file. Without the guard the two bodies below race:
+// whichever restores first strips the custom providers the other is still
+// resolving, and the swap lands on the wrong provider (observed as
+// `left: "pinned", right: "other"` in a default-features run that passed under
+// `--all-features` on scheduling luck). Same cross-suite lock the governor
+// suites hold around their own mirror swaps (#2012).
 #[tokio::test]
 async fn fast_path_skips_provider_rebuild() {
+    let _cooldown = crate::tests::telegram_cooldown_lock::guard().await;
     let previous = Config::current();
     Config::set_current(config_with_pinned());
 
@@ -168,6 +177,8 @@ async fn fast_path_skips_provider_rebuild() {
 
 #[tokio::test]
 async fn a_changed_provider_still_swaps() {
+    // Same mirror, same cross-suite lock: see the note above.
+    let _cooldown = crate::tests::telegram_cooldown_lock::guard().await;
     // The fast path must stay a fast path, not a "never sync" path: when the
     // session's stored provider genuinely differs, the swap still happens.
     let previous = Config::current();
