@@ -43,6 +43,14 @@ public class CoreService extends Service {
     private static final int NOTIFICATION_ID = 1;
     private static final String BINARY_NAME = "libopencrabs.so";
 
+    /**
+     * Intent extra: the activity owns the core (it runs the TUI under a pty), so this
+     * service must hold the foreground notification without spawning a second core.
+     * Two cores on one profile fight over the channel listeners and the database.
+     */
+    public static final String EXTRA_TUI_MODE = "io.opencrabs.mobile.TUI_MODE";
+
+
     /** The core's config table for the loopback HTTP/JSON surface (PRD FR-006). */
     private static final String SURFACE_TABLE = "[session_surface]";
     /** App-private file holding the generated bearer token. */
@@ -97,10 +105,21 @@ public class CoreService extends Service {
         // A fresh start clears a stop left by a previous instance, otherwise a
         // sticky restart comes up believing it is shutting down and never spawns.
         stopping = false;
-        startForeground(NOTIFICATION_ID, buildNotification("starting"));
+        boolean tuiMode = intent != null && intent.getBooleanExtra(EXTRA_TUI_MODE, false);
+        startForeground(NOTIFICATION_ID, buildNotification(tuiMode ? "terminal session" : "starting"));
         // Before the spawn, so the config the core reads already carries the
         // token. The surface starts listening during daemon boot.
         ensureSurfaceToken(this);
+        if (tuiMode) {
+            // The activity runs the TUI under a pty and owns the core process.
+            // Spawning `daemon` here as well would put two cores on one profile:
+            // they collide on the channel listeners and on the sqlite database.
+            // This service then only holds the foreground notification so the
+            // process survives being backgrounded.
+            Log.i(TAG, "TUI mode: not spawning a daemon, the terminal owns the core");
+            setState("terminal session");
+            return START_STICKY;
+        }
         spawnCore();
         // START_STICKY: if the platform reclaims us under memory pressure it
         // restarts the service, which is the behaviour the operator expects
@@ -147,8 +166,13 @@ public class CoreService extends Service {
     private synchronized void spawnCore() {
         Log.i(TAG, "runtime sdk=" + Build.VERSION.SDK_INT
                 + " processPidMethod=" + hasProcessPid());
+        // A second start (activity onCreate, then the POST_NOTIFICATIONS callback)
+        // resets the label to "starting" a few lines above. So an already-live core
+        // has to republish its real state here, or the notification stays stuck on
+        // "starting" and reads exactly like a hang.
         if (isAlive(core)) {
             Log.i(TAG, "core already running, pid=" + pidText(core));
+            setState("running, pid " + pidText(core));
             return;
         }
         File exe = coreBinary(this);
