@@ -2965,30 +2965,34 @@ impl App {
             // Open file with default app
             if let Some(file) = self.session_files.get(self.selected_file_index) {
                 let path = file.path.clone();
-                let result = {
-                    #[cfg(target_os = "macos")]
-                    {
-                        std::process::Command::new("open").arg(&path).status()
-                    }
-                    #[cfg(target_os = "linux")]
-                    {
-                        std::process::Command::new("xdg-open").arg(&path).status()
-                    }
-                    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-                    {
-                        Err::<std::process::ExitStatus, _>(std::io::Error::new(
-                            std::io::ErrorKind::Unsupported,
-                            "unsupported platform",
-                        ))
-                    }
-                };
+                // Detached (#2172): waiting on the viewer to close froze the
+                // whole event loop, so Enter on a tracked file looked like a
+                // hang until the user quit Preview or Finder. The exit status
+                // now arrives as an event instead of being waited for here.
+                let label = path.display().to_string();
+                let tx = self.event_sender();
+                let result = crate::tui::launcher::open_detached(&path, move |detail| {
+                    let _ = tx.send(crate::tui::events::TuiEvent::LauncherFailed {
+                        target: label,
+                        detail,
+                    });
+                });
                 match result {
-                    Ok(s) if s.success() => {
+                    Ok(()) => {
                         self.notification = Some(format!("Opened {}", path.display()));
                     }
-                    Ok(_) | Err(_) => {
-                        // Fallback: copy path to clipboard
-                        self.notification = Some(format!("Path: {}", path.display()));
+                    Err(_) => {
+                        // No launcher on this box: copy the path so the
+                        // keystroke is not a dead end, and say which of the
+                        // two actually happened. The old comment promised a
+                        // clipboard fallback that never ran (#2172).
+                        let shown = path.display().to_string();
+                        let copied = Self::copy_to_clipboard(&shown);
+                        self.notification = Some(if copied {
+                            format!("Copied {shown} (no launcher available)")
+                        } else {
+                            format!("Could not open {shown}")
+                        });
                     }
                 }
                 self.notification_shown_at = Some(std::time::Instant::now());
@@ -3019,29 +3023,28 @@ impl App {
             if let Some(file) = self.session_files.get(self.selected_file_index)
                 && let Some(parent) = file.path.parent()
             {
-                let result = {
-                    #[cfg(target_os = "macos")]
-                    {
-                        std::process::Command::new("open").arg(parent).status()
-                    }
-                    #[cfg(target_os = "linux")]
-                    {
-                        std::process::Command::new("xdg-open").arg(parent).status()
-                    }
-                    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-                    {
-                        Err::<std::process::ExitStatus, _>(std::io::Error::new(
-                            std::io::ErrorKind::Unsupported,
-                            "unsupported platform",
-                        ))
-                    }
-                };
+                let label = parent.display().to_string();
+                let tx = self.event_sender();
+                let result = crate::tui::launcher::open_detached(parent, move |detail| {
+                    let _ = tx.send(crate::tui::events::TuiEvent::LauncherFailed {
+                        target: label,
+                        detail,
+                    });
+                });
                 match result {
-                    Ok(s) if s.success() => {
+                    Ok(()) => {
                         self.notification = Some(format!("Opened {}", parent.display()));
                     }
-                    Ok(_) | Err(_) => {
-                        self.notification = Some(format!("Folder: {}", parent.display()));
+                    Err(_) => {
+                        // Same fallback as the file itself: copy the folder
+                        // path rather than claiming it opened (#2172).
+                        let shown = parent.display().to_string();
+                        let copied = Self::copy_to_clipboard(&shown);
+                        self.notification = Some(if copied {
+                            format!("Copied {shown} (no launcher available)")
+                        } else {
+                            format!("Could not open {shown}")
+                        });
                     }
                 }
                 self.notification_shown_at = Some(std::time::Instant::now());

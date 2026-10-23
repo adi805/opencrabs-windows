@@ -314,3 +314,37 @@ fn docs_advertise_click_to_open() {
         "/help dialog must list the Mouse click binding"
     );
 }
+
+/// The session-files launcher must never wait on the viewer (#2172).
+/// `.status()` there blocked the event loop until the user closed
+/// Preview/Finder, which is what froze the whole TUI on Enter.
+#[test]
+fn session_files_launcher_never_blocks_the_loop() {
+    let src = include_str!("../tui/app/input.rs");
+    let start = src
+        .find("pub(crate) async fn handle_session_files_key")
+        .expect("session-files key handler must exist");
+    let body = &src[start..];
+    let end = body
+        .find("/// Handle keys in projects mode")
+        .unwrap_or(body.len());
+    let body = &body[..end];
+    assert!(
+        !body.contains(".status()"),
+        "the session-files launcher must be detached, not blocking on .status()"
+    );
+    assert!(
+        body.contains("launcher::open_detached"),
+        "session files must go through the detached launcher"
+    );
+    // The failure branch used to promise a clipboard fallback in a comment
+    // and copy nothing (#2172). Pin the behaviour, not the comment.
+    assert!(
+        body.contains("copy_to_clipboard"),
+        "the no-launcher branch must actually copy the path, not just name it"
+    );
+    assert!(
+        !body.contains("Fallback: copy path to clipboard"),
+        "the comment promised a fallback the code never ran"
+    );
+}
