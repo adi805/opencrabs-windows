@@ -1229,12 +1229,9 @@ pub(crate) async fn handle_message(
         .register_session_jid(session_id, reply_target.to_string())
         .await;
 
-    // A new inbound turn never edits the previous turn's message (#1614). The
-    // outbox entry has to outlive its own turn (the final edit and the
-    // completion reaction both run after the agent call), so the turn that
-    // starts is the one that releases it. Skipping this let a follow-up sent
-    // inside the 15-minute edit window overwrite the answer already on screen.
-    wa_state.begin_turn(session_id).await;
+    // The outbox release for this turn happens after the turn slot is claimed
+    // (#2179, see below): a message that loses the claim is queued, and a
+    // queued message must not clear the live turn's entry.
 
     // Claim this session's background-task completions for WhatsApp: a completion
     // must be delivered by the surface that OWNS the session, not by whichever
@@ -1267,11 +1264,11 @@ pub(crate) async fn handle_message(
 
     // Fast-cancel: any recognised stop intent, in any supported language (#965).
     //
-    // Cancellation is scoped to explicit stop requests and genuine follow-up
-    // messages (handled at dispatch by store_cancel_token, which cancels the
-    // prior token before starting new work). Channel commands like /models,
-    // /help, /usage, /new must NEVER abort an in-flight task: switching models
-    // applies to the next run, it does not drop current work (#266).
+    // Cancellation is scoped to explicit stop requests. An ordinary follow-up
+    // no longer cancels anything: it queues behind the live turn through the
+    // turn slot (#2179). Channel commands like /models, /help, /usage, /new
+    // must NEVER abort an in-flight task: switching models applies to the next
+    // run, it does not drop current work (#266).
     if crate::utils::stop_intent::is_stop_command_or_intent(&content) {
         wa_state.cancel_session(session_id).await;
         let reply = waproto::whatsapp::Message {
@@ -1613,12 +1610,49 @@ pub(crate) async fn handle_message(
          the turn must never end on a bare attachment with no closing text after it.]\n{agent_input}"
     );
 
+    // ── Turn slot (#2179) ─────────────────────────────────────────────────
+    // One turn per session, claimed atomically BEFORE the typing setup, the
+    // stream setup and the agent call. A message that loses the claim is
+    // queued for the live turn (injected between tool rounds, flushed at turn
+    // end) instead of forking a second concurrent tool loop on this session.
+    // `store_cancel_token` no longer kills the running turn, so this slot is
+    // the only thing standing between a follow-up and two turns racing on one
+    // transcript.
+    let turn_guard = match wa_state.try_begin_turn(session_id) {
+        Some(guard) => guard,
+        None => {
+            tracing::info!(
+                "WhatsApp: message arrived mid-turn on session {session_id} — queued for \
+                 injection between tool rounds (#2179)"
+            );
+            wa_state.enqueue_turn_message(
+                session_id,
+                crate::brain::agent::QueuedUserMessage {
+                    context_text: agent_input,
+                    display_text,
+                    origin: crate::brain::agent::PushOrigin::Ingress,
+                    bg_meta: None,
+                },
+            );
+            return;
+        }
+    };
+
+    // A new inbound turn never edits the previous turn's message (#1614). The
+    // outbox entry has to outlive its own turn (the final edit and the
+    // completion reaction both run after the agent call), so the turn that
+    // starts is the one that releases it. Skipping this let a follow-up sent
+    // inside the 15-minute edit window overwrite the answer already on screen.
+    // Only a turn that WON the slot reaches this: a queued message must leave
+    // the live turn's entry alone, or its final edit lands as a new message.
+    wa_state.begin_turn(session_id).await;
+
     // Typing indicator — send composing every 5 s while the agent thinks
     let typing_cancel = CancellationToken::new();
     // The agent-call token is created HERE rather than at the call because
-    // the handover tail below must watch it: `/stop` and the next turn's
-    // `store_cancel_token` are the two events that should end this
-    // indicator, and both cancel exactly this token (#1989).
+    // the handover tail below must watch it: `/stop` is the event that should
+    // end this indicator, and it cancels exactly this token (#1989). A
+    // follow-up no longer cancels it: since #2179 it queues behind the turn.
     let cancel_token = CancellationToken::new();
     tokio::spawn({
         let client = client.clone();
@@ -2321,6 +2355,16 @@ pub(crate) async fn handle_message(
             }
         }
     }
+
+    // Drop the guard before flushing so a message arriving during the flush
+    // takes the slot fresh instead of re-queueing against a finished turn.
+    drop(turn_guard);
+
+    // #2179 safeguard: a follow-up that landed during the FINAL round had no
+    // further between-rounds drain after it. Flush it into a fresh turn so a
+    // mid-turn message is never silently stranded. Empty is the common case
+    // (one lock check); a real inference only fires when something was queued.
+    super::turns::flush_after_turn(wa_state.clone(), agent.clone(), session_id);
 }
 
 /// Send a real agent-generated confirmation greeting into the owner's self-chat

@@ -41,6 +41,7 @@ mod sessions;
 mod state;
 pub(crate) mod store;
 pub(crate) mod stream;
+pub(crate) mod turns;
 pub(crate) mod voice_note;
 
 pub use agent::WhatsAppAgent;

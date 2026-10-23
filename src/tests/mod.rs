@@ -1227,6 +1227,7 @@ pub mod whatsapp_status_fanout_test;
 pub mod whatsapp_status_media_test;
 pub mod whatsapp_store_test;
 pub mod whatsapp_stream_test;
+pub mod whatsapp_turn_slot_test;
 pub mod whatsapp_voice_note_test;
 pub mod whispercrabs_refresh_2114_test;
 pub mod word_delete_keybinding_test;
