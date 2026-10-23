@@ -8,6 +8,7 @@ import android.graphics.Typeface;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.inputmethod.BaseInputConnection;
@@ -39,6 +40,8 @@ import java.nio.charset.StandardCharsets;
  * escape sequences a TUI expects. Both end in {@link TerminalSession#write}.
  */
 public final class TerminalPane extends View {
+
+    private static final String TAG = "OpenCrabsTerm";
 
     private static final int CURSOR_BLINK_MS = 500;
 
@@ -145,8 +148,20 @@ public final class TerminalPane extends View {
 
     // ---------------------------------------------------------------- drawing
 
+    /**
+     * Frames actually painted. Kept because "the buffer holds text" and "a frame
+     * was drawn" are different claims: a pane that never gets laid out can hold
+     * a full screen and still show nothing.
+     */
+    private int drawCount;
+
+    int drawCount() {
+        return drawCount;
+    }
+
     @Override
     protected void onDraw(Canvas canvas) {
+        drawCount++;
         canvas.drawColor(0xff000000);
         if (session == null) return;
         TerminalEmulator emulator = session.getEmulator();
@@ -156,6 +171,10 @@ public final class TerminalPane extends View {
 
         int rows = emulator.getRows();
         int cols = emulator.getColumns();
+        if (drawCount == 1) {
+            Log.i(TAG, "tui frame: draw=1 rows=" + rows + " cols=" + cols
+                + " cell=" + cellWidth + "x" + cellHeight);
+        }
         int baselineOffset = (int) -textPaint.getFontMetrics().ascent;
 
         for (int row = 0; row < rows; row++) {
@@ -173,8 +192,7 @@ public final class TerminalPane extends View {
                     int charIndex = line.findStartOfColumn(col);
                     if (charIndex != lastCharIndex) {
                         lastCharIndex = charIndex;
-                        int codePoint = Character.codePointAt(line.mText, charIndex);
-                        if (codePoint != 0) runText.appendCodePoint(codePoint);
+                        appendCellText(line, charIndex, runText);
                     }
                     continue;
                 }
@@ -192,6 +210,29 @@ public final class TerminalPane extends View {
         }
 
         drawCursor(canvas, emulator, colors, baselineOffset);
+    }
+
+    /**
+     * Append a cell's full text: the base code point plus the combining marks
+     * stored after it.
+     *
+     * <p>Combining marks occupy zero columns and live in the same cell as their
+     * base, so copying only the first code point dropped them and "e" + U+0301
+     * rendered as plain "e". They sit immediately after the base char, which is
+     * why the walk stops at the first non-zero-width code point.
+     */
+    private static void appendCellText(TerminalRow line, int charIndex, StringBuilder out) {
+        int codePoint = Character.codePointAt(line.mText, charIndex);
+        if (codePoint == 0) return;
+        out.appendCodePoint(codePoint);
+        int i = charIndex + Character.charCount(codePoint);
+        int used = line.getSpaceUsed();
+        while (i < used) {
+            int next = Character.codePointAt(line.mText, i);
+            if (next == 0 || WcWidth.width(next) > 0) break;
+            out.appendCodePoint(next);
+            i += Character.charCount(next);
+        }
     }
 
     private void drawRun(Canvas canvas, TerminalColors colors, int row, int fromCol, int toCol,
@@ -244,10 +285,13 @@ public final class TerminalPane extends View {
         float left = col * cellWidth;
         float top = row * cellHeight;
         fillPaint.setColor(resolveColor(colors, TextStyle.COLOR_INDEX_CURSOR));
+        // The emulator already translated DECSCUSR into its own three values:
+        // 0 block, 1 underline, 2 bar. Comparing against the raw 3..6 never
+        // matched, so every requested shape came out as a block.
         int cursorStyle = emulator.getCursorStyle();
-        if (cursorStyle == 3 || cursorStyle == 4) {
+        if (cursorStyle == TerminalEmulator.TERMINAL_CURSOR_STYLE_UNDERLINE) {
             canvas.drawRect(left, top + cellHeight - 3, left + cellWidth, top + cellHeight, fillPaint);
-        } else if (cursorStyle == 5 || cursorStyle == 6) {
+        } else if (cursorStyle == TerminalEmulator.TERMINAL_CURSOR_STYLE_BAR) {
             canvas.drawRect(left, top, left + 3, top + cellHeight, fillPaint);
         } else {
             canvas.drawRect(left, top, left + cellWidth, top + cellHeight, fillPaint);
