@@ -3,8 +3,14 @@
 # Assemble a minimal debug APK around the Android core binary.
 #
 # Hand-rolled instead of Gradle on purpose: this needs a manifest, one dex and
-# two .so files. Pulling in AGP would add an AGP/JDK/SDK version-compat surface
+# three .so files. Pulling in AGP would add an AGP/JDK/SDK version-compat surface
 # for no benefit, and build-tools is already on the runner image.
+#
+# The three native libs are libopencrabs.so (the core, built by cargo),
+# libc++_shared.so (its C++ runtime, taken from the NDK) and libopencrabspty.so
+# (the forkpty JNI bridge in android/jni/pty.c, compiled here). The first two are
+# per-ABI copies; the third is compiled per ABI because a shared object built for
+# aarch64 cannot be loaded by an x86_64 process.
 #
 # The lib naming below is a platform requirement, not style. Since Android 10
 # (API 29) W^X is enforced on the app data directory, so a binary cannot be
@@ -32,6 +38,16 @@ set -euo pipefail
 # plus Process.isAlive/destroyForcibly). Declared once so the dex and the
 # manifest cannot drift apart, which is how it read 24 in both places before.
 MIN_SDK=26
+
+# The Android client has its own version train, independent of the core crate's
+# version in Cargo.toml: this artifact is a shell that bundles a core build, and
+# the shell changes on its own schedule (0.2.0 is the release that turns it from
+# a daemon wrapper into a terminal). Declared once for the same reason MIN_SDK
+# is: as two bare literals they can drift, and a versionCode that does not
+# increase is not a cosmetic bug, it is an APK Android refuses to install over
+# the previous one.
+VERSION_CODE=2
+VERSION_NAME=0.2.0
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "$#" -eq 0 ]; then
@@ -115,6 +131,39 @@ abi_triple() {
   esac
 }
 
+# clang wants the 32-bit ARM triple spelled armv7a-*, while the NDK's prebuilt
+# libc++ directory is named arm-linux-androideabi. Two spellings for one target,
+# so they get two functions instead of one clever one.
+clang_triple() {
+  case "$1" in
+    arm64-v8a)   echo "aarch64-linux-android" ;;
+    armeabi-v7a) echo "armv7a-linux-androideabi" ;;
+    x86)         echo "i686-linux-android" ;;
+    x86_64)      echo "x86_64-linux-android" ;;
+    *)           echo "" ;;
+  esac
+}
+
+# The NDK's clang, wherever the runner unpacked it. Returns 1 rather than
+# printing a bogus path: the pty library is not optional, so the caller has to
+# be able to tell "no clang" from "clang failed".
+find_clang() {
+  if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then
+    return 1
+  fi
+  for c in "$NDK"/toolchains/llvm/prebuilt/*/bin/clang; do
+    if [ -x "$c" ]; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Resolved once, up front: the pty bridge is required, so a runner without an
+# NDK has to fail here with a clear message instead of halfway through staging.
+CLANG="$(find_clang || true)"
+
 stage_abi() {
   abi="$1"
   bin="$2"
@@ -145,7 +194,37 @@ stage_abi() {
   cp "$cxx" "$OUT/stage/lib/$abi/libc++_shared.so"
   echo "c++ runtime : $abi <- $cxx"
 
-  printf '%s\n' "lib/$abi/libopencrabs.so" "lib/$abi/libc++_shared.so" >> "$OUT/libs.txt"
+  # The forkpty bridge. Compiled per ABI: a shared object is machine code, and
+  # the loader refuses an aarch64 .so inside an x86_64 process. -shared with no
+  # -l flags because pty.c only touches libc (no liblog: it does not log).
+  ct="$(clang_triple "$abi")"
+  if [ -z "$ct" ]; then
+    echo "unknown ABI '$abi': no clang target triple, cannot build libopencrabspty.so" >&2
+    exit 2
+  fi
+  if [ -z "$CLANG" ]; then
+    echo "no NDK clang found (NDK='${NDK:-<unset>}'): libopencrabspty.so cannot be built" >&2
+    echo "set ANDROID_NDK_HOME/ANDROID_NDK_ROOT to an NDK with toolchains/llvm/prebuilt" >&2
+    exit 2
+  fi
+  if [ ! -f "$ROOT/android/jni/pty.c" ]; then
+    echo "missing $ROOT/android/jni/pty.c" >&2
+    exit 2
+  fi
+  # --target pins the ABI *and* the API level, so bionic's forkpty declaration
+  # is visible (it arrived in API 23; this app's floor is 26).
+  "$CLANG" --target="${ct}${MIN_SDK}" -O2 -fPIC -shared \
+    -o "$OUT/stage/lib/$abi/libopencrabspty.so" \
+    "$ROOT/android/jni/pty.c"
+  if [ ! -f "$OUT/stage/lib/$abi/libopencrabspty.so" ]; then
+    echo "clang produced no libopencrabspty.so for $abi" >&2
+    exit 2
+  fi
+  chmod 755 "$OUT/stage/lib/$abi/libopencrabspty.so"
+  echo "pty bridge  : $abi <- clang ($ct$MIN_SDK, $(stat -c%s "$OUT/stage/lib/$abi/libopencrabspty.so") bytes)"
+
+  printf '%s\n' "lib/$abi/libopencrabs.so" "lib/$abi/libc++_shared.so" \
+    "lib/$abi/libopencrabspty.so" >> "$OUT/libs.txt"
 }
 
 for arg in "$@"; do
@@ -191,8 +270,8 @@ echo "dex         : $(stat -c%s "$OUT/classes.dex") bytes"
   -I "$AJAR" \
   --min-sdk-version "$MIN_SDK" \
   --target-sdk-version 35 \
-  --version-code 1 \
-  --version-name 0.1.0
+  --version-code "$VERSION_CODE" \
+  --version-name "$VERSION_NAME"
 
 # --- 4. fold dex + libs into the apk ----------------------------------------
 cp "$OUT/base.apk" "$OUT/unsigned.apk"
@@ -263,5 +342,16 @@ echo "=== badging ==="
 echo
 echo "=== zip contents (libs must be present, named lib*.so) ==="
 unzip -l "$OUT/opencrabs-debug.apk" | grep -E "classes.dex|lib/" || true
+
+# A staged lib that never reached the APK is the failure this asserts against:
+# everything above would still print success, and the crash would only appear
+# on a device as UnsatisfiedLinkError inside System.loadLibrary.
+for required in libopencrabs.so libc++_shared.so libopencrabspty.so; do
+  if ! unzip -l "$OUT/opencrabs-debug.apk" | grep -q "lib/.*/$required\$"; then
+    echo "APK is missing $required" >&2
+    exit 1
+  fi
+done
+echo "native libs : all three present in the APK"
 echo
 echo "apk: $OUT/opencrabs-debug.apk ($(stat -c%s "$OUT/opencrabs-debug.apk") bytes)"
