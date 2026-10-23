@@ -50,12 +50,46 @@ public class MainActivity extends Activity {
     private TerminalSession session;
     private TextView title;
 
+    /**
+     * What a configuration change must not destroy.
+     *
+     * <p>Rotating the phone tears the activity down and builds a new one. The pty, the
+     * child process and its three threads belong to the session, not to the view, so a
+     * naive onCreate would leave the old core running and spawn a second one on the same
+     * profile: two processes on one sqlite database and one set of channel listeners.
+     * Handing the session to the replacement activity keeps exactly one core alive.
+     *
+     * <p>{@link CoreSessionClient} is retained too because it counts redraws and holds the
+     * digest flag; a fresh one would log "tui rendered" a second time and reset the shell
+     * pid. It is safe to keep across activities: it stores the application context.
+     */
+    private static final class Retained {
+        final TerminalSession session;
+        final CoreSessionClient client;
+
+        Retained(TerminalSession session, CoreSessionClient client) {
+            this.session = session;
+            this.client = client;
+        }
+    }
+
+    @Override
+    public Object onRetainNonConfigurationInstance() {
+        return new Retained(session, client);
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         askForNotificationPermission();
 
-        client = new CoreSessionClient(this);
+        Retained retained = (Retained) getLastNonConfigurationInstance();
+        if (retained != null) {
+            client = retained.client;
+            session = retained.session;
+        } else {
+            client = new CoreSessionClient(this);
+        }
         pane = new TerminalPane(this);
         client.attachPane(pane);
 
@@ -108,7 +142,16 @@ public class MainActivity extends Activity {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         setContentView(root);
 
-        startSession();
+        if (session != null && session.isRunning()) {
+            // Same core as before the rotation: point the new pane at it and let the
+            // emulator's existing screen state draw. No new process, no new pty.
+            Log.i(TAG, "reattached to running session, pid=" + session.getPid());
+            pane.attachSession(session);
+            pane.requestFocus();
+            Keyboard.show(this, pane);
+        } else {
+            startSession();
+        }
         startForegroundServiceInTuiMode();
     }
 
@@ -163,6 +206,8 @@ public class MainActivity extends Activity {
             session.finishIfRunning();
             session = null;
         }
+        // onRetainNonConfigurationInstance reads this field, so a later rotation
+        // retains whichever session startSession() puts here, never the dead one.
         pane.attachSession(null);
         startSession();
     }
