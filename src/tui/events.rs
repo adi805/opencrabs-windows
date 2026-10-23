@@ -294,6 +294,11 @@ pub enum TuiEvent {
         success: bool,
         elapsed_secs: f32,
     },
+
+    /// A detached launcher exited non-zero after its `spawn` already
+    /// succeeded (#2170, #2172). `spawn` only proves the binary existed, so
+    /// the optimistic "Opened …" line is corrected when this lands.
+    LauncherFailed { target: String, detail: String },
 }
 
 /// Sudo password request from the bash tool

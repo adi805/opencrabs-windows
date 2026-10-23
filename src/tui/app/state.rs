@@ -3528,6 +3528,12 @@ impl App {
             TuiEvent::AgentProcessing => {
                 // Handled by the render loop
             }
+            TuiEvent::LauncherFailed { target, detail } => {
+                // The optimistic "Opened …" line was written when spawn
+                // succeeded; the exit status is the real answer (#2170).
+                self.notification = Some(format!("Could not open {target}: {detail}"));
+                self.notification_shown_at = Some(std::time::Instant::now());
+            }
         }
         Ok(())
     }

@@ -259,7 +259,19 @@ fn clickable_module_registered_and_launcher_detached() {
         "module registered"
     );
     let src = include_str!("../tui/app/clickable.rs");
-    assert!(src.contains(".spawn()"), "launcher uses spawn, not status");
+    assert!(
+        src.contains("launcher::open_detached"),
+        "clickable must delegate to the detached launcher"
+    );
+    assert!(
+        !src.contains("spawn().map(|_child| ())"),
+        "the spawn-and-forget launcher (#2170) must not come back"
+    );
+    let launcher = include_str!("../tui/launcher.rs");
+    assert!(
+        launcher.contains("spawn()"),
+        "launcher uses spawn, not status"
+    );
 }
 
 /// The launcher must pick the platform's default-handler command. Pinned per
@@ -268,7 +280,7 @@ fn clickable_module_registered_and_launcher_detached() {
 /// `logs open` CLI), not `cmd /C start`.
 #[test]
 fn opener_command_matches_platform() {
-    let cmd = clickable::opener_command();
+    let cmd = crate::tui::launcher::opener_command();
     #[cfg(target_os = "macos")]
     let expected = "open";
     #[cfg(target_os = "linux")]

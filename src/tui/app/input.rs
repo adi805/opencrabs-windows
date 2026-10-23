@@ -512,7 +512,7 @@ impl App {
         let Some(target) = super::clickable::target_at(line, col_in_line) else {
             return false;
         };
-        match super::clickable::open(&target) {
+        match super::clickable::open(&target, self.event_sender()) {
             Ok(()) => {
                 self.notification = Some(format!("Opened {}", target.label()));
                 self.notification_shown_at = Some(std::time::Instant::now());
