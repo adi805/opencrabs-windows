@@ -264,19 +264,35 @@ fi
 echo "dex         : $(stat -c%s "$OUT/classes.dex") bytes"
 
 # --- 3. manifest -> base apk -------------------------------------------------
-# -R carries android/res, which holds the launcher icons. aapt2 compiles the
-# mipmaps into the apk's resource table, so the manifest's @mipmap/ic_launcher
-# resolves at install time instead of the launcher falling back to the default
-# green Android robot.
+# android/res holds the launcher icons. aapt2 has no "point me at a resource
+# directory" flag on `link`: -R means "overlay resources from this APK", so
+# passing the directory made aapt2 try to read it as a zip and die with
+# "failed to read magic from input: Is a directory". Resources are compiled to
+# .flat first and handed to link as positional inputs, which is the only shape
+# link accepts.
+if [ ! -d "$ROOT/android/res" ]; then
+  echo "android/res is missing but the manifest references @mipmap/ic_launcher" >&2
+  exit 1
+fi
+rm -rf "$OUT/res"
+mkdir -p "$OUT/res"
+"$BT/aapt2" compile --dir "$ROOT/android/res" -o "$OUT/res"
+mapfile -t FLATS < <(find "$OUT/res" -type f -name '*.flat' | sort)
+if [ "${#FLATS[@]}" -eq 0 ]; then
+  echo "aapt2 compile produced no .flat files from android/res" >&2
+  exit 1
+fi
+echo "resources   : ${#FLATS[@]} flat files"
+
 "$BT/aapt2" link \
   -o "$OUT/base.apk" \
   --manifest "$ROOT/android/AndroidManifest.xml" \
-  -R "$ROOT/android/res" \
   -I "$AJAR" \
   --min-sdk-version "$MIN_SDK" \
   --target-sdk-version 35 \
   --version-code "$VERSION_CODE" \
-  --version-name "$VERSION_NAME"
+  --version-name "$VERSION_NAME" \
+  "${FLATS[@]}"
 
 # --- 4. fold dex + libs into the apk ----------------------------------------
 cp "$OUT/base.apk" "$OUT/unsigned.apk"
