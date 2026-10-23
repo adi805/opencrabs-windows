@@ -194,7 +194,9 @@ fn the_compaction_pinger_stops_with_the_turn() {
         .find("ProgressEvent::Compacting { .. } =>")
         .expect("the compaction arm is gone");
     let rest = &SRC[arm..];
-    let arm_body = &rest[..rest.find("ProgressEvent::ToolStarted").unwrap_or(rest.len())];
+    let arm_body = &rest[..rest
+        .find("ProgressEvent::ToolStarted")
+        .unwrap_or(rest.len())];
 
     assert!(
         arm_body.contains("turn_typing.clone()"),

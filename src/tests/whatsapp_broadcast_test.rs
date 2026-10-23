@@ -159,7 +159,10 @@ fn an_inbound_status_is_not_a_message() {
     assert!(!is_inbound_status(&dm, false), "a DM must still be handled");
 
     let group: Jid = "120363000000000000@g.us".parse().expect("group parses");
-    assert!(!is_inbound_status(&group, false), "a group must still be handled");
+    assert!(
+        !is_inbound_status(&group, false),
+        "a group must still be handled"
+    );
 
     let broadcast_list: Jid = "1234567890@broadcast".parse().expect("broadcast parses");
     assert!(

@@ -123,7 +123,10 @@ fn composing_retries_back_off_then_give_up() {
         first, COMPOSING_BASE_DELAY,
         "the first retry after a failure keeps the normal cadence"
     );
-    assert!(second > first, "the delay must grow, got {second:?} after {first:?}");
+    assert!(
+        second > first,
+        "the delay must grow, got {second:?} after {first:?}"
+    );
 
     // Every delay stays under the ceiling, including the last one before the
     // cap, which is where an unclamped doubling would blow past 30s.
