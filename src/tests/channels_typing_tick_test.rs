@@ -175,3 +175,37 @@ async fn tick_loop_exits_at_its_ceiling() {
         "the ceiling stops the pinging, not the registry"
     );
 }
+
+// ── #2189: the compaction pinger is bound to the turn ────────────────
+
+/// The Discord compaction pinger used to run 12 fixed rounds of 8s with no
+/// cancel token, so a compaction that finished in 2s left the client showing
+/// "is typing" for another 90 seconds, and each compaction spawned a new
+/// untracked 96s task.
+///
+/// A behavioural test would need a live gateway context, so this pins the two
+/// things that make the defect impossible: the loop observes the turn's
+/// cancellation token, and it is that token, not a fresh one.
+#[test]
+fn the_compaction_pinger_stops_with_the_turn() {
+    const SRC: &str = include_str!("../channels/discord/handler.rs");
+
+    let arm = SRC
+        .find("ProgressEvent::Compacting { .. } =>")
+        .expect("the compaction arm is gone");
+    let rest = &SRC[arm..];
+    let arm_body = &rest[..rest.find("ProgressEvent::ToolStarted").unwrap_or(rest.len())];
+
+    assert!(
+        arm_body.contains("turn_typing.clone()"),
+        "the pinger must use the turn's typing token, not one of its own"
+    );
+    assert!(
+        arm_body.contains("cancel.is_cancelled()") && arm_body.contains("cancel.cancelled()"),
+        "the pinger must observe cancellation before pinging and while waiting"
+    );
+    assert!(
+        !arm_body.contains("for _ in 0..12"),
+        "the fixed 12-round loop is the defect; it must be the named ceiling"
+    );
+}

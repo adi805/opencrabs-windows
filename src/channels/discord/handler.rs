@@ -167,6 +167,13 @@ const FLOW_TICKER_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// Hard stop for orphaned ticks (crashed turn): no immortal tasks.
 const FLOW_TICKER_CAP: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
+/// Compaction typing cadence (#2189). Under Discord's ~10s expiry so the dots
+/// do not flicker, and the same 8s the sustained turn pinger uses.
+const COMPACTION_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(8);
+/// Outer bound on the compaction pinger, about 96s. The turn token ends it
+/// when the turn ends; this only covers a compaction that never reports back.
+const COMPACTION_PING_ROUNDS: usize = 12;
+
 /// Button ceiling for one Discord menu message (#2190): 5 action rows of 5.
 pub(crate) const MENU_BUTTON_CAP: usize = 25;
 
@@ -1340,6 +1347,10 @@ pub(crate) async fn handle_message(
     // one ENDS the turn. Its own token, not `cancel_token`, which only fires on
     // abort — this must stop when the turn FINISHES, however it finishes.
     let typing_cancel = tokio_util::sync::CancellationToken::new();
+    // #2189: the compaction pinger must die with the turn. This clone is taken
+    // before the guard consumes the token, so the pinger and the turn share
+    // one cancellation and the pinger cannot outlive the work.
+    let turn_typing = typing_cancel.clone();
     super::typing::spawn_typing(
         ctx.http.clone(),
         msg.channel_id,
@@ -1424,12 +1435,24 @@ pub(crate) async fn handle_message(
                 // resume the indicator naturally.
                 ProgressEvent::Compacting { .. } => {
                     let http = http.clone();
+                    // #2189: bound to the turn, not to a fixed 96s window. A
+                    // compaction that finishes in 2s used to leave the client
+                    // showing "is typing" for another 90s, with no event able
+                    // to stop it. The ceiling stays as the outer bound for a
+                    // compaction that never reports back.
+                    let cancel = turn_typing.clone();
                     tokio::spawn(async move {
-                        for _ in 0..12 {
+                        for _ in 0..COMPACTION_PING_ROUNDS {
+                            if cancel.is_cancelled() {
+                                break;
+                            }
                             if let Err(e) = channel.broadcast_typing(&http).await {
                                 tracing::warn!(error = %e, "failed to broadcast Discord typing");
                             }
-                            tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                _ = tokio::time::sleep(COMPACTION_PING_INTERVAL) => {}
+                            }
                         }
                     });
                 }
