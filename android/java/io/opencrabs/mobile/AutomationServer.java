@@ -53,6 +53,18 @@ public final class AutomationServer {
 
     private static volatile AutomationServer sInstance;
 
+    /**
+     * Whether the app has a visible activity right now.
+     *
+     * <p>Load-bearing for /launch and /share: since Android 10 a background app
+     * cannot start an activity, and the block is silent. startActivity neither
+     * throws nor returns false, the system just logs "Background activity start
+     * blocked" and drops it, so without this flag the endpoint would answer
+     * {"ok":true} having done nothing. Reporting that honestly is worth more
+     * than a green JSON field.
+     */
+    static volatile boolean sAppForeground;
+
     private final Context mContext;
     private final ExecutorService mWorkers = Executors.newFixedThreadPool(2);
     private volatile boolean mRunning;
@@ -250,6 +262,32 @@ public final class AutomationServer {
             return;
         }
 
+        // /share is served without the accessibility service on purpose. It is
+        // the zero-risk path to another app: ACTION_SEND opens the target's own
+        // composer with the content prefilled and the user taps publish. No
+        // screen reading, no synthetic taps, nothing a platform's terms can
+        // object to, which is why it does not need the invasive permission.
+        if ("/share".equals(path)) {
+            JSONObject in = new JSONObject(body);
+            String text = in.optString("text", "");
+            String pkg = in.optString("package", "");
+            android.content.Intent send = new android.content.Intent(
+                    android.content.Intent.ACTION_SEND);
+            send.setType("text/plain");
+            send.putExtra(android.content.Intent.EXTRA_TEXT, text);
+            if (!pkg.isEmpty()) {
+                send.setPackage(pkg);
+            }
+            send.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                mContext.startActivity(send);
+                writeJson(c, 200, startResult(true));
+            } catch (Exception e) {
+                writeJson(c, 200, error("no app accepted the share: " + e.getMessage()));
+            }
+            return;
+        }
+
         if (svc == null) {
             writeJson(c, 503, error("accessibility service not enabled"));
             return;
@@ -311,7 +349,7 @@ public final class AutomationServer {
             case "/launch": {
                 JSONObject in = new JSONObject(body);
                 boolean ok = svc.launch(in.getString("package"));
-                writeJson(c, 200, result(ok));
+                writeJson(c, 200, startResult(ok));
                 return;
             }
             default:
@@ -322,6 +360,24 @@ public final class AutomationServer {
     private static JSONObject result(boolean ok) throws Exception {
         JSONObject o = new JSONObject();
         o.put("ok", ok);
+        return o;
+    }
+
+    /**
+     * Result for an endpoint that starts an activity.
+     *
+     * <p>Adds a warning when the app is not in the foreground, because the
+     * system drops a background activity start without telling anyone. A caller
+     * that reads only "ok" would believe a share happened when nothing opened.
+     */
+    private static JSONObject startResult(boolean ok) throws Exception {
+        JSONObject o = result(ok);
+        if (ok && !sAppForeground) {
+            o.put("warning", "app is backgrounded: Android may silently block this "
+                    + "activity start. Open the app and retry, or use /dump to check "
+                    + "whether the target actually opened.");
+            o.put("foreground", false);
+        }
         return o;
     }
 

@@ -305,6 +305,21 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        // The automation endpoints that start an activity (/launch, /share) are
+        // only honoured by the platform while this app is in front. Track it so
+        // the bridge can say "blocked" instead of a green ok that did nothing.
+        AutomationServer.sAppForeground = true;
+    }
+
+    @Override
+    protected void onPause() {
+        AutomationServer.sAppForeground = false;
+        super.onPause();
+    }
+
+    @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions,
                                            int[] grantResults) {
         if (requestCode != REQ_POST_NOTIFICATIONS) {
