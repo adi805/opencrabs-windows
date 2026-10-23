@@ -8,7 +8,9 @@
     lib/arm64-v8a/*.so into the app's native library directory at install
     time. Without extraction the files stay compressed inside the APK and
     cannot be exec'd. This also means every native lib gets extracted, which
-    is why the APK carries exactly two of them.
+    is why the APK carries three of them: libopencrabs.so (the core, exec'd),
+    libc++_shared.so (its C++ runtime) and libopencrabspty.so (the forkpty JNI
+    bridge the terminal session loads).
 
   * android:foregroundServiceType="specialUse" - Android 14 (API 34) requires
     every foreground service to declare a type. The core is a long-running
@@ -57,6 +59,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Provider + key setup. Not exported: only this app opens it. -->
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="OpenCrabs settings" />
 
         <service
             android:name=".CoreService"
