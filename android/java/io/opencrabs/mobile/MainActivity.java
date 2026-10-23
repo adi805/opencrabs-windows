@@ -13,6 +13,7 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -140,7 +141,15 @@ public class MainActivity extends Activity {
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         root.addView(pane.createExtraKeysRow(), new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        setContentView(root);
+
+        // The pane is full-screen, so a floating control is the only thing that stays
+        // reachable while the keyboard is either up or down. It toggles the IME instead
+        // of only hiding it, because the extra-keys HIDE key had no way back.
+        FrameLayout shell = new FrameLayout(this);
+        shell.addView(root, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        shell.addView(createKeyboardToggle(), keyboardToggleParams());
+        setContentView(shell);
 
         if (session != null && session.isRunning()) {
             // Same core as before the rotation: point the new pane at it and let the
@@ -148,7 +157,10 @@ public class MainActivity extends Activity {
             Log.i(TAG, "reattached to running session, pid=" + session.getPid());
             pane.attachSession(session);
             pane.requestFocus();
-            Keyboard.show(this, pane);
+            // Posted, not called inline: showSoftInput on a view that has not been laid
+            // out yet is silently ignored, which is why the keyboard never came up on
+            // launch. After the first traversal the view has a window token.
+            pane.post(() -> Keyboard.show(this, pane));
         } else {
             startSession();
         }
@@ -157,6 +169,41 @@ public class MainActivity extends Activity {
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density);
+    }
+
+    /**
+     * Floating keyboard switch, drawn on top of the terminal at the bottom-right.
+     *
+     * <p>Kept as a plain {@link TextView} rather than a material FAB because this build
+     * has no androidx: the APK is assembled with javac + d8 from vendored sources, so a
+     * support-library widget would mean unpacking an AAR at build time.
+     */
+    private View createKeyboardToggle() {
+        TextView toggle = new TextView(this);
+        // Plain ASCII on purpose: U+2328 (the keyboard glyph) is absent from Roboto on
+        // several Android builds and would render as a tofu box.
+        toggle.setText("KBD");
+        toggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        toggle.setTextColor(0xff7fd1ff);
+        toggle.setGravity(Gravity.CENTER);
+        toggle.setPadding(dp(12), dp(8), dp(12), dp(8));
+        toggle.setBackgroundColor(0xcc1f1f1f);
+        toggle.setAlpha(0.85f);
+        toggle.setOnClickListener(v -> {
+            boolean shown = pane.toggleKeyboard();
+            v.setAlpha(shown ? 0.45f : 0.85f);
+        });
+        return toggle;
+    }
+
+    /** Sits above the extra-keys row so the two never overlap. */
+    private FrameLayout.LayoutParams keyboardToggleParams() {
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM | Gravity.END);
+        int margin = dp(6);
+        params.setMargins(margin, margin, margin, dp(56));
+        return params;
     }
 
     /** Build the environment the core expects, then let the pane's first layout spawn it. */
@@ -197,7 +244,7 @@ public class MainActivity extends Activity {
             client);
         pane.attachSession(session);
         pane.requestFocus();
-        Keyboard.show(this, pane);
+        pane.post(() -> Keyboard.show(this, pane));
         Log.i(TAG, "session prepared: " + binary.getAbsolutePath() + " chat cwd=" + home);
     }
 
