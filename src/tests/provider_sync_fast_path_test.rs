@@ -14,9 +14,7 @@
 //! The sync now compares against the CONFIGURED primary. A promoted fallback is
 //! a temporary state, not a new configuration, so the chain is left alone.
 
-use crate::brain::provider::{
-    LLMRequest, LLMResponse, Provider, ProviderError, ProviderStream,
-};
+use crate::brain::provider::{LLMRequest, LLMResponse, Provider, ProviderError, ProviderStream};
 use crate::config::{Config, ProviderConfig};
 use crate::tests::agent_service_mocks::create_test_service_with_provider;
 use async_trait::async_trait;

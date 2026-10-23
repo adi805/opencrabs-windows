@@ -2248,7 +2248,6 @@ pub(crate) async fn handle_message(
             // and a DM reply is recorded whether or not it carries a
             // platform id.
 
-
             // TTS: send voice reply if input was audio and TTS is enabled
             if is_voice && voice_config.tts_enabled {
                 match crate::channels::voice::synthesize(&response.content, &voice_config).await {

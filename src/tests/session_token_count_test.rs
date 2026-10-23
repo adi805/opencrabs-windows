@@ -60,7 +60,9 @@ async fn concurrent_usage_updates_all_land() {
         }));
     }
     for h in handles {
-        h.await.expect("writer task did not panic").expect("update lands");
+        h.await
+            .expect("writer task did not panic")
+            .expect("update lands");
     }
 
     let stored = SessionRepository::new(pool.clone())

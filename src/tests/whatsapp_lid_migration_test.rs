@@ -93,12 +93,22 @@ async fn a_lid_only_session_is_renamed_to_its_phone_number() -> Result<()> {
     let pn = "6285270679623";
 
     let lid_session = seed_session(&pool, lid, Some(generated_title(lid)), 4200, 0.25).await;
-    seed_message(&pool, lid_session.id, 0, "before the cutover", 1_780_000_000).await;
+    seed_message(
+        &pool,
+        lid_session.id,
+        0,
+        "before the cutover",
+        1_780_000_000,
+    )
+    .await;
     seed_message(&pool, lid_session.id, 1, "still before it", 1_780_000_100).await;
 
     let report = reconcile_lid_sessions(&pool, vec![(lid.into(), pn.into())]).await?;
 
-    assert_eq!(report.renamed, 1, "the LID row is the PN row now: {report:?}");
+    assert_eq!(
+        report.renamed, 1,
+        "the LID row is the PN row now: {report:?}"
+    );
     assert_eq!(report.merged, 0, "nothing to merge, no PN session existed");
     assert_eq!(report.messages_moved, 0, "a rename moves no messages");
 
@@ -147,7 +157,10 @@ async fn a_split_conversation_is_merged_in_time_order() -> Result<()> {
     let report = reconcile_lid_sessions(&pool, vec![(lid.into(), pn.into())]).await?;
 
     assert_eq!(report.merged, 1, "one LID session folded in: {report:?}");
-    assert_eq!(report.renamed, 0, "the PN key was taken, so nothing renamed");
+    assert_eq!(
+        report.renamed, 0,
+        "the PN key was taken, so nothing renamed"
+    );
     assert_eq!(report.messages_moved, 2, "both LID messages moved");
 
     let survivor = session_by_key(&pool, &pn_key(pn))
@@ -159,7 +172,10 @@ async fn a_split_conversation_is_merged_in_time_order() -> Result<()> {
         2_532_737 + 177_219,
         "counters add up instead of one half's spend vanishing"
     );
-    assert!((survivor.total_cost - 10.5).abs() < 1e-9, "costs add up too");
+    assert!(
+        (survivor.total_cost - 10.5).abs() < 1e-9,
+        "costs add up too"
+    );
 
     let all = messages_of(&pool, survivor.id).await;
     assert_eq!(all.len(), 4, "one conversation, not two halves");
@@ -265,9 +281,7 @@ async fn unmapped_and_malformed_pairs_change_nothing() -> Result<()> {
 
     assert!(report.is_noop(), "nothing to reconcile: {report:?}");
     assert_eq!(
-        SessionRepository::new(pool.clone())
-            .count(false)
-            .await?,
+        SessionRepository::new(pool.clone()).count(false).await?,
         0,
         "no session was invented"
     );

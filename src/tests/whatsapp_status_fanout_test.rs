@@ -10,9 +10,7 @@
 //! The wiring (that the dispatch arm actually goes through the fan-out) is
 //! pinned in `whatsapp_status_media_test`, which scans the arm's source.
 
-use crate::brain::tools::whatsapp_send::{
-    StatusFanOut, StatusSink, fan_out_status, status_report,
-};
+use crate::brain::tools::whatsapp_send::{StatusFanOut, StatusSink, fan_out_status, status_report};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -195,7 +193,10 @@ async fn one_failed_send_does_not_stop_the_rest() {
     );
     assert_eq!(out.failed.len(), 1, "the middle recipient failed");
     assert_eq!(out.failed[0].0, targets[1].to_string());
-    assert!(out.refused.is_empty(), "a send failure is not a cap refusal");
+    assert!(
+        out.refused.is_empty(),
+        "a send failure is not a cap refusal"
+    );
 }
 
 /// Nothing delivered is an error, and it says the cap is not a queue.
@@ -204,7 +205,10 @@ fn a_fan_out_that_delivered_nothing_is_an_error() {
     let targets = jids(2);
     let out = StatusFanOut {
         sent: Vec::new(),
-        refused: targets.iter().map(std::string::ToString::to_string).collect(),
+        refused: targets
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
         failed: Vec::new(),
     };
 

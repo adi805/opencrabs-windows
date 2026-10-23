@@ -100,11 +100,9 @@ pub(crate) async fn route_interaction_turn(
     // and the tap follow (#1990). Losing the claim queues the interaction for
     // the live turn: without this, a component interaction arriving mid-turn
     // forked a second concurrent loop onto the same session row.
-    let Some(_turn_guard) = discord_state.claim_interaction_turn(
-        session_id,
-        context_text.clone(),
-        display_tag.clone(),
-    ) else {
+    let Some(_turn_guard) =
+        discord_state.claim_interaction_turn(session_id, context_text.clone(), display_tag.clone())
+    else {
         return;
     };
 
@@ -334,10 +332,8 @@ pub(crate) async fn route_followup_turn(
                         .await
                         {
                             Ok(sent_msg) => {
-                                let comps = super::tool_group::render_components(
-                                    &group,
-                                    sent_msg.id.get(),
-                                );
+                                let comps =
+                                    super::tool_group::render_components(&group, sent_msg.id.get());
                                 if !comps.is_empty()
                                     && let Some(Err(e)) = super::governor::edit_chrome(
                                         &dstate.governor,
@@ -345,9 +341,7 @@ pub(crate) async fn route_followup_turn(
                                         &http,
                                         sent_msg.id,
                                         EditMessage::new()
-                                            .embeds(super::tool_group::render_embeds(
-                                                &group,
-                                            ))
+                                            .embeds(super::tool_group::render_embeds(&group))
                                             .components(comps),
                                     )
                                     .await

@@ -22,7 +22,9 @@ fn interaction_waits_for_turn_slot() {
     let sid = uuid::Uuid::new_v4();
 
     // A turn is already running on this session.
-    let live = state.try_begin_turn(sid).expect("the live turn owns the slot");
+    let live = state
+        .try_begin_turn(sid)
+        .expect("the live turn owns the slot");
 
     // A select pick arrives mid-turn. It must lose the claim.
     let admission = state.claim_interaction_turn(
@@ -68,7 +70,11 @@ fn interaction_waits_for_turn_slot() {
     // And the claim it took is exclusive: a second interaction still waits.
     assert!(
         state
-            .claim_interaction_turn(sid, "modal submit".to_string(), "[System: modal]".to_string())
+            .claim_interaction_turn(
+                sid,
+                "modal submit".to_string(),
+                "[System: modal]".to_string()
+            )
             .is_none(),
         "the running interaction holds the slot until it finishes"
     );
@@ -103,7 +109,11 @@ fn a_free_slot_lets_the_interaction_run() {
     let other = uuid::Uuid::new_v4();
     assert!(
         state
-            .claim_interaction_turn(other, "picked x".to_string(), "[System: picked x]".to_string())
+            .claim_interaction_turn(
+                other,
+                "picked x".to_string(),
+                "[System: picked x]".to_string()
+            )
             .is_some(),
         "sessions are independent"
     );
@@ -149,7 +159,9 @@ fn every_interaction_entry_point_claims_the_slot() {
 
     let agent = include_str!("../channels/discord/agent.rs");
     assert_eq!(
-        agent.matches("dstate.clone(),\n                    )").count(),
+        agent
+            .matches("dstate.clone(),\n                    )")
+            .count(),
         2,
         "both synthetic callers (modal form, select menu) hand the state over; \
          one short means a dispatch went back to the unclaimed shape"

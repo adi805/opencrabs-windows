@@ -63,15 +63,7 @@ async fn an_empty_body_writes_nothing() {
     db.run_migrations().await.unwrap();
     let repo = ChannelMessageRepository::new(db.pool().clone());
 
-    outbox::record_row(
-        Some(db.pool().clone()),
-        CHANNEL,
-        None,
-        1,
-        None,
-        "   \n ",
-    )
-    .await;
+    outbox::record_row(Some(db.pool().clone()), CHANNEL, None, 1, None, "   \n ").await;
 
     let rows = repo
         .recent(Some("discord"), &CHANNEL.to_string(), 10, None, None)

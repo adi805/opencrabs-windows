@@ -36,9 +36,7 @@ async fn inbound_queues_behind_live_turn() {
 
     // The live turn stored its cancel token on the way in.
     let live_token = tokio_util::sync::CancellationToken::new();
-    state
-        .store_cancel_token(sid, live_token.clone())
-        .await;
+    state.store_cancel_token(sid, live_token.clone()).await;
 
     // A second inbound message arrives while that turn is still running.
     // It must NOT claim the slot, and it must NOT cancel the live turn:

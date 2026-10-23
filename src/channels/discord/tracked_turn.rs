@@ -220,9 +220,7 @@ pub(crate) fn run_tracked_resume_turn(
                                             &http,
                                             sent_msg.id,
                                             EditMessage::new()
-                                                .embeds(super::tool_group::render_embeds(
-                                                    &group,
-                                                ))
+                                                .embeds(super::tool_group::render_embeds(&group))
                                                 .components(comps),
                                         )
                                         .await
@@ -231,9 +229,7 @@ pub(crate) fn run_tracked_resume_turn(
                                             "Discord: tracked turn tool group component fixup failed: {e}"
                                         );
                                     }
-                                    dstate
-                                        .upsert_tool_group(sent_msg.id.get(), group)
-                                        .await;
+                                    dstate.upsert_tool_group(sent_msg.id.get(), group).await;
                                     bubble.store(sent_msg.id).await;
                                 }
                                 Err(e) => tracing::warn!(

@@ -63,11 +63,8 @@ async fn a_parked_birth_does_not_block_the_settle_store() {
     let (claimed, holder) = parked_birth(&slot).await;
     claimed.await.expect("birth task took the claim");
 
-    let stored = tokio::time::timeout(
-        Duration::from_millis(250),
-        slot.store(MessageId::new(4242)),
-    )
-    .await;
+    let stored =
+        tokio::time::timeout(Duration::from_millis(250), slot.store(MessageId::new(4242))).await;
     assert!(
         stored.is_ok(),
         "store waited on an in-flight bubble birth: the id lock is still held across the governor sleep"
@@ -94,7 +91,10 @@ async fn a_second_birth_waits_for_the_first() {
     holder.abort();
     // Releasing the parked claim lets the next birth through.
     let third = tokio::time::timeout(Duration::from_millis(500), slot.birth_claim()).await;
-    assert!(third.is_ok(), "birth claim stayed stuck after the holder left");
+    assert!(
+        third.is_ok(),
+        "birth claim stayed stuck after the holder left"
+    );
 }
 
 #[tokio::test]

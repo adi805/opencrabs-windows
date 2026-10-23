@@ -1917,8 +1917,14 @@ pub(crate) async fn cmd_session(
                     // Labels padded to the longest one so the values line up;
                     // the token figure is a lifetime accumulator, not the size
                     // of the context window, so it says so (#2180).
-                    println!("  Title:           {}", s.title.as_deref().unwrap_or("untitled"));
-                    println!("  Provider:        {}", s.provider_name.as_deref().unwrap_or("-"));
+                    println!(
+                        "  Title:           {}",
+                        s.title.as_deref().unwrap_or("untitled")
+                    );
+                    println!(
+                        "  Provider:        {}",
+                        s.provider_name.as_deref().unwrap_or("-")
+                    );
                     println!("  Model:           {}", s.model.as_deref().unwrap_or("-"));
                     println!("  Lifetime tokens: {}", s.token_count);
                     println!("  Cost:            ${:.6}", s.total_cost);
