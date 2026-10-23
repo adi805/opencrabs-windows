@@ -109,7 +109,11 @@ pub(crate) fn run_tracked_resume_turn(
             Arc::new(Mutex::new(Vec::new()));
         let intermediate_handles: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
-        let turn_group_mid: Arc<Mutex<Option<MessageId>>> = Arc::new(Mutex::new(None));
+        // The bubble slot owns the id and the birth claim (#2192): a birth
+        // may sleep in the governor, so it must not hold the id lock that the
+        // settle path needs to stamp the finished bubble.
+        let bubble = Arc::new(super::group_bubble::BubbleSlot::new());
+        let turn_group_mid: Arc<Mutex<Option<MessageId>>> = bubble.mid_handle();
         // The text a suggest_options surface halted on (see options_host.rs).
         let options_host = Arc::new(std::sync::Mutex::new(
             super::options_host::OptionsHost::default(),
@@ -122,6 +126,7 @@ pub(crate) fn run_tracked_resume_turn(
 
             let tools: Arc<Mutex<Vec<GroupEntry>>> = Arc::new(Mutex::new(Vec::new()));
             let group_msg_id = turn_group_mid.clone();
+            let bubble_cb = bubble.clone();
             let group_state_cb = dstate.clone();
             let http = http.clone();
             let sent = sent_intermediates.clone();
@@ -141,7 +146,7 @@ pub(crate) fn run_tracked_resume_turn(
                             host.on_tool_started(&tool_name);
                         }
                         let ctx_hint = crate::utils::tool_context_hint(&tool_name, &tool_input);
-                        let gmid = group_msg_id.clone();
+                        let bubble = bubble_cb.clone();
                         let dstate = group_state_cb.clone();
                         tokio::spawn(async move {
                             let entries = {
@@ -155,95 +160,85 @@ pub(crate) fn run_tracked_resume_turn(
                                 });
                                 t.clone()
                             };
-                            let mut mid_guard = gmid.lock().await;
-                            match *mid_guard {
-                                Some(mid) => {
-                                    let group = dstate
-                                        .upsert_tool_group(
-                                            mid.get(),
-                                            GroupState {
-                                                page: 0,
-                                                entries,
-                                                notes: Vec::new(),
-                                                expanded: false,
-                                                started_at: std::time::Instant::now(),
-                                                settled: None,
-                                            },
+                            // The bubble exists: append without touching the
+                            // birth claim.
+                            if let Some(mid) = bubble.read().await {
+                                super::group_bubble::append_tool_entry(
+                                    &dstate,
+                                    channel,
+                                    &http,
+                                    mid,
+                                    entries,
+                                    "tracked turn",
+                                )
+                                .await;
+                                return;
+                            }
+                            // Birth: one bubble per turn, so births serialise.
+                            // The id lock stays free while `governor::say`
+                            // sleeps, which is what #2192 fixes.
+                            let _birth = bubble.birth_claim().await;
+                            if let Some(mid) = bubble.read().await {
+                                super::group_bubble::append_tool_entry(
+                                    &dstate,
+                                    channel,
+                                    &http,
+                                    mid,
+                                    entries,
+                                    "tracked turn",
+                                )
+                                .await;
+                                return;
+                            }
+                            let group = GroupState {
+                                page: 0,
+                                entries,
+                                notes: Vec::new(),
+                                expanded: false,
+                                started_at: std::time::Instant::now(),
+                                settled: None,
+                            };
+                            let content = super::tool_group::render_content(&group);
+                            match super::governor::say(
+                                &dstate.governor,
+                                channel,
+                                &http,
+                                super::governor::Surface::Send,
+                                &content,
+                            )
+                            .await
+                            {
+                                Ok(sent_msg) => {
+                                    let comps = super::tool_group::render_components(
+                                        &group,
+                                        sent_msg.id.get(),
+                                    );
+                                    if !comps.is_empty()
+                                        && let Some(Err(e)) = super::governor::edit_chrome(
+                                            &dstate.governor,
+                                            channel,
+                                            &http,
+                                            sent_msg.id,
+                                            EditMessage::new()
+                                                .embeds(super::tool_group::render_embeds(
+                                                    &group,
+                                                ))
+                                                .components(comps),
                                         )
-                                        .await;
-                                    let edit = EditMessage::new()
-                                        .content(super::tool_group::render_content(&group))
-                                        .embeds(super::tool_group::render_embeds(&group))
-                                        .components(super::tool_group::render_components(
-                                            &group,
-                                            mid.get(),
-                                        ));
-                                    if let Some(Err(e)) = super::governor::edit_chrome(
-                                        &dstate.governor,
-                                        channel,
-                                        &http,
-                                        mid,
-                                        edit,
-                                    )
-                                    .await
+                                        .await
                                     {
                                         tracing::warn!(
-                                            "Discord: tracked turn tool group edit failed (append): {e}"
+                                            "Discord: tracked turn tool group component fixup failed: {e}"
                                         );
                                     }
+                                    dstate
+                                        .upsert_tool_group(sent_msg.id.get(), group)
+                                        .await;
+                                    bubble.store(sent_msg.id).await;
                                 }
-                                None => {
-                                    let group = GroupState {
-                                        page: 0,
-                                        entries,
-                                        notes: Vec::new(),
-                                        expanded: false,
-                                        started_at: std::time::Instant::now(),
-                                        settled: None,
-                                    };
-                                    let content = super::tool_group::render_content(&group);
-                                    match super::governor::say(
-                                        &dstate.governor,
-                                        channel,
-                                        &http,
-                                        super::governor::Surface::Send,
-                                        &content,
-                                    )
-                                    .await
-                                    {
-                                        Ok(sent_msg) => {
-                                            let comps = super::tool_group::render_components(
-                                                &group,
-                                                sent_msg.id.get(),
-                                            );
-                                            if !comps.is_empty()
-                                                && let Some(Err(e)) = super::governor::edit_chrome(
-                                                    &dstate.governor,
-                                                    channel,
-                                                    &http,
-                                                    sent_msg.id,
-                                                    EditMessage::new()
-                                                        .embeds(super::tool_group::render_embeds(
-                                                            &group,
-                                                        ))
-                                                        .components(comps),
-                                                )
-                                                .await
-                                            {
-                                                tracing::warn!(
-                                                    "Discord: tracked turn tool group component fixup failed: {e}"
-                                                );
-                                            }
-                                            dstate
-                                                .upsert_tool_group(sent_msg.id.get(), group)
-                                                .await;
-                                            *mid_guard = Some(sent_msg.id);
-                                        }
-                                        Err(e) => tracing::warn!(
-                                            "Discord: tracked turn failed to post tool group message: {e}"
-                                        ),
-                                    }
-                                }
+                                Err(e) => tracing::warn!(
+                                    "Discord: tracked turn failed to post tool group message: {e}"
+                                ),
                             }
                         });
                     }

@@ -21,6 +21,7 @@ pub(crate) mod commands;
 mod connection;
 pub(crate) mod cowork;
 pub(crate) mod governor;
+pub(crate) mod group_bubble;
 pub(crate) mod handler;
 pub(crate) mod interactions;
 pub(crate) mod options_host;
