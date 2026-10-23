@@ -30,20 +30,26 @@ final class ExtraKeys {
 
         addKey(context, row, "ESC", v -> pane.sendBytes(new byte[]{0x1b}));
         addKey(context, row, "TAB", v -> pane.sendBytes(new byte[]{0x09}));
-        addKey(context, row, "CTRL", v -> {
-            pane.toggleCtrl();
-            v.setSelected(pane.isCtrlArmed());
-        });
-        addKey(context, row, "ALT", v -> {
-            pane.toggleAlt();
-            v.setSelected(pane.isAltArmed());
-        });
+        TextView ctrlKey = addKey(context, row, "CTRL", v -> pane.toggleCtrl());
+        TextView altKey = addKey(context, row, "ALT", v -> pane.toggleAlt());
+        // A modifier is consumed by the keystroke it applies to, so the highlight has to
+        // follow the pane rather than only the button's own click.
+        Runnable refresh = () -> {
+            ctrlKey.setSelected(pane.isCtrlArmed());
+            altKey.setSelected(pane.isAltArmed());
+            ctrlKey.setTextColor(pane.isCtrlArmed() ? 0xff7fd1ff : 0xffe6e6e6);
+            altKey.setTextColor(pane.isAltArmed() ? 0xff7fd1ff : 0xffe6e6e6);
+        };
+        pane.setModifierListener(refresh);
+        refresh.run();
         addKey(context, row, "\u2190", v -> pane.sendText("\u001b[D"));
         addKey(context, row, "\u2191", v -> pane.sendText("\u001b[A"));
         addKey(context, row, "\u2193", v -> pane.sendText("\u001b[B"));
         addKey(context, row, "\u2192", v -> pane.sendText("\u001b[C"));
         addKey(context, row, "ENTER", v -> pane.sendBytes(new byte[]{0x0d}));
-        addKey(context, row, "PASTE", v -> pane.sendText(readClipboard(context)));
+        // Through the emulator, so bracketed paste is honoured: writing the text as
+        // keystrokes made a multi-line prompt submit at its first newline.
+        addKey(context, row, "PASTE", v -> pane.pasteText(readClipboard(context)));
         addKey(context, row, "HIDE", v -> Keyboard.hide(context, pane));
 
         HorizontalScrollView scroll = new HorizontalScrollView(context);
@@ -58,7 +64,7 @@ final class ExtraKeys {
         void run(TextView key);
     }
 
-    private static void addKey(Context context, LinearLayout row, String label, KeyAction action) {
+    private static TextView addKey(Context context, LinearLayout row, String label, KeyAction action) {
         TextView key = new TextView(context);
         key.setText(label);
         key.setTypeface(Typeface.MONOSPACE);
@@ -80,6 +86,7 @@ final class ExtraKeys {
         int gap = (int) (2 * context.getResources().getDisplayMetrics().density);
         params.setMargins(gap, gap, gap, gap);
         row.addView(key, params);
+        return key;
     }
 
     private static String readClipboard(Context context) {

@@ -133,8 +133,15 @@ final class CoreSessionClient implements TerminalSessionClient {
         if (clip == null || clip.getItemCount() == 0) return;
         CharSequence text = clip.getItemAt(0).coerceToText(context);
         if (text == null || text.length() == 0) return;
-        byte[] bytes = text.toString().getBytes(StandardCharsets.UTF_8);
-        session.write(bytes, 0, bytes.length);
+        // Same reason as the PASTE key: the emulator applies bracketed paste and strips
+        // escape sequences. Writing raw bytes here bypassed both.
+        TerminalEmulator emulator = session.getEmulator();
+        if (emulator == null) {
+            byte[] bytes = text.toString().getBytes(StandardCharsets.UTF_8);
+            session.write(bytes, 0, bytes.length);
+            return;
+        }
+        emulator.paste(text.toString());
     }
 
     @Override

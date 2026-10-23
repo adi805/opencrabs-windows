@@ -43,6 +43,9 @@ public final class TerminalPane extends View {
 
     private static final String TAG = "OpenCrabsTerm";
 
+    /** Set by the extra-keys row so an armed modifier that gets consumed stops glowing. */
+    private Runnable modifierListener;
+
     private static final int CURSOR_BLINK_MS = 500;
 
     /** View tag on the extra-keys row, so the activity can find or hide it without a field. */
@@ -333,7 +336,10 @@ public final class TerminalPane extends View {
         return new BaseInputConnection(this, true) {
             @Override
             public boolean commitText(CharSequence text, int newCursorPosition) {
-                sendText(text);
+                // Soft keyboards arrive here, never through onKeyDown, so without this
+                // the armed CTRL button was decorative: arming CTRL and typing "c"
+                // sent a literal "c" instead of ETX.
+                sendText(applyModifiers(text));
                 return true;
             }
 
@@ -377,11 +383,77 @@ public final class TerminalPane extends View {
 
         int unicode = event.getUnicodeChar(event.getMetaState());
         if (unicode != 0) {
-            sendText(new String(Character.toChars(unicode)));
-            clearModifiers();
+            // KeyHandler only maps the special keys; a plain letter falls through to
+            // here, where the modifier flags used to be dropped on the floor.
+            sendText(applyModifiers(new String(Character.toChars(unicode))));
             return true;
         }
         return super.onKeyDown(keyCode, event);
+    }
+
+    /**
+     * Turn typed text into the bytes a terminal expects, given the armed modifiers.
+     *
+     * <p>CTRL maps a character into the control range the same way a real terminal does:
+     * a letter loses its top three bits ({@code c} becomes 0x03) and the {@code @} to
+     * {@code _} run maps to 0x00 to 0x1f, with {@code ?} becoming DEL. ALT prefixes ESC.
+     * Both modifiers are consumed by the keystroke, and the on-screen buttons are told so
+     * they stop claiming to be armed.
+     */
+    private String applyModifiers(CharSequence text) {
+        if (text == null || text.length() == 0) return "";
+        boolean ctrl = ctrlArmed;
+        boolean alt = altArmed;
+        if (!ctrl && !alt) return text.toString();
+        StringBuilder out = new StringBuilder(text.length() + 2);
+        if (alt) out.append('\u001b');
+        if (!ctrl) {
+            out.append(text);
+        } else {
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (c >= 'a' && c <= 'z') {
+                    out.append((char) (c - 'a' + 1));
+                } else if (c >= 'A' && c <= 'Z') {
+                    out.append((char) (c - 'A' + 1));
+                } else if (c >= '@' && c <= '_') {
+                    out.append((char) (c - '@'));
+                } else if (c == ' ') {
+                    out.append('\u0000');
+                } else if (c == '?') {
+                    out.append('\u007f');
+                } else {
+                    out.append(c);
+                }
+            }
+        }
+        clearModifiers();
+        return out.toString();
+    }
+
+    /**
+     * Paste through the emulator, not as keystrokes.
+     *
+     * <p>The emulator knows whether the application asked for bracketed paste (DECSET
+     * 2004) and wraps the text accordingly, which is what keeps a multi-line prompt one
+     * editable buffer instead of submitting at the first newline. It also strips embedded
+     * escape sequences, so pasting text from a web page cannot drive the terminal.
+     */
+    public void pasteText(CharSequence text) {
+        if (text == null || text.length() == 0 || session == null) return;
+        TerminalEmulator emulator = session.getEmulator();
+        if (emulator == null) {
+            sendText(text);
+            return;
+        }
+        emulator.paste(text.toString());
+        cursorVisible = true;
+        invalidate();
+    }
+
+    /** Notified whenever a sticky modifier changes, so the keys row can redraw. */
+    void setModifierListener(Runnable listener) {
+        this.modifierListener = listener;
     }
 
     public void sendText(CharSequence text) {
@@ -400,12 +472,14 @@ public final class TerminalPane extends View {
     public void toggleCtrl() {
         ctrlArmed = !ctrlArmed;
         if (ctrlArmed) altArmed = false;
+        notifyModifiers();
     }
 
     /** Sticky ALT for the on-screen extra keys row. */
     public void toggleAlt() {
         altArmed = !altArmed;
         if (altArmed) ctrlArmed = false;
+        notifyModifiers();
     }
 
     public boolean isCtrlArmed() {
@@ -417,7 +491,13 @@ public final class TerminalPane extends View {
     }
 
     public void clearModifiers() {
+        boolean changed = ctrlArmed || altArmed;
         ctrlArmed = false;
         altArmed = false;
+        if (changed) notifyModifiers();
+    }
+
+    private void notifyModifiers() {
+        if (modifierListener != null) modifierListener.run();
     }
 }
