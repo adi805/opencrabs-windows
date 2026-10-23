@@ -272,6 +272,40 @@ jobs:
           fi
           echo "terminal emulator and PTY bridge classes: all present"
 
+      - name: Assert the APK carries a launcher icon and the boot receiver
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=android/out/opencrabs-debug.apk
+
+          # The icon is a resource, so it is invisible to the dex check above: a
+          # build with an empty android/res and no android:icon attribute installs
+          # fine and silently shows the default Android robot on the launcher.
+          # badging is the assertion that matters, because it reports the icon the
+          # MANIFEST resolved, not merely that a file exists in the zip.
+          AAPT2="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" -maxdepth 2 -name aapt2 -type f 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$AAPT2" ]; then
+            echo "::error::no aapt2 under the SDK, cannot verify the icon"
+            exit 1
+          fi
+          echo "aapt2: $AAPT2"
+          BADGING="$("$AAPT2" dump badging "$APK" 2>/dev/null || true)"
+          printf '%s\n' "$BADGING" | grep -E '^(package|application):' || true
+
+          if ! grep -qE "^application:.*icon='" <<< "$BADGING"; then
+            echo "::error::the manifest resolved no launcher icon. Check android:icon on <application> and that assemble-apk.sh passes -R android/res to aapt2 link."
+            exit 1
+          fi
+          echo "launcher icon: resolved by the manifest"
+
+          # The round icon is a separate attribute and easy to forget, so assert
+          # it independently rather than assuming it follows the square one.
+          if grep -qE "roundIcon='" <<< "$BADGING"; then
+            echo "round icon: resolved"
+          else
+            echo "::warning::no roundIcon resolved; round-mask launchers will fall back to the square icon"
+          fi
+
       - name: Upload the APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

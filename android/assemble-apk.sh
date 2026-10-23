@@ -264,9 +264,14 @@ fi
 echo "dex         : $(stat -c%s "$OUT/classes.dex") bytes"
 
 # --- 3. manifest -> base apk -------------------------------------------------
+# -R carries android/res, which holds the launcher icons. aapt2 compiles the
+# mipmaps into the apk's resource table, so the manifest's @mipmap/ic_launcher
+# resolves at install time instead of the launcher falling back to the default
+# green Android robot.
 "$BT/aapt2" link \
   -o "$OUT/base.apk" \
   --manifest "$ROOT/android/AndroidManifest.xml" \
+  -R "$ROOT/android/res" \
   -I "$AJAR" \
   --min-sdk-version "$MIN_SDK" \
   --target-sdk-version 35 \
