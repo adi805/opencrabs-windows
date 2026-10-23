@@ -57,20 +57,42 @@ pub(crate) async fn handle_reaction_add(
     if msg.author.id.get() != bot_id {
         return;
     }
-    // Respect the allow list, same as messages.
+    // Same identity gate as the message path (#2195). This used to check
+    // `allowed_users` alone, so a channel opened with /cowork answered typed
+    // messages and silently dropped every reaction, a user admitted through
+    // `allowed_roles` could talk but not react, and an owner who was not also
+    // listed in `allowed_users` lost their reactions entirely.
     let cfg = config_rx.borrow().clone();
-    let allowed = cfg
-        .channels
-        .discord
-        .allowed_users
-        .iter()
-        .any(|s| s.parse::<u64>().ok() == Some(reactor.get()));
-    if !allowed {
-        tracing::debug!("Discord reaction: user {reactor} not in allow list — ignoring");
+    let dc_cfg = &cfg.channels.discord;
+    let is_dm = msg.guild_id.is_none();
+    let channel_str = reaction.channel_id.get().to_string();
+    // A thread or forum post resolves through its parent, as on the message
+    // path: opening a forum opens every post in it.
+    let needs_parent = !is_dm && !dc_cfg.channels.is_empty();
+    let parent_id: Option<String> = if needs_parent {
+        super::commands::parent_channel_id(&ctx.http, reaction.channel_id).await
+    } else {
+        None
+    };
+    let open_here = !is_dm && dc_cfg.channel_open(&channel_str, parent_id.as_deref());
+    let guild_roles: Vec<u64> = reaction
+        .member
+        .as_ref()
+        .map(|m| m.roles.iter().map(|r| r.get()).collect())
+        .unwrap_or_default();
+    let admitted = super::access::identity_admitted(&super::access::DiscordIdentity {
+        user_id: reactor.get(),
+        allowed_users: &dc_cfg.allowed_users,
+        allowed_roles: &dc_cfg.allowed_roles,
+        bot_owner: &dc_cfg.bot_owner,
+        guild_roles: &guild_roles,
+        open_here,
+    });
+    if !admitted {
+        tracing::debug!("Discord reaction: user {reactor} not admitted here — ignoring");
         return;
     }
 
-    let is_dm = msg.guild_id.is_none();
     let glyph = glyph_of(&reaction.emoji);
     let user_name = match reactor.to_user(&ctx.http).await {
         Ok(u) => u.global_name.unwrap_or(u.name),

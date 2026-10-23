@@ -13,6 +13,7 @@
 //! background results. This file is declarations
 //! only — no function definitions live here (CONTRIBUTING.md).
 
+pub(crate) mod access;
 mod agent;
 mod approval;
 mod cancel;

@@ -490,7 +490,16 @@ pub(crate) async fn handle_message(
         });
     let unconfigured =
         allowed.is_empty() && dc_cfg.allowed_roles.is_empty() && dc_cfg.bot_owner.is_empty();
-    if unconfigured || !(is_owner || in_allowlist || role_granted || open_here) {
+    // One predicate, shared with the reaction path (#2195): two copies of this
+    // decision is how the reaction gate drifted narrower than the message gate
+    // in the first place.
+    if !super::commands::identity_admitted(
+        unconfigured,
+        is_owner,
+        in_allowlist,
+        role_granted,
+        open_here,
+    ) {
         tracing::debug!(
             "Discord: ignoring message from non-allowed user {} (deny-by-default, OC-02)",
             user_id
