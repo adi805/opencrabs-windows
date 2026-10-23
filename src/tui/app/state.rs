@@ -4210,19 +4210,24 @@ impl App {
         {
             return;
         }
+        // On Windows the probe is a PowerShell spawn, 100 to 300ms, which is
+        // far too heavy for a 3 second tick (#2174). A focus change is the
+        // only event that justifies that cost.
+        #[cfg(windows)]
+        if !force {
+            return;
+        }
         self.clipboard_probe_at = Some(now);
-        let Some(info) = super::clipboard_route::read_clipboard_info() else {
+        let Some((kinds, probe)) = super::clipboard_route::read_clipboard_kinds() else {
             return;
         };
-        let fp = super::clipboard_route::clipboard_info_fingerprint(&info);
+        let fp = super::clipboard_route::clipboard_info_fingerprint(&probe);
         if self.clipboard_hint_fp != Some(fp) {
             // The clipboard content changed: a fresh screenshot hints again.
             self.clipboard_hint_fp = Some(fp);
             self.clipboard_hint_suppressed = false;
         }
-        if self.clipboard_hint_suppressed
-            || !super::clipboard_route::clipboard_info_is_image_only(&info)
-        {
+        if self.clipboard_hint_suppressed || !kinds.is_image_only() {
             return;
         }
         self.clipboard_hint = Some(CLIPBOARD_HINT_TEXT.to_string());
