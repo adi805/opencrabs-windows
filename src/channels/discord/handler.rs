@@ -167,6 +167,25 @@ const FLOW_TICKER_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// Hard stop for orphaned ticks (crashed turn): no immortal tasks.
 const FLOW_TICKER_CAP: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
+/// Button ceiling for one Discord menu message (#2190): 5 action rows of 5.
+pub(crate) const MENU_BUTTON_CAP: usize = 25;
+
+/// Body for a menu message, with an explicit notice when the list was cut.
+///
+/// Discord allows 5 rows of 5 buttons, so 25 entries is a hard platform
+/// ceiling, not a choice. The defect was truncating silently: a user with 30
+/// providers saw 25 and no hint that five were unreachable from the menu.
+/// Returns the body unchanged when everything fits.
+pub(crate) fn menu_body(text: &str, total: usize) -> String {
+    let shown = total.min(MENU_BUTTON_CAP);
+    if total <= MENU_BUTTON_CAP {
+        return text.to_string();
+    }
+    format!(
+        "{text}\n\nShowing 1-{shown} of {total}. The rest are reachable from the TUI."
+    )
+}
+
 /// Re-render the turn's flow group on an interval (#1843): the Discord twin
 /// of Slack's `spawn_flow_ticker` and Telegram's `spawn_edit_loop`. Without
 /// it the clock freezes between tool events. Waits for the group message to
@@ -909,7 +928,8 @@ pub(crate) async fn handle_message(
                         )
                     })
                     .collect();
-                let builder = CreateMessage::new().content(&resp.text).components(rows);
+                let body = menu_body(&resp.text, resp.providers.len());
+                let builder = CreateMessage::new().content(&body).components(rows);
                 // Never silent (#1019): this IS the reply. A swallowed failure
                 // here is indistinguishable from the agent choosing not to
                 // answer, and the user has no way to tell or report it.
@@ -1052,7 +1072,8 @@ pub(crate) async fn handle_message(
                         )
                     })
                     .collect();
-                let builder = CreateMessage::new().content(&resp.text).components(rows);
+                let body = menu_body(&resp.text, resp.sessions.len());
+                let builder = CreateMessage::new().content(&body).components(rows);
                 // Never silent (#1019): this IS the reply. A swallowed failure
                 // here is indistinguishable from the agent choosing not to
                 // answer, and the user has no way to tell or report it.
