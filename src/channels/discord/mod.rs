@@ -25,6 +25,7 @@ pub(crate) mod group_bubble;
 pub(crate) mod handler;
 pub(crate) mod interactions;
 pub(crate) mod options_host;
+pub(crate) mod outbox;
 pub(crate) mod pending_interactions;
 pub(crate) mod plan_card;
 pub(crate) mod poll;

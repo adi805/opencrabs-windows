@@ -385,7 +385,7 @@ pub(crate) fn run_tracked_resume_turn(
                                 prev.push(clean.clone());
                             }
                             for chunk in super::handler::split_message(&clean, 2000) {
-                                if let Err(e) = super::governor::say(
+                                if let Err(e) = super::governor::say_recorded(
                                     &dstate.governor,
                                     channel,
                                     &http,
@@ -688,7 +688,7 @@ pub(crate) fn run_tracked_resume_turn(
                     // The #1899 cap disease applies here too: chunk through the
                     // fence-aware splitter, never one plain `say`.
                     for chunk in super::resume::resume_delivery_chunks(&text_only) {
-                        if let Err(e) = super::governor::say(
+                        if let Err(e) = super::governor::say_recorded(
                             &dstate.governor,
                             channel,
                             &http,
@@ -733,7 +733,7 @@ pub(crate) fn run_tracked_resume_turn(
                 tracing::error!("Discord: tracked turn agent error: {e}");
                 let error_msg =
                     format!("❌ Error\n\n{}", crate::brain::agent::format_user_error(&e));
-                if let Err(e) = super::governor::say(
+                if let Err(e) = super::governor::say_recorded(
                     &dstate.governor,
                     channel,
                     &http,

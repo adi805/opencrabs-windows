@@ -183,7 +183,7 @@ pub(crate) async fn handle_reaction_add(
     let trimmed = text_only.trim();
     if !trimmed.is_empty() {
         for chunk in super::handler::split_message(trimmed, 2000) {
-            if let Err(e) = super::governor::say(
+            if let Err(e) = super::governor::say_recorded(
                 &discord_state.governor,
                 reaction.channel_id,
                 &ctx.http,

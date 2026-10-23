@@ -510,7 +510,7 @@ pub(crate) async fn route_followup_turn(
                             prev.push(clean.clone());
                         }
                         for chunk in super::handler::split_message(&clean, 2000) {
-                            if let Err(e) = super::governor::say(
+                            if let Err(e) = super::governor::say_recorded(
                                 &dstate.governor,
                                 channel,
                                 &http,
@@ -792,7 +792,7 @@ pub(crate) async fn route_followup_turn(
 
             if !skip_final_post {
                 for chunk in super::handler::split_message(&text_only, 2000) {
-                    if let Err(e) = super::governor::say(
+                    if let Err(e) = super::governor::say_recorded(
                         &discord_state.governor,
                         channel,
                         &http,
@@ -836,7 +836,7 @@ pub(crate) async fn route_followup_turn(
         Err(e) => {
             tracing::error!("Discord: follow-up tap agent error: {e}");
             let error_msg = format!("❌ Error\n\n{}", crate::brain::agent::format_user_error(&e));
-            if let Err(e) = super::governor::say(
+            if let Err(e) = super::governor::say_recorded(
                 &discord_state.governor,
                 channel,
                 &http,

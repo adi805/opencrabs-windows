@@ -104,6 +104,13 @@ impl Default for DiscordState {
 }
 
 impl DiscordState {
+    /// The outbound write governor (#1910), exposed crate-wide so a tool that
+    /// sends on its own (the `discord_send` tool) still pays the budget and
+    /// records the message (#2196).
+    pub(crate) fn governor(&self) -> &Governor {
+        &self.governor
+    }
+
     pub fn new() -> Self {
         Self {
             http: Mutex::new(None),

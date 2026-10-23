@@ -633,6 +633,7 @@ pub mod channel_route_expectation_test;
 pub mod cli_context_window_test;
 pub mod click_to_expand_test;
 pub mod compaction_artifact_claim_test;
+pub mod discord_channel_history_write_test;
 pub mod discord_channel_scope_config_test;
 pub mod discord_cowork_gate_test;
 pub mod discord_cowork_test;

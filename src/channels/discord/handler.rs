@@ -1775,7 +1775,7 @@ pub(crate) async fn handle_message(
                             prev.push(clean.clone());
                         }
                         for chunk in split_message(&clean, 2000) {
-                            if let Err(e) = super::governor::say(
+                            if let Err(e) = super::governor::say_recorded(
                                 &dstate.governor,
                                 channel,
                                 &http,
@@ -2152,8 +2152,6 @@ pub(crate) async fn handle_message(
                 }
             }
 
-            // The answer's last chunk id, for the DM lookup record below (#2025).
-            let mut reply_msg_id: Option<String> = None;
             if skip_final_post {
                 // Answer already visible via the kept intermediate (#459's
                 // keep-intermediate outcome): skip the duplicate post. The
@@ -2183,7 +2181,7 @@ pub(crate) async fn handle_message(
                                 if truncated { "…" } else { "" },
                                 thread.id
                             );
-                            if let Err(e) = super::governor::say(
+                            if let Err(e) = super::governor::say_recorded(
                                 &discord_state.governor,
                                 target,
                                 &ctx.http,
@@ -2195,7 +2193,7 @@ pub(crate) async fn handle_message(
                                 tracing::error!("Discord: auto-thread teaser failed: {e}");
                             }
                             for chunk in &chunks {
-                                if let Err(e) = super::governor::say(
+                                if let Err(e) = super::governor::say_recorded(
                                     &discord_state.governor,
                                     thread.id,
                                     &ctx.http,
@@ -2211,7 +2209,7 @@ pub(crate) async fn handle_message(
                         Err(e) => {
                             tracing::warn!("Discord: auto-thread failed, posting inline: {e}");
                             for chunk in &chunks {
-                                if let Err(e) = super::governor::say(
+                                if let Err(e) = super::governor::say_recorded(
                                     &discord_state.governor,
                                     target,
                                     &ctx.http,
@@ -2227,7 +2225,9 @@ pub(crate) async fn handle_message(
                     }
                 } else {
                     for chunk in &chunks {
-                        match super::governor::say(
+                        // #2196: recorded as it leaves, so the transcript has
+                        // the answer no matter which surface produced it.
+                        if let Err(e) = super::governor::say_recorded(
                             &discord_state.governor,
                             target,
                             &ctx.http,
@@ -2236,44 +2236,18 @@ pub(crate) async fn handle_message(
                         )
                         .await
                         {
-                            Ok(m) => reply_msg_id = Some(m.id.get().to_string()),
-                            Err(e) => tracing::error!("Discord: failed to send reply: {}", e),
+                            tracing::error!("Discord: failed to send reply: {}", e);
                         }
                     }
                 }
             }
 
-            // Record the bot's reply in channel_messages so the recent() query
-            // used for group context on the next guild turn sees both sides of
-            // the conversation, and so channel_search can find it. A DM reply is
-            // stored when it has a message id, as Telegram's DM replies are
-            // (#2025); the session's messages table still carries full history.
-            if (!is_dm || reply_msg_id.is_some()) && !text_only.trim().is_empty() {
-                let bot_id = discord_state.bot_user_id().await;
-                let bot_sender_id = bot_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| "bot:opencrabs".to_string());
-                let guild_name = msg
-                    .guild_id
-                    .map(|g| g.get().to_string())
-                    .unwrap_or_else(|| "DM".to_string());
-                let cm = DbChannelMessage::new(
-                    "discord".into(),
-                    target.get().to_string(),
-                    Some(guild_name),
-                    bot_sender_id,
-                    "OpenCrabs".into(),
-                    text_only.clone(),
-                    "text".into(),
-                    reply_msg_id.clone(),
-                );
-                if let Err(e) = channel_msg_repo.insert(&cm).await {
-                    tracing::warn!(
-                        "Discord: failed to record bot reply in channel_messages: {}",
-                        e
-                    );
-                }
-            }
+            // The reply's channel_messages row is written by the governor's
+            // recorded send (#2196), not here: one call site covers this
+            // handler, resumed turns, taps, menus, reactions and tool sends,
+            // and a DM reply is recorded whether or not it carries a
+            // platform id.
+
 
             // TTS: send voice reply if input was audio and TTS is enabled
             if is_voice && voice_config.tts_enabled {
@@ -2326,7 +2300,7 @@ pub(crate) async fn handle_message(
             // too large, stream broken, repetition loop). Same wording
             // as the TUI + Telegram + Slack + WhatsApp paths.
             let error_msg = format!("❌ Error\n\n{}", crate::brain::agent::format_user_error(&e));
-            if let Err(e) = super::governor::say(
+            if let Err(e) = super::governor::say_recorded(
                 &discord_state.governor,
                 target,
                 &ctx.http,
