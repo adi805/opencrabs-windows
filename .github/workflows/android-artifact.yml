@@ -225,8 +225,14 @@ jobs:
 
           # Native side: the PTY bridge is per-ABI, so assert it for the ABI
           # this job built rather than for a hardcoded list.
-          unzip -l "$APK" | grep -E 'lib/[^/]+/lib.*\.so' || true
-          if ! unzip -l "$APK" | grep -q 'lib/arm64-v8a/libopencrabspty.so'; then
+          #
+          # The listing is captured once and matched with a here-string. Piping
+          # into `grep -q` is not equivalent under `pipefail`: grep exits at the
+          # first match, the producer then dies of SIGPIPE, and the pipeline
+          # reports 141, so a library that IS present reads as missing.
+          LISTING="$(unzip -l "$APK")"
+          printf '%s\n' "$LISTING" | grep -E 'lib/[^/]+/lib.*\.so' || true
+          if ! grep -qF 'lib/arm64-v8a/libopencrabspty.so' <<< "$LISTING"; then
             echo "::error::libopencrabspty.so is missing from the APK: the PTY JNI would throw UnsatisfiedLinkError on first fork, so the terminal can never spawn"
             exit 1
           fi
@@ -250,7 +256,10 @@ jobs:
             Lio/opencrabs/mobile/TerminalPane\; \
             Lio/opencrabs/mobile/Pty\;
           do
-            if printf '%s\n' "$STRINGS" | grep -qF "$type"; then
+            # Here-string, not a pipe: `grep -q` stops reading at the match, and
+            # under pipefail the resulting SIGPIPE on the producer turns a
+            # present class into a failed check.
+            if grep -qF "$type" <<< "$STRINGS"; then
               echo "  ok: $type"
             else
               echo "  MISSING: $type"

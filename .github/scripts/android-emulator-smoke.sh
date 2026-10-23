@@ -105,7 +105,11 @@ fi
 say "install"
 adb install -r -t "$APK" > "$OUT/install.txt" 2>&1 || true
 cat "$OUT/install.txt"
-if adb shell pm list packages 2>/dev/null | tr -d '\r' | grep -q "^package:$PKG$"; then
+# Packages are captured first: piping adb into `grep -q` is a pipefail trap
+# (grep exits at the match, adb and tr get SIGPIPE, and an installed package
+# then reports as absent).
+INSTALLED_PACKAGES="$(adb shell pm list packages 2>/dev/null | tr -d '\r')"
+if grep -qxF "package:$PKG" <<< "$INSTALLED_PACKAGES"; then
   pass "package installed"
 else
   fail "package $PKG is not installed"

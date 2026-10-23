@@ -353,11 +353,15 @@ jobs:
           tag="${RELEASE_TAG}"
           echo "--- assets on $tag ---"
           gh release view "$tag" --json assets --jq '.assets[].name' | sort
+          # Read the asset list once. `gh ... | grep -qx` would be a pipefail
+          # trap: grep exits at the match, gh gets SIGPIPE, and an asset that is
+          # published reads as missing.
+          PUBLISHED="$(gh release view "$tag" --json assets --jq '.assets[].name')"
           for want in "opencrabs-${tag}-linux-arm64.tar.gz" \
                       "opencrabs-${tag}-linux-amd64.tar.gz" \
                       "opencrabs-${tag}-android-arm64.apk" \
                       "SHA256SUMS"; do
-            if ! gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx "$want"; then
+            if ! grep -qxF "$want" <<< "$PUBLISHED"; then
               echo "::error::expected asset missing from $tag: $want"
               exit 1
             fi

@@ -227,8 +227,13 @@ jobs:
           # Both ABIs are built in this workflow, so both must carry the PTY
           # bridge. A missing one is invisible until an emulator of that ABI
           # boots.
+          # Captured once and matched with a here-string: piping unzip into
+          # `grep -q` fails under pipefail, because grep stops reading at the
+          # match, unzip dies of SIGPIPE, and the pipeline reports 141. A
+          # library that is present then reads as missing.
+          APK_LISTING="$(unzip -l "$APK")"
           for abi in arm64-v8a x86_64; do
-            if unzip -l "$APK" | grep -q "lib/$abi/libopencrabspty.so"; then
+            if grep -qF "lib/$abi/libopencrabspty.so" <<< "$APK_LISTING"; then
               echo "  ok: lib/$abi/libopencrabspty.so"
             else
               echo "::error::lib/$abi/libopencrabspty.so is missing: the terminal cannot spawn a pty on that ABI"
@@ -249,7 +254,10 @@ jobs:
             Lio/opencrabs/mobile/TerminalPane\; \
             Lio/opencrabs/mobile/Pty\;
           do
-            if printf '%s\n' "$STRINGS" | grep -qF "$type"; then
+            # Here-string, not a pipe: `grep -q` stops reading at the match, and
+            # under pipefail the resulting SIGPIPE on the producer turns a
+            # present class into a failed check.
+            if grep -qF "$type" <<< "$STRINGS"; then
               echo "  ok: $type"
             else
               echo "  MISSING: $type"
