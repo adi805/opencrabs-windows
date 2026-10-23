@@ -1219,6 +1219,7 @@ pub mod whatsapp_qr_replay_test;
 pub mod whatsapp_rate_limit_test;
 pub mod whatsapp_reaction_test;
 pub mod whatsapp_recent_test;
+pub mod whatsapp_status_fanout_test;
 pub mod whatsapp_status_media_test;
 pub mod whatsapp_store_test;
 pub mod whatsapp_stream_test;
