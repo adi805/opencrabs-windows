@@ -16,6 +16,7 @@
 use crate::tui::app::dialog_keys::{DialogScope, dialog_keys};
 
 use super::chrome;
+use super::responsive;
 use super::theme::{self, Role};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
@@ -137,21 +138,35 @@ pub fn footer_line_fitting(
 ///
 /// The label is drawn only when it fits beside the fitted bindings with at
 /// least one blank cell between them, so the two can never collide or
-/// overwrite each other; when it does not fit the footer renders alone.
+/// overwrite each other; when it does not fit the footer renders alone. Both
+/// ends inset by [`responsive::EDGE_INSET`] so the footer shares the margin of
+/// the rows above it (#2175).
 pub fn render_footer_with_context(
     frame: &mut Frame,
     area: Rect,
     keys: &[crate::tui::app::dialog_keys::DialogKey],
     right_label: &str,
 ) {
-    if area.width < 3 {
+    let inset = responsive::EDGE_INSET;
+    if area.width < inset * 2 + 1 {
         return;
     }
-    let line = footer_line_fitting("", keys, area.width);
+    // Everything the footer draws lives inside this rect, so the bindings and
+    // the label share one margin instead of each doing its own arithmetic.
+    let inner = Rect {
+        x: area.x + inset,
+        width: area.width - inset * 2,
+        ..area
+    };
+    let line = footer_line_fitting("", keys, inner.width);
     let footer_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
     let label_width = right_label.width();
-    if right_label.is_empty() || footer_width + label_width + 2 > area.width as usize {
-        frame.render_widget(Paragraph::new(line), area);
+    // One blank cell between the keys and the label, inside the insets.
+    // Without room for all of it the label is dropped, never squeezed against
+    // the keys.
+    let needed = footer_width + label_width + 1;
+    if right_label.is_empty() || needed > inner.width as usize {
+        frame.render_widget(Paragraph::new(line), inner);
         return;
     }
 
@@ -159,8 +174,8 @@ pub fn render_footer_with_context(
     frame.render_widget(
         Paragraph::new(line),
         Rect {
-            width: area.width - label_width - 2,
-            ..area
+            width: inner.width - label_width - 1,
+            ..inner
         },
     );
     frame.render_widget(
@@ -170,7 +185,7 @@ pub fn render_footer_with_context(
         )))
         .alignment(Alignment::Right),
         Rect {
-            x: area.x + area.width - label_width,
+            x: area.x + area.width - label_width - inset,
             width: label_width,
             ..area
         },

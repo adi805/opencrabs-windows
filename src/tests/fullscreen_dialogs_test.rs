@@ -631,3 +631,197 @@ async fn every_sessions_footer_binding_is_handled() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Gutters and columns (#2175). The border removal in #2162 took away the right
+// padding a border used to supply for free, and only the left gutter was put
+// back, so every row ran flush to the last column. The right half was also
+// built row by row and drawn as one right-aligned blob, so a row carrying one
+// more badge than its neighbour slid every field to its left.
+// ---------------------------------------------------------------------------
+
+use crate::tui::render::responsive::EDGE_INSET;
+
+/// The pane edge keeps the same breathing space on both sides.
+#[tokio::test]
+async fn sessions_rows_are_inset_on_both_sides() {
+    let mut app = app_in(AppMode::Sessions).await;
+    app.sessions = vec![session("CrabDev"), session("Crabsland")];
+
+    let (w, h) = (100u16, 20u16);
+    let buf = draw(&mut app, w, h);
+    let rows = all_rows(&buf, w, h);
+
+    // Row 0 is selected and carries a full-width selection bar on purpose:
+    // a bar that stopped short of the edge would read as a highlight of the
+    // text rather than of the row. Every other row is the one to measure.
+    let plain: Vec<&String> = rows.iter().filter(|r| r.contains("Crabsland")).collect();
+    assert_eq!(plain.len(), 1, "expected exactly one plain row: {rows:?}");
+
+    let row = plain[0];
+    let inset = EDGE_INSET as usize;
+    assert_eq!(
+        row.chars().count(),
+        w as usize,
+        "row width changed: {row:?}"
+    );
+    assert!(
+        row.starts_with(&" ".repeat(inset)),
+        "left gutter missing: {row:?}"
+    );
+    assert!(
+        row.ends_with(&" ".repeat(inset)),
+        "right gutter missing, the row still ends flush at the pane edge: {row:?}"
+    );
+}
+
+/// The right half is a table: a badge that only one row has must not move the
+/// columns its neighbours share.
+#[tokio::test]
+async fn sessions_columns_do_not_shift_between_rows() {
+    let mut app = app_in(AppMode::Sessions).await;
+
+    // Same date on both, one carries a provider pair the other does not. That
+    // single difference is what used to slide the date by the width of the
+    // badge, which is how two adjacent rows could disagree by 101 columns.
+    let mut bare = session("Bare");
+    bare.updated_at = chrono::Utc::now();
+    let mut rich = session("Rich");
+    rich.updated_at = bare.updated_at;
+    rich.provider_name = Some("opencrabs".to_string());
+    rich.model = Some("flash".to_string());
+    rich.token_count = 4_657_300;
+    app.sessions = vec![bare, rich];
+
+    let (w, h) = (160u16, 20u16);
+    let buf = draw(&mut app, w, h);
+    let rows = all_rows(&buf, w, h);
+
+    let bare_row = rows
+        .iter()
+        .find(|r| r.contains("Bare"))
+        .unwrap_or_else(|| panic!("bare row missing: {rows:?}"));
+    let rich_row = rows
+        .iter()
+        .find(|r| r.contains("Rich"))
+        .unwrap_or_else(|| panic!("rich row missing: {rows:?}"));
+
+    let date_of = |row: &str| {
+        row.find("2026-")
+            .unwrap_or_else(|| panic!("no date on row: {row:?}"))
+    };
+    assert_eq!(
+        date_of(bare_row),
+        date_of(rich_row),
+        "the date column slid between rows:\nbare: {bare_row:?}\nrich: {rich_row:?}"
+    );
+    assert_eq!(
+        bare_row.chars().count(),
+        rich_row.chars().count(),
+        "rows disagree on width:\nbare: {bare_row:?}\nrich: {rich_row:?}"
+    );
+    assert!(
+        rich_row.contains("[opencrabs/flash]"),
+        "provider badge must still render at 160 cols: {rich_row:?}"
+    );
+}
+
+/// The footer's right label is inset by the same amount as the rows, so the
+/// bottom of the screen lines up with the list above it.
+#[tokio::test]
+async fn sessions_footer_label_is_inset() {
+    let mut app = app_in(AppMode::Sessions).await;
+    app.sessions = vec![session("CrabDev")];
+
+    // Wide enough that every binding fits beside the label, so this measures
+    // the inset rather than whether the label was dropped for room.
+    let (w, h) = (200u16, 20u16);
+    let buf = draw(&mut app, w, h);
+    let rows = all_rows(&buf, w, h);
+
+    let last = &rows[h as usize - 1];
+    assert!(
+        last.contains("sessions"),
+        "footer label missing from the last row: {last:?}"
+    );
+    assert_eq!(
+        last.trim_end().chars().count(),
+        w as usize - EDGE_INSET as usize,
+        "the footer label must stop {EDGE_INSET} columns short of the edge: {last:?}"
+    );
+    assert!(
+        last.starts_with(&" ".repeat(EDGE_INSET as usize)),
+        "the footer's left inset is missing: {last:?}"
+    );
+}
+
+/// A row without a badge reserves that badge's columns instead of sliding its
+/// neighbours into them.
+#[tokio::test]
+async fn sessions_reserve_columns_for_absent_badges() {
+    let mut app = app_in(AppMode::Sessions).await;
+    let mut bare = session("Bare");
+    bare.updated_at = chrono::Utc::now();
+    let mut rich = session("Rich");
+    rich.updated_at = bare.updated_at;
+    rich.provider_name = Some("opencrabs".to_string());
+    rich.model = Some("flash".to_string());
+    app.sessions = vec![bare, rich];
+
+    let (w, h) = (160u16, 20u16);
+    let buf = draw(&mut app, w, h);
+    let rows = all_rows(&buf, w, h);
+
+    let bare_row = rows.iter().find(|r| r.contains("Bare")).unwrap();
+    let rich_row = rows.iter().find(|r| r.contains("Rich")).unwrap();
+
+    let badge = "[opencrabs/flash]";
+    let start = rich_row
+        .find(badge)
+        .unwrap_or_else(|| panic!("provider badge missing: {rich_row:?}"));
+    let end = start + badge.chars().count();
+    let reserved: String = bare_row.chars().skip(start).take(end - start).collect();
+    assert_eq!(
+        reserved,
+        " ".repeat(end - start),
+        "the bare row did not reserve the provider badge's columns:\nbare: {bare_row:?}\nrich: {rich_row:?}"
+    );
+}
+
+/// Narrow terminals still draw a usable list instead of panicking or writing
+/// outside the pane.
+#[tokio::test]
+async fn sessions_render_at_narrow_widths() {
+    for width in [40u16, 60u16] {
+        let mut app = app_in(AppMode::Sessions).await;
+        // Long enough that the name column must ellipsise at both widths,
+        // which is what proves the column still has room rather than being
+        // squeezed to nothing by the badges.
+        app.sessions = vec![
+            session("CrabDev with a title far longer than a narrow terminal"),
+            session("Crabsland"),
+        ];
+
+        let height = 20u16;
+        let buf = draw(&mut app, width, height);
+        let rows = all_rows(&buf, width, height);
+
+        // A draw that wrote outside the buffer would have panicked in
+        // TestBackend, so reaching here already proves containment.
+        for row in &rows {
+            assert_eq!(
+                row.chars().count(),
+                width as usize,
+                "row width changed at {width} cols: {row:?}"
+            );
+        }
+        let name_row = rows
+            .iter()
+            .find(|r| r.contains("Crab"))
+            .unwrap_or_else(|| panic!("name column vanished at {width} cols: {rows:?}"));
+        assert!(
+            name_row.contains('\u{2026}'),
+            "the long name should be ellipsised at {width} cols, not dropped: {name_row:?}"
+        );
+    }
+}

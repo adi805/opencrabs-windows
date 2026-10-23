@@ -7,6 +7,16 @@
 //!
 //! So there is one table, here, and every responsive screen reads it.
 
+/// Blank columns kept between content and the pane edge on every full-bleed
+/// screen (#2175).
+///
+/// #2162 removed the borders, and with them the right padding a border used
+/// to supply for free. Only the left gutter was re-added, so every full-bleed
+/// row ran flush to the last column and the right side had no breathing
+/// space. Both sides inset by this many columns now, in the rows and in the
+/// footer label alike, so one screen cannot disagree with another.
+pub const EDGE_INSET: u16 = 2;
+
 /// Width at which a card grid gets three columns.
 pub const GRID_THREE_COL_MIN: u16 = 90;
 
@@ -74,22 +84,5 @@ pub fn session_row_tier(width: u16) -> SessionRowTier {
         SessionRowTier::Medium
     } else {
         SessionRowTier::Narrow
-    }
-}
-
-impl SessionRowTier {
-    /// The next tier down, or `None` at the narrowest one.
-    ///
-    /// The tier a row starts on comes from the terminal width, but a long
-    /// provider/model pair or a deep working directory can still be wider
-    /// than the terminal at that tier. Dropping a tier is how a row loses
-    /// whole badges instead of having one clipped mid-token at the edge.
-    pub fn narrower(self) -> Option<SessionRowTier> {
-        match self {
-            SessionRowTier::ExtraWide => Some(SessionRowTier::Wide),
-            SessionRowTier::Wide => Some(SessionRowTier::Medium),
-            SessionRowTier::Medium => Some(SessionRowTier::Narrow),
-            SessionRowTier::Narrow => None,
-        }
     }
 }

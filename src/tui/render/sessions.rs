@@ -6,6 +6,12 @@
 //! footer at the bottom carrying the keys from the scoped keymap. Every
 //! session is exactly one terminal row, whatever the width, so the scroll
 //! math and the viewport can never disagree about where a session is.
+//!
+//! Rows are laid out from one [`RowPlan`] computed per frame (#2175). Before
+//! that, each row solved its own gap and pushed a badge only when it had a
+//! value, so the right half was a right-aligned blob whose width changed with
+//! the row. Two adjacent rows could differ by up to 101 columns, which is why
+//! the dates never lined up.
 
 use super::super::app::App;
 use super::hints;
@@ -35,6 +41,22 @@ fn project_badge_color(project_id: uuid::Uuid) -> Color {
     let idx = (project_id.as_u128() % PROJECT_BADGE_COLORS.len() as u128) as usize;
     PROJECT_BADGE_COLORS[idx]
 }
+
+/// Blank columns between a row and the pane edge, on both sides (#2175).
+///
+/// The #2162 border removal took away the right padding the border used to
+/// supply for free, and only the left gutter was put back, so every row ended
+/// on the last column while the left had two blank columns. Both sides inset
+/// by the same amount now.
+///
+/// Derived from [`responsive::EDGE_INSET`] rather than written out again, so
+/// the rows and the footer below them cannot drift apart: they read one
+/// number.
+const GUTTER: usize = responsive::EDGE_INSET as usize;
+
+/// A session name never gets narrower than this, so the list stays readable
+/// even when every badge has a value.
+const NAME_MIN: usize = 24;
 
 /// Render the sessions list.
 ///
@@ -129,7 +151,13 @@ pub(super) fn render_sessions(f: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
-    let tier = responsive::session_row_tier(content_area.width);
+    // One plan for the whole frame, so a column's width can no longer depend
+    // on which row is being drawn.
+    let visible: Vec<&Session> = visible_indices
+        .iter()
+        .map(|&idx| &app.sessions[idx])
+        .collect();
+    let plan = row_plan(app, &visible, content_area.width);
 
     for (display_idx, &session_idx) in visible_indices.iter().enumerate() {
         let session = &app.sessions[session_idx];
@@ -141,18 +169,11 @@ pub(super) fn render_sessions(f: &mut Frame, app: &App, area: Rect) {
             .unwrap_or(false);
 
         if is_selected && app.session_renaming {
-            lines.push(rename_row(app, content_area.width));
+            lines.push(rename_row(app, &plan));
             continue;
         }
 
-        lines.push(session_row(
-            app,
-            session,
-            is_selected,
-            is_current,
-            tier,
-            content_area.width,
-        ));
+        lines.push(session_row(app, session, is_selected, is_current, &plan));
     }
 
     // Viewport scroll: keep the selected session visible. One row per
@@ -176,58 +197,130 @@ pub(super) fn render_sessions(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// One session, exactly one terminal row.
+/// A right-hand column of the session list.
 ///
-/// The name takes whatever room is left after the badges the current width
-/// tier allows, and is truncated with an ellipsis rather than wrapped, so a
-/// long channel title can never push the next session down a row.
-fn session_row(
-    app: &App,
-    session: &Session,
-    is_selected: bool,
-    is_current: bool,
-    tier: SessionRowTier,
-    width: u16,
-) -> Line<'static> {
-    let width = width as usize;
-    let dim = Style::default().fg(theme::role(Role::GrayDim));
-    let mid = Style::default().fg(theme::role(Role::GrayMid));
-    let gray = Style::default().fg(theme::role(Role::Gray));
+/// The right half used to be built row by row and drawn as one right-aligned
+/// blob. Columns make it a table: every row draws the same columns in the
+/// same order, and a missing value is blank space rather than a shift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Column {
+    Date,
+    Status,
+    Model,
+    Branch,
+    Size,
+    Project,
+    Ctx,
+    Wd,
+}
 
-    // Everything to the right of the name, for one tier. Built first because
-    // its width decides how much room the name gets, and built as a closure
-    // because a tier whose badges do not fit is dropped for the next one
-    // down rather than clipped at the edge.
-    let build_right = |tier: SessionRowTier| -> Vec<Span<'static>> {
-        let mut right: Vec<Span<'static>> = Vec::new();
+impl Column {
+    /// Allocation order. A column is kept only when every column before it
+    /// already fits, so the visible set is always a prefix of this list and
+    /// never a ragged subset that differs row to row.
+    const PRIORITY: [Column; 8] = [
+        Column::Date,
+        Column::Status,
+        Column::Model,
+        Column::Branch,
+        Column::Size,
+        Column::Project,
+        Column::Ctx,
+        Column::Wd,
+    ];
 
-        // Show LAST ACTIVITY, not creation. The list is ordered by
-        // `updated_at DESC` (`list_sessions`), so printing `created_at` made the
-        // rows look mis-sorted: a session last used minutes ago but opened in
-        // March rendered "2026-03-26" above one created yesterday.
-        match tier {
-            SessionRowTier::Narrow => right.push(Span::styled(
-                format!(" {}", session.updated_at.format("%H:%M")),
-                dim,
-            )),
-            _ => right.push(Span::styled(
-                format!(" {}", session.updated_at.format("%Y-%m-%d %H:%M")),
-                dim,
-            )),
+    /// Drawing order, left to right. Deliberately different from
+    /// [`Self::PRIORITY`]: priority says what survives a narrow terminal,
+    /// this says where it sits. It keeps the order the badges had before
+    /// columns existed, with status last because it is a state marker.
+    const DRAW: [Column; 8] = [
+        Column::Date,
+        Column::Size,
+        Column::Ctx,
+        Column::Model,
+        Column::Project,
+        Column::Wd,
+        Column::Branch,
+        Column::Status,
+    ];
+
+    /// Lowest tier at which this column is a candidate, as a rank.
+    ///
+    /// The tier still decides which data the screen shows, exactly as it did
+    /// before columns existed; the width budget only trims that set further.
+    fn first_tier(self) -> u8 {
+        match self {
+            Column::Date | Column::Status => 0,
+            Column::Size => 1,
+            Column::Model | Column::Ctx => 2,
+            Column::Project | Column::Wd | Column::Branch => 3,
         }
+    }
 
-        if tier != SessionRowTier::Narrow && session.token_count > 0 {
-            right.push(Span::styled(
-                format!(
-                    "  {}",
-                    format_token_count_with_label(session.token_count, "total")
-                ),
-                mid,
-            ));
+    /// Widest this column is ever drawn.
+    ///
+    /// A value longer than the cap is ellipsised, so a deep working directory
+    /// or a long branch name cannot shove its neighbours off the row. Two are
+    /// wider than the common value needs: the project badge carries a
+    /// `{.name}` wrapper, and status is a composite of up to three indicators
+    /// that can all be on at once.
+    fn cap(self, tier: SessionRowTier) -> usize {
+        match self {
+            Column::Date if tier == SessionRowTier::Narrow => 6,
+            Column::Date => 17,
+            Column::Status => 14,
+            Column::Model => 34,
+            Column::Branch => 10,
+            Column::Size => 13,
+            Column::Project => 20,
+            Column::Ctx => 18,
+            Column::Wd => 40,
         }
+    }
 
-        if matches!(tier, SessionRowTier::Wide | SessionRowTier::ExtraWide) {
-            if is_current && let Some(input_tok) = app.last_input_tokens {
+    /// The cells this column draws for one session, empty when the row has no
+    /// value for it.
+    fn cell(
+        self,
+        app: &App,
+        session: &Session,
+        is_current: bool,
+        tier: SessionRowTier,
+    ) -> Vec<Span<'static>> {
+        let dim = Style::default().fg(theme::role(Role::GrayDim));
+        let mid = Style::default().fg(theme::role(Role::GrayMid));
+        let gray = Style::default().fg(theme::role(Role::Gray));
+
+        match self {
+            // Show LAST ACTIVITY, not creation. The list is ordered by
+            // `updated_at DESC` (`list_sessions`), so printing `created_at`
+            // made the rows look mis-sorted: a session last used minutes ago
+            // but opened in March rendered "2026-03-26" above one created
+            // yesterday.
+            Column::Date => {
+                let text = if tier == SessionRowTier::Narrow {
+                    format!(" {}", session.updated_at.format("%H:%M"))
+                } else {
+                    format!(" {}", session.updated_at.format("%Y-%m-%d %H:%M"))
+                };
+                vec![Span::styled(text, dim)]
+            }
+            Column::Size => {
+                if session.token_count <= 0 {
+                    return Vec::new();
+                }
+                vec![Span::styled(
+                    format!(
+                        "  {}",
+                        format_token_count_with_label(session.token_count, "total")
+                    ),
+                    mid,
+                )]
+            }
+            Column::Ctx => {
+                let Some(input_tok) = app.last_input_tokens.filter(|_| is_current) else {
+                    return Vec::new();
+                };
                 let pct = app.context_usage_percent();
                 let color = if pct > 80.0 {
                     theme::role(Role::Error)
@@ -236,7 +329,7 @@ fn session_row(
                 } else {
                     theme::role(Role::AccentTeal)
                 };
-                right.push(Span::styled(
+                vec![Span::styled(
                     format!(
                         "  ctx {}/{} {:.0}%",
                         format_token_count_raw(input_tok as i64),
@@ -244,119 +337,239 @@ fn session_row(
                         pct
                     ),
                     Style::default().fg(color),
-                ));
+                )]
             }
-            if let Some(prov) = session.provider_name.as_ref() {
-                let model = session.model.as_deref().unwrap_or("default");
-                right.push(Span::styled(format!("  [{prov}/{model}]"), gray));
-            }
-        }
-
-        if tier == SessionRowTier::ExtraWide {
-            if let Some(pid) = session.project_id {
-                let project_name = app
-                    .project_name_cache
-                    .get(&pid)
-                    .map(|s| s.as_str())
-                    .unwrap_or("?");
-                right.push(Span::styled(
-                    format!("  {{.{project_name}}}"),
-                    Style::default().fg(project_badge_color(pid)),
-                ));
-            }
-            if let Some(wd) = session.working_directory.as_ref() {
-                let home_dir = dirs::home_dir()
-                    .map(|h| h.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let short = if !home_dir.is_empty() && wd.starts_with(&home_dir) {
-                    format!("~{}", &wd[home_dir.len()..])
-                } else {
-                    wd.clone()
-                };
-                right.push(Span::styled(
-                    format!("  {short}"),
-                    Style::default().fg(theme::role(Role::BlueSteel)),
-                ));
-                if let Some(branch) =
-                    crate::utils::git_branch::current_branch(std::path::Path::new(wd))
-                {
-                    right.push(Span::styled(
-                        format!(" ({branch})"),
+            Column::Model => match session.provider_name.as_ref() {
+                Some(prov) => {
+                    let model = session.model.as_deref().unwrap_or("default");
+                    vec![Span::styled(format!("  [{prov}/{model}]"), gray)]
+                }
+                None => Vec::new(),
+            },
+            Column::Project => match session.project_id {
+                Some(pid) => {
+                    let project_name = app
+                        .project_name_cache
+                        .get(&pid)
+                        .map(|s| s.as_str())
+                        .unwrap_or("?");
+                    vec![Span::styled(
+                        format!("  {{.{project_name}}}"),
+                        Style::default().fg(project_badge_color(pid)),
+                    )]
+                }
+                None => Vec::new(),
+            },
+            Column::Wd => match session.working_directory.as_ref() {
+                Some(wd) => {
+                    let home_dir = dirs::home_dir()
+                        .map(|h| h.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let short = if !home_dir.is_empty() && wd.starts_with(&home_dir) {
+                        format!("~{}", &wd[home_dir.len()..])
+                    } else {
+                        wd.clone()
+                    };
+                    vec![Span::styled(
+                        format!("  {short}"),
+                        Style::default().fg(theme::role(Role::BlueSteel)),
+                    )]
+                }
+                None => Vec::new(),
+            },
+            Column::Branch => match session.working_directory.as_ref() {
+                Some(wd) => {
+                    match crate::utils::git_branch::current_branch(std::path::Path::new(wd)) {
+                        Some(branch) => vec![Span::styled(
+                            format!(" ({branch})"),
+                            Style::default().fg(theme::role(Role::AccentTeal)),
+                        )],
+                        None => Vec::new(),
+                    }
+                }
+                None => Vec::new(),
+            },
+            // Status is state, not decoration, so it is kept at every width
+            // and carries every indicator that applies.
+            Column::Status => {
+                let mut spans: Vec<Span<'static>> = Vec::new();
+                if app.processing_sessions.contains(&session.id) {
+                    const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+                    let frame = app.animation_frame % SPINNER.len();
+                    spans.push(Span::styled(
+                        format!(" {}", SPINNER[frame]),
+                        Style::default().fg(theme::role(Role::Accent)),
+                    ));
+                } else if app.sessions_with_pending_approval.contains(&session.id) {
+                    spans.push(Span::styled(
+                        " !",
+                        Style::default()
+                            .fg(theme::role(Role::Accent))
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                } else if app.sessions_with_unread.contains(&session.id) {
+                    spans.push(Span::styled(
+                        " ●",
                         Style::default().fg(theme::role(Role::AccentTeal)),
                     ));
                 }
+                if is_current {
+                    spans.push(Span::styled(
+                        " *",
+                        Style::default()
+                            .fg(theme::role(Role::Gray))
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+                // Pane indicator: which pane this session already occupies.
+                if app.pane_manager.is_split() {
+                    let pane_ids = app.pane_manager.pane_ids_in_order();
+                    if let Some(pos) = pane_ids.iter().position(|pid| {
+                        app.pane_manager
+                            .get(*pid)
+                            .is_some_and(|p| p.session_id == Some(session.id))
+                    }) {
+                        spans.push(Span::styled(
+                            format!(" [pane {}]", pos + 1),
+                            Style::default().fg(theme::role(Role::Success)),
+                        ));
+                    }
+                }
+                spans
             }
         }
+    }
+}
 
-        // Status is state, not decoration, so it renders at every width.
-        if app.processing_sessions.contains(&session.id) {
-            const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-            let frame = app.animation_frame % SPINNER.len();
-            right.push(Span::styled(
-                format!(" {}", SPINNER[frame]),
-                Style::default().fg(theme::role(Role::Accent)),
-            ));
-        } else if app.sessions_with_pending_approval.contains(&session.id) {
-            right.push(Span::styled(
-                " !",
-                Style::default()
-                    .fg(theme::role(Role::Accent))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        } else if app.sessions_with_unread.contains(&session.id) {
-            right.push(Span::styled(
-                " ●",
-                Style::default().fg(theme::role(Role::AccentTeal)),
-            ));
-        }
+/// One frame's column layout, computed once and shared by every row.
+#[derive(Debug, Clone)]
+struct RowPlan {
+    /// Full width the rows are drawn in.
+    width: usize,
+    /// Room for the name, after both gutters and the chosen columns.
+    name_width: usize,
+    /// Chosen columns and their fixed widths, in drawing order.
+    columns: Vec<(Column, usize)>,
+    /// The badge tier this frame resolved to.
+    tier: SessionRowTier,
+}
 
-        if is_current {
-            right.push(Span::styled(
-                " *",
-                Style::default()
-                    .fg(theme::role(Role::Gray))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
+/// Rank a tier so a column can ask "is this tier high enough?".
+fn tier_rank(tier: SessionRowTier) -> u8 {
+    match tier {
+        SessionRowTier::Narrow => 0,
+        SessionRowTier::Medium => 1,
+        SessionRowTier::Wide => 2,
+        SessionRowTier::ExtraWide => 3,
+    }
+}
 
-        // Pane indicator: which pane this session already occupies.
-        if app.pane_manager.is_split() {
-            let pane_ids = app.pane_manager.pane_ids_in_order();
-            if let Some(pos) = pane_ids.iter().position(|pid| {
-                app.pane_manager
-                    .get(*pid)
-                    .is_some_and(|p| p.session_id == Some(session.id))
-            }) {
-                right.push(Span::styled(
-                    format!(" [pane {}]", pos + 1),
-                    Style::default().fg(theme::role(Role::Success)),
-                ));
+/// Display width of a cell built from styled spans.
+fn cell_width(cell: &[Span<'static>]) -> usize {
+    cell.iter().map(|s| s.content.width()).sum()
+}
+
+/// Work out the frame's columns from the widest value each one has to hold.
+///
+/// Called once per frame with every visible session, so a column's width is
+/// the same for all of them. That is the whole fix: before this, the width of
+/// the right half depended on which row was being drawn, and the date slid up
+/// to 101 columns between neighbours.
+fn row_plan(app: &App, sessions: &[&Session], width: u16) -> RowPlan {
+    let width = width as usize;
+    let tier = responsive::session_row_tier(width as u16);
+    let rank = tier_rank(tier);
+
+    // Natural width per column, capped so one runaway value cannot claim the
+    // frame. Zero means no visible row has a value for that column.
+    let mut natural = [0usize; Column::PRIORITY.len()];
+    for session in sessions {
+        let is_current = app
+            .current_session
+            .as_ref()
+            .is_some_and(|s| s.id == session.id);
+        for (idx, column) in Column::PRIORITY.iter().enumerate() {
+            if column.first_tier() > rank {
+                continue;
             }
-        }
-
-        right
-    };
-
-    // The tier comes from the terminal width, but the badges themselves can
-    // still be wider than the terminal: a long provider/model pair or a deep
-    // working directory used to push the row past `width`, and the terminal
-    // then clipped it mid-token (the `[oper` at the right edge). Dropping
-    // whole tiers is how the row fits, so what is shown is never cut in half.
-    let gutter_width = "  ".len();
-    let mut tier = tier;
-    let mut right = build_right(tier);
-    let mut right_width: usize = right.iter().map(|s| s.content.width()).sum();
-    while gutter_width + 2 + right_width > width {
-        match tier.narrower() {
-            Some(next) => {
-                tier = next;
-                right = build_right(tier);
-                right_width = right.iter().map(|s| s.content.width()).sum();
-            }
-            None => break,
+            let cell = column.cell(app, session, is_current, tier);
+            natural[idx] = natural[idx].max(cell_width(&cell).min(column.cap(tier)));
         }
     }
 
+    // Allocate in priority order and stop at the first column that does not
+    // fit, so the kept set is a prefix: a wide terminal shows everything a
+    // narrow one shows plus more, never a different mix. A column with no
+    // value anywhere is skipped rather than ending the run.
+    let mut columns: Vec<(Column, usize)> = Vec::new();
+    let mut used = GUTTER * 2 + NAME_MIN;
+    for (idx, column) in Column::PRIORITY.iter().enumerate() {
+        let column_width = natural[idx];
+        if column_width == 0 {
+            continue;
+        }
+        if used + column_width > width {
+            break;
+        }
+        used += column_width;
+        columns.push((*column, column_width));
+    }
+    columns.sort_by_key(|(column, _)| {
+        Column::DRAW
+            .iter()
+            .position(|c| c == column)
+            .unwrap_or(usize::MAX)
+    });
+
+    let right_total: usize = columns.iter().map(|(_, w)| w).sum();
+    let name_width = width.saturating_sub(GUTTER * 2 + right_total).max(1);
+
+    RowPlan {
+        width,
+        name_width,
+        columns,
+        tier,
+    }
+}
+
+/// Trim a cell to its column width, ellipsising rather than cutting a glyph.
+///
+/// Only a value that exceeds its column's cap reaches here, so the ellipsis is
+/// the signal that a working directory or a branch name was too long for the
+/// frame. Nothing is ever cut mid-token without it.
+fn fit_cell(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for span in spans {
+        let span_width = span.content.width();
+        if used + span_width <= width {
+            used += span_width;
+            out.push(span);
+            continue;
+        }
+        let room = width.saturating_sub(used);
+        if room > 0 {
+            let text = truncate_to_width(&span.content, room);
+            out.push(Span::styled(text, span.style));
+        }
+        break;
+    }
+    out
+}
+
+/// One session, exactly one terminal row.
+///
+/// Drawn from the frame's [`RowPlan`]: the name is padded to the plan's name
+/// width and each chosen column is right-aligned inside its fixed width, so
+/// every row's date and badges land on the same columns. A row with no value
+/// for a column draws blanks there instead of sliding everything to its left.
+fn session_row(
+    app: &App,
+    session: &Session,
+    is_selected: bool,
+    is_current: bool,
+    plan: &RowPlan,
+) -> Line<'static> {
     // Green marks a session already assigned to the project being assigned.
     let is_assigned_to_target = app
         .assigning_to_project
@@ -375,33 +588,44 @@ fn session_row(
         Style::default().fg(theme::role(Role::TextPrimary))
     };
 
-    // Two-space gutter, then the name, then one blank cell, then the badges.
-    let gutter = "  ";
-    let name_room = width.saturating_sub(gutter.len() + right_width + 1).max(1);
-    let name = truncate_to_width(session.title.as_deref().unwrap_or("New Chat"), name_room);
-
+    // Left gutter, then the name padded to its column, then each column
+    // right-aligned inside its fixed width, then the right gutter.
+    let name = truncate_to_width(
+        session.title.as_deref().unwrap_or("New Chat"),
+        plan.name_width,
+    );
     let mut spans = vec![
-        Span::raw(gutter.to_string()),
+        Span::raw(" ".repeat(GUTTER)),
         Span::styled(name.clone(), name_style),
     ];
-    let used = gutter.len() + name.width();
-    let gap = width.saturating_sub(used + right_width);
-    if gap > 0 {
-        spans.push(Span::raw(" ".repeat(gap)));
+    let pad = plan.name_width.saturating_sub(name.width());
+    if pad > 0 {
+        spans.push(Span::raw(" ".repeat(pad)));
     }
-    spans.extend(right);
+    for (column, column_width) in &plan.columns {
+        let cell = fit_cell(
+            column.cell(app, session, is_current, plan.tier),
+            *column_width,
+        );
+        let pad = column_width.saturating_sub(cell_width(&cell));
+        if pad > 0 {
+            spans.push(Span::raw(" ".repeat(pad)));
+        }
+        spans.extend(cell);
+    }
+    spans.push(Span::raw(" ".repeat(GUTTER)));
 
-    finish_row(spans, width, is_selected)
+    finish_row(spans, plan.width, is_selected)
 }
 
 /// The rename editor, on the selected row, one row high.
-fn rename_row(app: &App, width: u16) -> Line<'static> {
-    let width = width as usize;
-    let gutter = "  ";
-    let room = width.saturating_sub(gutter.len() + 1).max(1);
-    let text = truncate_to_width(&format!("{}▏", app.session_rename_buffer), room);
+///
+/// Padded to the plan's name width so the editor sits exactly where the names
+/// it replaces sit.
+fn rename_row(app: &App, plan: &RowPlan) -> Line<'static> {
+    let text = truncate_to_width(&format!("{}▏", app.session_rename_buffer), plan.name_width);
     let spans = vec![
-        Span::raw(gutter.to_string()),
+        Span::raw(" ".repeat(GUTTER)),
         Span::styled(
             text,
             Style::default()
@@ -409,7 +633,7 @@ fn rename_row(app: &App, width: u16) -> Line<'static> {
                 .add_modifier(Modifier::BOLD),
         ),
     ];
-    finish_row(spans, width, true)
+    finish_row(spans, plan.width, true)
 }
 
 /// Give the selected row a full-width selection bar.
