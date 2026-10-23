@@ -53,6 +53,23 @@ pub async fn create_channel_session(
     title: Option<String>,
     inherit_wd_from: Option<&Session>,
 ) -> Result<Session> {
+    create_channel_session_reported(session_svc, title, inherit_wd_from)
+        .await
+        .map(|(session, _)| session)
+}
+
+/// Same as [`create_channel_session`], also reporting whether a row was
+/// created (#2183).
+///
+/// The chat-key insert is an insert-OR-RESOLVE: it returns the winning row
+/// when one already exists for that chat key. A caller that logs "created"
+/// therefore has to be told which happened, or it claims creation on every
+/// message of a long-lived chat.
+pub async fn create_channel_session_reported(
+    session_svc: &SessionService,
+    title: Option<String>,
+    inherit_wd_from: Option<&Session>,
+) -> Result<(Session, bool)> {
     // First, try to inherit from the most recent session (TUI or any channel).
     let (mut inherited_provider, mut inherited_model) =
         match session_svc.get_most_recent_session().await {
@@ -101,7 +118,7 @@ pub async fn create_channel_session(
         );
     }
 
-    create_with_chat_identity(
+    create_with_chat_identity_reported(
         session_svc,
         title,
         inherited_provider,
@@ -117,13 +134,17 @@ pub async fn create_channel_session(
 /// index decides and the loser joins the winner. Titles without a suffix
 /// (should not happen on channel paths, but is legal for direct callers)
 /// fall back to the plain insert.
-async fn create_with_chat_identity(
+///
+/// Also reports whether a row was created (#2183). The chat-key insert
+/// resolves an existing row, so a caller that logs "created" has to know
+/// which happened.
+pub(crate) async fn create_with_chat_identity_reported(
     session_svc: &SessionService,
     title: Option<String>,
     provider: Option<String>,
     model: Option<String>,
     wd: Option<String>,
-) -> Result<Session> {
+) -> Result<(Session, bool)> {
     let chat_key = title.as_deref().and_then(|t| {
         let idx = t.rfind("[chat:")?;
         Some(t[idx..].to_string())
@@ -131,13 +152,14 @@ async fn create_with_chat_identity(
     match chat_key {
         Some(key) => {
             session_svc
-                .insert_or_resolve_channel_session(title, provider, model, wd, &key)
+                .insert_or_resolve_channel_session_reported(title, provider, model, wd, &key)
                 .await
         }
         None => {
-            session_svc
+            let session = session_svc
                 .create_session_with_provider(title, provider, model, wd)
-                .await
+                .await?;
+            Ok((session, true))
         }
     }
 }

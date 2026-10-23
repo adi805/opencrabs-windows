@@ -81,6 +81,30 @@ impl SessionService {
         working_directory: Option<String>,
         chat_key: &str,
     ) -> Result<Session> {
+        self.insert_or_resolve_channel_session_reported(
+            title,
+            provider_name,
+            model,
+            working_directory,
+            chat_key,
+        )
+        .await
+        .map(|(session, _)| session)
+    }
+
+    /// Same as [`Self::insert_or_resolve_channel_session`], also reporting
+    /// whether this call created the row (#2183). A caller that logs
+    /// "created new channel session" needs to know which it was: the insert
+    /// resolves an existing row for the same chat key, so the word "created"
+    /// was printed on every message of a long-lived chat.
+    pub async fn insert_or_resolve_channel_session_reported(
+        &self,
+        title: Option<String>,
+        provider_name: Option<String>,
+        model: Option<String>,
+        working_directory: Option<String>,
+        chat_key: &str,
+    ) -> Result<(Session, bool)> {
         let repo = SessionRepository::new(self.context.pool());
 
         let session = Session {
@@ -99,13 +123,21 @@ impl SessionService {
             channel_chat_key: None,
         };
 
-        let result = repo
-            .insert_or_resolve_channel(&session, chat_key)
+        let (result, created) = repo
+            .insert_or_resolve_channel_reported(&session, chat_key)
             .await
             .context("Failed to create channel session")?;
 
-        tracing::info!("Created/resolved channel session: {}", result.id);
-        Ok(result)
+        tracing::info!(
+            "{} channel session: {}",
+            if created {
+                "Created new"
+            } else {
+                "Resolved existing"
+            },
+            result.id
+        );
+        Ok((result, created))
     }
 
     /// Get a session by ID
@@ -383,6 +415,14 @@ impl SessionService {
     /// (e.g. `[chat:12345]`) as the title suffix on creation so a
     /// rename of the user-visible label still resolves to the same
     /// session row.
+    /// The live session carrying this stable `[chat:<id>]` key (#2183). The
+    /// key is the unique identity, so this is a direct lookup; the title
+    /// suffix is only a proxy for it and misses an auto-renamed row.
+    pub async fn find_session_by_channel_chat_key(&self, key: &str) -> Result<Option<Session>> {
+        let repo = SessionRepository::new(self.context.pool());
+        repo.find_by_channel_chat_key(key).await
+    }
+
     pub async fn find_session_by_title_suffix(&self, suffix: &str) -> Result<Option<Session>> {
         let repo = SessionRepository::new(self.context.pool());
         repo.find_by_title_suffix(suffix).await
