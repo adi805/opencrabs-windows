@@ -91,6 +91,23 @@ public final class TerminalRow {
     }
 
     /** Note that the column may end of second half of wide character. */
+    /**
+     * MODIFIED (not upstream): true when the row holds something other than
+     * spaces and zero-width marks.
+     *
+     * <p>Added because {@link #getSpaceUsed()} reports allocated characters, not
+     * visible ones: {@code clear()} fills the row with spaces and sets the count
+     * to the column count, so a fully blank screen reports the same number as a
+     * full one. The CI smoke test needs the difference.
+     */
+    public boolean hasVisibleText() {
+        for (int i = 0; i < mSpaceUsed; i++) {
+            char c = mText[i];
+            if (c != ' ' && c != 0 && WcWidth.width(c) > 0) return true;
+        }
+        return false;
+    }
+
     public int findStartOfColumn(int column) {
         if (column == mColumns) return getSpaceUsed();
 

@@ -91,7 +91,11 @@ final class CoreSessionClient implements TerminalSessionClient {
         int nonEmptyRows = 0;
         for (int row = 0; row < rows; row++) {
             TerminalRow line = screen.getRowForRendering(row);
-            if (line != null && line.getSpaceUsed() > 0) nonEmptyRows++;
+            // hasVisibleText, not getSpaceUsed: TerminalRow.clear() fills the row
+            // with spaces and sets spaceUsed to the column count, so a completely
+            // blank screen reports a "full" row and would satisfy the smoke
+            // test's floor of two non-empty rows without printing anything.
+            if (line != null && line.hasVisibleText()) nonEmptyRows++;
         }
         Log.i(TAG, "tui rendered: textChanged=" + textChangedCount
             + " chars=" + chars
