@@ -24,6 +24,42 @@ use waproto::whatsapp::Message;
 use whatsapp_rust::SendOptions;
 use whatsapp_rust::client::Client;
 
+/// Composing pings are best-effort, so the retry policy is deliberately
+/// conservative (#2181): the loop used to retry every 5 seconds forever with
+/// no connection check, which during an outage wrote one WARN per 5 seconds
+/// per session for a call that could not succeed (48 lines in 4 minutes).
+pub(crate) const COMPOSING_BASE_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Ceiling for the exponential backoff. The indicator is a nicety, not a
+/// delivery mechanism, so past 30 seconds there is nothing to gain from
+/// pinging more often.
+pub(crate) const COMPOSING_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Give up after this many consecutive failures. The turn's cancel token ends
+/// the loop anyway, so a cap only stops the pointless tail of a dead
+/// connection.
+pub(crate) const COMPOSING_MAX_FAILURES: u32 = 5;
+
+/// Delay before the next composing attempt, or `None` when the loop should
+/// stop. `failures` counts consecutive failures, reset to zero on success.
+///
+/// Pure so the policy is testable without a socket: 5s, 10s, 20s, 30s, then
+/// give up.
+pub(crate) fn composing_retry_delay(failures: u32) -> Option<std::time::Duration> {
+    if failures == 0 {
+        return Some(COMPOSING_BASE_DELAY);
+    }
+    if failures >= COMPOSING_MAX_FAILURES {
+        return None;
+    }
+    let factor = 1u64 << (failures - 1).min(3);
+    let base = COMPOSING_BASE_DELAY.as_millis() as u64;
+    let cap = COMPOSING_MAX_DELAY.as_millis() as u64;
+    Some(std::time::Duration::from_millis(
+        base.saturating_mul(factor).min(cap),
+    ))
+}
+
 /// Header prepended to all outgoing messages so the user knows it's from the agent.
 pub const MSG_HEADER: &str = "\u{1f980} *OpenCrabs*";
 
@@ -1553,14 +1589,53 @@ pub(crate) async fn handle_message(
         let stop = cancel_token.clone();
         let background = agent.background_manager();
         let agents = agent.subagent_manager();
+        let state = wa_state.clone();
         async move {
+            // #2181: check the connection before every attempt and back off on
+            // failure instead of retrying every 5s forever. The first failure
+            // of an episode is the only one worth a WARN.
+            let mut failures: u32 = 0;
             loop {
-                if let Err(e) = client.chatstate().send_composing(&chat_jid).await {
-                    tracing::warn!(error = %e, "failed to send WhatsApp composing indicator");
-                }
+                let delay = if !state.is_connected().await {
+                    failures = failures.saturating_add(1);
+                    tracing::debug!(
+                        failures,
+                        "WhatsApp not connected; skipping composing indicator"
+                    );
+                    match composing_retry_delay(failures) {
+                        Some(d) => d,
+                        None => break,
+                    }
+                } else {
+                    match client.chatstate().send_composing(&chat_jid).await {
+                        Ok(()) => {
+                            failures = 0;
+                            composing_retry_delay(0).unwrap_or(COMPOSING_BASE_DELAY)
+                        }
+                        Err(e) => {
+                            failures = failures.saturating_add(1);
+                            if failures == 1 {
+                                tracing::warn!(
+                                    error = %e,
+                                    "failed to send WhatsApp composing indicator"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    error = %e,
+                                    failures,
+                                    "composing indicator still failing"
+                                );
+                            }
+                            match composing_retry_delay(failures) {
+                                Some(d) => d,
+                                None => break,
+                            }
+                        }
+                    }
+                };
                 tokio::select! {
                     _ = cancel.cancelled() => break,
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                    _ = tokio::time::sleep(delay) => {}
                 }
             }
             // Keep composing past the end of the turn while this session still
@@ -1581,8 +1656,14 @@ pub(crate) async fn handle_message(
                 // /stop or a new turn, #1989).
                 crate::channels::typing_tick::DEFAULT_TICK_CEILING,
                 || async {
+                    // #2181: the detached tail pings on its own cadence, so it
+                    // needs the same connection check. A dead socket must not
+                    // produce one WARN per tick.
+                    if !state.is_connected().await {
+                        return;
+                    }
                     if let Err(e) = client.chatstate().send_composing(&chat_jid).await {
-                        tracing::warn!(
+                        tracing::debug!(
                             error = %e,
                             "failed to send WhatsApp composing indicator"
                         );
