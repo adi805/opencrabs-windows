@@ -184,6 +184,64 @@ jobs:
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: bash android/assemble-apk.sh apk-input/opencrabs
 
+      # The APK is now a terminal client, not just a daemon shell: it carries a
+      # third native library (the PTY bridge) and the vendored terminal
+      # emulator's Java classes. assemble-apk.sh asserts the three libs itself,
+      # but a missing Java class cannot fail that script (javac + d8 succeed
+      # either way when a source file is simply absent from the compile list).
+      # That failure mode is silent and lands as NoClassDefFoundError on a
+      # phone, so it is checked here, against the packed artifact.
+      - name: Assert the APK carries the PTY bridge and the terminal emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=android/out/opencrabs-debug.apk
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK not found at $APK (the assemble step did not produce it)"
+            exit 1
+          fi
+          echo "apk: $APK ($(stat -c%s "$APK") bytes)"
+
+          # Native side: the PTY bridge is per-ABI, so assert it for the ABI
+          # this job built rather than for a hardcoded list.
+          unzip -l "$APK" | grep -E 'lib/[^/]+/lib.*\.so' || true
+          if ! unzip -l "$APK" | grep -q 'lib/arm64-v8a/libopencrabspty.so'; then
+            echo "::error::libopencrabspty.so is missing from the APK: the PTY JNI would throw UnsatisfiedLinkError on first fork, so the terminal can never spawn"
+            exit 1
+          fi
+          echo "lib/arm64-v8a/libopencrabspty.so: present"
+
+          # Java side: the terminal emulator lives in its own package and is
+          # reached only through TerminalPane, so assert the exact type
+          # descriptors instead of a loose substring that a comment could hit.
+          # dex string data carries the descriptor verbatim, which is why
+          # `strings` on the dex is enough: no dexdump and no extra tooling.
+          DEXDIR="$(mktemp -d)"
+          unzip -o -q "$APK" 'classes*.dex' -d "$DEXDIR"
+          DEXES="$(find "$DEXDIR" -name 'classes*.dex' | sort)"
+          echo "dex files: $(printf '%s ' $DEXES)"
+          STRINGS="$(cat $DEXES | strings)"
+          MISSING=""
+          for type in \
+            Lcom/termux/terminal/TerminalEmulator\; \
+            Lcom/termux/terminal/TerminalSession\; \
+            Lcom/termux/terminal/TerminalBuffer\; \
+            Lio/opencrabs/mobile/TerminalPane\; \
+            Lio/opencrabs/mobile/Pty\;
+          do
+            if printf '%s\n' "$STRINGS" | grep -qF "$type"; then
+              echo "  ok: $type"
+            else
+              echo "  MISSING: $type"
+              MISSING="$MISSING $type"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::the APK is missing terminal classes:$MISSING. The compile list in assemble-apk.sh decides what reaches the dex, so a class that is not listed here is a class that does not ship."
+            exit 1
+          fi
+          echo "terminal emulator and PTY bridge classes: all present"
+
       - name: Upload the APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

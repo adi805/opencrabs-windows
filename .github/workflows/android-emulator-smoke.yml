@@ -211,6 +211,57 @@ jobs:
           fi
           echo "source manifest declares <uses-sdk>: ok"
 
+      # The TUI is the thing this APK exists for now, and it needs three pieces
+      # that a plain `javac` run will happily skip: the vendored terminal
+      # emulator classes, the TerminalPane renderer, and the per-ABI PTY
+      # bridge. Missing any one of them installs fine and then dies on first
+      # launch, 30 minutes into the emulator leg. Assert them here instead.
+      - name: Assert the APK carries the terminal (TUI) and the PTY bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=android/out/opencrabs-debug.apk
+          echo "apk: $APK ($(stat -c%s "$APK") bytes)"
+          unzip -l "$APK" | grep -E 'lib/[^/]+/lib.*\.so' || true
+
+          # Both ABIs are built in this workflow, so both must carry the PTY
+          # bridge. A missing one is invisible until an emulator of that ABI
+          # boots.
+          for abi in arm64-v8a x86_64; do
+            if unzip -l "$APK" | grep -q "lib/$abi/libopencrabspty.so"; then
+              echo "  ok: lib/$abi/libopencrabspty.so"
+            else
+              echo "::error::lib/$abi/libopencrabspty.so is missing: the terminal cannot spawn a pty on that ABI"
+              exit 1
+            fi
+          done
+
+          # Dex side: exact type descriptors, read out of the packed dex. A
+          # loose substring would match a comment or a log string.
+          DEXDIR="$(mktemp -d)"
+          unzip -o -q "$APK" 'classes*.dex' -d "$DEXDIR"
+          STRINGS="$(cat $(find "$DEXDIR" -name 'classes*.dex' | sort) | strings)"
+          MISSING=""
+          for type in \
+            Lcom/termux/terminal/TerminalEmulator\; \
+            Lcom/termux/terminal/TerminalSession\; \
+            Lcom/termux/terminal/TerminalBuffer\; \
+            Lio/opencrabs/mobile/TerminalPane\; \
+            Lio/opencrabs/mobile/Pty\;
+          do
+            if printf '%s\n' "$STRINGS" | grep -qF "$type"; then
+              echo "  ok: $type"
+            else
+              echo "  MISSING: $type"
+              MISSING="$MISSING $type"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::the APK is missing terminal classes:$MISSING (TerminalPane and the vendored terminal emulator must be in the javac list in android/assemble-apk.sh)"
+            exit 1
+          fi
+          echo "terminal emulator + TerminalPane + Pty: all present"
+
       - name: Upload the APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

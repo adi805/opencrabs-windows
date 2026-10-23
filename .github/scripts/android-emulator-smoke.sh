@@ -21,6 +21,11 @@
 #      drains a battery and heats a phone, and neither shows up in a single RSS
 #      reading - so CPU jiffies, RSS and thread count are trended across the
 #      whole soak window instead of sampled once.
+#   6. Does the terminal actually render? The APK is a TUI client now: a pty
+#      that spawns but draws nothing looks identical to a working one unless
+#      something measures the screen. CoreSessionClient logs one digest line
+#      (chars=, nonEmptyRows=) that this script asserts on, because the pixels
+#      live in a Canvas the harness cannot read.
 #
 # Deliberately does NOT use `set -e`: a failure in one check must not hide the
 # evidence from the others. Failures are counted and the exit code reflects
@@ -233,18 +238,84 @@ if [ -n "$CORE_PID1" ]; then
 fi
 
 # ---------------------------------------------------------------- logcat ----
-say "logcat (OpenCrabsCore)"
-adb logcat -d -s OpenCrabsCore:V OpenCrabsApp:V > "$OUT/logcat-core.txt" 2>&1 || true
+say "logcat (OpenCrabsCore / OpenCrabsApp / OpenCrabsTerm)"
+adb logcat -d -s OpenCrabsCore:V OpenCrabsApp:V OpenCrabsTerm:V > "$OUT/logcat-core.txt" 2>&1 || true
 head -60 "$OUT/logcat-core.txt"
+# Two modes ship in this APK, so two markers are valid: the daemon path logs
+# "core started, pid=" from CoreService, and the TUI path logs "session
+# prepared:" from MainActivity (the activity owns the pty, so the service
+# deliberately does not spawn a second core). Demanding the daemon marker from
+# a TUI build would fail a working app.
 if grep -q "core started, pid=" "$OUT/logcat-core.txt"; then
-  pass "CoreService reported a spawned core"
+  pass "CoreService reported a spawned core (daemon mode)"
+elif grep -q "session prepared:" "$OUT/logcat-core.txt"; then
+  pass "MainActivity prepared the TUI session (TUI mode, no second core spawned)"
 else
-  fail "no 'core started, pid=' line from CoreService"
+  fail "neither 'core started, pid=' nor 'session prepared:' is in logcat: nothing spawned the core"
 fi
 if grep -qiE 'dlopen failed|cannot execute|spawn failed|Permission denied|not found' "$OUT/logcat-core.txt"; then
   fail "loader or spawn error in the core log"
 else
   pass "no loader or spawn error"
+fi
+# The PTY bridge is a third native library, and a missing one is not a build
+# failure anywhere upstream of this point: System.loadLibrary is lazy, so the
+# APK installs and the activity starts and only the first fork throws.
+if grep -qiE 'UnsatisfiedLinkError|opencrabspty' "$OUT/logcat-core.txt"; then
+  if grep -qi 'UnsatisfiedLinkError' "$OUT/logcat-core.txt"; then
+    fail "UnsatisfiedLinkError in logcat: the PTY bridge (libopencrabspty.so) is missing or unloadable, so no terminal can ever spawn"
+  else
+    pass "the PTY bridge loaded (libopencrabspty referenced without a link error)"
+  fi
+else
+  echo "NOTE: no mention of libopencrabspty in logcat; the bridge is only named when it fails to load"
+fi
+
+# ------------------------------------------------------------------- TUI ----
+# The reason this APK exists is a terminal, and a terminal that renders nothing
+# is indistinguishable from one that works if the only assertion is "the
+# process is alive". The pixels live in a Canvas this harness cannot read and
+# the child's stdout goes into the pty, not logcat, so the app itself measures
+# the rendered screen and logs one digest line (CoreSessionClient
+# .logRenderDigestOnce). That line is the evidence: a blank pty, a child that
+# exited at once, or a TerminalPane that never received a session all report
+# chars=0.
+say "TUI (terminal rendered?)"
+TUI_LINE=""
+for _ in $(seq 1 12); do
+  adb logcat -d -s OpenCrabsTerm:V OpenCrabsApp:V > "$OUT/logcat-tui.txt" 2>&1 || true
+  TUI_LINE="$(tr -d '\r' < "$OUT/logcat-tui.txt" | grep -m1 'tui rendered:')"
+  [ -n "$TUI_LINE" ] && break
+  sleep 5
+done
+echo "  ${TUI_LINE:-<no 'tui rendered:' digest in logcat>}"
+if [ -z "$TUI_LINE" ]; then
+  fail "the TUI never reported a render digest: the pty produced no screen output within 60s (child exited, or TerminalPane never attached)"
+else
+  TUI_CHARS="$(printf '%s\n' "$TUI_LINE" | sed -n 's/.*chars=\([0-9]*\).*/\1/p')"
+  TUI_ROWS="$(printf '%s\n' "$TUI_LINE" | sed -n 's/.*nonEmptyRows=\([0-9]*\).*/\1/p')"
+  TUI_DIMS="$(printf '%s\n' "$TUI_LINE" | sed -n 's/.*\(rows=[0-9]* cols=[0-9]*\).*/\1/p')"
+  echo "  chars=${TUI_CHARS:-?} nonEmptyRows=${TUI_ROWS:-?} ${TUI_DIMS:-}"
+  if [ "${TUI_CHARS:-0}" -gt 0 ]; then
+    pass "the terminal buffer holds ${TUI_CHARS} characters of core output"
+  else
+    fail "the terminal buffer is empty (chars=0): the core wrote nothing to the pty"
+  fi
+  # One non-empty row would be a bare prompt. A TUI draws a header/status area
+  # plus body, so more than one row is the floor for "it rendered a UI".
+  if [ "${TUI_ROWS:-0}" -ge 2 ]; then
+    pass "the TUI drew ${TUI_ROWS} non-empty rows (a rendered interface, not one prompt line)"
+  else
+    fail "only ${TUI_ROWS:-0} non-empty row(s) on screen: the TUI did not draw an interface"
+  fi
+fi
+# The pane's own wiring is asserted from the app side: without this line the
+# binary path, cwd or argv was never resolved, and the digest above cannot exist
+# for the right reason.
+if grep -q "session prepared:" "$OUT/logcat-tui.txt"; then
+  pass "MainActivity wired the pane to a session ($(tr -d '\r' < "$OUT/logcat-tui.txt" | grep -m1 'session prepared:' | sed 's/.*session prepared: //'))"
+else
+  fail "no 'session prepared:' line: MainActivity never attached a TerminalSession to the pane"
 fi
 
 # -------------------------------------------------------------- core log ----
