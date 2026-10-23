@@ -20,9 +20,22 @@ use uuid::Uuid;
 
 use tokio_util::sync::CancellationToken;
 use wacore::types::message::MessageInfo;
+use wacore_binary::jid::JidExt;
 use waproto::whatsapp::Message;
 use whatsapp_rust::SendOptions;
 use whatsapp_rust::client::Client;
+
+/// True when an inbound stanza is a contact's status (story) rather than a
+/// message addressed to us.
+///
+/// Status posts arrive as group traffic on `status@broadcast`, so without this
+/// they look like a DM from the poster: a full agent turn runs on the image,
+/// and the session's reply target becomes a JID that cannot receive
+/// `send_message` (#2176). A status is never a message, so it is dropped
+/// before session resolution rather than filtered later.
+pub(crate) fn is_inbound_status(chat: &wacore_binary::jid::Jid, is_from_me: bool) -> bool {
+    !is_from_me && chat.is_status_broadcast()
+}
 
 /// Composing pings are best-effort, so the retry policy is deliberately
 /// conservative (#2181): the loop used to retry every 5 seconds forever with
@@ -513,6 +526,19 @@ pub(crate) async fn handle_message(
         tracing::info!(
             target: "whatsapp",
             "dropping inbound message from a blocked contact (#1487)"
+        );
+        return;
+    }
+
+    // #2176: a status (story) is not a message. It arrives as group traffic on
+    // `status@broadcast`, which used to run a full agent turn and then poison
+    // the session's reply target with a JID that cannot receive a send. Dropped
+    // here, before any session is resolved, so no reply target can bind to it.
+    if is_inbound_status(&info.source.chat, info.source.is_from_me) {
+        tracing::debug!(
+            target: "whatsapp",
+            "dropping inbound status broadcast from {}",
+            phone
         );
         return;
     }
@@ -1121,6 +1147,18 @@ pub(crate) async fn handle_message(
             }
         }
     };
+
+    // Second line (#2176): the drop above covers the inbound path, and this
+    // covers any future path that computes a target. A broadcast JID rejects
+    // every `send_message`, so binding a session to one costs a full turn and
+    // poisons every later progress event in that session.
+    if reply_target.is_status_broadcast() {
+        tracing::warn!(
+            target: "whatsapp",
+            "refusing to reply into status@broadcast; dropping this stanza"
+        );
+        return;
+    }
 
     // is_owner gates /new archiving and owner-only flows. The self-chat is
     // always the owner even though its LID sender won't match the configured PN.
