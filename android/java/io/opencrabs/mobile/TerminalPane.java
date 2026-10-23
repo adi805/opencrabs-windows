@@ -1,0 +1,379 @@
+package io.opencrabs.mobile;
+
+import android.content.Context;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.RectF;
+import android.graphics.Typeface;
+import android.os.Handler;
+import android.os.Looper;
+import android.text.InputType;
+import android.view.KeyEvent;
+import android.view.View;
+import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
+
+import com.termux.terminal.KeyHandler;
+import com.termux.terminal.TerminalBuffer;
+import com.termux.terminal.TerminalColors;
+import com.termux.terminal.TerminalEmulator;
+import com.termux.terminal.TerminalRow;
+import com.termux.terminal.TerminalSession;
+import com.termux.terminal.TextStyle;
+import com.termux.terminal.WcWidth;
+
+import java.nio.charset.StandardCharsets;
+
+/**
+ * Canvas renderer + input front end for a {@link TerminalSession}.
+ *
+ * <p>This is a hand-written replacement for Termux's terminal-view module, which we do not
+ * vendor because it drags in androidx and needs an AAR unpacked at build time. Only the
+ * terminal-emulator module (Apache 2.0) is vendored; everything below is drawn from the
+ * public emulator API: {@link TerminalBuffer#getRowForRendering}, {@link TerminalRow#mText},
+ * {@link TextStyle} decoders and {@link KeyHandler}.
+ *
+ * <p>Input path: soft keyboard text goes through {@link BaseInputConnection#commitText},
+ * hardware keys through {@link #onKeyDown} which maps them with {@link KeyHandler} to the
+ * escape sequences a TUI expects. Both end in {@link TerminalSession#write}.
+ */
+public final class TerminalPane extends View {
+
+    private static final int CURSOR_BLINK_MS = 500;
+
+    /** View tag on the extra-keys row, so the activity can find or hide it without a field. */
+    public static final String EXTRA_KEYS = "opencrabs.extraKeys";
+
+    private TerminalSession session;
+    private int textSizePx = 30;
+    private int cellWidth;
+    private int cellHeight;
+
+    private final Paint textPaint = new Paint();
+    private final Paint fillPaint = new Paint();
+    private final RectF tmpRect = new RectF();
+    private final StringBuilder runText = new StringBuilder(256);
+
+    private boolean ctrlArmed;
+    private boolean altArmed;
+    private boolean cursorVisible = true;
+
+    private final Handler blinkHandler = new Handler(Looper.getMainLooper());
+    private final Runnable blink = new Runnable() {
+        @Override
+        public void run() {
+            cursorVisible = !cursorVisible;
+            invalidate();
+            blinkHandler.postDelayed(this, CURSOR_BLINK_MS);
+        }
+    };
+
+    public TerminalPane(Context context) {
+        super(context);
+        setFocusable(true);
+        setFocusableInTouchMode(true);
+        setClickable(true);
+        setBackgroundColor(0xff000000);
+
+        textPaint.setTypeface(Typeface.MONOSPACE);
+        textPaint.setAntiAlias(true);
+        textPaint.setTextSize(textSizePx);
+        fillPaint.setStyle(Paint.Style.FILL);
+        setTextSizePx(textSizePx);
+    }
+
+    /** Attach the session this pane renders. Call after {@link TerminalSession#initializeEmulator}. */
+    public void attachSession(TerminalSession session) {
+        this.session = session;
+        updateSessionSize();
+        requestLayout();
+        invalidate();
+    }
+
+    public TerminalSession getSession() {
+        return session;
+    }
+
+    /**
+     * Build the on-screen key row for this pane (ESC, TAB, CTRL, ALT, arrows, ENTER, PASTE).
+     * Tagged {@link #EXTRA_KEYS} so the activity can locate it without holding a field.
+     */
+    public View createExtraKeysRow() {
+        View row = ExtraKeys.create(getContext(), this);
+        row.setTag(EXTRA_KEYS);
+        return row;
+    }
+
+    public void setTextSizePx(int px) {
+        textSizePx = Math.max(12, px);
+        textPaint.setTextSize(textSizePx);
+        Paint.FontMetrics fm = textPaint.getFontMetrics();
+        cellHeight = (int) Math.ceil(fm.descent - fm.ascent + fm.leading);
+        cellWidth = (int) Math.ceil(textPaint.measureText("M"));
+        if (cellWidth <= 0) cellWidth = textSizePx / 2;
+        requestLayout();
+        updateSessionSize();
+        invalidate();
+    }
+
+    @Override
+    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        updateSessionSize();
+    }
+
+    private void updateSessionSize() {
+        if (session == null || cellWidth <= 0 || cellHeight <= 0) return;
+        int cols = Math.max(2, getWidth() / cellWidth);
+        int rows = Math.max(2, getHeight() / cellHeight);
+        session.updateSize(cols, rows, cellWidth, cellHeight);
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        blinkHandler.removeCallbacks(blink);
+        blinkHandler.postDelayed(blink, CURSOR_BLINK_MS);
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        blinkHandler.removeCallbacks(blink);
+        super.onDetachedFromWindow();
+    }
+
+    // ---------------------------------------------------------------- drawing
+
+    @Override
+    protected void onDraw(Canvas canvas) {
+        canvas.drawColor(0xff000000);
+        if (session == null) return;
+        TerminalEmulator emulator = session.getEmulator();
+        if (emulator == null) return;
+        TerminalBuffer screen = emulator.getScreen();
+        TerminalColors colors = emulator.mColors;
+
+        int rows = emulator.getRows();
+        int cols = emulator.getColumns();
+        int baselineOffset = (int) -textPaint.getFontMetrics().ascent;
+
+        for (int row = 0; row < rows; row++) {
+            TerminalRow line = screen.getRowForRendering(row);
+            if (line == null) continue;
+            int top = row * cellHeight;
+            int runStartCol = 0;
+            long runStyle = Long.MIN_VALUE;
+            runText.setLength(0);
+            int lastCharIndex = -1;
+
+            for (int col = 0; col <= cols; col++) {
+                long style = (col < cols) ? screen.getStyleAt(row, col) : Long.MIN_VALUE;
+                if (col < cols && style == runStyle) {
+                    int charIndex = line.findStartOfColumn(col);
+                    if (charIndex != lastCharIndex) {
+                        lastCharIndex = charIndex;
+                        int codePoint = Character.codePointAt(line.mText, charIndex);
+                        if (codePoint != 0) runText.appendCodePoint(codePoint);
+                    }
+                    continue;
+                }
+                if (runStartCol < col && runStyle != Long.MIN_VALUE) {
+                    drawRun(canvas, colors, row, runStartCol, col, runStyle, runText, top, baselineOffset);
+                }
+                if (col < cols) {
+                    runStartCol = col;
+                    runStyle = style;
+                    runText.setLength(0);
+                    lastCharIndex = -1;
+                    col--; // re-handle this cell as the first cell of the new run
+                }
+            }
+        }
+
+        drawCursor(canvas, emulator, colors, baselineOffset);
+    }
+
+    private void drawRun(Canvas canvas, TerminalColors colors, int row, int fromCol, int toCol,
+                         long style, StringBuilder text, int top, int baselineOffset) {
+        int effect = TextStyle.decodeEffect(style);
+        boolean inverse = (effect & TextStyle.CHARACTER_ATTRIBUTE_INVERSE) != 0;
+        int fore = resolveColor(colors, TextStyle.decodeForeColor(style));
+        int back = resolveColor(colors, TextStyle.decodeBackColor(style));
+        if (inverse) {
+            int swap = fore;
+            fore = back;
+            back = swap;
+        }
+
+        float left = fromCol * cellWidth;
+        float right = toCol * cellWidth;
+        tmpRect.set(left, top, right, top + cellHeight);
+        fillPaint.setColor(back);
+        canvas.drawRect(tmpRect, fillPaint);
+
+        boolean invisible = (effect & TextStyle.CHARACTER_ATTRIBUTE_INVISIBLE) != 0;
+        if (invisible || text.length() == 0) return;
+
+        textPaint.setColor(fore);
+        textPaint.setFakeBoldText((effect & TextStyle.CHARACTER_ATTRIBUTE_BOLD) != 0);
+        textPaint.setTextSkewX((effect & TextStyle.CHARACTER_ATTRIBUTE_ITALIC) != 0 ? -0.25f : 0f);
+        textPaint.setAlpha((effect & TextStyle.CHARACTER_ATTRIBUTE_DIM) != 0 ? 140 : 255);
+        canvas.drawText(text, 0, text.length(), left, top + baselineOffset, textPaint);
+        textPaint.setFakeBoldText(false);
+        textPaint.setTextSkewX(0f);
+        textPaint.setAlpha(255);
+
+        float underlineY = top + cellHeight - 2;
+        if ((effect & TextStyle.CHARACTER_ATTRIBUTE_UNDERLINE) != 0) {
+            fillPaint.setColor(fore);
+            canvas.drawRect(left, underlineY, right, underlineY + 2, fillPaint);
+        }
+        if ((effect & TextStyle.CHARACTER_ATTRIBUTE_STRIKETHROUGH) != 0) {
+            float strikeY = top + cellHeight / 2f;
+            fillPaint.setColor(fore);
+            canvas.drawRect(left, strikeY, right, strikeY + 2, fillPaint);
+        }
+    }
+
+    private void drawCursor(Canvas canvas, TerminalEmulator emulator, TerminalColors colors, int baselineOffset) {
+        if (!emulator.shouldCursorBeVisible() || !cursorVisible) return;
+        int row = emulator.getCursorRow();
+        int col = emulator.getCursorCol();
+        if (row < 0 || col < 0 || row >= emulator.getRows() || col >= emulator.getColumns()) return;
+        float left = col * cellWidth;
+        float top = row * cellHeight;
+        fillPaint.setColor(resolveColor(colors, TextStyle.COLOR_INDEX_CURSOR));
+        int cursorStyle = emulator.getCursorStyle();
+        if (cursorStyle == 3 || cursorStyle == 4) {
+            canvas.drawRect(left, top + cellHeight - 3, left + cellWidth, top + cellHeight, fillPaint);
+        } else if (cursorStyle == 5 || cursorStyle == 6) {
+            canvas.drawRect(left, top, left + 3, top + cellHeight, fillPaint);
+        } else {
+            canvas.drawRect(left, top, left + cellWidth, top + cellHeight, fillPaint);
+            TerminalRow line = emulator.getScreen().getRowForRendering(row);
+            if (line != null) {
+                long style = emulator.getScreen().getStyleAt(row, col);
+                int charIndex = line.findStartOfColumn(col);
+                int codePoint = Character.codePointAt(line.mText, charIndex);
+                if (codePoint != 0 && codePoint != ' ' && WcWidth.width(codePoint) > 0) {
+                    textPaint.setColor(resolveColor(colors, TextStyle.decodeBackColor(style)));
+                    canvas.drawText(new String(Character.toChars(codePoint)), left, top + baselineOffset, textPaint);
+                }
+            }
+        }
+    }
+
+    private static int resolveColor(TerminalColors colors, int color) {
+        if (color >= TextStyle.COLOR_INDEX_FOREGROUND) {
+            return colors.mCurrentColors[color];
+        }
+        if ((color & 0xff000000) == 0xff000000) {
+            return color;
+        }
+        return colors.mCurrentColors[color];
+    }
+
+    // ------------------------------------------------------------------ input
+
+    @Override
+    public boolean onCheckIsTextEditor() {
+        return true;
+    }
+
+    @Override
+    public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+        outAttrs.imeOptions = EditorInfo.IME_ACTION_NONE | EditorInfo.IME_FLAG_NO_FULLSCREEN
+            | EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_FLAG_NO_ENTER_ACTION;
+        return new BaseInputConnection(this, true) {
+            @Override
+            public boolean commitText(CharSequence text, int newCursorPosition) {
+                sendText(text);
+                return true;
+            }
+
+            @Override
+            public boolean sendKeyEvent(KeyEvent event) {
+                return TerminalPane.this.dispatchKeyEvent(event);
+            }
+
+            @Override
+            public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+                // Soft keyboards implement backspace as a delete, a terminal wants 0x7f.
+                for (int i = 0; i < beforeLength; i++) sendBytes(new byte[]{0x7f});
+                return true;
+            }
+        };
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (session == null) return super.onKeyDown(keyCode, event);
+        TerminalEmulator emulator = session.getEmulator();
+
+        if (keyCode == KeyEvent.KEYCODE_BACK && !event.isCtrlPressed() && !altArmed) {
+            return super.onKeyDown(keyCode, event);
+        }
+
+        int keyMode = 0;
+        if (ctrlArmed || event.isCtrlPressed()) keyMode |= KeyHandler.KEYMOD_CTRL;
+        if (altArmed || event.isAltPressed()) keyMode |= KeyHandler.KEYMOD_ALT;
+        if (event.isShiftPressed()) keyMode |= KeyHandler.KEYMOD_SHIFT;
+
+        String code = KeyHandler.getCode(keyCode, keyMode,
+            emulator != null && emulator.isCursorKeysApplicationMode(),
+            emulator != null && emulator.isKeypadApplicationMode());
+
+        if (code != null) {
+            sendText(code);
+            clearModifiers();
+            return true;
+        }
+
+        int unicode = event.getUnicodeChar(event.getMetaState());
+        if (unicode != 0) {
+            sendText(new String(Character.toChars(unicode)));
+            clearModifiers();
+            return true;
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    public void sendText(CharSequence text) {
+        if (text == null || text.length() == 0) return;
+        sendBytes(text.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    public void sendBytes(byte[] bytes) {
+        if (session == null || bytes == null || bytes.length == 0) return;
+        session.write(bytes, 0, bytes.length);
+        cursorVisible = true;
+        invalidate();
+    }
+
+    /** Sticky CTRL for the on-screen extra keys row. */
+    public void toggleCtrl() {
+        ctrlArmed = !ctrlArmed;
+        if (ctrlArmed) altArmed = false;
+    }
+
+    /** Sticky ALT for the on-screen extra keys row. */
+    public void toggleAlt() {
+        altArmed = !altArmed;
+        if (altArmed) ctrlArmed = false;
+    }
+
+    public boolean isCtrlArmed() {
+        return ctrlArmed;
+    }
+
+    public boolean isAltArmed() {
+        return altArmed;
+    }
+
+    public void clearModifiers() {
+        ctrlArmed = false;
+        altArmed = false;
+    }
+}
