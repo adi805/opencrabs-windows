@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Configuration for CrabsAccessibilityService.
+
+  Every capability below is required for the feature to work at all, and each
+  one is a permission the user grants explicitly in Settings > Accessibility:
+
+  * canRetrieveWindowContent - without it getRootInActiveWindow() returns null
+    and there is nothing to read. This is what lets the service see another
+    app's view tree.
+  * canPerformGestures - required for dispatchGesture, which is how taps and
+    swipes are delivered. Real screens frequently expose no clickable node at
+    the point the user can see, so a synthesized touch is the only reliable way.
+  * notificationTimeout - debounce for window-change events. The service does
+    not consume the event stream (onAccessibilityEvent is empty by design), but
+    the platform still delivers events, so a longer debounce is cheaper.
+
+  Deliberately NOT set:
+  * android:packageNames - omitting it means all apps, which is what a general
+    automation bridge needs. Listing packages would silently break the moment
+    the user automates something not on the list.
+  * flags with flagRequestFilterKeyEvents / flagRequestTouchExplorationMode -
+    those turn the service into a key logger or a screen reader and are far
+    more invasive than tapping and reading bounds requires.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/accessibility_description"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="true"
+    android:canPerformGestures="true"
+    android:notificationTimeout="200" />

@@ -48,6 +48,8 @@ public class SettingsActivity extends Activity {
     private Switch bootSwitch;
     private Button batteryButton;
     private TextView batteryStatus;
+    private Button automationButton;
+    private TextView automationStatus;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -97,6 +99,7 @@ public class SettingsActivity extends Activity {
         root.addView(status);
 
         addBackgroundSection(root);
+        addAutomationSection(root);
 
         // Scrolled: the background section pushed the content past a small
         // phone's viewport, and a LinearLayout alone would clip the last control
@@ -198,6 +201,68 @@ public class SettingsActivity extends Activity {
                 batteryStatus.setText("Exempt. Doze will not defer this app's alarms.");
             }
         }
+        refreshAutomationStatus();
+    }
+
+    /**
+     * The bridge that lets the agent drive other apps.
+     *
+     * <p>This is the one control in this screen that hands over real power: with
+     * it on, the agent can read the screen of any app and tap anything. So the
+     * switch here is not a switch at all, it is a button that opens the system's
+     * own Accessibility screen. Android deliberately does not let an app enable
+     * its own accessibility service, and routing through the system UI is the
+     * only way the grant stays something the user did rather than something the
+     * app did to them.
+     */
+    private void addAutomationSection(LinearLayout root) {
+        TextView heading = new TextView(this);
+        heading.setText("Automation");
+        heading.setTypeface(Typeface.DEFAULT_BOLD);
+        heading.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        heading.setPadding(0, dp(24), 0, 0);
+        root.addView(heading);
+
+        TextView hint = new TextView(this);
+        hint.setText("Lets the agent read other apps' screens and tap, type or swipe "
+            + "for you. Off unless you turn it on in Android's accessibility settings, "
+            + "and Android shows a permanent switch there to revoke it. Automating a "
+            + "third-party service can violate its terms and put your account at risk, "
+            + "so use it on apps that permit it.");
+        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        hint.setPadding(0, dp(6), 0, dp(8));
+        root.addView(hint);
+
+        automationButton = new Button(this);
+        automationButton.setOnClickListener(v -> openAccessibilitySettings());
+        root.addView(automationButton);
+
+        automationStatus = new TextView(this);
+        automationStatus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        automationStatus.setTypeface(Typeface.MONOSPACE);
+        automationStatus.setPadding(0, dp(8), 0, 0);
+        root.addView(automationStatus);
+    }
+
+    private void openAccessibilitySettings() {
+        try {
+            startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS));
+        } catch (ActivityNotFoundException e) {
+            automationStatus.setText("This build has no accessibility settings screen.");
+        }
+    }
+
+    private void refreshAutomationStatus() {
+        if (automationButton == null || automationStatus == null) {
+            return;
+        }
+        boolean connected = CrabsAccessibilityService.isConnected();
+        automationButton.setText(connected
+            ? "Automation is on (tap to review)"
+            : "Enable automation in accessibility settings");
+        automationStatus.setText(connected
+            ? "bridge ready on 127.0.0.1:" + AutomationServer.PORT
+            : "bridge idle: service not enabled");
     }
 
     private EditText addField(LinearLayout root, String label, String initial, int inputType) {

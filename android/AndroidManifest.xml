@@ -67,6 +67,20 @@
          drops the app into legacy compatibility behaviour. -->
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
 
+    <!-- Android 11 package visibility: queryIntentActivities returns only apps
+         this app can "see". Declaring the launcher intent here makes exactly
+         the launchable apps visible, which is what the automation surface needs
+         to resolve a name like "instagram" to a package. The alternative,
+         QUERY_ALL_PACKAGES, is a sensitive permission that app stores treat as
+         a red flag and it exposes far more than this feature uses. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+
     <application
         android:label="OpenCrabs"
         android:icon="@mipmap/ic_launcher"
@@ -110,5 +124,29 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- Reads and drives other apps' UIs. Three properties make this safe
+             rather than a backdoor:
+
+             1. android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+                - only the system can bind it. Without this attribute any app on
+                the device could bind the service and drive the phone.
+             2. exported="true" is REQUIRED (the system binds from outside this
+                app) but it is inert without that permission.
+             3. It is off until the user flips the switch in Settings >
+                Accessibility. Code cannot enable it, and the platform shows a
+                persistent toggle that revokes it. -->
+        <service
+            android:name=".CrabsAccessibilityService"
+            android:exported="true"
+            android:label="OpenCrabs automation"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
     </application>
 </manifest>

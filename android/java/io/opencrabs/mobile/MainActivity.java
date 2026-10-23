@@ -84,6 +84,12 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         askForNotificationPermission();
 
+        // The automation bridge is started with the activity but lives on its
+        // own daemon thread, so it keeps answering while the app is
+        // backgrounded. It refuses to serve anything except /status until the
+        // user enables the accessibility service.
+        AutomationServer.start(this);
+
         Retained retained = (Retained) getLastNonConfigurationInstance();
         if (retained != null) {
             client = retained.client;
