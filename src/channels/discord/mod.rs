@@ -23,7 +23,7 @@ pub(crate) mod governor;
 pub(crate) mod handler;
 pub(crate) mod interactions;
 pub(crate) mod options_host;
-mod pending_interactions;
+pub(crate) mod pending_interactions;
 pub(crate) mod plan_card;
 pub(crate) mod poll;
 pub(crate) mod reactions;
