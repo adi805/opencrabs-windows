@@ -784,7 +784,9 @@ impl App {
 
     /// Copy text to system clipboard
     fn copy_to_clipboard(text: &str) -> bool {
+        #[cfg(windows)]
         use std::io::Write;
+        #[cfg(windows)]
         use std::process::{Command, Stdio};
 
         // Windows first, and only its own backends. The old arm fell through
@@ -849,54 +851,14 @@ impl App {
             return false;
         }
 
-        // Legacy Unix backends, now gated: on Windows the arm above always
-        // returns, and these spawns can never exist here. Compiling them
-        // un-gated produced unreachable-code warnings in windows builds.
+        // Unix backends, now gated: on Windows the arm above always returns.
+        // Every backend is tried in platform order and a backend that spawns
+        // but fails does not end the search (#2171), so a `true` here means
+        // the text really reached a clipboard owner.
         #[cfg(not(windows))]
         {
-            // Try pbcopy (macOS)
-            if let Ok(mut child) = Command::new("pbcopy")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                if let Some(ref mut stdin) = child.stdin {
-                    let _ = stdin.write_all(text.as_bytes());
-                }
-                return child.wait().is_ok_and(|s| s.success());
-            }
-
-            // Try xclip (Linux)
-            if let Ok(mut child) = Command::new("xclip")
-                .args(["-selection", "clipboard"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                if let Some(ref mut stdin) = child.stdin {
-                    let _ = stdin.write_all(text.as_bytes());
-                }
-                return child.wait().is_ok_and(|s| s.success());
-            }
-
-            // Try xsel (Linux fallback)
-            if let Ok(mut child) = Command::new("xsel")
-                .args(["--clipboard", "--input"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                if let Some(ref mut stdin) = child.stdin {
-                    let _ = stdin.write_all(text.as_bytes());
-                }
-                return child.wait().is_ok_and(|s| s.success());
-            }
+            copy_with_backends(clipboard_backends(), text)
         }
-
-        false
     }
 
     /// True if `bytes` start with a known raster-image magic number. Used to
@@ -3275,5 +3237,108 @@ impl App {
         }
 
         Ok(())
+    }
+}
+
+/// Clipboard write backends for this platform, in the order they are tried.
+///
+/// Pure and testable so the ordering is pinned: on Linux the Wayland tool
+/// goes first (#2171). The read path already prefers `wl-paste`
+/// (`read_clipboard`), so a Wayland box could paste what it had copied with
+/// a terminal shortcut while `copy_to_clipboard` had written to X11 and
+/// silently lost it. `wl-copy` holds the selection until it is replaced, and
+/// it takes no arguments.
+#[cfg(not(windows))]
+pub(crate) fn clipboard_backends() -> &'static [(&'static str, &'static [&'static str])] {
+    #[cfg(target_os = "macos")]
+    {
+        &[("pbcopy", &[])]
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        &[
+            ("wl-copy", &[]),
+            ("xclip", &["-selection", "clipboard"]),
+            ("xsel", &["--clipboard", "--input"]),
+        ]
+    }
+}
+
+/// Try every backend in order until one actually owns the text.
+///
+/// A backend counts as successful only when it spawned, accepted the whole
+/// payload on stdin and exited 0. Anything less falls through to the next
+/// one, so a missing `wl-copy`, a dead X display or a half-written pipe can
+/// no longer make `copy_to_clipboard` report success it did not have
+/// (#2171).
+#[cfg(not(windows))]
+pub(crate) fn copy_with_backends(backends: &[(&str, &[&str])], text: &str) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    for (program, args) in backends {
+        let Ok(mut child) = Command::new(program)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        // A write failure means this backend never got the payload, so it
+        // cannot be trusted even if it exits 0.
+        let wrote = match child.stdin.as_mut() {
+            Some(stdin) => stdin.write_all(text.as_bytes()).is_ok(),
+            None => false,
+        };
+        // Close the pipe before waiting: the tools read to EOF, and holding
+        // stdin open makes `wait` hang on the last backend.
+        drop(child.stdin.take());
+        if wrote && child.wait().is_ok_and(|s| s.success()) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(all(test, not(windows)))]
+mod clipboard_backend_tests {
+    use super::*;
+
+    /// Linux must try Wayland before X11, matching the read path.
+    #[test]
+    fn wayland_comes_first_on_linux() {
+        let backends = clipboard_backends();
+        #[cfg(target_os = "macos")]
+        assert_eq!(backends[0].0, "pbcopy");
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(backends[0].0, "wl-copy");
+            assert_eq!(backends[1].0, "xclip");
+            assert_eq!(backends[2].0, "xsel");
+        }
+    }
+
+    /// A backend that spawns and exits non-zero must not end the search.
+    /// Both fakes are `sh`, so no test depends on a clipboard tool existing.
+    #[test]
+    fn a_failing_backend_falls_through_to_the_next() {
+        let backends: &[(&str, &[&str])] =
+            &[("sh", &["-c", "exit 1"]), ("sh", &["-c", "cat >/dev/null"])];
+        assert!(
+            copy_with_backends(backends, "payload"),
+            "the second backend must be tried after the first fails"
+        );
+    }
+
+    /// Every backend failing means false, not a silent success.
+    #[test]
+    fn all_backends_failing_reports_failure() {
+        let backends: &[(&str, &[&str])] = &[
+            ("sh", &["-c", "exit 1"]),
+            ("opencrabs-no-such-clipboard-xyz", &[]),
+        ];
+        assert!(!copy_with_backends(backends, "payload"));
     }
 }
