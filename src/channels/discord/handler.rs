@@ -780,7 +780,11 @@ pub(crate) async fn handle_message(
     // (#1990). Channel commands like /models,
     // /help, /usage, /new must NEVER abort an in-flight task: switching models
     // applies to the next run, it does not drop current work (#266).
-    if crate::utils::stop_intent::is_stop_command_or_intent(&msg.content) {
+    //
+    // Reads `content`, not `msg.content`: the voice path above replaces
+    // `content` with the STT transcript (#2187), so a spoken "stop" is only
+    // visible here. WhatsApp and Slack already read the resolved text.
+    if crate::utils::stop_intent::is_stop_command_or_intent(&content) {
         discord_state.cancel_session(session_id).await;
         if let Err(e) = super::governor::say(
             &discord_state.governor,
