@@ -306,6 +306,18 @@ jobs:
             echo "::warning::no roundIcon resolved; round-mask launchers will fall back to the square icon"
           fi
 
+          # BootReceiver only reaches the dex if assemble-apk.sh's source glob
+          # picks it up, and without it the core never returns after a reboot
+          # even though the manifest declares the filter.
+          DEXDIR="$(mktemp -d)"
+          unzip -o -q "$APK" 'classes*.dex' -d "$DEXDIR"
+          STRINGS="$(cat "$DEXDIR"/classes*.dex | strings)"
+          if ! grep -qF 'Lio/opencrabs/mobile/BootReceiver;' <<< "$STRINGS"; then
+            echo "::error::BootReceiver is not in the dex: start-on-boot would be dead code and the core would never return after a reboot."
+            exit 1
+          fi
+          echo "BootReceiver: present in the dex"
+
       - name: Upload the APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
