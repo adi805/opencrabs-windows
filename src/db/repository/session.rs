@@ -136,6 +136,40 @@ impl SessionRepository {
             .context("Failed to find session by chat key")
     }
 
+    /// Give up this session's claim on its chat key without archiving it
+    /// (#2186).
+    ///
+    /// The unique index is partial on live rows, so "one live session per
+    /// chat" is enforced by the key. A `/new` that must leave the previous
+    /// session visible (the owner case) therefore cannot just insert a second
+    /// keyed row: the insert would resolve the old one and `/new` would be a
+    /// no-op. Clearing the key frees the slot while the row stays live, so
+    /// `/sessions` keeps showing it.
+    ///
+    /// `updated_at` is deliberately untouched: the title-suffix fallback in
+    /// `resolve_or_create_channel_session` orders by `updated_at DESC`, so
+    /// bumping it here would make the released row win that fallback over the
+    /// session that just took its key.
+    pub async fn release_channel_chat_key(&self, id: Uuid) -> Result<()> {
+        let id_str = id.to_string();
+        self.pool
+            .get()
+            .await
+            .context("Failed to get connection")?
+            .interact(move |conn| {
+                conn.execute(
+                    "UPDATE sessions SET channel_chat_key = NULL WHERE id = ?1",
+                    params![id_str],
+                )
+            })
+            .await
+            .map_err(interact_err)?
+            .context("Failed to release session chat key")?;
+
+        tracing::debug!("Released chat key for session: {}", id);
+        Ok(())
+    }
+
     /// Create a new session
     pub async fn create(&self, session: &Session) -> Result<()> {
         let s = session.clone();

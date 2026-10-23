@@ -964,40 +964,34 @@ pub(crate) async fn handle_message(
                 return;
             }
             ChannelCommand::NewSession => {
-                // MUST match the per-message resolver format above —
-                // DM titles include the author id so /new and the next
-                // typed message land on the same row (issue #89).
-                let session_title = if is_dm {
-                    format!("Discord: DM {} ({})", msg.author.name, msg.author.id.get())
+                // MUST match the per-message resolver format above: the title
+                // carries the stable `[chat:discord-…]` suffix so the row
+                // created here claims the chat key and the next typed message
+                // resolves to it (#2186). Built without the suffix, the insert
+                // took the plain path, stored `channel_chat_key: NULL`, and
+                // every following message resolved back to the previous
+                // session — /new was a no-op that left an orphan row behind.
+                let (id_str, legacy_title) = if is_dm {
+                    (
+                        format!("discord-dm-{}", msg.author.id.get()),
+                        format!("Discord: DM {} ({})", msg.author.name, msg.author.id.get()),
+                    )
                 } else {
-                    format!("Discord: #{}", msg.channel_id.get())
+                    (
+                        format!("discord-{}", msg.channel_id.get()),
+                        format!("Discord: #{}", msg.channel_id.get()),
+                    )
                 };
-                // The new session inherits its working directory from the
-                // session that received this /new (same chat), not the global
-                // most-recent session (#263).
-                let prior_session = session_svc
-                    .find_session_by_title(&session_title)
-                    .await
-                    .unwrap_or_else(|e| {
-                        // /new means a fresh session IS the intent; the
-                        // failure is logged, never silent (#442).
-                        tracing::error!("Discord: /new prior-session lookup failed: {e:#}");
-                        None
-                    });
-                // Archive the previous session on /new, except for the owner —
-                // owner sessions stay non-archived so they remain visible in
-                // /sessions for history review. Guest sessions get archived
-                // so the next title lookup resolves cleanly to the new row.
-                if !is_owner
-                    && let Some(old) = prior_session.as_ref()
-                    && let Err(e) = session_svc.archive_session(old.id).await
-                {
-                    tracing::error!("Discord: failed to archive old session {}: {}", old.id, e);
-                }
-                match crate::channels::session_init::create_channel_session(
+                let chat_key = crate::channels::session_resolve::chat_id_suffix(&id_str);
+                // Owner sessions stay non-archived so they remain visible in
+                // /sessions for history review; guests get archived so the
+                // next title lookup resolves cleanly to the new row.
+                match crate::channels::session_init::start_new_channel_session(
                     &session_svc,
-                    Some(session_title),
-                    prior_session.as_ref(),
+                    &chat_key,
+                    &legacy_title,
+                    is_owner,
+                    "Discord",
                 )
                 .await
                 {

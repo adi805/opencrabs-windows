@@ -429,6 +429,14 @@ impl SessionService {
         repo.find_by_title_suffix(suffix).await
     }
 
+    /// Give up a session's claim on its chat key without archiving it (#2186).
+    pub async fn release_channel_chat_key(&self, id: Uuid) -> Result<()> {
+        let repo = SessionRepository::new(self.context.pool());
+        repo.release_channel_chat_key(id)
+            .await
+            .context("Failed to release session chat key")
+    }
+
     /// Get the most recent active session
     pub async fn get_most_recent_session(&self) -> Result<Option<Session>> {
         let repo = SessionRepository::new(self.context.pool());

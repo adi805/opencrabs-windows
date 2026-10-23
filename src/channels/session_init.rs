@@ -169,3 +169,66 @@ fn provider_enabled(config: &Config, name: &str) -> bool {
     crate::brain::provider::factory::provider_config_by_name(config, name)
         .is_some_and(|p| p.enabled)
 }
+
+/// Start the session a channel's `/new` command asked for (#2186).
+///
+/// `/new` has to hand the chat key over to the row it creates, or the next
+/// message resolves straight back to the previous session and the new row is
+/// an orphan nobody ever writes to. Three things follow from that:
+///
+/// 1. The prior session is looked up by chat key, not by exact title. Channel
+///    titles carry a `[chat:<id>]` suffix, so an exact-title lookup misses and
+///    the working-directory inheritance (#263) silently never happens.
+/// 2. The new row is created from the suffixed title, which is what routes it
+///    through the keyed insert and stamps `channel_chat_key`.
+/// 3. The prior session must give the key up first, because the unique index
+///    is partial on live rows. Guests archive it. The owner's rows stay live
+///    so `/sessions` keeps showing their history, so those release the key
+///    instead of archiving.
+///
+/// `chat_key` is the `[chat:<id>]` suffix, `legacy_title` the visible label
+/// without it. Lookup and hand-over failures are logged and tolerated: `/new`
+/// means a fresh session is the intent, so creation proceeds either way
+/// (#442 keeps it from being silent).
+pub async fn start_new_channel_session(
+    session_svc: &SessionService,
+    chat_key: &str,
+    legacy_title: &str,
+    keep_prior_live: bool,
+    log_prefix: &str,
+) -> Result<Session> {
+    let prior_session = match session_svc.find_session_by_channel_chat_key(chat_key).await {
+        Ok(found) => found,
+        Err(e) => {
+            tracing::error!("{log_prefix}: /new prior-session lookup failed: {e:#}");
+            None
+        }
+    };
+    let prior_session = match prior_session {
+        Some(s) => Some(s),
+        None => session_svc
+            .find_session_by_title_suffix(chat_key)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!("{log_prefix}: /new title-suffix lookup failed: {e:#}");
+                None
+            }),
+    };
+
+    if let Some(old) = prior_session.as_ref() {
+        let handed_over = if keep_prior_live {
+            session_svc.release_channel_chat_key(old.id).await
+        } else {
+            session_svc.archive_session(old.id).await
+        };
+        if let Err(e) = handed_over {
+            tracing::error!(
+                "{log_prefix}: /new could not hand the chat key over from {}: {e:#}",
+                old.id
+            );
+        }
+    }
+
+    let current_title = format!("{legacy_title} {chat_key}");
+    create_channel_session(session_svc, Some(current_title), prior_session.as_ref()).await
+}
