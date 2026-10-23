@@ -123,6 +123,14 @@ public class SettingsActivity extends Activity {
         String provider = firstValue(config, "agent", "default_provider");
         if (provider != null && provider.length() > 0) {
             providerField.setText(provider);
+            // The base URL decides which table save() writes to. Left blank, a
+            // custom provider is re-saved as [providers.<name>] while the core
+            // still reads [providers.custom.<name>], so the screen reports
+            // success and the old key stays in force.
+            String baseUrl = firstValue(config, "providers.custom." + provider, "base_url");
+            if (baseUrl != null && baseUrl.length() > 0) {
+                baseUrlField.setText(baseUrl);
+            }
         }
         String model = firstValue(config, "agent", "default_model");
         if (model != null && model.length() > 0) {
@@ -167,6 +175,13 @@ public class SettingsActivity extends Activity {
 
         if (provider.length() == 0) {
             status.setText("provider is required");
+            return;
+        }
+        // The name is spliced into a table header ([providers.custom.<name>]),
+        // so a space or a quote produces a file the core cannot parse, which
+        // means the core does not start. Reject here rather than write it.
+        if (!provider.matches("[A-Za-z0-9_-]+")) {
+            status.setText("provider name: letters, digits, dash and underscore only");
             return;
         }
         // The built-in provider is keyless on a fresh install (the core seeds its

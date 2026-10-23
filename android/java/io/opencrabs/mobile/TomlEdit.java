@@ -68,7 +68,7 @@ final class TomlEdit {
 
         int headerIndex = -1;
         for (int i = 0; i < lines.size(); i++) {
-            if (lines.get(i).trim().equals(header)) {
+            if (stripComment(lines.get(i)).trim().equals(header)) {
                 headerIndex = i;
                 break;
             }
@@ -86,8 +86,9 @@ final class TomlEdit {
 
         int sectionEnd = lines.size();
         for (int i = headerIndex + 1; i < lines.size(); i++) {
-            String trimmed = lines.get(i).trim();
-            if (trimmed.startsWith("[")) {
+            // Only a real table header ends the section. Testing startsWith("[")
+            // would also treat a multi-line array value as a header.
+            if (isTableHeader(lines.get(i))) {
                 sectionEnd = i;
                 break;
             }
@@ -104,6 +105,34 @@ final class TomlEdit {
 
         lines.add(headerIndex + 1, assignment);
         return join(lines);
+    }
+
+    /**
+     * Drop a trailing {@code #} comment, respecting quoted strings.
+     *
+     * <p>Without this, a header written as {@code [agent] # defaults} is not
+     * recognised, so saving appends a second {@code [agent]} table and the
+     * whole file stops parsing. A '#' inside a quoted value is not a comment.
+     */
+    private static String stripComment(String line) {
+        boolean inString = false;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (c == '"' && (i == 0 || line.charAt(i - 1) != '\\')) {
+                inString = !inString;
+            } else if (c == '#' && !inString) {
+                return line.substring(0, i);
+            }
+        }
+        return line;
+    }
+
+    /** True for a line that is exactly one table header, optionally commented. */
+    private static boolean isTableHeader(String line) {
+        String bare = stripComment(line).trim();
+        if (bare.length() < 2 || bare.charAt(0) != '[') return false;
+        int close = bare.lastIndexOf(']');
+        return close == bare.length() - 1 && bare.indexOf('[') == 0;
     }
 
     private static String join(List<String> lines) {
