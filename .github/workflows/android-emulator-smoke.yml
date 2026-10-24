@@ -133,6 +133,12 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          # Same release key CI uses for the shipped APK, so the smoke test
+          # exercises the signing path real users get (an emulator installs
+          # either signature fine; the point is the code path runs).
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         # abi=path form, added with the multi-ABI support in assemble-apk.sh.
         # A bare path still means arm64-v8a, so android-artifact.yml keeps
         # working unchanged.
@@ -164,7 +170,7 @@ jobs:
             echo "::error::no executable aapt2 under $SDK/build-tools"
             exit 1
           fi
-          APK=android/out/opencrabs-debug.apk
+          APK=android/out/opencrabs-release.apk
           if [ ! -f "$APK" ]; then
             echo "::error::APK not found at $APK (assemble step did not produce it)"
             exit 1
@@ -220,7 +226,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APK=android/out/opencrabs-debug.apk
+          APK=android/out/opencrabs-release.apk
           echo "apk: $APK ($(stat -c%s "$APK") bytes)"
           unzip -l "$APK" | grep -E 'lib/[^/]+/lib.*\.so' || true
 
@@ -274,7 +280,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: opencrabs-android-apk-multiabi
-          path: android/out/opencrabs-debug.apk
+          path: android/out/opencrabs-release.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -317,7 +323,7 @@ jobs:
           force-avd-creation: false
           disable-animations: true
           emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: bash .github/scripts/android-emulator-smoke.sh apk/opencrabs-debug.apk smoke-out
+          script: bash .github/scripts/android-emulator-smoke.sh apk/opencrabs-release.apk smoke-out
 
       - name: Upload the smoke evidence
         # always(): a failed smoke run is exactly when the logs matter most.
