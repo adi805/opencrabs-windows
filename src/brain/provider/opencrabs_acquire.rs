@@ -1,21 +1,27 @@
-//! Get this install's caller token for the built-in OpenCrabs provider (#2047).
+//! Get this install's caller token for the built-in OpenCrabs provider
+//! (#2047, #2198).
 //!
 //! A stored install is reused as-is, so a second launch never calls the proxy.
-//! Without one, a fresh ID is generated and sent to the install route. A `409`
-//! means the proxy already holds a token for that ID, which only happens if the
-//! ID repeats, so the request is retried once with a new ID before giving up.
+//! Without one, the identity is settled before anything is sent: the stored ID
+//! is reused when it survived, a fresh one is minted exactly once when it did
+//! not, and either way the ID reaches disk before the first request. A lost
+//! response or a failed token write can then cost the token, never the
+//! identity.
+//!
+//! A `409` means the proxy already holds a token for this ID, which from here
+//! is what a lost token looks like. That is a reissue for the same ID, not a
+//! new identity. Only when the proxy refuses the reissue too does this mint a
+//! new ID, and it names both IDs in the log, so a split stays traceable instead
+//! of silent.
 
 use std::time::Duration;
 
 use super::opencrabs_install::{
     INSTALL_PATH, InstallError, IssuedToken, OPENCRABS_BASE_URL, install_request_body,
-    new_install_id, parse_install_response,
+    new_install_id, parse_install_response, reissue_request_body,
 };
 use super::opencrabs_store::{self, StoredInstall};
 use crate::config::Config;
-
-/// Most requests made for one acquire, counting the first.
-const ATTEMPTS: usize = 2;
 
 /// Longest wait for the proxy to answer one install request.
 const TIMEOUT: Duration = Duration::from_secs(15);
@@ -41,26 +47,80 @@ pub async fn ensure_install_at(base_url: &str) -> Result<StoredInstall, InstallE
         })?;
     let url = format!("{}{}", base_url.trim_end_matches('/'), INSTALL_PATH);
 
-    let mut last = InstallError::ProxyFailed;
-    for _ in 0..ATTEMPTS {
-        let install_id = new_install_id();
-        match post_install(&client, &url, &install_id).await {
-            Ok(issued) => {
-                let install = StoredInstall {
-                    install_id,
-                    token: issued.token,
-                };
-                opencrabs_store::save(&install).map_err(|e| {
-                    tracing::error!("Could not save the built-in provider token: {e}");
-                    InstallError::StorageFailed
-                })?;
-                return Ok(install);
-            }
-            Err(InstallError::AlreadyIssued) => last = InstallError::AlreadyIssued,
-            Err(other) => return Err(other),
-        }
+    // One identity per acquire, on disk before the first request. Every path
+    // below uses this ID until the proxy proves it will not serve it.
+    let install_id = match opencrabs_store::load_install_id() {
+        Some(id) => id,
+        None => mint_and_persist_id()?,
+    };
+
+    match post_install(&client, &url, &install_id, false).await {
+        Ok(issued) => return store_install(install_id, issued),
+        Err(InstallError::AlreadyIssued) => {}
+        Err(other) => return Err(other),
     }
-    Err(last)
+
+    // The proxy knows this ID and this machine does not hold its token, so ask
+    // for the token to be reissued against the same ID. The matching proxy
+    // change is tracked separately; a proxy without it answers 409 again.
+    match post_install(&client, &url, &install_id, true).await {
+        Ok(issued) => return store_install(install_id, issued),
+        Err(InstallError::AlreadyIssued) => {}
+        Err(other) => return Err(other),
+    }
+
+    // Last resort: this machine cannot recover the token and the proxy will not
+    // reissue for the ID. A new identity keeps the user working, so it is
+    // minted here, but never quietly: both IDs are named so a split in the
+    // proxy's numbers can be traced back to this line.
+    //
+    // Only when a token can actually be stored. A `keys.toml` that does not
+    // parse refuses every token write, so a fresh identity would be issued and
+    // then thrown away, and the next launch would mint yet another one. That
+    // is the split this module exists to prevent, so the identity already on
+    // disk is kept and the failure is reported (#2198).
+    if !opencrabs_store::token_store_is_writable() {
+        tracing::error!(
+            "The built-in provider would not reissue a token for install {install_id}, and \
+             keys.toml cannot accept one, so no new identity is minted. Repair keys.toml and \
+             retry: the install ID is kept."
+        );
+        return Err(InstallError::StorageFailed);
+    }
+    let fresh = mint_and_persist_id()?;
+    tracing::warn!(
+        "The built-in provider would not reissue a token for install {install_id}; \
+         minting a new install identity {fresh}"
+    );
+    let issued = post_install(&client, &url, &fresh, false).await?;
+    store_install(fresh, issued)
+}
+
+/// Mint one identity and put it on disk before the proxy can be asked about it.
+///
+/// The only place this module generates an ID. A failure to persist it stops
+/// the acquire instead of requesting a token for an ID that would be lost on
+/// restart, which is how one user used to become two.
+fn mint_and_persist_id() -> Result<String, InstallError> {
+    let install_id = new_install_id();
+    opencrabs_store::write_install_id(&install_id).map_err(|e| {
+        tracing::error!("Could not write the install ID before requesting a token: {e}");
+        InstallError::StorageFailed
+    })?;
+    Ok(install_id)
+}
+
+/// Store an issued token beside the identity it belongs to.
+fn store_install(install_id: String, issued: IssuedToken) -> Result<StoredInstall, InstallError> {
+    let install = StoredInstall {
+        install_id,
+        token: issued.token,
+    };
+    opencrabs_store::save(&install).map_err(|e| {
+        tracing::error!("Could not save the built-in provider token: {e}");
+        InstallError::StorageFailed
+    })?;
+    Ok(install)
 }
 
 /// One request to the install route, read through the pure parser.
@@ -68,16 +128,17 @@ async fn post_install(
     client: &reqwest::Client,
     url: &str,
     install_id: &str,
+    reissue: bool,
 ) -> Result<IssuedToken, InstallError> {
-    let response = client
-        .post(url)
-        .json(&install_request_body(install_id))
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::warn!("Built-in provider install request failed: {e}");
-            InstallError::Unreachable
-        })?;
+    let body = if reissue {
+        reissue_request_body(install_id)
+    } else {
+        install_request_body(install_id)
+    };
+    let response = client.post(url).json(&body).send().await.map_err(|e| {
+        tracing::warn!("Built-in provider install request failed: {e}");
+        InstallError::Unreachable
+    })?;
     let status = response.status().as_u16();
     let body = response.text().await.unwrap_or_default();
     parse_install_response(status, &body)
