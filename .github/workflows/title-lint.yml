@@ -38,7 +38,7 @@ jobs:
       # For a pull request, lint with the BASE revision of the linter, so a
       # PR cannot rewrite the checker and then satisfy it. For an issue there
       # is no base, so the default branch is the trusted copy.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
           fetch-depth: 1

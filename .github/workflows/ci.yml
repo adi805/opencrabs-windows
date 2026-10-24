@@ -51,7 +51,7 @@ jobs:
     # 36069934718); one noisy neighbor on the hosted fleet is a false red.
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Refuse to administer the host's rustup
         # dtolnay/rust-toolchain manages rustup on whatever machine it runs
@@ -83,12 +83,12 @@ jobs:
           done
 
       - name: Install Rust (from rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.98.1
           components: rustfmt, clippy
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -141,7 +141,7 @@ jobs:
             target: aarch64-apple-darwin
             features: --all-features
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Refuse to administer the host's rustup
         # dtolnay/rust-toolchain manages rustup on whatever machine it runs
@@ -173,12 +173,12 @@ jobs:
           done
 
       - name: Install Rust (from rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.98.1
           targets: ${{ matrix.target }}
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -220,7 +220,7 @@ jobs:
       run: ${{ steps.relevant.outputs.run }}
     steps:
       # fetch-depth 0: the filter below diffs against the PR base sha.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
@@ -294,10 +294,10 @@ jobs:
     # execution receipts, not silent drift.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Rust (from rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.98.1
           components: rustfmt, clippy
@@ -306,15 +306,19 @@ jobs:
       # workflow_dispatch, so a `refs/heads/main`-only save-if never fires —
       # the cache would stay cold forever. Saving in the run's own scope
       # lets the 2nd..Nth push of a PR hit warm artifacts.
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
 
+      # Pinned to a released tag and an explicit tool version: the action
+      # defaults cmakeVersion to "latest" and resolves it at run time.
       - name: Install CMake (Windows)
-        uses: lukka/get-cmake@latest
+        uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # v4.4.4
+        with:
+          cmakeVersion: "4.4.4"
 
       - name: Install NASM (Windows)
-        uses: ilammy/setup-nasm@v1
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
 
       - name: Build
         shell: bash
@@ -446,7 +450,7 @@ jobs:
     timeout-minutes: 10
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'self-hosted' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Linter proves its own teeth
         run: python3 scripts/check-windows-footguns.py --self-test
@@ -478,7 +482,7 @@ jobs:
     # waited). Warm hosted fits in 20; 60 is the cold-cache ceiling.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Refuse to administer the host's rustup
         # dtolnay/rust-toolchain manages rustup on whatever machine it runs
@@ -510,11 +514,11 @@ jobs:
           done
 
       - name: Install Rust (from rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.98.1
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -547,7 +551,7 @@ jobs:
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'self-hosted' }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Refuse to administer the host's rustup
         # dtolnay/rust-toolchain manages rustup on whatever machine it runs
@@ -579,12 +583,12 @@ jobs:
           done
 
       - name: Install Rust (from rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.98.1
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2
         with:
           tool: cargo-audit
 
@@ -676,9 +680,9 @@ jobs:
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'self-hosted' }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -713,7 +717,7 @@ jobs:
           done
 
       - name: Install Rust (from rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.98.1
 
@@ -722,7 +726,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y libasound2-dev
 
       - name: Install tarpaulin
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2
         with:
           tool: cargo-tarpaulin
 
@@ -733,7 +737,7 @@ jobs:
         # local-tts added when feature lands on main.
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           files: ./cobertura.xml
 

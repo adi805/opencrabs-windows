@@ -156,7 +156,7 @@ jobs:
     outputs:
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Check if already published
         id: check
@@ -201,7 +201,7 @@ jobs:
 
       - name: Install Rust
         if: steps.check.outputs.published == 'false'
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.98.1
 
@@ -277,7 +277,7 @@ jobs:
             asset_suffix: macos-arm64
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set version
         id: version
@@ -314,7 +314,7 @@ jobs:
           done
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.98.1
           targets: ${{ matrix.target }}
@@ -325,13 +325,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev
 
+      # Pinned to a released tag and an explicit tool version: the action
+      # defaults cmakeVersion to "latest" and resolves it at run time.
       - name: Install CMake (Windows)
         if: matrix.os == 'windows-latest'
-        uses: lukka/get-cmake@latest
+        uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # v4.4.4
+        with:
+          cmakeVersion: "4.4.4"
 
       - name: Install NASM (Windows)
         if: matrix.os == 'windows-latest'
-        uses: ilammy/setup-nasm@v1
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
 
       - name: Build
         shell: bash
@@ -470,7 +474,7 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: opencrabs-v${{ steps.version.outputs.version }}-${{ matrix.asset_suffix }}
           path: |
@@ -489,7 +493,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Extract version from tag
         id: version
@@ -511,7 +515,7 @@ jobs:
           fi
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: artifacts
 
