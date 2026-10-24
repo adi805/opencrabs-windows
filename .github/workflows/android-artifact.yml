@@ -40,6 +40,23 @@ on:
         required: false
         type: string
         default: ""
+    # Declared so the caller can pass the signing material by name. The
+    # alternative, `secrets: inherit` in release-fork.yml, hands this workflow
+    # every secret the repo owns and Semgrep rejects it outright as
+    # yaml.github-actions.security.secrets-inherit. required:false keeps the
+    # push and workflow_dispatch triggers working: those are not called by
+    # anyone, so nothing is passed and the env block reads the repo secrets
+    # directly.
+    secrets:
+      ANDROID_KEYSTORE_B64:
+        description: "Base64 encoded PKCS12 release keystore."
+        required: false
+      ANDROID_KEYSTORE_PASS:
+        description: "Password for the release keystore."
+        required: false
+      ANDROID_KEY_ALIAS:
+        description: "Alias of the release key inside the keystore."
+        required: false
   push:
     # main is included so the downloadable artifact tracks the branch that
     # ships. Without it the APK stays whatever the last feat-branch run
