@@ -10,7 +10,10 @@ Thank you for your interest in contributing to OpenCrabs! We welcome contributio
 
 ### 1. Bug Reports (Issues Only)
 
-Found a bug? Open an issue — **do not submit a PR yet**.
+Found a bug? Open an issue — **do not submit a PR yet**. The bug report form
+(`.github/ISSUE_TEMPLATE/bug_report.yml`) asks for every item below, so use it
+rather than a blank issue: it is the fastest route to a confirmed, fixable
+report.
 
 **Required information:**
 - Clear, descriptive title
@@ -22,7 +25,9 @@ Found a bug? Open an issue — **do not submit a PR yet**.
 
 ### 2. Feature Requests (Issues Only — No Code)
 
-Have an idea for a new feature? Open an issue with the `enhancement` label.
+Have an idea for a new feature? Open an issue with the `feature` label. The
+feature request form (`.github/ISSUE_TEMPLATE/feature_request.yml`) asks for
+exactly this information.
 
 **What to include:**
 - What problem does this solve?
