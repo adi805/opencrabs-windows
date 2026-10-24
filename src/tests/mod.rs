@@ -337,6 +337,7 @@ pub mod epistemic_inline_test;
 pub mod epistemic_plan_start_test;
 pub mod fallback_suggestion_test;
 pub mod file_versions_test;
+pub mod fuzzy_crlf_test;
 pub mod generate_image_filename_test;
 pub mod git_branch_test;
 pub mod glob_tool_test;
