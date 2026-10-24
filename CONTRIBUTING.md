@@ -181,6 +181,21 @@ A code comment explains what the code does and why, in words. An issue number ca
 - **SQLite** (bundled via `rusqlite`)
 - **Git**
 
+### Toolchain
+
+`rust-toolchain.toml` pins an exact compiler version, and all 11 `toolchain:` inputs in `.github/workflows/` name the same version. Your local `cargo` and CI therefore compile with the same rustc, and a new Rust release cannot change the shipped binary without a commit here.
+
+The pin is deliberate. The glibc floor of the Linux binary is a property of the toolchain that built it, so a floating `stable` can raise that floor the same way a rolled runner image did in v0.5.13 (#2206).
+
+To bump it, in one commit:
+
+1. Set `channel` in `rust-toolchain.toml` to the new version.
+2. Set every `toolchain:` value in `.github/workflows/` to match (`grep -rn 'toolchain:' .github/workflows/` finds all of them).
+3. Update `rust-version` in `Cargo.toml` only if the new compiler raises the minimum the code needs.
+4. Run `cargo fmt --all -- --check`, the clippy gate below, and `cargo test --all-features`.
+
+Those four places are the whole bump, so nothing is left floating after it.
+
 ### Build & Test
 
 ```bash
