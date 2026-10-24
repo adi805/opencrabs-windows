@@ -33,6 +33,27 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Background survival, three separate problems with three separate fixes.
+
+         1. RECEIVE_BOOT_COMPLETED - a START_STICKY service is restarted after
+            the platform kills it, but a reboot is not a kill: nothing restarts
+            it. Without this the user has to open the app after every reboot.
+
+         2. REQUEST_IGNORE_BATTERY_OPTIMIZATIONS - Doze defers alarms and jobs
+            and suspends network access. A foreground service keeps its network
+            (power-details: "App process is running a foreground service" ->
+            network "No restrictions"), but alarms and jobs are still deferred,
+            so anything time-based stalls until the next maintenance window.
+            This permission lets the app ask for an exemption with an explicit
+            user dialog; it is never granted silently.
+
+         3. WAKE_LOCK is deliberately ABSENT. The core blocks on a pty read and
+            sleeps in the kernel; holding a partial wake lock would keep the CPU
+            up for no reason and is the single most common cause of background
+            battery drain. Do not add it without a measured reason. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- Declared explicitly because a build flag alone is not the contract.
          Measured 2026-10-07 with aapt2 link: when both a manifest element and
          the min-sdk-version flag are present, the MANIFEST wins, so a stale
@@ -46,14 +67,31 @@
          drops the app into legacy compatibility behaviour. -->
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
 
+    <!-- Android 11 package visibility: queryIntentActivities returns only apps
+         this app can "see". Declaring the launcher intent here makes exactly
+         the launchable apps visible, which is what the automation surface needs
+         to resolve a name like "instagram" to a package. The alternative,
+         QUERY_ALL_PACKAGES, is a sensitive permission that app stores treat as
+         a red flag and it exposes far more than this feature uses. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+
     <application
         android:label="OpenCrabs"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"
         android:extractNativeLibs="true">
 
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -73,6 +111,42 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="local agent core process started by the user" />
+        </service>
+
+        <!-- Restarts the core after a reboot. Not exported: the system delivers
+             BOOT_COMPLETED as a protected broadcast, so no other app can forge
+             it, and exported="false" keeps it that way. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Reads and drives other apps' UIs. Three properties make this safe
+             rather than a backdoor:
+
+             1. android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+                - only the system can bind it. Without this attribute any app on
+                the device could bind the service and drive the phone.
+             2. exported="true" is REQUIRED (the system binds from outside this
+                app) but it is inert without that permission.
+             3. It is off until the user flips the switch in Settings >
+                Accessibility. Code cannot enable it, and the platform shows a
+                persistent toggle that revokes it. -->
+        <service
+            android:name=".CrabsAccessibilityService"
+            android:exported="true"
+            android:label="OpenCrabs automation"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
         </service>
     </application>
 </manifest>

@@ -10,6 +10,7 @@ import android.os.Looper;
 import android.text.InputType;
 import android.util.Log;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
@@ -139,14 +140,48 @@ public final class TerminalPane extends View {
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
-        blinkHandler.removeCallbacks(blink);
-        blinkHandler.postDelayed(blink, CURSOR_BLINK_MS);
+        startBlink();
     }
 
     @Override
     protected void onDetachedFromWindow() {
-        blinkHandler.removeCallbacks(blink);
+        stopBlink();
         super.onDetachedFromWindow();
+    }
+
+    /**
+     * Window visibility is the hook that actually fires when the app is
+     * backgrounded.
+     *
+     * <p>This matters for battery, not just for looks. {@code onDetachedFromWindow}
+     * only runs when the view is removed from the hierarchy, and pressing Home does
+     * not remove it: the activity is stopped, the window becomes invisible, and the
+     * view stays attached. The blink loop therefore kept toggling and calling
+     * {@code invalidate()} twice a second while the app sat in the background, which
+     * is 7200 CPU wakeups per hour for a cursor nobody can see. Measured target for
+     * this app is under 2% battery per hour idle, and this loop alone would blow it.
+     */
+    @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        if (visibility == VISIBLE) {
+            startBlink();
+        } else {
+            stopBlink();
+        }
+    }
+
+    private void startBlink() {
+        blinkHandler.removeCallbacks(blink);
+        cursorVisible = true;
+        blinkHandler.postDelayed(blink, CURSOR_BLINK_MS);
+    }
+
+    private void stopBlink() {
+        blinkHandler.removeCallbacks(blink);
+        // Leave the cursor solid rather than frozen mid-blink, so returning to the
+        // app does not show a cursor that is invisible until the next toggle.
+        cursorVisible = true;
     }
 
     // ---------------------------------------------------------------- drawing
@@ -322,6 +357,40 @@ public final class TerminalPane extends View {
     }
 
     // ------------------------------------------------------------------ input
+
+    /**
+     * A tap on the terminal brings the keyboard up.
+     *
+     * <p>Without this the pane was a dead rectangle: {@code View} only requests focus on
+     * touch, and requesting focus does not raise the IME on its own, so the soft keyboard
+     * could never be summoned after {@code Keyboard.hide()} or after the first layout.
+     * Focus plus an explicit {@code showSoftInput} is what actually opens it.
+     */
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            // Claim the gesture so the UP below is delivered to this view.
+            return true;
+        }
+        if (action == MotionEvent.ACTION_UP) {
+            requestFocus();
+            Keyboard.show(getContext(), this);
+            return true;
+        }
+        return super.onTouchEvent(event);
+    }
+
+    /** Flip the soft keyboard for this pane. Returns the state it was moved to. */
+    boolean toggleKeyboard() {
+        requestFocus();
+        return Keyboard.toggle(getContext(), this);
+    }
+
+    /** True while the IME is up for this pane, so a toggle button can draw its state. */
+    boolean isKeyboardVisible() {
+        return Keyboard.isVisible(getContext(), this);
+    }
 
     @Override
     public boolean onCheckIsTextEditor() {

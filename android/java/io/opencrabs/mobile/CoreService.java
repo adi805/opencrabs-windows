@@ -54,6 +54,26 @@ public class CoreService extends Service {
     private static final String PREFS_NAME = "opencrabs-service";
     private static final String PREF_TUI_MODE = "tui_mode";
 
+    /**
+     * Whether the core should come back on its own after a reboot.
+     *
+     * Defaults to false on purpose: a process that resurrects itself after every
+     * reboot without the operator asking is indistinguishable from malware, and
+     * on a phone it also competes for battery with whatever the user actually
+     * opened. The Settings screen flips this on.
+     */
+    static final String PREF_START_ON_BOOT = "start_on_boot";
+
+    static boolean startOnBoot(Context context) {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean(PREF_START_ON_BOOT, false);
+    }
+
+    static void setStartOnBoot(Context context, boolean enabled) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().putBoolean(PREF_START_ON_BOOT, enabled).apply();
+    }
+
 
     /** The core's config table for the loopback HTTP/JSON surface (PRD FR-006). */
     private static final String SURFACE_TABLE = "[session_surface]";

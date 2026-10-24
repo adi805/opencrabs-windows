@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shown verbatim in Settings > Accessibility > OpenCrabs. It has to state
+         the real scope in plain language: the platform displays this text next
+         to a switch that grants control over every app on the device, and a
+         vague description there is how users end up granting more than they
+         understood. -->
+    <string name="accessibility_description">Lets OpenCrabs read the on-screen layout of other apps and tap, type or swipe on your behalf, so the agent can drive an app for you. Off by default. Turn it off here at any time.</string>
+</resources>

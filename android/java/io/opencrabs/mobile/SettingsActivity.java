@@ -1,8 +1,12 @@
 package io.opencrabs.mobile;
 
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
 import android.graphics.Typeface;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.text.InputType;
 import android.util.Log;
 import android.util.TypedValue;
@@ -11,6 +15,8 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 
 import java.io.File;
@@ -39,6 +45,11 @@ public class SettingsActivity extends Activity {
     private EditText modelField;
     private EditText keyField;
     private TextView status;
+    private Switch bootSwitch;
+    private Button batteryButton;
+    private TextView batteryStatus;
+    private Button automationButton;
+    private TextView automationStatus;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -87,8 +98,171 @@ public class SettingsActivity extends Activity {
         status.setPadding(0, dp(12), 0, 0);
         root.addView(status);
 
-        setContentView(root);
+        addBackgroundSection(root);
+        addAutomationSection(root);
+
+        // Scrolled: the background section pushed the content past a small
+        // phone's viewport, and a LinearLayout alone would clip the last control
+        // with no way to reach it.
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(root);
+        setContentView(scroll);
         loadCurrent();
+    }
+
+    /**
+     * Background survival controls.
+     *
+     * <p>Both of these are things the app cannot grant itself: one is a user
+     * preference, the other is a system dialog. Presenting them here is the only
+     * honest way to offer them, because silently holding a wakelock or
+     * resurrecting on every boot is what malware does.
+     */
+    private void addBackgroundSection(LinearLayout root) {
+        TextView heading = new TextView(this);
+        heading.setText("Background");
+        heading.setTypeface(Typeface.DEFAULT_BOLD);
+        heading.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        heading.setPadding(0, dp(24), 0, 0);
+        root.addView(heading);
+
+        TextView hint = new TextView(this);
+        hint.setText("The core keeps running as a foreground service while the app is "
+            + "in the background. These two settings make it survive a reboot and stop "
+            + "Android from deferring its work.");
+        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        hint.setPadding(0, dp(6), 0, dp(8));
+        root.addView(hint);
+
+        bootSwitch = new Switch(this);
+        bootSwitch.setText("Start on boot");
+        bootSwitch.setChecked(CoreService.startOnBoot(this));
+        bootSwitch.setOnCheckedChangeListener((v, checked) ->
+            CoreService.setStartOnBoot(SettingsActivity.this, checked));
+        root.addView(bootSwitch);
+
+        batteryButton = new Button(this);
+        batteryButton.setOnClickListener(v -> requestBatteryExemption());
+        root.addView(batteryButton);
+
+        batteryStatus = new TextView(this);
+        batteryStatus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        batteryStatus.setPadding(0, dp(8), 0, 0);
+        root.addView(batteryStatus);
+    }
+
+    /**
+     * Asks the system for a Doze exemption.
+     *
+     * <p>A foreground service already keeps its network access during Doze
+     * (power-details: foreground service process gets "No restrictions" on
+     * network), so this is not needed for the agent to reach a provider. It is
+     * needed for anything time-based, because Doze defers alarms and jobs
+     * regardless of foreground state. The dialog is the system's, so the user
+     * grants it explicitly; the app cannot grant it to itself.
+     */
+    private void requestBatteryExemption() {
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        if (pm != null && pm.isIgnoringBatteryOptimizations(getPackageName())) {
+            batteryStatus.setText("Already exempt from battery optimization.");
+            return;
+        }
+        try {
+            Intent intent = new Intent(
+                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        } catch (ActivityNotFoundException e) {
+            // Some OEM builds ship without this activity. Falling back to the
+            // list of all apps still lets the user find us, which beats a crash.
+            try {
+                startActivity(new Intent(
+                    android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+            } catch (ActivityNotFoundException ignored) {
+                batteryStatus.setText("This build has no battery optimization screen.");
+            }
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Re-read on resume: the exemption is granted in a different app
+        // (Settings), so the label would otherwise keep claiming "not exempt"
+        // after the user just granted it.
+        if (batteryButton != null) {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            boolean exempt = pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
+            batteryButton.setText(exempt
+                ? "Battery optimization: unrestricted"
+                : "Allow unrestricted battery use");
+            batteryButton.setEnabled(!exempt);
+            if (exempt) {
+                batteryStatus.setText("Exempt. Doze will not defer this app's alarms.");
+            }
+        }
+        refreshAutomationStatus();
+    }
+
+    /**
+     * The bridge that lets the agent drive other apps.
+     *
+     * <p>This is the one control in this screen that hands over real power: with
+     * it on, the agent can read the screen of any app and tap anything. So the
+     * switch here is not a switch at all, it is a button that opens the system's
+     * own Accessibility screen. Android deliberately does not let an app enable
+     * its own accessibility service, and routing through the system UI is the
+     * only way the grant stays something the user did rather than something the
+     * app did to them.
+     */
+    private void addAutomationSection(LinearLayout root) {
+        TextView heading = new TextView(this);
+        heading.setText("Automation");
+        heading.setTypeface(Typeface.DEFAULT_BOLD);
+        heading.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        heading.setPadding(0, dp(24), 0, 0);
+        root.addView(heading);
+
+        TextView hint = new TextView(this);
+        hint.setText("Lets the agent read other apps' screens and tap, type or swipe "
+            + "for you. Off unless you turn it on in Android's accessibility settings, "
+            + "and Android shows a permanent switch there to revoke it. Automating a "
+            + "third-party service can violate its terms and put your account at risk, "
+            + "so use it on apps that permit it.");
+        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        hint.setPadding(0, dp(6), 0, dp(8));
+        root.addView(hint);
+
+        automationButton = new Button(this);
+        automationButton.setOnClickListener(v -> openAccessibilitySettings());
+        root.addView(automationButton);
+
+        automationStatus = new TextView(this);
+        automationStatus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        automationStatus.setTypeface(Typeface.MONOSPACE);
+        automationStatus.setPadding(0, dp(8), 0, 0);
+        root.addView(automationStatus);
+    }
+
+    private void openAccessibilitySettings() {
+        try {
+            startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS));
+        } catch (ActivityNotFoundException e) {
+            automationStatus.setText("This build has no accessibility settings screen.");
+        }
+    }
+
+    private void refreshAutomationStatus() {
+        if (automationButton == null || automationStatus == null) {
+            return;
+        }
+        boolean connected = CrabsAccessibilityService.isConnected();
+        automationButton.setText(connected
+            ? "Automation is on (tap to review)"
+            : "Enable automation in accessibility settings");
+        automationStatus.setText(connected
+            ? "bridge ready on 127.0.0.1:" + AutomationServer.PORT
+            : "bridge idle: service not enabled");
     }
 
     private EditText addField(LinearLayout root, String label, String initial, int inputType) {

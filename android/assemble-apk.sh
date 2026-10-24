@@ -46,8 +46,8 @@ MIN_SDK=26
 # is: as two bare literals they can drift, and a versionCode that does not
 # increase is not a cosmetic bug, it is an APK Android refuses to install over
 # the previous one.
-VERSION_CODE=2
-VERSION_NAME=0.2.0
+VERSION_CODE=3
+VERSION_NAME=0.2.1
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "$#" -eq 0 ]; then
@@ -264,6 +264,26 @@ fi
 echo "dex         : $(stat -c%s "$OUT/classes.dex") bytes"
 
 # --- 3. manifest -> base apk -------------------------------------------------
+# android/res holds the launcher icons. aapt2 has no "point me at a resource
+# directory" flag on `link`: -R means "overlay resources from this APK", so
+# passing the directory made aapt2 try to read it as a zip and die with
+# "failed to read magic from input: Is a directory". Resources are compiled to
+# .flat first and handed to link as positional inputs, which is the only shape
+# link accepts.
+if [ ! -d "$ROOT/android/res" ]; then
+  echo "android/res is missing but the manifest references @mipmap/ic_launcher" >&2
+  exit 1
+fi
+rm -rf "$OUT/res"
+mkdir -p "$OUT/res"
+"$BT/aapt2" compile --dir "$ROOT/android/res" -o "$OUT/res"
+mapfile -t FLATS < <(find "$OUT/res" -type f -name '*.flat' | sort)
+if [ "${#FLATS[@]}" -eq 0 ]; then
+  echo "aapt2 compile produced no .flat files from android/res" >&2
+  exit 1
+fi
+echo "resources   : ${#FLATS[@]} flat files"
+
 "$BT/aapt2" link \
   -o "$OUT/base.apk" \
   --manifest "$ROOT/android/AndroidManifest.xml" \
@@ -271,7 +291,8 @@ echo "dex         : $(stat -c%s "$OUT/classes.dex") bytes"
   --min-sdk-version "$MIN_SDK" \
   --target-sdk-version 35 \
   --version-code "$VERSION_CODE" \
-  --version-name "$VERSION_NAME"
+  --version-name "$VERSION_NAME" \
+  "${FLATS[@]}"
 
 # --- 4. fold dex + libs into the apk ----------------------------------------
 cp "$OUT/base.apk" "$OUT/unsigned.apk"
