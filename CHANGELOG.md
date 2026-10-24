@@ -7,6 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.13] - 2026-10-24
+
+61 commits since v0.5.12, 5 contributors. 188 files changed, +14,367 / -1,600 lines.
+
+The channels carried most of this release, and the theme is one task, one place. A detached task now updates its own row instead of posting a second message on Telegram, Slack, Discord and WhatsApp, and a Telegram turn ends with its answer in one bubble rather than two. Discord interactions were hardened end to end: they obey the session turn slot, the turn group lock is no longer held across a governor sleep, reactions get the same identity check as messages, pending approvals drop on every exit from the wait, the pending select and form maps are capped, the compaction pinger stops when the turn ends, and a menu says so when it was cut to the button cap. WhatsApp folds LID-keyed sessions into their phone-number twin, queues a mid-turn message instead of killing the live turn, drops inbound status posts instead of answering them, backs off and gives up on a failing composing indicator, gates delete through the send limiter, and posts one status per recipient. A new channel session no longer inherits a provider the config disables, and the channel provider comparison reads what the session is configured with instead of the sticky fallback. A request that dies during connection setup now says whether the name failed to resolve or the connection stalled, instead of reporting both as a slow server. The TUI got full-screen sessions and help dialogs with their commands in the footer, copy that tries every clipboard backend and writes to Wayland, an editor handoff that matches nvim, helix and `$EDITOR`, and an open that reports failure instead of claiming success. The installer now leaves a callable `opencrabs` command: it writes the shell's PATH entry once, offers `--no-path`, and verifies with `command -v` before reporting success. The install identity moved to its own file so a lost token never mints a second user, an empty `stt_model` falls through instead of overriding a configured STT provider, hashline tags widened to six characters, and a scheduled cron run is exempt from the plan gate like every other headless run.
+
+### ✨ Features
+
+- `fded4837` **tui**: the help dialog is full screen with each column scrolling on its own (#2162)
+- `f2a892e9` **tui**: the sessions dialog is full screen with its commands in the footer (#2162)
+
+### 🔧 Fixes
+
+- `4b4d4338` **provider**: name the phase when a connect timeout hides a DNS failure (#2204)
+- `45e01b75` **install**: leave a callable opencrabs command after the install (#2203)
+- `0dee0cca` **feedback**: let `feedback_analyze` filter to one tool and reach corrections (#2200)
+- `687d671d` **hashline**: show real tags when a hash ref does not parse (#2201)
+- `780cf330` **hashline**: widen line tags from four characters to six (#2202)
+- `2a99ed3f` **voice**: an empty `stt_model` falls through instead of overriding a configured STT provider (#2185)
+- `265418bc` **provider**: keep the install identity in its own file so a lost token never mints a second user (#2198)
+- `1cd00208` **discord**: give `/new` the chat key so the next message lands on it (#2186)
+- `80b05bbe` **whatsapp**: route the follow-up flush through the paired sanitize (#2179)
+- `773b8df6` **session**: make the token counter atomic and stop calling it context (#2180)
+- `ea9bf477` **whatsapp**: fold LID-keyed sessions into their phone-number twin (#2178)
+- `3edc63a9` **whatsapp**: queue a mid-turn message instead of killing the live turn (#2179)
+- `18c5f4ed` **discord**: record outbound messages where they leave the bot (#2196)
+- `f20dcafe` **discord**: make interactions obey the session turn slot (#2191)
+- `f293f403` **discord**: stop holding the turn group lock across a governor sleep (#2192)
+- `e1f31f3b` **channels**: compare the session's configured provider, not the sticky fallback (#2184, #2188)
+- `f1325525` **whatsapp**: post one status per recipient instead of one for the list (#2177)
+- `8e9fade0` **deps**: bump `ctutils` past RUSTSEC-2026-0385 (#2197)
+- `ab12d362` **channels**: stop logging "created" when a session already exists (#2183)
+- `b9ee9bdb` **discord**: gate reactions with the same identity check as messages (#2195)
+- `dad595cf` **discord**: drop pending approvals on every exit from the wait (#2194)
+- `a6ac763b` **discord**: cap the pending select and form maps (#2193)
+- `f58e9fa3` **discord**: stop the compaction pinger when the turn ends (#2189)
+- `f69ec299` **discord**: say when a menu was cut to the button cap (#2190)
+- `bfe3832e` **whatsapp**: drop inbound status posts instead of answering them (#2176)
+- `f542b96c` **whatsapp**: back off and give up on a failing composing indicator (#2181)
+- `4c643bab` **discord**: read the transcribed text in the stop gate (#2187)
+- `3e5f0d0c` **whatsapp**: gate the delete action through the send limiter (#2182)
+- `58817179` **tui**: the image clipboard hint works off macOS too (#2174)
+- `82c5d3e2` **tui**: the editor handoff matches nvim, helix and `$EDITOR` (#2173)
+- `cbfa53c1` **tui**: opening a session file no longer freezes the TUI (#2172)
+- `8da38191` **tui**: copy tries every clipboard backend and writes to Wayland (#2171)
+- `466b5f99` **tui**: a failed open is reported instead of claimed as success (#2170)
+- `2ebe7d46` **rsi**: bound the template fetch, retry once and name the cause (#2169)
+- `b445622a` **tui**: the sessions dialog insets both sides and aligns its columns (#2175)
+- `f86437d4` **acp**: let the ACP surface keep `suggest_options` instead of the headless set
+- `45f50285` **tui**: one chat floor for the plan card and the layout (#2168)
+- `42a0f419` **tui**: the closing line no longer replaces a delivered answer (#2167)
+- `e2420894` **tui**: a rule separates the sessions and help footers (#2162)
+- `9f0da073` **tui/theme**: boot builds the theme pack before looking up the saved theme (#2164)
+- `a693de4b` **tui/theme**: the chat history paints the theme background (#2163)
+- `2420f0ed` **whatsapp**: a detached task keeps one row after the edit window closes (#2150)
+- `e83ad61a` **slack**: a detached task updates its row instead of opening a second block (#2149)
+- `418b823c` **discord**: a detached task updates its card instead of posting a second one (#2148)
+- `8b4bba28` **telegram**: a detached task updates its row instead of posting a second message (#2147)
+- `e518377e` **agent**: a detached task reports its start and finish with one id, and the TUI draws it as one row (#2145, #2146)
+- `df9c49c3` **telegram**: a turn ends with its answer in one bubble, not two (#2156)
+- `fe7001cd` **cron**: a scheduled run is exempt from the plan gate like every other headless run (#2161)
+- `16a0dcc7` **bash**: a sudo invocation is found where the shell runs it, and the dialog opens only when it can be answered (#2157)
+- `2e605cb6` **tui**: a running turn folds into its tool block like any other turn (#2160)
+- `02db7d2e` **sessions**: a new channel session does not inherit a provider the config disables (#2158)
+- `0ce8c4bf` **telegram**: a guest chat resolves its session from the database like a regular chat (#2159)
+
+### 📖 Documentation
+
+- `0ac63efa` verify external facts on the web instead of answering from memory (#2199)
+- `b272466c` say how agent-written work is accepted and agent accounts are not
+
+### 🧹 Miscellaneous
+
+- `a18cbe72` test(session): serialize the provider sync suites on the config mirror (#2184)
+- `8a06ce94` test(tui): the theme cache test pins its own pane layout
+- `82006fb6` style: rustfmt the channel fix batch
+- `8ae04828` style(tests): wrap long lines in the Phase A channel tests
+- `2b1aa860` ci(titles): fail the title check on a bare area prefix
+
+### 👥 Contributors
+
+5 contributors this release:
+
+- @adolfousier (Adolfo Usier)
+- @adi805 (Syafriadi)
+- @loonix (Daniel Carneiro)
+- @antony87-x
+- @spinecki
+
+### 📊 Stats
+
+- 61 commits since v0.5.12
+- 188 files changed, +14,367 / -1,600 lines
+- 11,333 tests (11,295 passed, 0 failed, 38 ignored)
+
 ## [0.5.12] - 2026-10-21
 
 78 commits since v0.5.11, 6 contributors. 180 files changed, +14,993 / -3,285 lines.
@@ -9619,3 +9714,4 @@ fixes.
 [0.5.10]: https://github.com/opencrabs/opencrabs/compare/v0.5.5...v0.5.10
 [0.5.11]: https://github.com/opencrabs/opencrabs/compare/v0.5.10...v0.5.11
 [0.5.12]: https://github.com/opencrabs/opencrabs/compare/v0.5.11...v0.5.12
+[0.5.13]: https://github.com/opencrabs/opencrabs/compare/v0.5.12...v0.5.13
