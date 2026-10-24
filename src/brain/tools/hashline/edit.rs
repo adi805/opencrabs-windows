@@ -199,6 +199,13 @@ impl Tool for HashlineEditTool {
         // Release the path lock taken before the read (#593).
         drop(write_lock);
 
+        // The session now knows the file as what it just wrote, so its next
+        // write_file is not mistaken for another agent's change (#2210). The
+        // read above was whole-file, so this edit is also a basis for a later
+        // overwrite (#1168), the same as a whole-file read or a write.
+        crate::brain::tools::file_versions::record(context.session_id, &path, &new_content);
+        crate::brain::tools::read_state::mark_fully_read(context.session_id, &path);
+
         // Track file in session (fire and forget, path-only)
         if let Some(ref sc) = context.service_context {
             let fs = crate::services::FileService::new(sc.clone());
