@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Assemble a minimal debug APK around the Android core binary.
+# Assemble a minimal APK around the Android core binary.
 #
 # Hand-rolled instead of Gradle on purpose: this needs a manifest, one dex and
 # three .so files. Pulling in AGP would add an AGP/JDK/SDK version-compat surface
@@ -26,10 +26,11 @@
 # leaning on the API 35 ARM-translation layer to run it would be a community
 # claim, not a contract this repo can verify.
 #
-# Signing: android/debug.keystore is committed on purpose so successive
-# builds share one certificate and `adb install -r` upgrades in place.
-# Override with ANDROID_KEYSTORE_B64 (+ _PASS/_ALIAS/_KEY_PASS) to sign
-# with a release key.
+# Signing: CI signs with the release key from repo secrets
+# (ANDROID_KEYSTORE_B64 + _PASS/_ALIAS/_KEY_PASS), because Play Protect
+# blocks debug-signed installs on real phones. android/debug.keystore stays
+# as the fallback so secretless local builds remain installable and keep one
+# stable certificate for `adb install -r` upgrades.
 set -euo pipefail
 
 # minSdk 26 is a product contract, not a build detail: the PRD pins it in
@@ -325,6 +326,16 @@ cp "$OUT/classes.dex" "$OUT/stage/classes.dex"
 # Android treats a different certificate as a different app, so that switch
 # needs one uninstall. Keeping the debug key stable at least means our own
 # successive builds upgrade in place.
+#
+# The release path is not cosmetic. Google Play Protect scans every APK the
+# installer feeds it before the user can tap through, and the debug
+# certificate is a publicly known constant: a debug-signed app that binds
+# an accessibility service and asks to be exempted from battery
+# optimization matched "Aplikasi diblokir untuk melindungi perangkat Anda"
+# on a real phone, with only an "Oke" button and no install-anyway path
+# (v0.2.1, 2026-10-24). A private release certificate is no guarantee of a
+# clean scan, but it removes the strongest signal, which is that every
+# copy of this APK presents the same public key as repackaged malware.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -n "${ANDROID_KEYSTORE_B64:-}" ]; then
   KS="$OUT/signing.keystore"
@@ -350,29 +361,29 @@ fi
   --ks-key-alias "$KS_ALIAS" \
   --ks-pass "pass:$KS_PASS" \
   --key-pass "pass:$KEY_PASS" \
-  --out "$OUT/opencrabs-debug.apk" \
+  --out "$OUT/opencrabs-release.apk" \
   "$OUT/aligned.apk"
 
-"$BT/apksigner" verify --print-certs "$OUT/opencrabs-debug.apk" | head -3
+"$BT/apksigner" verify --print-certs "$OUT/opencrabs-release.apk" | head -3
 
 # --- 6. verify what we actually built ---------------------------------------
 echo
 echo "=== badging ==="
-"$BT/aapt2" dump badging "$OUT/opencrabs-debug.apk" 2>/dev/null \
+"$BT/aapt2" dump badging "$OUT/opencrabs-release.apk" 2>/dev/null \
   | grep -E "^(package|sdkVersion|targetSdkVersion|application-label|launchable-activity|native-code)" || true
 echo
 echo "=== zip contents (libs must be present, named lib*.so) ==="
-unzip -l "$OUT/opencrabs-debug.apk" | grep -E "classes.dex|lib/" || true
+unzip -l "$OUT/opencrabs-release.apk" | grep -E "classes.dex|lib/" || true
 
 # A staged lib that never reached the APK is the failure this asserts against:
 # everything above would still print success, and the crash would only appear
 # on a device as UnsatisfiedLinkError inside System.loadLibrary.
 for required in libopencrabs.so libc++_shared.so libopencrabspty.so; do
-  if ! unzip -l "$OUT/opencrabs-debug.apk" | grep -q "lib/.*/$required\$"; then
+  if ! unzip -l "$OUT/opencrabs-release.apk" | grep -q "lib/.*/$required\$"; then
     echo "APK is missing $required" >&2
     exit 1
   fi
 done
 echo "native libs : all three present in the APK"
 echo
-echo "apk: $OUT/opencrabs-debug.apk ($(stat -c%s "$OUT/opencrabs-debug.apk") bytes)"
+echo "apk: $OUT/opencrabs-release.apk ($(stat -c%s "$OUT/opencrabs-release.apk") bytes)"

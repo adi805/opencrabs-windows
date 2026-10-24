@@ -203,6 +203,12 @@ jobs:
           # ANDROID_NDK_ROOT, while the script reads either.
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          # Release certificate from repo secrets. Without these the script
+          # falls back to the committed debug key, and Play Protect blocks
+          # debug-signed installs on real phones (v0.2.1, 2026-10-24).
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: bash android/assemble-apk.sh apk-input/opencrabs
 
       # The APK is now a terminal client, not just a daemon shell: it carries a
@@ -216,7 +222,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APK=android/out/opencrabs-debug.apk
+          APK=android/out/opencrabs-release.apk
           if [ ! -f "$APK" ]; then
             echo "::error::APK not found at $APK (the assemble step did not produce it)"
             exit 1
@@ -276,7 +282,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APK=android/out/opencrabs-debug.apk
+          APK=android/out/opencrabs-release.apk
 
           # The icon is a resource, so it is invisible to the dex check above: a
           # build with an empty android/res and no android:icon attribute installs
@@ -351,10 +357,42 @@ jobs:
           fi
           echo "accessibility service: declared with BIND_ACCESSIBILITY_SERVICE"
 
+      # The badging and dex checks prove what the APK CONTAINS, not who
+      # signed it. If the secrets ever go missing (rotated token, moved
+      # repo, a future job that forgets `secrets: inherit`), the script
+      # falls back to the debug key WITHOUT failing, and the resulting APK
+      # is the one Play Protect blocks on the phone. Assert the signer here
+      # so that failure lands as a red CI job, not as an unexplainable
+      # install block on a user's device. Guarded on the secret being
+      # present so fork PRs without secret access keep building debug APKs.
+      - name: Assert the APK carries the release certificate
+        if: env.ANDROID_KEYSTORE_B64 != ''
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          APK=android/out/opencrabs-release.apk
+          BT="$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/build-tools" -maxdepth 2 -name apksigner -type f 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$BT" ]; then
+            echo "::error::no apksigner under the SDK; cannot verify who signed the APK"
+            exit 1
+          fi
+          CERTS="$("$BT" verify --print-certs "$APK" 2>/dev/null || true)"
+          printf '%s\n' "$CERTS" | grep -E 'certificate DN' || true
+          if grep -qi "Android Debug" <<< "$CERTS"; then
+            echo "::error::the APK is signed with the public Android debug key. ANDROID_KEYSTORE_B64 was empty when the APK was assembled: check the repo secret and the step env."
+            exit 1
+          fi
+          if ! grep -q "CN=OpenCrabs Release" <<< "$CERTS"; then
+            echo "::error::unexpected signer certificate. A signature this check does not recognize must be looked at, not shipped."
+            exit 1
+          fi
+          echo "signer: CN=OpenCrabs Release (private key held in repo secrets)"
+
       - name: Upload the APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: opencrabs-android-apk
-          path: android/out/opencrabs-debug.apk
+          path: android/out/opencrabs-release.apk
           if-no-files-found: error
           retention-days: 30
