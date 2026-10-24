@@ -111,6 +111,20 @@ mkdir -p "$OUT/classes"
 
 NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
 
+# OPENCRABS_LITE=1 ships a build without the accessibility service declaration.
+# Google Play Protect auto-blocks a sideloaded APK that declares
+# BIND_ACCESSIBILITY_SERVICE in select markets (Indonesia included) and shows no
+# install-anyway button, so a device whose owner cannot switch the scanner off
+# can only install the lite build. The Java class stays in the dex and the
+# manifest element goes: the automation bridge is absent at runtime instead of
+# failing later with a confusing "service not enabled".
+LITE="${OPENCRABS_LITE:-0}"
+if [ "$LITE" = "1" ]; then
+  APK_NAME=opencrabs-lite.apk
+else
+  APK_NAME=opencrabs-release.apk
+fi
+
 # --- 1. native libraries -----------------------------------------------------
 #
 # One lib/<abi>/ directory per ABI. libc++_shared.so is per-ABI inside the NDK:
@@ -285,9 +299,29 @@ if [ "${#FLATS[@]}" -eq 0 ]; then
 fi
 echo "resources   : ${#FLATS[@]} flat files"
 
+MANIFEST="$ROOT/android/AndroidManifest.xml"
+if [ "$LITE" = "1" ]; then
+  # Strip the marked service block rather than keeping a second manifest file:
+  # two manifests drift, and the one that is not compiled stops being reviewed.
+  MANIFEST="$OUT/AndroidManifest.lite.xml"
+  awk '
+    /<!-- LITE:BEGIN/ { skip = 1 }
+    skip && /<!-- LITE:END/ { skip = 0; next }
+    !skip { print }
+  ' "$ROOT/android/AndroidManifest.xml" > "$MANIFEST"
+  # A "lite" build that still declares the service would keep the Play Protect
+  # block and make the whole variant pointless, so fail loudly if the markers
+  # ever disappear from the manifest.
+  if grep -q 'BIND_ACCESSIBILITY_SERVICE' "$MANIFEST"; then
+    echo "lite manifest still declares BIND_ACCESSIBILITY_SERVICE: the LITE:BEGIN/END markers are gone from android/AndroidManifest.xml" >&2
+    exit 1
+  fi
+  echo "manifest    : lite (accessibility service stripped)"
+fi
+
 "$BT/aapt2" link \
   -o "$OUT/base.apk" \
-  --manifest "$ROOT/android/AndroidManifest.xml" \
+  --manifest "$MANIFEST" \
   -I "$AJAR" \
   --min-sdk-version "$MIN_SDK" \
   --target-sdk-version 35 \
@@ -361,29 +395,29 @@ fi
   --ks-key-alias "$KS_ALIAS" \
   --ks-pass "pass:$KS_PASS" \
   --key-pass "pass:$KEY_PASS" \
-  --out "$OUT/opencrabs-release.apk" \
+  --out "$OUT/$APK_NAME" \
   "$OUT/aligned.apk"
 
-"$BT/apksigner" verify --print-certs "$OUT/opencrabs-release.apk" | head -3
+"$BT/apksigner" verify --print-certs "$OUT/$APK_NAME" | head -3
 
 # --- 6. verify what we actually built ---------------------------------------
 echo
 echo "=== badging ==="
-"$BT/aapt2" dump badging "$OUT/opencrabs-release.apk" 2>/dev/null \
+"$BT/aapt2" dump badging "$OUT/$APK_NAME" 2>/dev/null \
   | grep -E "^(package|sdkVersion|targetSdkVersion|application-label|launchable-activity|native-code)" || true
 echo
 echo "=== zip contents (libs must be present, named lib*.so) ==="
-unzip -l "$OUT/opencrabs-release.apk" | grep -E "classes.dex|lib/" || true
+unzip -l "$OUT/$APK_NAME" | grep -E "classes.dex|lib/" || true
 
 # A staged lib that never reached the APK is the failure this asserts against:
 # everything above would still print success, and the crash would only appear
 # on a device as UnsatisfiedLinkError inside System.loadLibrary.
 for required in libopencrabs.so libc++_shared.so libopencrabspty.so; do
-  if ! unzip -l "$OUT/opencrabs-release.apk" | grep -q "lib/.*/$required\$"; then
+  if ! unzip -l "$OUT/$APK_NAME" | grep -q "lib/.*/$required\$"; then
     echo "APK is missing $required" >&2
     exit 1
   fi
 done
 echo "native libs : all three present in the APK"
 echo
-echo "apk: $OUT/opencrabs-release.apk ($(stat -c%s "$OUT/opencrabs-release.apk") bytes)"
+echo "apk: $OUT/$APK_NAME ($(stat -c%s "$OUT/$APK_NAME") bytes)"

@@ -125,6 +125,17 @@
             </intent-filter>
         </receiver>
 
+        <!-- LITE:BEGIN automation-service
+             Everything from this marker down to LITE:END is stripped when
+             assemble-apk.sh runs with OPENCRABS_LITE=1. Play Protect
+             auto-blocks a sideloaded APK that declares
+             BIND_ACCESSIBILITY_SERVICE in select markets (Indonesia included)
+             and shows no install-anyway button, so the lite build drops the
+             declaration instead of asking the user to switch the scanner off.
+             Keep both markers: they are what the strip keys on. The prose below
+             is stripped with the service on purpose, so a lite manifest carries
+             no stale mention of the permission either. -->
+
         <!-- Reads and drives other apps' UIs. Three properties make this safe
              rather than a backdoor:
 
@@ -148,5 +159,6 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+        <!-- LITE:END automation-service -->
     </application>
 </manifest>
