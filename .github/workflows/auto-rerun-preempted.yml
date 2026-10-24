@@ -1,0 +1,70 @@
+name: Auto-rerun preempted CI
+
+# Repair the one failure mode that is not about the code: a GitHub-hosted
+# runner VM being torn down mid-job. The agent then prints "The runner has
+# received a shutdown signal" and exits 143, killing the job before a single
+# test writes a result line, so the red check carries no information about the
+# change. On 2026-10-23/24 that hit the Test job five times across five
+# different runners; the same suite passed on the sixth attempt with no code
+# change, and the same signature shows up on main and on 2026-10-23 PR runs.
+#
+# The opposite case is the dangerous one, so this never reruns a real failure:
+# scripts/auto-rerun-preempted.sh reruns only when EVERY failed job carries the
+# preemption marker, vetoing on a single assertion failure or an unreadable log.
+#
+# NOTE: GitHub only runs `workflow_run` workflows that live on the default
+# branch, so this does nothing until it is merged to main.
+#
+# SECURITY INVARIANT: `workflow_run` executes with this repo's token, including
+# actions: write, and it can be triggered by a fork PR. This workflow therefore
+# checks out the DEFAULT BRANCH only and runs a script that lives here. It must
+# never check out the triggering run's head_sha or run any code from it, or a
+# fork PR would execute arbitrary code holding a write token.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "CI run id to inspect and repair"
+        required: true
+      max_attempts:
+        description: "Stop rerunning at this attempt number"
+        required: false
+        default: "3"
+
+permissions:
+  actions: write
+  contents: read
+
+# One repair per run at a time. Never cancel: a half-sent rerun request is
+# worse than a queued one, and rerunning is cheap next to a full CI cycle.
+concurrency:
+  group: auto-rerun-${{ github.event.workflow_run.id || inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: Rerun if the runner was preempted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # A successful run needs nothing. Gate here so we do not spin a runner for
+    # every green push; the script re-checks the conclusion anyway.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'failure' ||
+      github.event.workflow_run.conclusion == 'timed_out'
+    steps:
+      - name: Check out the repair script
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Inspect the failure and rerun only if it was a preemption
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts || '3' }}
+        run: |
+          set -o pipefail
+          bash scripts/auto-rerun-preempted.sh 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
