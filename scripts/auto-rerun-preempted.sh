@@ -13,12 +13,40 @@
 # only when EVERY failed job carries the preemption signature in its log. One
 # failed job without it, or a log we cannot read, means no rerun.
 #
-# Env: REPO (owner/name), RUN_ID, MAX_ATTEMPTS (default 3), DRY_RUN (1 = report only)
+# Usage: auto-rerun-preempted.sh [RUN_ID] [REPO]
+#   RUN_ID and REPO may also come from the environment, which is how the
+#   workflow passes them. When REPO is absent it is detected with
+#   `gh repo view`, so a local DRY_RUN against a historical run needs no setup.
+# Env: REPO (owner/name), RUN_ID, MAX_ATTEMPTS (default 6), DRY_RUN (1 = report only)
 set -uo pipefail
 
-REPO="${REPO:?REPO is required}"
-RUN_ID="${RUN_ID:?RUN_ID is required}"
-MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
+log() { printf '%s\n' "$*"; }
+
+RUN_ID="${1:-${RUN_ID:-}}"
+REPO="${2:-${REPO:-}}"
+
+if [ -z "$REPO" ]; then
+    REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || true
+fi
+if [ -z "$REPO" ]; then
+    REPO=$(git remote get-url origin 2>/dev/null \
+        | sed -E 's#^git@[^:]+:##; s#^https?://[^/]+/##; s#\.git$##') || true
+fi
+if [ -z "$REPO" ]; then
+    log "FAIL: cannot determine repo; pass it as the second argument or set REPO"
+    exit 1
+fi
+if [ -z "$RUN_ID" ]; then
+    log "FAIL: run id required; pass it as the first argument or set RUN_ID"
+    exit 1
+fi
+
+# Total attempts allowed, counting manual reruns. Six, not three: the
+# 2026-10-23/24 preemption streak needed exactly six attempts before the same
+# suite passed with no code change, so a lower cap would have abandoned a run
+# that was going to go green. The cap still exists so a permanently broken
+# runner cannot loop forever.
+MAX_ATTEMPTS="${MAX_ATTEMPTS:-6}"
 DRY_RUN="${DRY_RUN:-0}"
 
 # Markers the runner agent itself emits when its VM is torn down. Both come
