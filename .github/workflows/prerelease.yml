@@ -165,6 +165,22 @@ jobs:
           cd target/${{ matrix.target }}/release
           tar czf "../../../${ARCHIVE}.tar.gz" opencrabs rtk
 
+      # Same gate as the release workflow: the floor check above reads what the
+      # binary asks for, this runs it on the distribution that floor names, out
+      # of the archive about to be uploaded. A prerelease asset that cannot
+      # start reaches users through the same download path as a release one
+      # (#2209, #2214).
+      - name: Check the archive starts on the oldest supported Linux
+        shell: bash
+        env:
+          # Same floor as the check above; the script maps it to an image.
+          GLIBC_FLOOR: "2.39"
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          archive="opencrabs-v${VERSION}-pre-${SHA}-${{ matrix.asset_suffix }}.tar.gz"
+          ./scripts/check-linux-asset-starts.sh "$archive" "$GLIBC_FLOOR"
+
       - name: Upload artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:

@@ -473,6 +473,23 @@ jobs:
               opencrabs.desktop opencrabs.png
           fi
 
+      # The floor check above reads what the binary asks for. This runs it, on
+      # the distribution that floor names, out of the archive that is about to
+      # be uploaded. v0.5.13 passed every other check in this job and then
+      # refused to start on Ubuntu 24.04 with "GLIBC_2.43 not found" (#2206):
+      # the hosted image rolled underneath the build, and nothing downstream
+      # ever executed the result. A container on the oldest supported release is
+      # the only place that answers "does this start for a user" (#2214).
+      - name: Check the archive starts on the oldest supported Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          # Same floor as the check above; the script maps it to an image.
+          GLIBC_FLOOR: "2.39"
+        run: |
+          archive="opencrabs-v${{ steps.version.outputs.version }}-${{ matrix.asset_suffix }}.tar.gz"
+          ./scripts/check-linux-asset-starts.sh "$archive" "$GLIBC_FLOOR"
+
       - name: Upload artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
