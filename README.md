@@ -3656,7 +3656,7 @@ OpenCrabs includes 40+ built-in tools. The AI can use these during conversation:
 | `read_file` | Read file contents with syntax awareness. Supports `hashline=true` mode for hash-anchored editing |
 | `write_file` | Create or modify files |
 | `edit_file` | Precise text replacements in files |
-| `hashline_edit` | Hash-anchored file editing — reference lines by 2-char content hashes instead of reproducing text. Eliminates stale-line errors and reduces token usage, especially for weaker models. Use `read_file` with `hashline=true` to get line references |
+| `hashline_edit` | Hash-anchored file editing: reference lines by the content hash `read_file` prints in hashline mode instead of reproducing text. Eliminates stale-line errors and reduces token usage, especially for weaker models. Use `read_file` with `hashline=true` to get line references |
 | `bash` | Execute shell commands — **any CLI tool on your system works** |
 | `ls` | List directory contents |
 | `glob` | Find files matching patterns |

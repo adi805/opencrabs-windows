@@ -80,7 +80,9 @@ struct ReadInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     line_count: Option<usize>,
 
-    /// Optional: Output with hashline tags (HASH|content format, where HASH is a 4-char content hash)
+    /// Optional: Output with hashline tags (HASH|content format, where HASH is the
+    /// content hash whose width is `hashline::hash::HASH_LEN`; never write the
+    /// number here, a hardcoded width goes stale the next time the tag widens)
     #[serde(default)]
     hashline: Option<bool>,
 }
@@ -115,7 +117,7 @@ impl Tool for ReadTool {
                 },
                 "hashline": {
                     "type": "boolean",
-                    "description": "Optional: Output lines in HASH|content format (4-char content hash) for use with hashline_edit tool. Default: false."
+                    "description": "Optional: Output lines in HASH|content format, where HASH is the content hash for use with the hashline_edit tool. Use the tag exactly as printed; the tool rejects a wrong width and names the expected length. Default: false."
                 }
             },
             "required": ["path"]
