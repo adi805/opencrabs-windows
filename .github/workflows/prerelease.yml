@@ -140,6 +140,20 @@ jobs:
       - name: Strip
         run: strip target/${{ matrix.target }}/release/opencrabs
 
+      # Same gate as the release workflow: assert the stripped artifact needs no
+      # newer glibc than we promise, then prove it starts. A prerelease asset
+      # that cannot run is as broken as a release one, and it reaches users
+      # through the same download path (#2209).
+      - name: Check glibc floor
+        shell: bash
+        env:
+          # The oldest glibc we support, matching ubuntu-24.04 and v0.5.12.
+          GLIBC_FLOOR: "2.39"
+        run: |
+          binary="target/${{ matrix.target }}/release/opencrabs"
+          ./scripts/check-glibc-floor.sh "$binary" "$GLIBC_FLOOR"
+          "$binary" --version
+
       - name: Create archive
         shell: bash
         run: |
