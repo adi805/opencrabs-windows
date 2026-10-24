@@ -4,14 +4,14 @@
 
 OpenCrabs is community funded. No venture capital, no investors, no company behind it. The people listed here pay for the subscriptions, the inference and the credits that keep the agent running, and some of them also write the code.
 
-Numbers below are derived from [`sponsors.json`](sponsors.json) as of **October 19, 2026**. Currencies are never converted, so each one is totalled on its own.
+Numbers below are derived from [`sponsors.json`](sponsors.json) as of **October 24, 2026**. Currencies are never converted, so each one is totalled on its own.
 
 ## Totals
 
 | Type | Total | How it is counted |
 |---|---|---|
-| Cash | **€30** | Transferred, not converted |
-| Cash | **$65.12** | Transferred, not converted |
+| Contributions | **€30** | Transferred, not converted |
+| Contributions | **$83.25** | Transferred, not converted |
 | In kind | **$450** | Subscription rate times billings to date |
 | Credits | **8B to 9B tokens** | Qwen Ambassador programme: Magic Cubes credits and early access. No money value recorded |
 
@@ -23,18 +23,17 @@ Numbers below are derived from [`sponsors.json`](sponsors.json) as of **October 
 | [Daniel Carneiro](https://github.com/loonix) | Core maintainer | August 12, 2026 | August 27, 2026 |
 | Miguel Carneiro | Financial sponsor | August 12, 2026 | No code |
 
-## Cash
+## Contributions
 
-| Date | Sponsor | Amount | Source | For |
-|---|---|---|---|---|
-| August 12, 2026 | Daniel Carneiro | €20 | Buy Me a Coffee | Subscriptions |
-| August 12, 2026 | Miguel Carneiro | €10 | Buy Me a Coffee | Subscriptions |
-| October 2026 | Adolfo Usier | $8 | Inference top-up | Free model access for every user, built-in provider |
-| October 2026 | Adolfo Usier | $20 | Inference top-up | Free model access for every user, built-in provider |
-| October 15, 2026 | Daniel Carneiro | $20 | Inference top-up | Free model access for every user, built-in provider |
-| October 19, 2026 | Adolfo Usier | $17.12 | Account earnings | Free model access for every user, built-in provider |
-
-Of the cash above, $17.12 is money the account had already earned, moved back into inference rather than taken out. The rest is paid from a sponsor's own pocket.
+| Date | Sponsor | Amount | For |
+|---|---|---|---|
+| August 12, 2026 | Daniel Carneiro | €20 | Subscriptions |
+| August 12, 2026 | Miguel Carneiro | €10 | Subscriptions |
+| October 2026 | Adolfo Usier | $8 | Free model access for every user, built-in provider |
+| October 2026 | Adolfo Usier | $20 | Free model access for every user, built-in provider |
+| October 15, 2026 | Daniel Carneiro | $20 | Free model access for every user, built-in provider |
+| October 19, 2026 | Adolfo Usier | $17.12 | Free model access for every user, built-in provider |
+| October 24, 2026 | Adolfo Usier | $18.13 | Free model access for every user, built-in provider |
 
 ## Subscriptions paid directly
 
@@ -63,11 +62,11 @@ Granted credits carry no money amount here on purpose. Nobody paid a rate for th
 
 ## Where the money goes
 
-Subscriptions first, then inference, then GPU. The first cash contributions went straight into the recurring subscriptions. Everything since has gone to inference credits.
+Subscriptions first, then inference, then GPU. The first contributions went straight into the recurring subscriptions. Everything since has gone to inference credits.
 
 ## Disclosure
 
-Two things are kept out of this page on purpose. The inference accounts listed above pay for the built-in provider that serves free model access to every OpenCrabs user, and that provider is not named and not linked here. Payment links are not published either: the place a sponsorship comes from is named, the link is not.
+Two things are kept out of this page on purpose. The inference accounts listed above pay for the built-in provider that serves free model access to every OpenCrabs user, and that provider is not named and not linked here. Payment links are not published either.
 
 ## How to sponsor
 

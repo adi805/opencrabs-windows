@@ -5872,7 +5872,7 @@ cargo test
 <!-- sponsors:start -->
 ### Community funded
 
-OpenCrabs has no investors. The people below cover the subscriptions, the inference and the credits, and some of them write the code too. Totals as of October 19, 2026.
+OpenCrabs has no investors. The people below cover the subscriptions, the inference and the credits, and some of them write the code too. Totals as of October 24, 2026.
 
 | Sponsor | Role | Sponsoring since |
 |---|---|---|
@@ -5880,7 +5880,7 @@ OpenCrabs has no investors. The people below cover the subscriptions, the infere
 | Daniel Carneiro | Core maintainer | August 12, 2026 |
 | Miguel Carneiro | Financial sponsor | August 12, 2026 |
 
-To date: **€30** + **$65.12** in cash, **$450** in subscriptions, **8B to 9B tokens** of granted credits.
+To date: **€30** + **$83.25** contributed, **$450** in subscriptions, **8B to 9B tokens** of granted credits.
 
 Full ledger: [SPONSORS.md](SPONSORS.md)
 <!-- sponsors:end -->
