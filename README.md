@@ -2157,13 +2157,13 @@ Then just type `opencrabs` to start. The onboarding wizard handles everything on
 > **Linux runtime dependencies:** The pre-built binary links against system libraries that may not be installed on minimal/VPS images:
 > ```bash
 > # Debian/Ubuntu
-> sudo apt-get install libgomp1 libasound2
+> sudo apt-get install libgomp1 libasound2t64
 > # Fedora/RHEL
 > sudo dnf install libgomp alsa-lib
 > # Arch
 > sudo pacman -S gcc-libs alsa-lib
 > ```
-> `libgomp` (GCC OpenMP) is required by the local embedding engine (`llama-cpp-2`). `libasound` is required for local speech-to-text audio I/O. macOS and Windows binaries have no extra prerequisites.
+> `libgomp1` is required for the binary to start at all: it is a hard link-time dependency of the local embedding engine (`llama-cpp-2`), and without it every command fails with `error while loading shared libraries: libgomp.so.1`. `libasound2` only enables local speech-to-text audio I/O and is loaded at runtime, so the binary starts without it. On Ubuntu 24.04 and newer the audio package is `libasound2t64`: `libasound2` is a virtual package there, so `apt-get install libasound2` aborts the whole command and installs nothing, not even `libgomp1`. macOS and Windows binaries have no extra prerequisites.
 >
 > **Local TTS (Piper) additionally requires Python 3 with the `venv` module:**
 > ```bash
