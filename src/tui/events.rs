@@ -286,7 +286,9 @@ pub enum TuiEvent {
     /// A detached task finished (#2146). Same `task_id` as the start, so the
     /// row is found by identity rather than by label. A finish with no row
     /// (the turn's block is gone, or the task outlived a restart) is not an
-    /// error: the completion still arrives through `BackgroundTaskDone`.
+    /// error. Since #2218 the receipt push is the fallback for a task with no
+    /// progress callback, so a surface that received this event must not
+    /// expect `BackgroundTaskDone` to follow it.
     DetachedTaskFinished {
         session_id: Uuid,
         task_id: String,

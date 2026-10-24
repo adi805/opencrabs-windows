@@ -147,7 +147,8 @@ fn detached_finish_settles_the_same_row_and_queues_no_new_message() {
 
 /// A finish can arrive with no row: the process restarted, or the turn ended
 /// and the block settled. It must stay silent rather than open a duplicate
-/// block; the background-task receipt path still announces the outcome.
+/// block. Since #2218 the receipt push only runs for a task with no progress
+/// callback, so this arm cannot assume an announcement follows.
 #[test]
 fn detached_finish_with_no_matching_row_queues_nothing() {
     let st = base_state();

@@ -115,6 +115,12 @@ async fn start_and_finish_carry_the_same_task_id() {
 /// it drew. This asserts that id is the same in all three places it appears
 /// (the start event, the running row, the completion receipt), so there is
 /// no second address to invent a second message for.
+///
+/// Since #2218 the receipt push is the FALLBACK, sent only when the row is
+/// gone: a row that is still there is settled by the finish event and gets no
+/// second report. The row is dropped here on purpose, through the same seam a
+/// surface uses, so the receipt path runs and the id it carries can be
+/// compared with the one the start published.
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn the_finish_addresses_the_row_the_start_already_created() {
@@ -146,9 +152,12 @@ async fn the_finish_addresses_the_row_the_start_already_created() {
         sid,
         std::env::temp_dir(),
         "echo probe".to_string(),
-        "echo ROW_ID_MARKER".to_string(),
+        "sleep 1; echo ROW_ID_MARKER".to_string(),
         Some(cb),
     );
+    // The row goes away before the command exits, so the fallback delivery is
+    // the one that carries the receipt (#2218).
+    mgr.mirror_finished(sid, "echo probe");
 
     let mut waited = 0;
     while recorded.lock().unwrap().is_empty() && waited < 50 {

@@ -540,9 +540,10 @@ impl Tool for BashTool {
                 );
                 return Ok(ToolResult::success(format!(
                     "Started in the background: {label}\n\nThis is a long-running task, so it \
-                     is running detached. I'll continue this session automatically when it \
-                     finishes — no need to poll or wait. Do other independent work meanwhile \
-                     if there is any."
+                     is running detached. You will be told when it finishes: the task row \
+                     settles in place on a surface that draws rows, and the full output is in \
+                     the task status file that tasks_list reads. No need to poll or wait. Do \
+                     other independent work meanwhile if there is any."
                 )));
             }
             None => {
@@ -569,9 +570,10 @@ impl Tool for BashTool {
                             );
                             return Ok(ToolResult::success(format!(
                                 "Started in the background: {label}\n\nThis is a long-running task, so it \
-                                 is running detached. I'll continue this session automatically when it \
-                                 finishes — no need to poll or wait. Do other independent work meanwhile \
-                                 if there is any."
+                                 is running detached. You will be told when it finishes: the task row \
+                                 settles in place on a surface that draws rows, and the full output is in \
+                                 the task status file that tasks_list reads. No need to poll or wait. Do \
+                                 other independent work meanwhile if there is any."
                             )));
                         }
                         // Worth a line: the command looks long to a reader, and the

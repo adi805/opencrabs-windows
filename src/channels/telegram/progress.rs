@@ -187,9 +187,10 @@ pub(crate) fn apply_progress_event(
         // rewrite the existing block in place.
         //
         // A finish with no matching row is not an error: the process may have
-        // restarted, or the turn ended and the block settled. The receipt push
-        // in `background_tasks` still announces the outcome, so this arm stays
-        // silent rather than opening a duplicate block.
+        // restarted, or the turn ended and the block settled. Since #2218 the
+        // receipt push is the fallback for a task the manager holds no
+        // callback for, so this arm must not assume a push will follow: it
+        // stays silent rather than opening a duplicate block.
         ProgressEvent::DetachedTaskFinished {
             task_id, success, ..
         } => {

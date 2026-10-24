@@ -3125,8 +3125,10 @@ impl App {
             } => {
                 // #2146: settle the row the start already drew. A finish with no
                 // row is not an error: the turn may have been settled, or the
-                // task outlived a restart, and the result still arrives through
-                // `BackgroundTaskDone` below.
+                // task outlived a restart. Since #2218 the receipt push is the
+                // fallback for a task the manager holds no callback for, so a
+                // surface that did get this event must not expect a second
+                // `BackgroundTaskDone` to follow.
                 let found = {
                     let mut state = self.session_state_mut(session_id);
                     if let Some(row) = state.find_detached_row(&task_id) {
@@ -3141,7 +3143,7 @@ impl App {
                 if !found {
                     tracing::debug!(
                         "[TUI] DetachedTaskFinished for {task_id} has no row; \
-                         the completion still arrives via BackgroundTaskDone"
+                         the outcome was already settled elsewhere"
                     );
                 }
             }
