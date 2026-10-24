@@ -410,6 +410,30 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
 
+      # The published asset is the only thing users ever run, so the floor gets
+      # checked on that exact file, after strip, before it is archived. A binary
+      # built on an image newer than the floor carries newer symbol versions and
+      # refuses to start on older distributions, which is how v0.5.13 shipped
+      # GLIBC_2.43 and broke every Ubuntu 24.04 install (#2206).
+      #
+      # Running the binary on this runner does not catch that on its own: the
+      # build image always satisfies the requirement its own toolchain baked in.
+      # The version assertion is the real gate; the --version run is there to
+      # catch the plain breakage, like a missing shared library.
+      - name: Check glibc floor (Linux)
+        if: contains(matrix.target, 'linux')
+        shell: bash
+        env:
+          # The oldest glibc we support. This is what ubuntu-24.04 ships and
+          # what v0.5.12 shipped with. Raising it drops every distribution
+          # older than that image, so it is a deliberate decision, never a
+          # side effect of a runner label rolling forward.
+          GLIBC_FLOOR: "2.39"
+        run: |
+          binary="target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
+          ./scripts/check-glibc-floor.sh "$binary" "$GLIBC_FLOOR"
+          "$binary" --version
+
       # A Mach-O executable has no icon field, so macOS can only show an icon
       # for a bundle. Without this step the tarball ships a bare binary and the
       # system falls back to the generic exec glyph.
