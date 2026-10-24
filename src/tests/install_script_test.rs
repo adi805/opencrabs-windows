@@ -190,3 +190,193 @@ fn the_installer_offers_a_dry_run_and_a_dependency_opt_out() {
         "the dry run must exit before the download, not after it"
     );
 }
+
+// #2203: the installer used to finish by printing an `export PATH` line and
+// calling that installed. The user closes the terminal and the command is
+// gone, which is the path hunting a one-line installer exists to spare them.
+// A target directory that is off PATH now gets an entry written once.
+
+#[test]
+fn the_installer_creates_a_path_entry_when_the_target_is_off_path() {
+    let src = script();
+    assert!(
+        src.contains(r#"export PATH=\"${INSTALL_DIR}:\$PATH\""#),
+        "install.sh must build the PATH line it writes, or an install into a \
+         directory off PATH leaves no callable command"
+    );
+    // The entry is useless in a file the user's shell never reads, so each
+    // shell has to map to the startup file it actually sources.
+    for rc in [".zshrc", ".bashrc", ".bash_profile", ".profile"] {
+        assert!(
+            src.contains(rc),
+            "install.sh must know about {rc}, otherwise it writes the PATH entry \
+             into a file the user's shell never reads"
+        );
+    }
+    assert!(
+        src.contains(">>\"$RC\""),
+        "install.sh must append the PATH line to the shell startup file"
+    );
+}
+
+#[test]
+fn the_installer_does_not_duplicate_the_path_entry() {
+    let src = script();
+    assert!(
+        src.contains(r#"grep -Fq "$PATH_LINE" "$RC""#),
+        "the PATH entry must be guarded by a check, or every reinstall appends \
+         another copy of the same line"
+    );
+    assert!(
+        src.contains("already puts ${INSTALL_DIR} on PATH"),
+        "a second run must report the entry as already present instead of \
+         writing it again"
+    );
+}
+
+#[test]
+fn the_installer_can_skip_the_path_entry() {
+    let src = script();
+    assert!(
+        src.contains("--no-path"),
+        "install.sh must accept --no-path for callers that manage PATH themselves"
+    );
+    assert!(
+        src.contains("WITH_PATH_ENTRY=0"),
+        "--no-path must actually switch the PATH write off"
+    );
+    assert!(
+        src.contains("--no-path was given"),
+        "the skipped case must say so, or a caller cannot tell why the command \
+         is still missing"
+    );
+}
+
+#[test]
+fn the_installer_verifies_the_command_resolves_before_reporting_success() {
+    let src = script();
+    let verify = src
+        .find("command -v opencrabs")
+        .expect("install.sh must check that the command a user types resolves");
+    let done = src
+        .find("Run 'opencrabs' to get started!")
+        .expect("install.sh must print the closing line");
+    assert!(
+        verify < done,
+        "the resolution check must run before the success line, otherwise a \
+         broken PATH still reports a finished install"
+    );
+}
+
+// #2203: on a fresh Mac `/usr/local/bin` does not exist (it is listed in
+// /etc/paths, so it is on the default PATH once created, but nothing creates
+// it). `ln -sf` into a missing directory fails with "No such file or
+// directory", so the documented macOS one-liner died on its last step after
+// the user had already copied the app.
+
+#[test]
+fn the_readme_one_liners_create_the_link_directory_before_linking() {
+    let readme = fs::read_to_string("README.md").expect("README.md readable");
+    let mut checked = 0;
+
+    for line in readme.lines() {
+        // Only the download-and-install one-liners, which write into
+        // /usr/local/bin as part of a single piped command.
+        if !line.starts_with("curl -sL \"$(curl -s https://api.github.com") {
+            continue;
+        }
+        checked += 1;
+
+        let mkdir = line.find("mkdir -p /usr/local/bin");
+        assert!(
+            mkdir.is_some(),
+            "a README one-liner writes into /usr/local/bin without creating it \
+             first, which fails on a fresh Mac: {line}"
+        );
+        assert!(
+            line.trim_end().ends_with("command -v opencrabs"),
+            "a README one-liner must verify the command resolves, or a broken \
+             install looks finished: {line}"
+        );
+    }
+
+    assert_eq!(
+        checked, 4,
+        "expected the four platform one-liners in README.md, found {checked}: \
+         the check above silently covers nothing if the block is renamed"
+    );
+}
+
+// #2203 follow-up: the README shipped binaries for macOS and Linux with no
+// Windows command at all, even though the release publishes a Windows zip.
+// The Windows path is served by opencrabs.com, so the test pins the exact
+// command a reader copies and the PATH outcome it promises, not the script.
+
+#[test]
+fn the_readme_documents_a_windows_one_liner_that_updates_path() {
+    let readme = fs::read_to_string("README.md").expect("README.md readable");
+
+    assert!(
+        readme.contains("iwr -useb https://opencrabs.com/install.ps1 | iex"),
+        "README.md has no Windows install command, so a Windows reader has \
+         nothing to copy even though the release ships a Windows archive"
+    );
+    assert!(
+        readme.contains("Get-Command opencrabs"),
+        "the Windows section must tell the reader how to confirm the command \
+         resolves, or a PATH-less install looks finished"
+    );
+    assert!(
+        readme.contains("%LOCALAPPDATA%\\OpenCrabs\\bin"),
+        "the Windows section must name the install directory, which is what \
+         the reader has to add to PATH if they pass -NoPathUpdate"
+    );
+    assert!(
+        readme.contains("-NoPathUpdate"),
+        "the Windows section must document the escape hatch for readers who \
+         manage PATH themselves"
+    );
+}
+
+#[test]
+fn the_readme_documents_the_no_path_flag() {
+    let readme = fs::read_to_string("README.md").expect("README.md readable");
+
+    assert!(
+        readme.contains(
+            "| `--no-path` | Install without touching your shell startup file, \
+             for example when you manage PATH yourself |"
+        ),
+        "install.sh accepts --no-path but the README flag table does not list \
+         it, so the only way to find it is to read the script"
+    );
+}
+
+#[test]
+fn the_readme_linux_one_liners_install_rtk() {
+    let readme = fs::read_to_string("README.md").expect("README.md readable");
+    let mut checked = 0;
+
+    for line in readme.lines() {
+        if !line.starts_with("curl -sL \"$(curl -s https://api.github.com") {
+            continue;
+        }
+        if !line.contains("linux-") {
+            continue;
+        }
+        checked += 1;
+
+        assert!(
+            line.contains("mv opencrabs rtk /usr/local/bin/"),
+            "a Linux one-liner moves only opencrabs, so the rtk binary the \
+             archive ships is left behind in the working directory and the \
+             feature has to download itself again at runtime: {line}"
+        );
+    }
+
+    assert_eq!(
+        checked, 2,
+        "expected two Linux one-liners in README.md, found {checked}: the \
+         check above silently covers nothing if the block is renamed"
+    );
+}

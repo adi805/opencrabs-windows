@@ -2091,9 +2091,9 @@ OpenCrabs supports multi-agent structured debate via the **Bee Colony** protocol
 curl -fsSL https://raw.githubusercontent.com/opencrabs/opencrabs/main/src/scripts/install.sh | bash
 ```
 
-It picks the right archive for your OS and architecture, verifies the download against the release's `SHA256SUMS` before unpacking, installs the CLI plus `rtk`, and sets up poppler so scanned PDFs can be read. On macOS it handles both archive layouts: releases that ship `OpenCrabs.app` land the bundle in `~/Applications` with the CLI linked onto your PATH, and older ones install the bare binary.
+It picks the right archive for your OS and architecture, verifies the download against the release's `SHA256SUMS` before unpacking, installs the CLI plus `rtk`, and sets up poppler so scanned PDFs can be read. On macOS it handles both archive layouts: releases that ship `OpenCrabs.app` land the bundle in `~/Applications` with the CLI linked onto your PATH, and older ones install the bare binary. If the install directory is not already on your PATH, it adds it to your shell startup file once, and it verifies that `opencrabs` resolves before it reports success.
 
-It is safe to run with nobody watching, which is the point for scripted and agent-driven installs: it never prompts for a password. If the target directory needs root and there is no terminal, it fails immediately and names the fix instead of hanging forever.
+It is safe to run with nobody watching, which is the point for scripted and agent-driven installs: with no terminal it never prompts for a password, and if the target directory needs root without passwordless sudo it fails immediately and names the fix instead of hanging forever. Run by hand at a terminal it asks for sudo once, like any installer.
 
 | Flag | What it does |
 |---|---|
@@ -2101,6 +2101,7 @@ It is safe to run with nobody watching, which is the point for scripted and agen
 | `--version <tag>` | Pin a release instead of taking the latest |
 | `--dry-run` | Resolve and print the plan, install nothing |
 | `--no-deps` | Leave the system package manager alone (skips poppler) |
+| `--no-path` | Install without touching your shell startup file, for example when you manage PATH yourself |
 
 ```bash
 # Inspect first, then install without touching system packages
@@ -2114,16 +2115,29 @@ Grab a pre-built binary from [GitHub Releases](https://github.com/opencrabs/open
 
 ```bash
 # macOS (Apple Silicon) — installs OpenCrabs.app (with its icon) and links the CLI
-curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-arm64\.tar\.gz\)".*/\1/p')" | tar xz && sudo cp -R OpenCrabs.app /Applications/ && sudo ln -sf /Applications/OpenCrabs.app/Contents/MacOS/opencrabs /usr/local/bin/opencrabs
+curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-arm64\.tar\.gz\)".*/\1/p')" | tar xz && sudo cp -R OpenCrabs.app /Applications/ && sudo mkdir -p /usr/local/bin && sudo ln -sf /Applications/OpenCrabs.app/Contents/MacOS/opencrabs /usr/local/bin/opencrabs && command -v opencrabs
 
 # macOS (Intel)
-curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-amd64\.tar\.gz\)".*/\1/p')" | tar xz && sudo cp -R OpenCrabs.app /Applications/ && sudo ln -sf /Applications/OpenCrabs.app/Contents/MacOS/opencrabs /usr/local/bin/opencrabs
+curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*macos-amd64\.tar\.gz\)".*/\1/p')" | tar xz && sudo cp -R OpenCrabs.app /Applications/ && sudo mkdir -p /usr/local/bin && sudo ln -sf /Applications/OpenCrabs.app/Contents/MacOS/opencrabs /usr/local/bin/opencrabs && command -v opencrabs
+```
 
+```powershell
+# Windows (PowerShell): installs to %LOCALAPPDATA%\OpenCrabs\bin and adds it to your user PATH
+iwr -useb https://opencrabs.com/install.ps1 | iex
+```
+
+The Windows script installs `opencrabs.exe` and `rtk.exe` into `%LOCALAPPDATA%\OpenCrabs\bin`, adds that directory to your user PATH, and tells already-open programs about the change, so a new terminal picks it up without a restart and `Get-Command opencrabs` resolves. Pass `-NoPathUpdate` to leave PATH untouched, which needs the script block form:
+
+```powershell
+& ([scriptblock]::Create((iwr -useb https://opencrabs.com/install.ps1))) -NoPathUpdate
+```
+
+```bash
 # Linux (x86_64) — binary plus a desktop entry and icon
-curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/ && install -Dm644 opencrabs.desktop ~/.local/share/applications/opencrabs.desktop && install -Dm644 opencrabs.png ~/.local/share/icons/hicolor/256x256/apps/opencrabs.png
+curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-amd64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mkdir -p /usr/local/bin && sudo mv opencrabs rtk /usr/local/bin/ && install -Dm644 opencrabs.desktop ~/.local/share/applications/opencrabs.desktop && install -Dm644 opencrabs.png ~/.local/share/icons/hicolor/256x256/apps/opencrabs.png && command -v opencrabs
 
 # Linux (ARM64)
-curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mv opencrabs /usr/local/bin/ && install -Dm644 opencrabs.desktop ~/.local/share/applications/opencrabs.desktop && install -Dm644 opencrabs.png ~/.local/share/icons/hicolor/256x256/apps/opencrabs.png
+curl -sL "$(curl -s https://api.github.com/repos/opencrabs/opencrabs/releases/latest | sed -n 's/.*"\(https:\/\/[^"]*linux-arm64\.tar\.gz\)".*/\1/p')" | tar xz && chmod +x opencrabs && sudo mkdir -p /usr/local/bin && sudo mv opencrabs rtk /usr/local/bin/ && install -Dm644 opencrabs.desktop ~/.local/share/applications/opencrabs.desktop && install -Dm644 opencrabs.png ~/.local/share/icons/hicolor/256x256/apps/opencrabs.png && command -v opencrabs
 ```
 
 The macOS archive ships `OpenCrabs.app`, not a loose binary: macOS reads an app icon only from a bundle, so a bare Mach-O always shows the generic exec glyph. Copying the bundle to `/Applications` gives you the Dock icon and a Launchpad entry, and the symlink keeps `opencrabs` on your PATH. The Linux archive carries `opencrabs.desktop` and `opencrabs.png` for the same reason, so your application menu has an entry with the real icon instead of a nameless terminal.
@@ -2327,7 +2341,10 @@ cargo run --bin opencrabs -- migrate openclaw --dry-run
 After downloading or building, add the binary to your PATH so you can run `opencrabs` from any project directory:
 
 ```bash
-# Symlink (recommended — always points to latest build)
+# A fresh Mac has no /usr/local/bin, and both commands below fail without it.
+sudo mkdir -p /usr/local/bin
+
+# Symlink (recommended, always points to latest build)
 sudo ln -sf $(pwd)/target/release/opencrabs /usr/local/bin/opencrabs
 
 # Or copy

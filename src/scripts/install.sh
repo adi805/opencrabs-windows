@@ -14,6 +14,7 @@ set -euo pipefail
 #   --version <tag>   Install a specific release (default: the latest)
 #   --dry-run         Resolve and print the plan, install nothing
 #   --no-deps         Leave the system package manager alone
+#   --no-path         Do not add the install dir to your shell startup file
 #   -h, --help        Show this help
 #
 # Two archive layouts exist and both are handled: releases up to v0.5.11 ship a
@@ -48,6 +49,7 @@ Options:
   --version <tag>   Install a specific release (default: the latest)
   --dry-run         Resolve and print the plan, install nothing
   --no-deps         Leave the system package manager alone
+  --no-path         Do not add the install dir to your shell startup file
   -h, --help        Show this help
 
 Two archive layouts exist and both are handled: releases up to v0.5.11 ship a
@@ -66,6 +68,7 @@ APP_DIR="${OPENCRABS_APP_DIR:-$HOME/Applications}"
 REQUESTED_VERSION="${OPENCRABS_VERSION:-}"
 DRY_RUN=0
 WITH_DEPS=1
+WITH_PATH_ENTRY=1
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -93,6 +96,10 @@ while [ $# -gt 0 ]; do
       ;;
     --no-deps)
       WITH_DEPS=0
+      shift
+      ;;
+    --no-path)
+      WITH_PATH_ENTRY=0
       shift
       ;;
     -h | --help)
@@ -187,6 +194,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
   info "Dry run: CLI goes to ${INSTALL_DIR}$([ "$NEEDS_SUDO" -eq 1 ] && echo " (via sudo -n)")"
   [ "$OS" = "macos" ] && info "Dry run: a bundled release would also land OpenCrabs.app in ${APP_DIR}"
   [ "$WITH_DEPS" -eq 1 ] && info "Dry run: would also make sure poppler (pdftoppm) is present"
+  [ "$WITH_PATH_ENTRY" -eq 1 ] &&
+    info "Dry run: would add ${INSTALL_DIR} to your shell startup file if it is not already on PATH"
   exit 0
 fi
 
@@ -299,7 +308,44 @@ fi
 
 case ":${PATH}:" in
   *":${INSTALL_DIR}:"*) ;;
-  *) warn "${INSTALL_DIR} is not on PATH. Add it, or call the binary by full path." ;;
+  *)
+    # An install that leaves no callable command is not finished. The whole
+    # point of a one-line installer is that the user never has to hunt for the
+    # path, so write the entry into the shell's startup file, once, guarded by
+    # a check so a second run cannot append it twice.
+    if [ "$WITH_PATH_ENTRY" -eq 0 ]; then
+      warn "${INSTALL_DIR} is not on PATH and --no-path was given. Add it yourself, or call the binary by full path."
+    else
+      case "$(basename "${SHELL:-sh}")" in
+        zsh) RC="$HOME/.zshrc" ;;
+        bash)
+          if [ -f "$HOME/.bashrc" ]; then RC="$HOME/.bashrc"; else RC="$HOME/.bash_profile"; fi
+          ;;
+        *) RC="$HOME/.profile" ;;
+      esac
+      PATH_LINE="export PATH=\"${INSTALL_DIR}:\$PATH\""
+      if [ -f "$RC" ] && grep -Fq "$PATH_LINE" "$RC"; then
+        info "${RC} already puts ${INSTALL_DIR} on PATH"
+      else
+        printf '\n# Added by the OpenCrabs installer\n%s\n' "$PATH_LINE" >>"$RC" ||
+          error "Could not write to ${RC}. Add this line to it yourself:
+   ${PATH_LINE}"
+        info "Added ${INSTALL_DIR} to PATH in ${RC} (open a new terminal to pick it up)"
+      fi
+      PATH="${INSTALL_DIR}:${PATH}"
+      export PATH
+    fi
+    ;;
 esac
+
+# Report success only when the command a user will type actually resolves.
+# A caller that asked for --no-path manages PATH itself, so a missing entry
+# there is the requested outcome, not a failure.
+if [ "$WITH_PATH_ENTRY" -eq 1 ]; then
+  command -v opencrabs >/dev/null 2>&1 ||
+    error "opencrabs was installed but is not callable.
+   Add this line to your shell startup file and open a new terminal:
+     export PATH=\"${INSTALL_DIR}:\$PATH\""
+fi
 
 info "Run 'opencrabs' to get started!"
