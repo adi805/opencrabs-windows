@@ -85,7 +85,7 @@ jobs:
       - name: Install Rust (from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
           components: rustfmt, clippy
 
       - uses: swatinem/rust-cache@v2
@@ -175,7 +175,7 @@ jobs:
       - name: Install Rust (from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
 
       - uses: swatinem/rust-cache@v2
@@ -299,7 +299,7 @@ jobs:
       - name: Install Rust (from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
           components: rustfmt, clippy
 
       # No `save-if` restriction: this job only runs on PRs and
@@ -512,7 +512,7 @@ jobs:
       - name: Install Rust (from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -581,7 +581,7 @@ jobs:
       - name: Install Rust (from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2
@@ -715,7 +715,7 @@ jobs:
       - name: Install Rust (from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: 1.98.1
 
       - name: Install ALSA dev
         if: runner.os == 'Linux'
