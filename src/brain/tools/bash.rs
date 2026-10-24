@@ -1451,6 +1451,22 @@ pub(crate) fn record_bash_block(session_id: Uuid, cmd: &str) {
     }
 }
 
+/// Forget the recorded bash outcomes for a session (#2211).
+///
+/// The guard's premise is "same command, unchanged world". Two things break
+/// that premise: a new user turn, and a successful non-bash tool call. When
+/// `write_file` creates the file a previous `cat` could not find, the recorded
+/// error no longer describes what the command would do, and the user's next
+/// explicit request for it has to run. The loop the guard exists to stop is
+/// back-to-back retries inside one turn, and that stays blocked because bash
+/// calls never reach this function.
+pub(crate) fn note_environment_changed(session_id: Uuid) {
+    let Ok(mut state) = recent_bash_state().write() else {
+        return;
+    };
+    state.remove(&session_id);
+}
+
 #[cfg(test)]
 pub(crate) fn recorded_at_of(session_id: Uuid, cmd: &str) -> Option<Instant> {
     let state = recent_bash_state().read().ok()?;

@@ -539,6 +539,24 @@ impl ToolRegistry {
             );
         }
 
+        // A successful call that changed the world can invalidate a recorded
+        // bash failure (#2211): the write that created the missing file is the
+        // reported case, so the retry the user asked for has to run. Read-only
+        // calls do not clear it, so fail -> read -> retry the identical command
+        // stays blocked, which is the loop this guard exists to stop. Bash
+        // itself never clears the window for the same reason.
+        if result.success
+            && name != "bash"
+            && (tool
+                .capabilities()
+                .contains(&crate::brain::tools::r#trait::ToolCapability::WriteFiles)
+                || tool
+                    .capabilities()
+                    .contains(&crate::brain::tools::r#trait::ToolCapability::SystemModification))
+        {
+            super::bash::note_environment_changed(context.session_id);
+        }
+
         Ok(result)
     }
 

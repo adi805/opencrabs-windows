@@ -585,6 +585,12 @@ impl AgentService {
             user_message,
         );
 
+        // A new user turn is a new intent (#2211). A command the user now asks
+        // for explicitly must run even if an earlier turn saw it fail: the
+        // retry guard exists to stop back-to-back retries inside one turn, not
+        // to refuse a fresh request from the person at the keyboard.
+        crate::brain::tools::bash::note_environment_changed(session_id);
+
         // Track this request for restart recovery. Resume turns pass
         // `track_origin == None`: a resume is a one-shot best-effort recovery,
         // so it must NOT re-insert its own pending row. Otherwise an interrupted
