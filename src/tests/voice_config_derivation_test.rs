@@ -242,3 +242,107 @@ tts_model = "tts-1"
     assert_eq!(vc.stt_base_url, None);
     assert_eq!(vc.tts_base_url, None);
 }
+
+/// #2185: an empty `stt_model` on the active provider is an ABSENT model, not
+/// a declared one. It used to win the precedence chain (`Some("")` is `Some`),
+/// route audio to the active provider with an empty model name, and leave the
+/// enabled `[providers.stt.openai_compatible]` block unread. This is the exact
+/// shape from the report: a local parakeet shim plus a cleared field.
+#[test]
+fn an_empty_stt_model_falls_through_to_the_openai_compatible_block() {
+    let vc = cfg(r#"
+[providers.stt.openai_compatible]
+enabled = true
+base_url = "http://127.0.0.1:2246"
+model = "parakeet"
+api_key = "local-shim-key"
+[providers.custom.local]
+enabled = true
+base_url = "http://127.0.0.1:2246/v1"
+api_key = "local-shim-key"
+default_model = "some-chat-model"
+stt_model = ""
+"#)
+    .voice_config();
+    assert_eq!(
+        vc.stt_base_url.as_deref(),
+        Some("http://127.0.0.1:2246"),
+        "the empty provider model must not claim the audio route"
+    );
+    assert_eq!(
+        vc.stt_model.as_deref(),
+        Some("parakeet"),
+        "the configured provider's model must win when the field is blank"
+    );
+    assert_eq!(vc.stt_api_key.as_deref(), Some("local-shim-key"));
+    assert!(vc.stt_enabled);
+}
+
+/// The same rule for a whitespace-only value: a field holding spaces is a
+/// cleared field, not a model named " ".
+#[test]
+fn a_whitespace_only_stt_model_is_treated_as_absent() {
+    let vc = cfg(r#"
+[providers.stt.openai_compatible]
+enabled = true
+base_url = "http://127.0.0.1:2246"
+model = "parakeet"
+api_key = "local-shim-key"
+[providers.custom.local]
+enabled = true
+base_url = "http://127.0.0.1:2246/v1"
+api_key = "local-shim-key"
+default_model = "some-chat-model"
+stt_model = "   "
+"#)
+    .voice_config();
+    assert_eq!(vc.stt_base_url.as_deref(), Some("http://127.0.0.1:2246"));
+    assert_eq!(vc.stt_model.as_deref(), Some("parakeet"));
+}
+
+/// With nothing behind it, a cleared model must not invent a working route:
+/// no `[providers.stt.*]` block means transcription stays off rather than
+/// posting an empty model at the active provider.
+#[test]
+fn an_empty_stt_model_with_no_stt_block_does_not_enable_transcription() {
+    let vc = cfg(r#"
+[providers.custom.local]
+enabled = true
+base_url = "http://127.0.0.1:1234/v1"
+api_key = "local-key"
+default_model = "some-chat-model"
+stt_model = ""
+"#)
+    .voice_config();
+    assert!(
+        !vc.stt_enabled,
+        "a cleared stt_model must not enable transcription on its own"
+    );
+    assert_eq!(vc.stt_base_url, None);
+}
+
+/// The synthesis twin rides the same shared candidate builder: a cleared
+/// `tts_model` falls through instead of claiming the speech route.
+#[test]
+fn an_empty_tts_model_does_not_claim_the_speech_route() {
+    let vc = cfg(r#"
+[providers.tts.openai_compatible]
+enabled = true
+base_url = "http://127.0.0.1:8880"
+model = "kokoro"
+api_key = "local-tts-key"
+[providers.custom.local]
+enabled = true
+base_url = "http://127.0.0.1:1234/v1"
+api_key = "local-key"
+default_model = "some-chat-model"
+tts_model = ""
+"#)
+    .voice_config();
+    assert_eq!(
+        vc.tts_base_url.as_deref(),
+        Some("http://127.0.0.1:8880"),
+        "the empty provider model must not claim the speech route"
+    );
+    assert_eq!(vc.tts_model, "kokoro");
+}

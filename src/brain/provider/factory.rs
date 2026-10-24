@@ -1370,6 +1370,23 @@ fn audio_candidate(
 ) -> Option<(String, String, String)> {
     let root = voice_root_url(&base_url);
     let api_key = api_key.filter(|k| !k.is_empty());
+    // An empty model is an ABSENT model, the same rule the key above follows
+    // (#2185). `pick(cfg)?` returns `Some("")` for `stt_model = ""`, and that
+    // `Some` alone used to win the precedence chain in `voice_config`, so a
+    // cleared field silently rerouted audio to the active provider with an
+    // empty model name, a guaranteed 403, while an enabled
+    // `[providers.stt.openai_compatible]` block waited behind it. Dropping the
+    // whole candidate here is what lets the chain fall through: filtering only
+    // `stt_model` downstream would keep THIS endpoint's base_url and pair it
+    // with the other provider's model, which is a worse route than either.
+    let model = model.trim();
+    if model.is_empty() {
+        tracing::debug!(
+            base_url = %root,
+            "voice: skipping active-provider audio candidate, the declared model is empty"
+        );
+        return None;
+    }
     if api_key.is_none() && !is_local_base_url(&root) {
         tracing::debug!(
             base_url = %root,
