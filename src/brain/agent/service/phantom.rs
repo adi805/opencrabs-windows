@@ -1185,9 +1185,13 @@ fn backticks_outside_fences(text: &str) -> usize {
 /// Detect whether `text` ends with a URL.
 fn ends_with_url(text: &str) -> bool {
     let trimmed = text.trim_end();
+    // `rfind` returns the first byte of the separator, so `i + 1` can land
+    // inside it when the separator is multi-byte (U+202F, U+00A0, U+2009,
+    // U+3000). Snapping forward keeps the slice on a char boundary; slicing
+    // at `i + 1` panicked with "not a char boundary" before #2220.
     let boundary = trimmed
         .rfind(|c: char| c.is_whitespace() || matches!(c, '(' | '[' | '{' | '<' | '"' | '\''))
-        .map(|i| i + 1)
+        .map(|i| trimmed.ceil_char_boundary(i + 1))
         .unwrap_or(0);
     let tail = &trimmed[boundary..];
     tail.contains("://")
