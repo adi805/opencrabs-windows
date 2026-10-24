@@ -97,6 +97,21 @@ fn test_parse_hashref_wrong_hash_length() {
 }
 
 #[test]
+fn test_parse_hashref_error_names_the_source_of_the_tag() {
+    // The dominant hashline_edit failure is a source line pasted where a tag
+    // belongs. The error has to say where tags come from, not just a length.
+    let err = HashRef::parse("const MAX_BODY_BYTES: usize = 10_000;").unwrap_err();
+    assert!(
+        err.contains("hashline=true"),
+        "error must name read_file hashline=true: {err}"
+    );
+    assert!(
+        err.contains("before the `|`"),
+        "error must name where the tag sits on the line: {err}"
+    );
+}
+
+#[test]
 fn test_deserialize_replace_op() {
     let json = serde_json::json!({
         "op": "replace",

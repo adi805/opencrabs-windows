@@ -147,7 +147,20 @@ impl Tool for HashlineEditTool {
         for (i, edit) in input.edits.iter().enumerate() {
             match resolve_edit(edit, i, &hash_to_lines, total_lines)? {
                 Ok(resolved_edit) => resolved.push(resolved_edit),
-                Err(error_msg) => return Ok(ToolResult::error(error_msg)),
+                Err(error_msg) => {
+                    // A parse failure is the caller pasting a source line where a
+                    // tag belongs. Show the real thing: two tags from the file
+                    // they named, in the exact form read_file prints them (#2201).
+                    let error_msg = if error_msg.contains("Invalid hash ref") {
+                        format!(
+                            "{error_msg}\n\n{}",
+                            ref_examples(&line_hashes, &original_lines)
+                        )
+                    } else {
+                        error_msg
+                    };
+                    return Ok(ToolResult::error(error_msg));
+                }
             }
         }
 
@@ -322,6 +335,42 @@ fn resolve_edit(
             }))
         }
     }
+}
+
+/// Two or three real `HASH|content` lines from the file being edited, printed
+/// next to a parse failure. The dominant `hashline_edit` failure is a source
+/// line pasted where a tag belongs, and the old error only stated a length, so
+/// the correct form lived one tool call away. Showing it inside the failure
+/// ends the round trip (#2201).
+fn ref_examples(line_hashes: &[(usize, String)], lines: &[&str]) -> String {
+    let mut out =
+        String::from("Hash refs look like this, taken from `read_file` with hashline=true:\n");
+    let mut shown = 0;
+    for (num, hash) in line_hashes {
+        if shown == 3 {
+            break;
+        }
+        let Some(content) = lines.get(num.saturating_sub(1)) else {
+            continue;
+        };
+        if content.trim().is_empty() {
+            continue;
+        }
+        let mut sample: String = content.chars().take(60).collect();
+        if content.chars().count() > 60 {
+            sample.push_str("...");
+        }
+        out.push_str(&format!(
+            "  {}\n",
+            super::hash::format_hashline(*num, hash, &sample)
+        ));
+        shown += 1;
+    }
+    if shown == 0 {
+        out.push_str("  (this file has no non-blank lines to sample)\n");
+    }
+    out.push_str("Use the tag before the `|`, not the source line.");
+    out
 }
 
 /// Validate that a HashRef's hash exists in the file and is unique.

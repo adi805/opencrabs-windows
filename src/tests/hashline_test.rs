@@ -695,3 +695,53 @@ async fn test_read_file_hashline_collision_detection() {
 
 // --- #2201: the invalid-hash error has to show a real tag ---
 
+#[tokio::test]
+async fn test_invalid_hash_ref_error_shows_real_tags_from_the_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("sample.txt");
+    let body = "fn alpha() {\n    let one = 1;\n}\n\nfn beta() {\n    let two = 2;\n}\n";
+    std::fs::write(&file_path, body).unwrap();
+
+    let tool = HashlineEditTool;
+    let context = ToolExecutionContext::new(Uuid::new_v4())
+        .with_working_directory(temp_dir.path().to_path_buf())
+        .with_auto_approve(true);
+
+    // The logged failure shape: a whole source line pasted where a tag belongs.
+    let input = json!({
+        "path": file_path.to_str().unwrap(),
+        "edits": [{
+            "op": "replace",
+            "pos": "fn alpha() {",
+            "lines": "fn alpha() {}"
+        }]
+    });
+
+    let result = tool.execute(input, &context).await.unwrap();
+    assert!(!result.success, "a source line must not parse as a tag");
+
+    // A failed ToolResult carries its message in `error`, not `output`
+    // (ToolResult::error leaves output empty), and that is the string the
+    // model is shown, so assert against it.
+    let out = result
+        .error
+        .clone()
+        .unwrap_or_else(|| result.output.clone());
+    assert!(
+        out.contains("read_file") && out.contains("hashline=true"),
+        "error must name where a tag comes from: {out}"
+    );
+
+    // At least two real tags from this file, in the exact printed form.
+    let mut real_tags = 0;
+    for line in body.lines().filter(|l| !l.trim().is_empty()) {
+        let expected = format!("{}|", hash_line(line));
+        if out.contains(&expected) {
+            real_tags += 1;
+        }
+    }
+    assert!(
+        real_tags >= 2,
+        "error must show at least two real tags from the file, found {real_tags}: {out}"
+    );
+}
