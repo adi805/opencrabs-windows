@@ -608,6 +608,7 @@ pub mod tool_repeat_test;
 // integration_test, plan_mode_integration_test and streaming_test all
 // imported `opencrabs::llm`, removed in 2026-02, so they could never
 // compile. test_module_declarations_test keeps the list honest.
+pub mod evolve_verify_retry_test;
 pub mod evolve_verify_test;
 pub mod execution_blocklist_floor_test;
 pub mod failure_window_test;
