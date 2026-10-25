@@ -1,10 +1,16 @@
-//! Character-set language detection and the all-languages scan order.
+//! Character-set language detection: which of the packs a message reads as.
 
-use super::config::{LANG_EN, LANG_ES, LANG_FR, LANG_ID, LANG_PT, LANG_RU, LangConfig};
+use super::config::{Lang, LangConfig};
 
-/// Detect language from text content using character-set heuristics.
-/// Returns a static reference to the appropriate language config.
-pub fn detect_language(text: &str) -> &'static LangConfig {
+/// Which language `text` reads as, from character-set heuristics over its
+/// first 500 characters.
+///
+/// The script branches live here next to the Cyrillic test, not in the
+/// registry: Arabic and CJK join this function as their packs land (#2222,
+/// #2223). Callers that need the table rather than the id use
+/// [`detect_language`], and callers that scan every language use
+/// `config::all_langs`.
+pub fn detect_lang(text: &str) -> Lang {
     let mut cyrillic = 0u32;
     let mut latin_accent = 0u32;
     let mut total_alpha = 0u32;
@@ -21,12 +27,12 @@ pub fn detect_language(text: &str) -> &'static LangConfig {
     }
 
     if total_alpha == 0 {
-        return &LANG_EN;
+        return Lang::En;
     }
 
     // Cyrillic > 20% of alpha chars → Russian
     if cyrillic * 5 > total_alpha {
-        return &LANG_RU;
+        return Lang::Ru;
     }
 
     // For Latin-accent text, distinguish Spanish/Portuguese/French
@@ -40,12 +46,12 @@ pub fn detect_language(text: &str) -> &'static LangConfig {
             || text.contains('Õ')
             || text.contains('Ç')
         {
-            return &LANG_PT;
+            return Lang::Pt;
         }
         // Spanish-specific: ñ, ¿, ¡
         if text.contains('ñ') || text.contains('Ñ') || text.contains('¿') || text.contains('¡')
         {
-            return &LANG_ES;
+            return Lang::Es;
         }
         // If we have significant accented Latin but no PT/ES markers,
         // check for French patterns (à, â, ç, é, è, ê, ë, î, ï, ô, ù, û, ü, ÿ)
@@ -65,23 +71,41 @@ pub fn detect_language(text: &str) -> &'static LangConfig {
             || text.contains('ü')
             || text.contains('ÿ')
         {
-            return &LANG_FR;
+            return Lang::Fr;
         }
     }
 
-    &LANG_EN
+    Lang::En
 }
 
-/// Every loaded language config, in detection-priority order.
-///
-/// The phantom-intent detectors scan intent phrases across all languages
-/// at once: `detect_language` only routes Cyrillic and accented-Latin
-/// text reliably, so accent-free non-English narration (e.g.
-/// `"Voy a usar write_file…"`, no ñ/¿) otherwise falls through to English
-/// and slips past. Intent phrases are multi-word and carry
-/// language-distinctive tokens, so cross-language scanning is
-/// collision-free — unlike the short single-word `action_verbs`, which
-/// stay gated to the detected language. 2026-06-12.
-pub fn all_langs() -> [&'static LangConfig; 6] {
-    [&LANG_EN, &LANG_RU, &LANG_ES, &LANG_PT, &LANG_FR, &LANG_ID]
+/// The pack for `text`, i.e. [`detect_lang`] resolved through the registry.
+pub fn detect_language(text: &str) -> &'static LangConfig {
+    detect_lang(text).pack()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detection_keeps_its_character_set_routing() {
+        assert_eq!(detect_lang("Давайте проверю логи"), Lang::Ru);
+        assert_eq!(detect_lang("planejamento com ã"), Lang::Pt);
+        assert_eq!(detect_lang("¿cómo estás?"), Lang::Es);
+        assert_eq!(detect_lang("résumé à la carte"), Lang::Fr);
+        assert_eq!(detect_lang("hello world"), Lang::En);
+        assert_eq!(detect_lang(""), Lang::En);
+    }
+
+    #[test]
+    fn detect_language_resolves_through_the_registry() {
+        assert!(std::ptr::eq(
+            detect_language("Давайте проверю логи и исправлю ошибку"),
+            Lang::Ru.pack()
+        ));
+        assert!(std::ptr::eq(
+            detect_language("no accents here"),
+            Lang::En.pack()
+        ));
+    }
 }
