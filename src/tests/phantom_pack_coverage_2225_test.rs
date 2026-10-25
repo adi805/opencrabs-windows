@@ -115,7 +115,7 @@ fn the_pack_list_is_the_one_under_test() {
     // a second edit here. This pins the count so the floors cannot quietly
     // apply to fewer packs than the binary ships.
     assert_eq!(all_langs().len(), Lang::ALL.len());
-    assert_eq!(Lang::ALL.len(), 6);
+    assert_eq!(Lang::ALL.len(), 7);
 }
 
 /// One real announcement per pack, in the shape a speaker of that language

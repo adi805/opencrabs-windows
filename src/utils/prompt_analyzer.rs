@@ -64,6 +64,7 @@ pub struct AnalyzerLang {
 /// Embedded TOML content (compile-time validated).
 const EN_TOML: &str = include_str!("prompt_analyzer_lang/en.toml");
 const RU_TOML: &str = include_str!("prompt_analyzer_lang/ru.toml");
+const AR_TOML: &str = include_str!("prompt_analyzer_lang/ar.toml");
 const ES_TOML: &str = include_str!("prompt_analyzer_lang/es.toml");
 const PT_TOML: &str = include_str!("prompt_analyzer_lang/pt.toml");
 const FR_TOML: &str = include_str!("prompt_analyzer_lang/fr.toml");
@@ -73,6 +74,8 @@ pub(crate) static LANG_EN: LazyLock<AnalyzerLang> =
     LazyLock::new(|| toml::from_str(EN_TOML).expect("BUG: en.toml failed to parse at runtime"));
 pub(crate) static LANG_RU: LazyLock<AnalyzerLang> =
     LazyLock::new(|| toml::from_str(RU_TOML).expect("BUG: ru.toml failed to parse at runtime"));
+pub(crate) static LANG_AR: LazyLock<AnalyzerLang> =
+    LazyLock::new(|| toml::from_str(AR_TOML).expect("BUG: ar.toml failed to parse at runtime"));
 pub(crate) static LANG_ES: LazyLock<AnalyzerLang> =
     LazyLock::new(|| toml::from_str(ES_TOML).expect("BUG: es.toml failed to parse at runtime"));
 pub(crate) static LANG_PT: LazyLock<AnalyzerLang> =
@@ -92,6 +95,7 @@ pub(crate) fn analyzer_pack(lang: Lang) -> &'static AnalyzerLang {
     match lang {
         Lang::En => &LANG_EN,
         Lang::Ru => &LANG_RU,
+        Lang::Ar => &LANG_AR,
         Lang::Es => &LANG_ES,
         Lang::Pt => &LANG_PT,
         Lang::Fr => &LANG_FR,
@@ -104,7 +108,7 @@ pub(crate) fn analyzer_pack(lang: Lang) -> &'static AnalyzerLang {
 /// Multi-word phrases are scanned across all languages to catch code-switched
 /// input. Single-word keywords stay gated to the detected language to avoid
 /// false positives.
-pub(crate) fn all_packs() -> [&'static AnalyzerLang; 6] {
+pub(crate) fn all_packs() -> [&'static AnalyzerLang; 7] {
     Lang::ALL.map(analyzer_pack)
 }
 

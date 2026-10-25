@@ -1,4 +1,4 @@
-//! [`LangConfig`], the six embedded language tables, and the language
+//! [`LangConfig`], the embedded language tables, and the language
 //! registry the rest of the crate resolves its packs from, parsed once on
 //! first use. A TOML syntax error fails the build via `include_str!`.
 //!
@@ -151,6 +151,7 @@ pub struct LangConfig {
 /// Embedded TOML content (compile-time validated).
 const EN_TOML: &str = include_str!("en.toml");
 const RU_TOML: &str = include_str!("ru.toml");
+const AR_TOML: &str = include_str!("ar.toml");
 const ES_TOML: &str = include_str!("es.toml");
 const PT_TOML: &str = include_str!("pt.toml");
 const FR_TOML: &str = include_str!("fr.toml");
@@ -160,6 +161,8 @@ pub(crate) static LANG_EN: LazyLock<LangConfig> =
     LazyLock::new(|| toml::from_str(EN_TOML).expect("BUG: en.toml failed to parse at runtime"));
 pub(crate) static LANG_RU: LazyLock<LangConfig> =
     LazyLock::new(|| toml::from_str(RU_TOML).expect("BUG: ru.toml failed to parse at runtime"));
+pub(crate) static LANG_AR: LazyLock<LangConfig> =
+    LazyLock::new(|| toml::from_str(AR_TOML).expect("BUG: ar.toml failed to parse at runtime"));
 pub(crate) static LANG_ES: LazyLock<LangConfig> =
     LazyLock::new(|| toml::from_str(ES_TOML).expect("BUG: es.toml failed to parse at runtime"));
 pub(crate) static LANG_PT: LazyLock<LangConfig> =
@@ -182,6 +185,8 @@ pub enum Lang {
     En,
     /// Russian.
     Ru,
+    /// Arabic.
+    Ar,
     /// Spanish.
     Es,
     /// Portuguese.
@@ -194,13 +199,22 @@ pub enum Lang {
 
 impl Lang {
     /// Every shipped language, in detection-priority order.
-    pub const ALL: [Lang; 6] = [Lang::En, Lang::Ru, Lang::Es, Lang::Pt, Lang::Fr, Lang::Id];
+    pub const ALL: [Lang; 7] = [
+        Lang::En,
+        Lang::Ru,
+        Lang::Ar,
+        Lang::Es,
+        Lang::Pt,
+        Lang::Fr,
+        Lang::Id,
+    ];
 
     /// The ISO 639-1 code, for logs and diagnostics.
     pub fn code(self) -> &'static str {
         match self {
             Lang::En => "en",
             Lang::Ru => "ru",
+            Lang::Ar => "ar",
             Lang::Es => "es",
             Lang::Pt => "pt",
             Lang::Fr => "fr",
@@ -213,6 +227,7 @@ impl Lang {
         match self {
             Lang::En => &LANG_EN,
             Lang::Ru => &LANG_RU,
+            Lang::Ar => &LANG_AR,
             Lang::Es => &LANG_ES,
             Lang::Pt => &LANG_PT,
             Lang::Fr => &LANG_FR,
@@ -224,14 +239,14 @@ impl Lang {
 /// Every loaded language config, in detection-priority order.
 ///
 /// The phantom-intent detectors scan intent phrases across all languages
-/// at once: `detect_lang` only routes Cyrillic and accented-Latin
+/// at once: `detect_lang` only routes Cyrillic, Arabic and accented-Latin
 /// text reliably, so accent-free non-English narration (e.g.
 /// `"Voy a usar write_file…"`, no ñ/¿) otherwise falls through to English
 /// and slips past. Intent phrases are multi-word and carry
 /// language-distinctive tokens, so cross-language scanning is
 /// collision-free; the short single-word `action_verbs` are not, which is why
 /// they stay gated to the detected language. 2026-06-12.
-pub fn all_langs() -> [&'static LangConfig; 6] {
+pub fn all_langs() -> [&'static LangConfig; 7] {
     Lang::ALL.map(Lang::pack)
 }
 
