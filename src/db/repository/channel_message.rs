@@ -520,9 +520,15 @@ impl ChannelMessageRepository {
             .context("Failed to get connection")?
             .interact(move |conn| {
                 conn.query_row(
+                    // #2121: a media message can be stored twice under one
+                    // platform id (a row carrying `[file: <path>]` and a
+                    // pathless `[photo] <caption>` twin). Newest-first handed
+                    // back the pathless one, which is the row that cannot
+                    // identify the artifact. Prefer a row that carries a path,
+                    // then fall back to the newest.
                     "SELECT content FROM channel_messages \
                      WHERE channel = ?1 AND channel_chat_id = ?2 AND platform_message_id = ?3 \
-                     ORDER BY created_at DESC LIMIT 1",
+                     ORDER BY (content LIKE '%[file: %') DESC, created_at DESC LIMIT 1",
                     params![ch, cid, pmid],
                     |row| row.get::<_, String>(0),
                 )

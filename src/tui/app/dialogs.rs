@@ -5,7 +5,7 @@ use super::onboarding::{OnboardingStep, WizardAction, WizardMode, welcome_messag
 use super::*;
 use crate::brain::provider::{ContentBlock, LLMRequest};
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Shown after the first Ctrl+C inside the wizard; a second one quits.
 const QUIT_HINT: &str = "Press Ctrl+C again to quit";
@@ -1520,18 +1520,62 @@ pub(crate) async fn ensure_whispercrabs() -> Result<PathBuf> {
     };
     let binary_path = bin_dir.join(binary_name);
 
-    if binary_path.exists() {
-        return Ok(binary_path);
-    }
-
     // An older version may already have a copy in the brain dir
-    // (`~/.opencrabs/bin`). Reuse it in place if present — don't re-download,
-    // and don't touch/move the user's existing files.
+    // (`~/.opencrabs/bin`). It is a cache candidate, not a final answer: a
+    // stale copy is replaced in the main bin dir on the next refresh and the
+    // old file is left untouched (#2114).
     let legacy = crate::config::opencrabs_home()
         .join("bin")
         .join(binary_name);
-    if legacy.exists() {
-        return Ok(legacy);
+
+    // Which cached copy are we judging, if any? The main bin dir wins.
+    let cached_path: Option<PathBuf> = [&binary_path, &legacy]
+        .into_iter()
+        .find(|p| p.exists())
+        .cloned();
+
+    // One API call decides everything, so the tag that installs is the tag
+    // that gets recorded (#2114: the download path already knew the tag and
+    // threw it away).
+    let release = match fetch_latest_release().await {
+        Ok(release) => release,
+        Err(e) => {
+            // Offline or rate limited: a cached binary still runs, so use it
+            // rather than failing /whisper outright.
+            return match cached_path {
+                Some(path) => {
+                    tracing::warn!(
+                        error = %e,
+                        "whispercrabs: could not check the latest release, using the cached binary"
+                    );
+                    Ok(path)
+                }
+                None => Err(e),
+            };
+        }
+    };
+    let latest_tag = release["tag_name"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if latest_tag.is_empty() {
+        return match cached_path {
+            Some(path) => Ok(path),
+            None => anyhow::bail!("Latest whispercrabs release carries no tag name"),
+        };
+    }
+
+    if let Some(path) = &cached_path {
+        let cached_tag = read_cached_tag(path);
+        if !needs_refresh(cached_tag.as_deref(), &latest_tag, cached_binary_ok(path)) {
+            return Ok(path.clone());
+        }
+        tracing::info!(
+            cached = cached_tag.as_deref().unwrap_or("unrecorded"),
+            latest = %latest_tag,
+            "whispercrabs: refreshing the cached binary (#2114)"
+        );
     }
 
     // Detect platform
@@ -1543,16 +1587,8 @@ pub(crate) async fn ensure_whispercrabs() -> Result<PathBuf> {
     };
     let arch = std::env::consts::ARCH; // "x86_64" or "aarch64"
 
-    // Download latest release via GitHub API
+    // Download the archive through the release we already resolved.
     let client = reqwest::Client::new();
-    let release_url = "https://api.github.com/repos/adolfousier/whispercrabs/releases/latest";
-    let release: serde_json::Value = client
-        .get(release_url)
-        .header("User-Agent", "opencrabs")
-        .send()
-        .await?
-        .json()
-        .await?;
 
     // Find matching asset
     let pattern = format!("whispercrabs-{}-{}", os_name, arch);
@@ -1578,39 +1614,123 @@ pub(crate) async fn ensure_whispercrabs() -> Result<PathBuf> {
         .bytes()
         .await?;
 
-    // Extract (tar.gz for Linux/macOS, zip for Windows)
-    let tmp = bin_dir.join("whispercrabs_download");
+    // Extract (tar.gz for Linux/macOS, zip for Windows) into a staging dir,
+    // then move the binary into place. A killed download or a half-extracted
+    // archive must never leave a broken file at the cache path (#2114).
+    let staging = bin_dir.join("whispercrabs_staging");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
+    let tmp = staging.join("whispercrabs_download");
     std::fs::write(&tmp, &bytes)?;
 
+    let staged_binary = staging.join(binary_name);
     if ext == "tar.gz" {
         let output = tokio::process::Command::new("tar")
             .args([
                 "xzf",
                 &tmp.to_string_lossy(),
                 "-C",
-                &bin_dir.to_string_lossy(),
+                &staging.to_string_lossy(),
             ])
             .output()
             .await?;
         if !output.status.success() {
-            let _ = std::fs::remove_file(&tmp);
+            let _ = std::fs::remove_dir_all(&staging);
             anyhow::bail!("Failed to extract archive");
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))?;
+            std::fs::set_permissions(&staged_binary, std::fs::Permissions::from_mode(0o755))?;
         }
     }
 
-    // Clean up temp file
-    let _ = std::fs::remove_file(&tmp);
-
-    if !binary_path.exists() {
-        anyhow::bail!("Binary not found after extraction — archive may use a different layout");
+    if !staged_binary.is_file() {
+        let _ = std::fs::remove_dir_all(&staging);
+        anyhow::bail!("Binary not found after extraction: archive may use a different layout");
     }
 
+    // Rename over the old file: same directory, so the swap is atomic on
+    // every platform we ship.
+    std::fs::rename(&staged_binary, &binary_path)?;
+    let _ = std::fs::remove_dir_all(&staging);
+
+    // Record the tag we actually installed, next to the binary.
+    write_cached_tag(&binary_path, &latest_tag);
+
     Ok(binary_path)
+}
+
+/// The `.version` sidecar that records which release a cached binary is.
+pub(crate) fn tag_path(binary: &Path) -> PathBuf {
+    let mut name = binary
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "whispercrabs".to_string());
+    name.push_str(".version");
+    binary.with_file_name(name)
+}
+
+/// Tag recorded for a cached binary, if any. `None` covers both "no sidecar"
+/// (an install from before the sidecar existed) and an unreadable one.
+pub(crate) fn read_cached_tag(binary: &Path) -> Option<String> {
+    let tag = std::fs::read_to_string(tag_path(binary)).ok()?;
+    let tag = tag.trim().to_string();
+    (!tag.is_empty()).then_some(tag)
+}
+
+pub(crate) fn write_cached_tag(binary: &Path, tag: &str) {
+    if let Err(e) = std::fs::write(tag_path(binary), format!("{tag}\n")) {
+        tracing::warn!(error = %e, "whispercrabs: could not record the installed tag");
+    }
+}
+
+/// Is the cached file usable at all: present, non-empty, and executable where
+/// that is meaningful? `exists()` alone hands a zero-byte or mode-644 leftover
+/// straight to `Command::new` (#2114).
+pub(crate) fn cached_binary_ok(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o111 == 0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Should the cached binary be replaced? Pure, so the decision is testable
+/// without a network call or a home directory.
+///
+/// A cache with no recorded tag is treated as stale: it predates the sidecar,
+/// so there is no way to know which release it is.
+pub(crate) fn needs_refresh(cached_tag: Option<&str>, latest_tag: &str, path_ok: bool) -> bool {
+    if !path_ok {
+        return true;
+    }
+    match cached_tag {
+        Some(tag) => tag != latest_tag,
+        None => true,
+    }
+}
+
+/// Latest whispercrabs release document from the GitHub API.
+async fn fetch_latest_release() -> Result<serde_json::Value> {
+    let client = reqwest::Client::new();
+    let release: serde_json::Value = client
+        .get("https://api.github.com/repos/adolfousier/whispercrabs/releases/latest")
+        .header("User-Agent", "opencrabs")
+        .send()
+        .await?
+        .json()
+        .await?;
+    Ok(release)
 }
 
 /// Result of a Telegram test connection attempt.

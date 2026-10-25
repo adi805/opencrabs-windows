@@ -129,7 +129,7 @@ pub(crate) fn build_flow_progress(
                 ProgressEvent::IntermediateText { text, .. } => {
                     // Same cleaning as handle_message's fold path: artifacts
                     // and media markers must not leak into the note.
-                    let text = crate::utils::sanitize::strip_llm_artifacts(&text);
+                    let text = crate::utils::sanitize::sanitize_outbound(&text);
                     let (text_clean, _img) = crate::utils::extract_img_markers(&text);
                     let (text_clean, _vid) = crate::utils::extract_vid_markers(&text_clean);
                     if text_clean.trim().is_empty() {

@@ -1551,6 +1551,25 @@ pub(crate) async fn handle_message(
                 }
                 return;
             }
+            ChannelCommand::StopSession {
+                session_id: target,
+                label,
+            } => {
+                // No separate activity probe here: an absent cancel token is
+                // the only "nothing to cancel" signal WhatsApp has (#2108).
+                let cancelled = wa_state.cancel_session(target).await;
+                wa_state.clear_pending_followups(target).await;
+                let outcome = crate::channels::stop_target::classify(cancelled, false);
+                let text = crate::channels::stop_target::receipt(outcome, &label, target);
+                let reply = waproto::whatsapp::Message {
+                    conversation: Some(text),
+                    ..Default::default()
+                };
+                if let Err(e) = client.send_message(reply_target.clone(), reply).await {
+                    tracing::warn!(error = %e, "failed to send WhatsApp message");
+                }
+                return;
+            }
             ChannelCommand::Compact => {
                 let status = waproto::whatsapp::Message {
                     conversation: Some("⏳ Compacting context...".to_string()),

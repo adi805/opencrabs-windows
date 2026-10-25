@@ -1,7 +1,7 @@
 //! browser_act — Batched browser actions (multi_act) in ONE call.
 //!
 //! Accepts an ordered `actions` array (`click` / `fill` / `press` /
-//! `select` / `wait`) and executes it against a STABLE view: every
+//! `select` / `wait` / `upload`) and executes it against a STABLE view: every
 //! selector is resolved up front in a single JS pass BEFORE anything
 //! executes — a stale reference rejects the whole call instead of
 //! half-running a sequence. Execution aborts on first failure and
@@ -27,20 +27,40 @@ pub(crate) const BATCH_TIMEOUT_SECS: u64 = 120;
 /// One parsed, validated action.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Act {
-    Click { selector: String },
-    Fill { selector: String, text: String },
-    Press { key: String },
-    Select { selector: String, value: String },
-    Wait { ms: u64 },
+    Click {
+        selector: String,
+    },
+    Fill {
+        selector: String,
+        text: String,
+    },
+    Press {
+        key: String,
+    },
+    Select {
+        selector: String,
+        value: String,
+    },
+    /// Attach files to an `<input type="file">` (#2112). Only PATHS cross
+    /// the tool call: the bytes go browser-side through CDP, so a 10 MB
+    /// video costs one string instead of ~3.5M tokens of base64.
+    Upload {
+        selector: String,
+        files: Vec<String>,
+    },
+    Wait {
+        ms: u64,
+    },
 }
 
 impl Act {
     /// The selector this action targets, if any (drives pre-flight).
     pub(crate) fn selector(&self) -> Option<&str> {
         match self {
-            Act::Click { selector } | Act::Fill { selector, .. } | Act::Select { selector, .. } => {
-                Some(selector)
-            }
+            Act::Click { selector }
+            | Act::Fill { selector, .. }
+            | Act::Select { selector, .. }
+            | Act::Upload { selector, .. } => Some(selector),
             Act::Press { .. } | Act::Wait { .. } => None,
         }
     }
@@ -52,6 +72,9 @@ impl Act {
             Act::Fill { selector, .. } => format!("fill {selector}"),
             Act::Press { key } => format!("press {key}"),
             Act::Select { selector, .. } => format!("select {selector}"),
+            Act::Upload { selector, files } => {
+                format!("upload {selector} ({} files)", files.len())
+            }
             Act::Wait { ms } => format!("wait {ms}ms"),
         }
     }
@@ -84,6 +107,10 @@ pub(crate) fn parse_actions(input: &Value) -> std::result::Result<Vec<Act>, Stri
             "press" => Act::Press {
                 key: req_str(a, "key", i, "press")?,
             },
+            "upload" => Act::Upload {
+                selector: req_str(a, "selector", i, "upload")?,
+                files: req_files(a, i)?,
+            },
             "select" => Act::Select {
                 selector: req_str(a, "selector", i, "select")?,
                 value: match a["value"].as_str() {
@@ -110,7 +137,8 @@ pub(crate) fn parse_actions(input: &Value) -> std::result::Result<Vec<Act>, Stri
             }
             other => {
                 return Err(format!(
-                    "action {}: unknown type '{other}' (expected click/fill/press/select/wait)",
+                    "action {}: unknown type '{other}' (expected \
+                     click/fill/press/select/wait/upload)",
                     i + 1
                 ));
             }
@@ -130,6 +158,80 @@ fn req_str(a: &Value, field: &str, i: usize, kind: &str) -> std::result::Result<
     }
 }
 
+/// `files` for an `upload` action: a non-empty array of absolute paths.
+///
+/// Absolute-only is a security boundary, not a convenience: a relative path
+/// resolves against the BROWSER PROCESS's cwd, so the same action would
+/// attach different files depending on where the browser was launched, and
+/// a page that injected the call could pick the target with a `../` walk.
+fn req_files(a: &Value, i: usize) -> std::result::Result<Vec<String>, String> {
+    let raw = match a["files"].as_array() {
+        Some(f) if !f.is_empty() => f,
+        _ => {
+            return Err(format!(
+                "action {}: 'upload' requires a non-empty \"files\" array of absolute paths",
+                i + 1
+            ));
+        }
+    };
+    let mut out = Vec::with_capacity(raw.len());
+    for f in raw {
+        let path = match f.as_str() {
+            Some(p) if !p.is_empty() => p,
+            _ => {
+                return Err(format!(
+                    "action {}: every \"files\" entry must be a non-empty string",
+                    i + 1
+                ));
+            }
+        };
+        if !std::path::Path::new(path).is_absolute() {
+            return Err(format!(
+                "action {}: upload path \"{path}\" is relative. Use an absolute path: a \
+                 relative one resolves against the browser process's working directory",
+                i + 1
+            ));
+        }
+        out.push(path.to_string());
+    }
+    Ok(out)
+}
+
+/// Resolve every upload path in place, before the first CDP call.
+///
+/// `DOM.setFileInputFiles` will happily attach any path the browser process
+/// can read, including a key file, so the batch is refused up front when a
+/// path is missing or is not a regular file. Canonicalising here also means
+/// the path echoed back in the result (and in the approval preview) is the
+/// one the browser actually used, not a `..`-laden alias of it.
+///
+/// Errors are prefixed like every other parse failure: the operator sees
+/// which action was refused, and `NOTHING executed` stays true because this
+/// runs before frame resolution and pre-flight.
+pub(crate) fn resolve_upload_paths(acts: &mut [Act]) -> std::result::Result<(), String> {
+    for (i, act) in acts.iter_mut().enumerate() {
+        let Act::Upload { files, .. } = act else {
+            continue;
+        };
+        for path in files.iter_mut() {
+            let resolved = std::fs::canonicalize(&*path).map_err(|e| {
+                format!(
+                    "action {}: upload file \"{path}\" is not readable ({e}). NOTHING executed.",
+                    i + 1
+                )
+            })?;
+            if !resolved.is_file() {
+                return Err(format!(
+                    "action {}: upload path \"{path}\" is not a regular file. NOTHING executed.",
+                    i + 1
+                ));
+            }
+            *path = resolved.to_string_lossy().into_owned();
+        }
+    }
+    Ok(())
+}
+
 /// Completed-prefix failure report: "actions 1-2 OK; action 3 failed: …".
 /// Pure — pinned by tests.
 pub(crate) fn format_prefix_report(done: usize, failed: &Act, reason: &str) -> String {
@@ -146,21 +248,27 @@ pub(crate) fn format_prefix_report(done: usize, failed: &Act, reason: &str) -> S
     }
 }
 
-/// Build the one-pass pre-flight JS: resolves EVERY selector (all three
-/// shapes: CSS, `text=…`, `xpath=…`) and reports presence + visibility.
-/// Injected as a JSON array so quoting is airtight; pure fn — shape is
-/// pinned by tests.
-pub(crate) fn build_pre_flight_js(selectors: &[String]) -> String {
+/// Same pass, with a per-selector visibility requirement.
+///
+/// An `upload` target is usually a file input that the site hides behind a
+/// styled button (`display:none`, zero size, `opacity:0`), so demanding a
+/// non-zero rect would reject the normal case. Presence is still required:
+/// a stale selector has to reject the batch, which is the point of the
+/// pass. `require_visible` is positional, one flag per selector.
+pub(crate) fn build_pre_flight_js_with(selectors: &[String], require_visible: &[bool]) -> String {
     let arr = serde_json::to_string(selectors).unwrap_or_else(|_| "[]".into());
+    let vis = serde_json::to_string(require_visible).unwrap_or_else(|_| "[]".into());
     // Pre-flight has to see exactly what execution will see: css and
     // text resolve across open shadow roots, xpath stays main-document
     // (the XPath spec has no shadow boundary), matching exec_click.
     super::shadow::with_deep_helpers(&format!(
         r#"
   var sels = {arr};
+  var vis = {vis};
   var results = [];
   for (var i = 0; i < sels.length; i++) {{
     var s = sels[i];
+    var needVis = vis[i] !== false;
     var el = null;
     try {{
       if (s.indexOf("text=") === 0) {{
@@ -171,7 +279,7 @@ pub(crate) fn build_pre_flight_js(selectors: &[String]) -> String {
           var t = (node.innerText || node.textContent || "").toLowerCase();
           if (t.indexOf(needle) !== -1) {{
             var r = node.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) {{ el = node; break; }}
+            if (!needVis || (r.width > 0 && r.height > 0)) {{ el = node; break; }}
           }}
         }}
       }} else if (s.indexOf("xpath=") === 0) {{
@@ -180,20 +288,21 @@ pub(crate) fn build_pre_flight_js(selectors: &[String]) -> String {
         var n = it.singleNodeValue;
         if (n) {{
           var r2 = n.getBoundingClientRect();
-          if (r2.width > 0 && r2.height > 0) el = n;
+          if (!needVis || (r2.width > 0 && r2.height > 0)) el = n;
         }}
       }} else {{
         var q = __ocQueryOne(s);
         if (q) {{
           var r3 = q.getBoundingClientRect();
-          if (r3.width > 0 && r3.height > 0) el = q;
+          if (!needVis || (r3.width > 0 && r3.height > 0)) el = q;
         }}
       }}
     }} catch (e) {{
       results.push({{i: i, ok: false, reason: "invalid selector: " + e.message}});
       continue;
     }}
-    results.push({{i: i, ok: !!el, reason: el ? "" : "not found or not visible"}});
+    results.push({{i: i, ok: !!el,
+      reason: el ? "" : (needVis ? "not found or not visible" : "not found")}});
   }}
   return results;"#
     ))
@@ -217,7 +326,7 @@ impl Tool for BrowserActTool {
 
     fn description(&self) -> &str {
         "Execute a batch of browser actions in ONE call against the current page. \
-         Actions run in order: click/fill/press/select/wait (max 10). Every selector is \
+         Actions run in order: click/fill/press/select/upload/wait (max 10). Every selector is \
          resolved BEFORE anything executes — one stale reference rejects the whole call \
          with zero side effects. On mid-sequence failure the completed prefix is reported \
          and the rest is skipped. Takes ONE screenshot at the end. Use this instead of \
@@ -237,6 +346,8 @@ impl Tool for BrowserActTool {
                         {\"type\":\"fill\",\"selector\":\"…\",\"text\":\"…\"} (replaces the value, framework-safe), \
                         {\"type\":\"press\",\"key\":\"Enter\"}, \
                         {\"type\":\"select\",\"selector\":\"…\",\"value\":\"option value\"}, \
+                        {\"type\":\"upload\",\"selector\":\"input[type=file]\",\"files\":[\"/abs/path\"]} \
+                        (absolute paths; the file bytes never enter the tool call; CSS selector only), \
                         {\"type\":\"wait\",\"ms\":500} (max 10000).",
                 }
             },
@@ -296,10 +407,17 @@ impl BrowserActTool {
         context: &ToolExecutionContext,
         main_page: &chromiumoxide::Page,
     ) -> Result<ToolResult> {
-        let acts = match parse_actions(input) {
+        let mut acts = match parse_actions(input) {
             Ok(a) => a,
             Err(e) => return Ok(ToolResult::error(e)),
         };
+
+        // Upload paths are resolved BEFORE the first CDP call: a missing file
+        // or a directory has to reject the batch with zero side effects, and
+        // pre-flight is already a page interaction.
+        if let Err(e) = resolve_upload_paths(&mut acts) {
+            return Ok(ToolResult::error(e));
+        }
 
         // Resolve every action's page up front: frame-prefixed selectors
         // (`f2:14`) route to their OOPIF page, everything else to main.
@@ -354,11 +472,27 @@ impl BrowserActTool {
                 Some(l) => &frame_pages[l],
                 None => main_page,
             };
+            // Strip the `f2:` routing prefix: it selects the PAGE, it is not
+            // part of the CSS. Passing it through made every frame-scoped
+            // action fail pre-flight as an invalid selector, which is the
+            // opposite of what the pass is for.
             let selectors: Vec<String> = idxs
                 .iter()
-                .map(|&i| acts[i].selector().unwrap().to_string())
+                .map(|&i| {
+                    let sel = acts[i].selector().unwrap();
+                    match split_frame_selector(sel) {
+                        Some((_, rest)) => rest,
+                        None => sel.to_string(),
+                    }
+                })
                 .collect();
-            let js = build_pre_flight_js(&selectors);
+            // An upload target only has to EXIST: a hidden file input is the
+            // normal case, not a stale selector.
+            let require_visible: Vec<bool> = idxs
+                .iter()
+                .map(|&i| !matches!(acts[i], Act::Upload { .. }))
+                .collect();
+            let js = build_pre_flight_js_with(&selectors, &require_visible);
             let raw = match page.evaluate(js.as_str()).await {
                 Ok(r) => r.value().cloned().unwrap_or(Value::Null),
                 Err(e) => return Ok(ToolResult::error(format!("Pre-flight check failed: {e}"))),
@@ -399,6 +533,9 @@ impl BrowserActTool {
                 Act::Select { selector, value } => {
                     self.exec_select(page_ref, selector, value).await
                 }
+                Act::Upload { selector, files } => {
+                    self.exec_upload(page_ref, selector, files).await
+                }
                 Act::Wait { ms } => {
                     tokio::time::sleep(std::time::Duration::from_millis(*ms)).await;
                     Ok(())
@@ -432,12 +569,22 @@ impl BrowserActTool {
             .map(|a| a.label())
             .collect::<Vec<_>>()
             .join(", ");
+        // Echo every resolved absolute path. The label carries the count, and
+        // this line carries the paths themselves: an upload is the one action
+        // that hands the page a file off disk, so the operator has to be able
+        // to read back exactly what was attached (#2112).
+        let mut text = format!(
+            "Executed {} action{} (one call): {summary}",
+            acts.len(),
+            if acts.len() == 1 { "" } else { "s" }
+        );
+        for act in &acts {
+            if let Act::Upload { selector, files } = act {
+                text.push_str(&format!("\nAttached to {selector}: {}", files.join(", ")));
+            }
+        }
         let mut result = ToolResult::success(super::events::append_line(
-            format!(
-                "Executed {} action{} (one call): {summary}",
-                acts.len(),
-                if acts.len() == 1 { "" } else { "s" }
-            ),
+            text,
             self.manager.drain_recent_events(),
         ));
         self.manager
@@ -626,5 +773,44 @@ impl BrowserActTool {
             Some("no_option") => Err(format!("no option matching '{value}' in '{selector}'")),
             _ => Err(format!("select failed on '{selector}'")),
         }
+    }
+
+    /// Attach files to a file input through CDP (#2112).
+    ///
+    /// `DOM.setFileInputFiles` takes a node handle, so this path needs a CSS
+    /// selector: `text=` and `xpath=` resolve inside the page as a JS value
+    /// and never produce a node id. Refusing them here is honest, and the
+    /// pre-flight already proved the CSS selector resolves.
+    ///
+    /// Chrome dispatches `input` and `change` itself when the file list is
+    /// set, so no synthetic event is needed. The paths were canonicalised and
+    /// verified as regular files before the batch started.
+    async fn exec_upload(
+        &self,
+        page: &chromiumoxide::Page,
+        selector: &str,
+        files: &[String],
+    ) -> std::result::Result<(), String> {
+        if selector.starts_with("text=") || selector.starts_with("xpath=") {
+            return Err(format!(
+                "upload needs a CSS selector: '{selector}' resolves inside the page and cannot \
+                 be turned into a node handle"
+            ));
+        }
+        // `f2:` picks the page; it is not part of the CSS.
+        let css = match split_frame_selector(selector) {
+            Some((_, rest)) => rest,
+            None => selector.to_string(),
+        };
+        let element = super::manager::resolve_element(page, &css)
+            .await
+            .map_err(|e| format!("file input '{selector}' not found: {e}"))?;
+        let mut params =
+            chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams::new(files.to_vec());
+        params.backend_node_id = Some(element.backend_node_id);
+        page.execute(params)
+            .await
+            .map_err(|e| format!("upload to '{selector}' failed: {e}"))?;
+        Ok(())
     }
 }

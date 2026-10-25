@@ -25,7 +25,9 @@ pub use find::BrowserFindTool;
 // Batched-action pure cores — re-exported only for test fixtures
 // (src/tests/browser_act_test.rs).
 #[cfg(test)]
-pub(crate) use act::{Act, build_pre_flight_js, format_prefix_report, parse_actions};
+pub(crate) use act::{
+    Act, build_pre_flight_js_with, format_prefix_report, parse_actions, resolve_upload_paths,
+};
 
 // Eval output cap — re-exported only for test fixtures
 // (src/tests/browser_eval_cap_test.rs).
