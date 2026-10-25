@@ -280,13 +280,13 @@ impl Tool for EditTool {
                     ));
                 }
 
-                let mut new_lines = Vec::new();
-                new_lines.extend_from_slice(&lines[..start_line]);
-                new_lines.push(&new_text);
-                if end_line + 1 < lines.len() {
-                    new_lines.extend_from_slice(&lines[end_line + 1..]);
-                }
-                new_lines.join("\n")
+                // Splice the edited byte range out of the original instead of
+                // rebuilding the file from `lines()` (#2227). `lines()` drops
+                // every terminator and a trailing `\r`, so the join could only
+                // put back the ending it was told to: a CRLF file came out LF
+                // and every file lost its final newline. Nothing said so,
+                // because the result diff only lists the changed lines.
+                super::line_ops::replace_lines(&content, start_line, end_line, &new_text)
             }
 
             EditOperation::InsertLine { line, text } => {
@@ -299,11 +299,8 @@ impl Tool for EditTool {
                     )));
                 }
 
-                let mut new_lines = Vec::new();
-                new_lines.extend_from_slice(&lines[..line]);
-                new_lines.push(&text);
-                new_lines.extend_from_slice(&lines[line..]);
-                new_lines.join("\n")
+                // Byte splice, same reason as `replace_lines` (#2227).
+                super::line_ops::insert_line(&content, line, &text)
             }
 
             EditOperation::DeleteLines {
@@ -325,12 +322,8 @@ impl Tool for EditTool {
                     ));
                 }
 
-                let mut new_lines = Vec::new();
-                new_lines.extend_from_slice(&lines[..start_line]);
-                if end_line + 1 < lines.len() {
-                    new_lines.extend_from_slice(&lines[end_line + 1..]);
-                }
-                new_lines.join("\n")
+                // Byte splice, same reason as `replace_lines` (#2227).
+                super::line_ops::delete_lines(&content, start_line, end_line)
             }
 
             EditOperation::RegexReplace {

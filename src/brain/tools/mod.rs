@@ -25,6 +25,7 @@ pub mod fs_util;
 pub mod glob;
 pub mod grep;
 pub mod hashline;
+pub mod line_ops;
 pub mod ls;
 pub mod read;
 pub mod read_state;

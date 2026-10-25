@@ -5,6 +5,7 @@
 //! whitespace and Unicode punctuation differences between the agent's
 //! `old_text` and the actual file content.
 
+use super::line_ops::line_spans;
 use unicode_normalization::UnicodeNormalization;
 
 /// Normalize Unicode punctuation/whitespace to ASCII equivalents so that
@@ -145,24 +146,4 @@ pub fn fuzzy_replace_once(content: &str, old_str: &str, new_str: &str) -> Result
     new_content.push_str(&content[region_end..]);
 
     Ok(new_content)
-}
-
-/// Byte span of every line, terminator included.
-///
-/// `str::lines()` is lossy for this purpose: it drops the `\n` and a trailing
-/// `\r`. Keeping the offsets lets a caller replace one block and leave every
-/// other byte of the file untouched (#2212).
-fn line_spans(content: &str) -> Vec<(usize, usize)> {
-    let mut spans = Vec::new();
-    let mut start = 0;
-    for (i, byte) in content.bytes().enumerate() {
-        if byte == b'\n' {
-            spans.push((start, i + 1));
-            start = i + 1;
-        }
-    }
-    if start < content.len() {
-        spans.push((start, content.len()));
-    }
-    spans
 }
