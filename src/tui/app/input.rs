@@ -22,90 +22,6 @@ pub(crate) fn should_restore_cancelled_query(
     !has_visible_text && !has_visible_reasoning && !had_tool_activity && !had_intermediate
 }
 
-/// Detect whether a character is likely part of a mouse tracking CSI sequence
-/// that crossterm failed to parse (e.g. `[<35;116;77M` arriving as individual
-/// chars after ESC was consumed as KeyCode::Esc).
-///
-/// Strategy: scan the recent tail for the start of either:
-///
-/// - SGR mouse mode (1006): `\x1b[<Cb;Cx;Cy[Mm]` — visible as `[<…M/m`
-/// - URXVT mouse mode (1015): `\x1b[Cb;Cx;Cy M` — visible as `[N;…M`
-///
-/// crossterm enables both modes (`EnableMouseCapture` emits `?1015h ?1006h`)
-/// and some terminals fall back to URXVT for motion events. If the tail
-/// matches either prefix and the current char fits the continuation pattern
-/// (digits, `;`, `M`, `m`) we treat it as garbage.
-pub(crate) fn is_mouse_sequence_fragment(c: char, buf: &str, cursor: usize) -> bool {
-    // Raw ESC and ETX arriving as KeyCode::Char are never legitimate
-    // typing: crossterm reports Esc as KeyCode::Esc and Ctrl+C as a
-    // control event, so these bytes only reach the char path when an
-    // escape read was split mid-sequence, the head of exactly the
-    // bursts this filter rejects. (#1943)
-    if matches!(c, '\x1b' | '\u{3}') {
-        return true;
-    }
-    // Only bother checking chars that actually appear in mouse sequences
-    if !matches!(c, '[' | '<' | '>' | 'M' | 'm' | ';') && !c.is_ascii_digit() {
-        return false;
-    }
-
-    let mut tail_start = cursor.saturating_sub(30);
-    // Snap to a char boundary — cursor.saturating_sub(30) can land inside
-    // a multi-byte character (e.g. 🦀 is 4 bytes).
-    while tail_start > 0 && !buf.is_char_boundary(tail_start) {
-        tail_start -= 1;
-    }
-    let tail = &buf[tail_start..cursor];
-
-    // SGR mode (1006): `[<` anywhere in the tail starts the sequence.
-    // Everything after it (digits, ;, M/m) is garbage until a non-matching char.
-    if let Some(csi_pos) = tail.rfind("[<") {
-        let after_csi = &tail[csi_pos + 2..];
-        if after_csi
-            .chars()
-            .all(|ch| ch.is_ascii_digit() || matches!(ch, ';' | 'M' | 'm'))
-        {
-            return true;
-        }
-    }
-
-    // URXVT mode (1015): the rightmost `[` in the tail is followed only by
-    // digits/`;` — that's the cb;cx;cy stretch of `\x1b[Cb;Cx;Cy M`. Skip
-    // when the bracket is followed by `<` since that's already handled above.
-    // Requires at least one digit between `[` and the cursor so we don't
-    // false-fire on a bare `[` that the user just typed.
-    if let Some(bracket_pos) = tail.rfind('[') {
-        let after_bracket = &tail[bracket_pos + 1..];
-        if !after_bracket.starts_with('<')
-            && !after_bracket.is_empty()
-            && after_bracket
-                .chars()
-                .all(|ch| ch.is_ascii_digit() || ch == ';')
-            && matches!(c, '0'..='9' | ';' | 'M' | 'm')
-        {
-            return true;
-        }
-    }
-
-    // `[` at the end of tail = CSI just started; the next char picks the
-    // mode (`<` for SGR, digit for URXVT, letter for other CSI) or
-    // continues a sequence whose intermediate bytes were already
-    // suppressed (which leaves `;` or `M`/`m` showing up here too).
-    // Any of those after a stray `[` is garbage.
-    if tail.ends_with('[') && matches!(c, '<' | 'A'..='Z' | 'a'..='z' | '0'..='9' | ';') {
-        return true;
-    }
-
-    // Tail ends with `[<` partially built — suppress digits/; that follow
-    if tail.ends_with("[<")
-        || tail.ends_with(|ch: char| ch.is_ascii_digit() || ch == ';') && tail.contains("[<")
-    {
-        return matches!(c, '0'..='9' | ';' | 'M' | 'm');
-    }
-
-    false
-}
-
 /// Find the byte offset in `text` where the cumulative display width reaches `target_col`.
 fn byte_offset_at_display_col(text: &str, target_col: usize) -> usize {
     let mut width = 0usize;
@@ -2566,16 +2482,12 @@ impl App {
                     self.open_file_picker().await?;
                 }
                 KeyCode::Char(c) if keys::types_character(event.modifiers) => {
-                    // Reject chars that are fragments of mouse tracking CSI
-                    // sequences leaked through tmux pane switches.  Pattern:
-                    // ESC [ < Ps ; Ps ; Ps M  — the ESC is eaten by crossterm
-                    // as KeyCode::Esc, leaving [, <, digits, ;, M as chars.
-                    if is_mouse_sequence_fragment(c, &self.input_buffer, self.cursor_position) {
-                        // silently drop — not real user input
-                    } else {
-                        self.input_buffer.insert(self.cursor_position, c);
-                        self.cursor_position += c.len_utf8();
-                    }
+                    // Mouse-report fragments are already dropped by the
+                    // dispatcher gate (`MouseFragGate`, #1983/#2233) before
+                    // this handler runs, so anything reaching here is real
+                    // typing - including `arr[0]` and `[0; 4]`.
+                    self.input_buffer.insert(self.cursor_position, c);
+                    self.cursor_position += c.len_utf8();
                 }
                 KeyCode::Backspace if event.modifiers.is_empty() && self.cursor_position > 0 => {
                     // Find the previous char boundary

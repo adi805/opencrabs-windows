@@ -657,7 +657,6 @@ pub mod loop_break_test;
 pub mod loop_guard_test;
 pub mod models_session_pair_test;
 pub mod mouse_frag_gate_test;
-pub mod mouse_fragment_filter_test;
 pub mod nonstream_compat_test;
 pub mod onboard_subcommand_surfaces_test;
 pub mod onboarding_brain_test;

@@ -397,7 +397,7 @@ Born from two real incidents (#646, #1178): hard-coded fixture constants broke o
 | Tests — Model Order | 9 | `src/tests/model_order_test.rs` |
 | Tests — Model Refresh | 4 | `src/tests/model_refresh_test.rs` |
 | Tests — Models Picker Dedup | 7 | `src/tests/models_picker_dedup_test.rs` |
-| Tests — Mouse Fragment Filter | 13 | `src/tests/mouse_fragment_filter_test.rs` |
+| Tests — Mouse Frag Gate | 18 | `src/tests/mouse_frag_gate_test.rs` |
 | Tests — Nesting Gate | 4 | `src/tests/nesting_gate_test.rs` |
 | Tests — New Session Pane Binding | 3 | `src/tests/new_session_pane_binding_test.rs` |
 | Tests — No Direct Terminal Writes | 2 | `src/tests/no_direct_terminal_writes_test.rs` |
