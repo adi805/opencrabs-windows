@@ -427,8 +427,21 @@ public final class TerminalPane extends View {
         // last cell and the right edge of the line gets clipped. Measuring first and
         // falling back to one drawText per cell keeps every glyph inside its own column.
         float span = (toCol - fromCol) * cellWidth;
-        if (textPaint.measureText(text, 0, text.length()) <= span) {
+        // The run must occupy exactly its cell span, and natural advances cannot
+        // be trusted to do that. Typeface.MONOSPACE only covers the glyphs its
+        // face carries: the TUI draws box-drawing (└─), arrows and emoji, none of
+        // which are in it, so those cells fall back to another font with a
+        // different advance. Drawing a mixed run at natural advances therefore
+        // accumulates drift, and the tail of the line lands in the wrong column,
+        // which reads as broken table borders and words shoved to the right.
+        //
+        // Scaling the run to its span is what keeps the grid authoritative: the
+        // measured width is corrected once, up front, instead of being assumed.
+        float natural = textPaint.measureText(text, 0, text.length());
+        if (natural > 0f) {
+            textPaint.setTextScaleX(span / natural);
             canvas.drawText(text, 0, text.length(), left, top + baselineOffset, textPaint);
+            textPaint.setTextScaleX(1f);
         } else {
             for (int col = fromCol; col < toCol; col++) {
                 int charIndex = line.findStartOfColumn(col);
