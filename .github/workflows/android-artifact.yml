@@ -325,9 +325,17 @@ jobs:
 
       - name: Assert the APK carries a launcher icon and the boot receiver
         shell: bash
+        env:
+          # The manifest assertion below branches on the build mode, so this
+          # step needs the flag too. It used to live only on the preceding
+          # step, which meant LITE always read as unset here and the lite
+          # build was rejected for having exactly the manifest it was asked
+          # to produce (run 40165998395 died there while the APK was correct).
+          LITE: ${{ inputs.lite }}
         run: |
           set -euo pipefail
           APK=android/out/opencrabs-release.apk
+          echo "build mode: LITE=${LITE:-unset}"
 
           # The icon is a resource, so it is invisible to the dex check above: a
           # build with an empty android/res and no android:icon attribute installs
