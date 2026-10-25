@@ -501,6 +501,7 @@ pub mod tasks_list_test;
 pub mod telegram_callback_session_topic_test;
 pub mod telegram_cancel_token_no_drop_test;
 pub mod telegram_details_fallback_render_test;
+pub mod telegram_dispatcher_panic_test;
 pub mod telegram_draft_streaming_compat_test;
 #[cfg(feature = "telegram")]
 pub mod telegram_file_delivery_test;
