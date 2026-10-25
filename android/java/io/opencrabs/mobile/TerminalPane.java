@@ -519,19 +519,63 @@ public final class TerminalPane extends View {
      * could never be summoned after {@code Keyboard.hide()} or after the first layout.
      * Focus plus an explicit {@code showSoftInput} is what actually opens it.
      */
+    /** Accumulated vertical drag, in px, toward the next wheel notch. */
+    private float scrollAccum;
+    /** Y of the previous MOVE, so a drag can be measured without a VelocityTracker. */
+    private float scrollLastY;
+    /** True once this gesture scrolled, so its UP does not also raise the keyboard. */
+    private boolean scrolledThisGesture;
+
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
-            // Claim the gesture so the UP below is delivered to this view.
+            // Claim the gesture so MOVE and UP below are delivered to this view.
+            scrollAccum = 0f;
+            scrollLastY = event.getY();
+            scrolledThisGesture = false;
+            return true;
+        }
+        if (action == MotionEvent.ACTION_MOVE) {
+            float dy = scrollLastY - event.getY();
+            scrollLastY = event.getY();
+            scrollAccum += dy;
+            float step = Math.max(8f, cellHeight * 0.75f);
+            while (scrollAccum >= step) {
+                sendWheel(true);
+                scrollAccum -= step;
+                scrolledThisGesture = true;
+            }
+            while (scrollAccum <= -step) {
+                sendWheel(false);
+                scrollAccum += step;
+                scrolledThisGesture = true;
+            }
             return true;
         }
         if (action == MotionEvent.ACTION_UP) {
-            requestFocus();
-            Keyboard.show(getContext(), this);
+            // A swipe that scrolled must not also pop the keyboard.
+            if (!scrolledThisGesture) {
+                requestFocus();
+                Keyboard.show(getContext(), this);
+            }
             return true;
         }
         return super.onTouchEvent(event);
+    }
+
+    /**
+     * Send one mouse-wheel notch to the core as an SGR escape sequence.
+     *
+     * <p>The TUI runs with {@code EnableMouseCapture}, so crossterm turns a wheel notch
+     * into {@code TuiEvent::MouseScroll} and the app already routes that to its
+     * scrollback. No new core API is needed: the pane only has to speak the protocol a
+     * desktop terminal speaks. Button 64 is up, 65 is down, and the coordinates just have
+     * to land inside the grid.
+     */
+    private void sendWheel(boolean up) {
+        String seq = "\u001b[<" + (up ? 64 : 65) + ";1;1M";
+        sendBytes(seq.getBytes(StandardCharsets.UTF_8));
     }
 
     /** Flip the soft keyboard for this pane. Returns the state it was moved to. */
