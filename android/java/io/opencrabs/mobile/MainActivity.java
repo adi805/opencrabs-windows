@@ -20,6 +20,7 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -99,6 +100,9 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // First statement in the process's first activity: everything after this point is
+        // covered by the handler, including the setup below.
+        CrashLog.install(this);
         super.onCreate(savedInstanceState);
         askForNotificationPermission();
 
@@ -169,13 +173,17 @@ public class MainActivity extends Activity {
         keyboardToggle = createKeyboardToggle();
         shell.addView(keyboardToggle, keyboardToggleParams());
 
-        // Edge-to-edge first, then the listener: the listener reports the insets that
-        // opt-out produces, so it has to be installed after the window stops fitting.
+        setContentView(shell);
+
+        // Edge-to-edge and the insets listener go in AFTER setContentView. The window
+        // insets controller and the decor view only exist once there is content to
+        // attach them to; touching them earlier is the difference between a running app
+        // and a force close on builds that enforce that ordering.
         applyEdgeToEdge();
         installInsetListener(shell);
         applyImmersive(immersive);
         toolbar.setVisibility(immersive ? View.GONE : View.VISIBLE);
-        setContentView(shell);
+        showPreviousCrash(shell);
 
         if (session != null && session.isRunning()) {
             // Same core as before the rotation: point the new pane at it and let the
@@ -191,6 +199,46 @@ public class MainActivity extends Activity {
             startSession();
         }
         startForegroundServiceInTuiMode();
+    }
+
+    /**
+     * Render the previous run's stack trace, if it crashed.
+     *
+     * <p>The build box has no adb path to the phone, so a force close used to be a dead
+     * end: the system dialog names the app and nothing else. Showing the trace on the next
+     * launch means one screenshot carries the whole diagnosis, and it is dismissed only by
+     * the CLEAR button so it cannot disappear before it is read.
+     */
+    private void showPreviousCrash(FrameLayout shell) {
+        String trace = CrashLog.last(this);
+        if (trace == null) return;
+        Log.e(TAG, "previous run crashed:\n" + trace);
+
+        TextView body = new TextView(this);
+        body.setText(trace);
+        body.setTextColor(0xffffb4b4);
+        body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9);
+        body.setTypeface(Typeface.MONOSPACE);
+        body.setPadding(dp(8), dp(8), dp(8), dp(8));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(body);
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setBackgroundColor(0xff1a0000);
+        panel.addView(scroll, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        TextView dismiss = toolButton("CLEAR CRASH LOG");
+        dismiss.setOnClickListener(v -> {
+            CrashLog.clear(this);
+            shell.removeView(panel);
+        });
+        panel.addView(dismiss, wrap());
+
+        shell.addView(panel, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
     private int dp(int value) {
