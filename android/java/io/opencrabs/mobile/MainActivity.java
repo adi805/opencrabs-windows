@@ -126,7 +126,11 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         immersive = prefs.getBoolean(PREF_IMMERSIVE, false);
         title = new TextView(this);
-        title.setText("OpenCrabs");
+        // The version goes in at creation, not when the grid is reported: every round of
+        // this bug has cost a round trip to work out which build was on the phone, and a
+        // title that only gets its text later cannot answer that if the later path does
+        // not run. The grid numbers replace this string as soon as the first frame paints.
+        title.setText("v" + appVersionName());
         title.setTextColor(0xffe6e6e6);
         title.setTypeface(Typeface.MONOSPACE);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);

@@ -333,6 +333,15 @@ public final class TerminalPane extends View {
         if (drawCount == 1) {
             Log.i(TAG, "tui frame: draw=1 rows=" + rows + " cols=" + cols
                 + " cell=" + cellWidth + "x" + cellHeight);
+            // Report the grid the emulator ACTUALLY holds, at the moment the first frame
+            // is painted. The size listener used to be called only from
+            // updateSessionSize(), which has guards for a zero-width pane and a zero
+            // cell, and in practice it never fired: the title bar kept its initial text
+            // on both a phone and the emulator while the terminal rendered fine, so the
+            // readout the title exists for was never shown. onDraw runs whenever there is
+            // something to paint, and the numbers here are the ones the TUI is really
+            // drawing with, not the ones this class believes it computed.
+            if (sizeListener != null) sizeListener.onSize(cols, rows);
         }
         int baselineOffset = (int) -textPaint.getFontMetrics().ascent;
 
