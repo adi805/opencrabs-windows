@@ -107,8 +107,25 @@ jobs:
         continue-on-error: true
         run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --locked --lib --bins --tests --examples --all-features -- -D warnings
+      - name: Byte-slice ratchet self-test
+        # A checker that has silently learned to find nothing is worse than no
+        # checker, so it ships its own teeth (#2221).
+        run: python3 scripts/check-byte-slice-ratchet.py --self-test
+
+      - name: Clippy, with the byte-slice ratchet
+        # One clippy run does both jobs. -D warnings is still the gate for every
+        # other lint; clippy::string_slice is held at warn by --force-warn (a
+        # group -D beats a later -W, measured) so the ratchet can read the site
+        # list instead of dying on the 900 sites this repo already has. Only a
+        # site that is not in scripts/byte-slice-baseline.txt fails the job.
+        #
+        # The touch matters: on a restored cargo cache every unit reports fresh
+        # and clippy emits no diagnostics at all, which would let the ratchet
+        # pass without checking anything. Forcing our own crate to recompile
+        # keeps dependencies cached and keeps the check real.
+        run: |
+          touch src/lib.rs
+          python3 scripts/check-byte-slice-ratchet.py
 
   # ── Stage 2: Build verification (parallel, gated on lint + audit) ────────
   # Cross-platform BUILD on macOS confirms target compatibility without
