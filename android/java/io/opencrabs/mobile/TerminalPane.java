@@ -62,7 +62,17 @@ public final class TerminalPane extends View {
     public static final String EXTRA_KEYS = "opencrabs.extraKeys";
 
     private TerminalSession session;
-    private int textSizePx = 30;
+    /**
+     * Default glyph height in pixels.
+     *
+     * <p>30 was too big for a phone: the cell advance for a monospace face is about
+     * 0.58 of the text size, so 30px measured 17.4px per cell and a 1080px screen fit
+     * only 62 columns. Prose then wrapped at 62 characters and the right third of the
+     * screen looked empty, which reads as a broken layout even though the grid filled
+     * the width exactly. 22px measures about 12.8px per cell and fits ~84 columns,
+     * close to what Termux gives at its default, and A-/A+ still adjust from here.
+     */
+    private int textSizePx = 22;
     /**
      * Cell advance in pixels, deliberately fractional.
      *
@@ -135,6 +145,14 @@ public final class TerminalPane extends View {
 
     public TerminalSession getSession() {
         return session;
+    }
+
+    /**
+     * Cell advance in pixels, so the activity can print the number the grid was
+     * computed from instead of inferring it from a screenshot.
+     */
+    public float getCellWidth() {
+        return cellWidth;
     }
 
     /**

@@ -141,8 +141,21 @@ public class MainActivity extends Activity {
         // is assigned (it used to be registered before, so a size change that arrived
         // early wrote to a null field) and the pane width in px rides along, so one
         // screenshot answers whether the pane got the whole screen or a padded slice.
-        pane.setSizeListener((cols, rows) ->
-            title.setText("OpenCrabs " + cols + "x" + rows + " " + pane.getWidth() + "px"));
+        pane.setSizeListener((cols, rows) -> {
+            title.setText("OpenCrabs " + cols + "x" + rows + " " + pane.getWidth() + "px");
+            // Report the grid out loud once. "The TUI looks narrow" has three different
+            // causes: a cell width that disagrees with what drawText advances, a pty that
+            // never received the resize, or a pane narrower than the screen. A title bar
+            // readout can be cropped or missed in a screenshot, so the same numbers go
+            // into a toast at the moment the grid is decided: one round trip instead of
+            // three guesses.
+            if (title.getTag() == null) {
+                title.setTag(Boolean.TRUE);
+                Toast.makeText(this, "grid " + cols + "x" + rows
+                    + "  cell " + String.format(java.util.Locale.US, "%.2f", pane.getCellWidth())
+                    + "px  pane " + pane.getWidth() + "px", Toast.LENGTH_LONG).show();
+            }
+        });
 
         TextView full = toolButton("FULL");
         full.setOnClickListener(v -> setFullScreen(!immersive));
