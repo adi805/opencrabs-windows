@@ -328,6 +328,26 @@ else
   fail "no 'session prepared:' line: MainActivity never attached a TerminalSession to the pane"
 fi
 
+# ------------------------------------------------------------- screenshot ----
+# The numbers above say what the pty was TOLD; only pixels say whether the
+# renderer actually painted into that grid. A pane that reports 84 columns and
+# paints 60 of them passes every assertion so far, and that exact gap is how a
+# build that looks broken on a phone shipped through a green smoke run. Capture
+# the frame and keep it in the evidence bundle so the layout can be looked at,
+# not inferred.
+say "screenshot"
+adb exec-out screencap -p > "$OUT/screen.png" 2>/dev/null || true
+if [ -s "$OUT/screen.png" ]; then
+  pass "captured screen.png ($(wc -c < "$OUT/screen.png") bytes)"
+else
+  echo "NOTE: screencap wrote no bytes; the visual evidence is missing for this run"
+fi
+# The first drawn frame logs the cell the grid was computed from, which is the
+# other half of the measurement: cols alone cannot separate a small grid from a
+# large cell.
+tr -d '\r' < "$OUT/logcat-tui.txt" | grep 'tui frame:' | tail -3 > "$OUT/tui-frame.txt" 2>&1 || true
+echo "  $(cat "$OUT/tui-frame.txt" 2>/dev/null | tail -1)"
+
 # -------------------------------------------------------------- core log ----
 # The core's own log is the only place that records WHY the surface is or is
 # not up: the config it actually loaded, any bind refusal, and how far startup
