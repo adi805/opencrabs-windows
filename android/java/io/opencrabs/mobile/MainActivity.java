@@ -142,7 +142,10 @@ public class MainActivity extends Activity {
         // early wrote to a null field) and the pane width in px rides along, so one
         // screenshot answers whether the pane got the whole screen or a padded slice.
         pane.setSizeListener((cols, rows) -> {
-            title.setText("OpenCrabs " + cols + "x" + rows + " " + pane.getWidth() + "px");
+            // Numbers first, name last. The toolbar gives the title weight=1 next to
+            // three buttons, so a narrow phone can clip this string; when that happens
+            // the name is what should be lost, not the measurement the title exists for.
+            title.setText(cols + "x" + rows + " " + pane.getWidth() + "px  OpenCrabs");
             // Report the grid out loud once. "The TUI looks narrow" has three different
             // causes: a cell width that disagrees with what drawText advances, a pty that
             // never received the resize, or a pane narrower than the screen. A title bar
