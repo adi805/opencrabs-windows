@@ -622,7 +622,11 @@ pub(super) fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
     // Track which message index each rendered line belongs to (for click-to-copy)
     let mut line_to_msg: Vec<Option<usize>> = Vec::new();
 
-    let content_width = area.width.saturating_sub(4) as usize; // borders + padding
+    // The chat block is Borders::NONE + Padding(1,1,1,0), so its horizontal chrome is
+    // exactly two columns: one on each side. Reserving four (a leftover from when the
+    // block still drew a border) left two columns of the right edge permanently empty,
+    // which on a phone-width terminal is a visible margin that no text ever fills.
+    let content_width = area.width.saturating_sub(2) as usize; // padding only, no border
 
     // Track how many messages to skip (already rendered as part of a stack)
     let mut skip_count: usize = 0;
