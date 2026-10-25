@@ -23,6 +23,12 @@ name: Android binary (artifact)
 
 on:
   workflow_dispatch:
+    inputs:
+      lite:
+        description: "Build the lite variant: no accessibility service, debug signing."
+        required: false
+        type: boolean
+        default: false
   # Reusable so release-fork.yml can build the APK at the tag being published.
   # Without this the release workflow has no way to produce an Android asset,
   # and the only alternative is attaching an APK that some earlier branch run
@@ -40,6 +46,15 @@ on:
         required: false
         type: string
         default: ""
+      # Lite variant: the accessibility service is stripped from the manifest
+      # and the APK is signed with the committed debug key, so it installs
+      # OVER an already installed debug-signed build and carries none of the
+      # declarations Play Protect blocks. Costs the automation bridge.
+      lite:
+        description: "Build the lite variant (no accessibility service, debug signing)."
+        required: false
+        type: boolean
+        default: false
     # Declared so the caller can pass the signing material by name. The
     # alternative, `secrets: inherit` in release-fork.yml, hands this workflow
     # every secret the repo owns and Semgrep rejects it outright as
@@ -214,6 +229,12 @@ jobs:
           ndk-version: r27d
           add-to-path: false
 
+      # Toggled before the assemble step, which reads android/AndroidManifest.xml
+      # from the working tree: the edit is in the checkout, disposable by design.
+      - name: Strip the accessibility service for the lite variant
+        if: inputs.lite
+        run: python3 scripts/strip-lite-manifest.py android/AndroidManifest.xml android/AndroidManifest.xml
+
       - name: Assemble the APK
         env:
           # Both names: the runner image preinstalls an NDK and exports
@@ -223,9 +244,14 @@ jobs:
           # Release certificate from repo secrets. Without these the script
           # falls back to the committed debug key, and Play Protect blocks
           # debug-signed installs on real phones (v0.2.1, 2026-10-24).
-          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
-          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          # A lite build MUST be debug-signed: the phone already runs a
+          # debug-signed install, and Android refuses to replace an app whose
+          # certificate changed (INSTALL_FAILED_UPDATE_INCOMPATIBLE, shown to
+          # the user as "App not installed"). Blanking these three is what
+          # makes assemble-apk.sh fall back to android/debug.keystore.
+          ANDROID_KEYSTORE_B64: ${{ !inputs.lite && secrets.ANDROID_KEYSTORE_B64 || '' }}
+          ANDROID_KEYSTORE_PASS: ${{ !inputs.lite && secrets.ANDROID_KEYSTORE_PASS || '' }}
+          ANDROID_KEY_ALIAS: ${{ !inputs.lite && secrets.ANDROID_KEY_ALIAS || '' }}
         run: bash android/assemble-apk.sh apk-input/opencrabs
 
       # The APK is now a terminal client, not just a daemon shell: it carries a
@@ -237,6 +263,8 @@ jobs:
       # phone, so it is checked here, against the packed artifact.
       - name: Assert the APK carries the PTY bridge and the terminal emulator
         shell: bash
+        env:
+          LITE: ${{ inputs.lite }}
         run: |
           set -euo pipefail
           APK=android/out/opencrabs-release.apk
@@ -368,11 +396,18 @@ jobs:
             echo "::error::CrabsAccessibilityService is not declared in the packaged manifest."
             exit 1
           fi
-          if ! grep -qF 'android.permission.BIND_ACCESSIBILITY_SERVICE' <<< "$MANIFEST_XML"; then
+          if [ "${LITE:-false}" = "true" ]; then
+            if grep -qF 'BIND_ACCESSIBILITY_SERVICE' <<< "$MANIFEST_XML"; then
+              echo "::error::this is a lite build but the APK still declares BIND_ACCESSIBILITY_SERVICE, so Play Protect will block the install anyway."
+              exit 1
+            fi
+            echo "lite build: accessibility service absent, as intended"
+          elif ! grep -qF 'android.permission.BIND_ACCESSIBILITY_SERVICE' <<< "$MANIFEST_XML"; then
             echo "::error::the accessibility service is declared without BIND_ACCESSIBILITY_SERVICE, so any app could bind it and drive the device."
             exit 1
+          else
+            echo "accessibility service: declared with BIND_ACCESSIBILITY_SERVICE"
           fi
-          echo "accessibility service: declared with BIND_ACCESSIBILITY_SERVICE"
 
       # The badging and dex checks prove what the APK CONTAINS, not who
       # signed it. If the secrets ever go missing (rotated token, moved
@@ -383,7 +418,7 @@ jobs:
       # install block on a user's device. Guarded on the secret being
       # present so fork PRs without secret access keep building debug APKs.
       - name: Assert the APK carries the release certificate
-        if: env.ANDROID_KEYSTORE_B64 != ''
+        if: env.ANDROID_KEYSTORE_B64 != '' && !inputs.lite
         env:
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
@@ -406,10 +441,28 @@ jobs:
           fi
           echo "signer: CN=OpenCrabs Release (private key held in repo secrets)"
 
+      - name: Assert the lite build carries the debug certificate
+        if: inputs.lite
+        run: |
+          set -euo pipefail
+          APK=android/out/opencrabs-release.apk
+          BT="$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/build-tools" -maxdepth 2 -name apksigner -type f 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$BT" ]; then
+            echo "::error::no apksigner under the SDK; cannot verify who signed the APK"
+            exit 1
+          fi
+          CERTS="$("$BT" verify --print-certs "$APK" 2>/dev/null || true)"
+          printf '%s\n' "$CERTS" | grep -E 'certificate DN' || true
+          if ! grep -qi "Android Debug" <<< "$CERTS"; then
+            echo "::error::a lite build must carry the committed debug certificate so it can replace an already installed build. Any other signer fails with INSTALL_FAILED_UPDATE_INCOMPATIBLE."
+            exit 1
+          fi
+          echo "signer: Android Debug (installs over an existing debug-signed install)"
+
       - name: Upload the APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: opencrabs-android-apk
+          name: ${{ inputs.lite && 'opencrabs-android-apk-lite' || 'opencrabs-android-apk' }}
           path: android/out/opencrabs-release.apk
           if-no-files-found: error
           retention-days: 30
