@@ -193,6 +193,11 @@ public final class TerminalPane extends View {
      */
     private void updateSessionSize() {
         if (cellWidth <= 0 || cellHeight <= 0) return;
+        // attachSession runs before the first layout pass, so both dimensions are
+        // still zero here. Sending the clamped 2x2 would make the TUI paint a
+        // two-column frame and then reflow to the real grid, which is one of the
+        // ways the screen ends up looking drawn twice. Wait for a real size.
+        if (getWidth() <= 0 || getHeight() <= 0) return;
         int cols = Math.max(2, getWidth() / cellWidth);
         int rows = Math.max(2, getHeight() / cellHeight);
         if (sizeListener != null) sizeListener.onSize(cols, rows);
