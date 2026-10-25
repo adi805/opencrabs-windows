@@ -203,3 +203,28 @@ fn send_and_caller_walls_never_both_apply() {
         }
     }
 }
+
+/// A URL that merely carries the built-in host keeps the 60s cloud budget.
+///
+/// The endpoint class is a host check (#2234). Before the host comparison was
+/// fixed, a substring match handed any such URL the 120s endpoint budget.
+#[test]
+fn a_lookalike_url_does_not_get_the_endpoint_budget() {
+    for url in [
+        "https://evil.example/?x=inference.opencrabs.com",
+        "https://proxy.example/inference.opencrabs.com/v1",
+        "https://inference.opencrabs.com.attacker.example/v1",
+        "https://notinference.opencrabs.com/v1",
+    ] {
+        assert_eq!(
+            handshake_timeout_for(false, Some(url)),
+            Duration::from_secs(60),
+            "{url} must keep the 60s cloud budget"
+        );
+    }
+    // The real host still gets the endpoint budget.
+    assert_eq!(
+        handshake_timeout_for(false, Some("https://inference.opencrabs.com/v1")),
+        Duration::from_secs(120),
+    );
+}

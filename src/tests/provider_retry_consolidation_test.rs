@@ -529,3 +529,41 @@ fn the_endpoint_profile_is_selected_by_host_not_by_provider_name() {
     );
     assert_eq!(forced.abort_on_consecutive_timeouts, None);
 }
+
+/// A send URL that merely carries the built-in host keeps the default ladder.
+///
+/// The endpoint profile is selected by host (#2234). A substring match used to
+/// hand `https://proxy.example/inference.opencrabs.com/...` the endpoint
+/// profile, including the abort after two consecutive timeouts, on a host that
+/// is not the endpoint at all.
+#[test]
+fn a_lookalike_send_url_does_not_get_the_endpoint_profile() {
+    use crate::brain::provider::custom_openai_compatible::select_retry_config;
+
+    for send_url in [
+        "https://evil.example/?x=inference.opencrabs.com",
+        "https://proxy.example/inference.opencrabs.com/v1/chat/completions",
+        "https://inference.opencrabs.com.attacker.example/v1/chat/completions",
+        "https://notinference.opencrabs.com/v1/chat/completions",
+    ] {
+        let cfg = select_retry_config(None, send_url, "opencrabs", false, "deepseek-v4.1-flash");
+        assert_eq!(
+            cfg.abort_on_consecutive_timeouts, None,
+            "{send_url} must not get the endpoint timeout stop",
+        );
+        assert_eq!(
+            cfg.max_attempts, 4,
+            "{send_url} must keep the default attempt budget",
+        );
+    }
+
+    // The real host still gets the endpoint profile.
+    let built_in = select_retry_config(
+        None,
+        "https://inference.opencrabs.com/v1/chat/completions",
+        "opencrabs",
+        false,
+        "deepseek-v4.1-flash",
+    );
+    assert_eq!(built_in.abort_on_consecutive_timeouts, Some(2));
+}
