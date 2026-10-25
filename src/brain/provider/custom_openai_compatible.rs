@@ -2302,7 +2302,7 @@ impl OpenAIProvider {
         // Qwen, OpenRouter, and :free models: retry on 429 with backoff.
         // OpenRouter upstream providers often have tight per-minute windows
         // that reopen within seconds — bailing to fallback on the first 429
-        // is wasteful when a 3-retry backoff would get through.
+        // is wasteful when a 4-attempt backoff would get through.
         if self.name == "qwen" || self.is_openrouter() || model.ends_with(":free") {
             crate::utils::retry::RetryConfig::qwen_cli_match()
         } else {
@@ -4569,7 +4569,7 @@ impl Provider for OpenAIProvider {
                                     // emits 529 / `overloaded_error` / 503 when the shared
                                     // cluster is temporarily saturated. It's the exact case
                                     // tool_loop's StreamError retry-then-fallback path exists
-                                    // for: retry 3x with backoff, then swap to a healthy
+                                    // for: retry 5x with backoff, then swap to a healthy
                                     // provider. Mapping to StreamError routes it there —
                                     // mapping to ApiError{500} sent it to the catch-all that
                                     // bubbled straight to the TUI.

@@ -599,8 +599,8 @@ pub(crate) fn is_html_error_body(message: &str) -> bool {
 /// True when an HTTP 400 response body looks like a proxy passthrough of
 /// an upstream hiccup rather than a real client-side error. Used by
 /// `is_retryable` so opencode.ai-style "Provider returned error" 400s
-/// go through the 3-retry backoff instead of bailing to fallback on
-/// the first try.
+/// go through the 4-attempt backoff (`RetryConfig::default`) instead of
+/// bailing to fallback on the first try.
 pub(crate) fn is_transient_proxy_400(message: &str, error_type: Option<&str>) -> bool {
     // Real client errors always carry an error_type (OpenAI: "invalid_request_error",
     // "model_not_found", "validation_error", etc.). Treat any non-empty type as
