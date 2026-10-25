@@ -392,20 +392,29 @@ jobs:
             echo "::error::aapt2 could not dump the packaged AndroidManifest.xml, so the service declaration cannot be verified."
             exit 1
           fi
-          if ! grep -qF 'CrabsAccessibilityService' <<< "$MANIFEST_XML"; then
-            echo "::error::CrabsAccessibilityService is not declared in the packaged manifest."
-            exit 1
-          fi
+          # The two modes assert OPPOSITE things, so the checks cannot be
+          # shared. Lite mode strips the declaration on purpose: demanding
+          # it here would reject the one build that installs without
+          # touching Play Protect settings, which is the whole point.
           if [ "${LITE:-false}" = "true" ]; then
             if grep -qF 'BIND_ACCESSIBILITY_SERVICE' <<< "$MANIFEST_XML"; then
               echo "::error::this is a lite build but the APK still declares BIND_ACCESSIBILITY_SERVICE, so Play Protect will block the install anyway."
               exit 1
             fi
-            echo "lite build: accessibility service absent, as intended"
-          elif ! grep -qF 'android.permission.BIND_ACCESSIBILITY_SERVICE' <<< "$MANIFEST_XML"; then
-            echo "::error::the accessibility service is declared without BIND_ACCESSIBILITY_SERVICE, so any app could bind it and drive the device."
-            exit 1
+            if grep -qF 'CrabsAccessibilityService' <<< "$MANIFEST_XML"; then
+              echo "::error::lite build still declares CrabsAccessibilityService, so the strip did not take effect."
+              exit 1
+            fi
+            echo "lite build: accessibility service absent from the manifest, as intended"
           else
+            if ! grep -qF 'CrabsAccessibilityService' <<< "$MANIFEST_XML"; then
+              echo "::error::CrabsAccessibilityService is not declared in the packaged manifest."
+              exit 1
+            fi
+            if ! grep -qF 'android.permission.BIND_ACCESSIBILITY_SERVICE' <<< "$MANIFEST_XML"; then
+              echo "::error::the accessibility service is declared without BIND_ACCESSIBILITY_SERVICE, so any app could bind it and drive the device."
+              exit 1
+            fi
             echo "accessibility service: declared with BIND_ACCESSIBILITY_SERVICE"
           fi
 
