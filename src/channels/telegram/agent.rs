@@ -2219,7 +2219,7 @@ impl TelegramAgent {
                         "Telegram: dispatcher exited unexpectedly — reconnecting in 5s"
                     ),
                     Err(err) => tracing::warn!(
-                        "Telegram: dispatcher could not start ({err}) — reconnecting in 5s"
+                        "Telegram: dispatcher could not start ({err}), reconnecting in 5s"
                     ),
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;

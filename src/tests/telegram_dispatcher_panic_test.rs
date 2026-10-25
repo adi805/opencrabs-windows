@@ -40,7 +40,12 @@ fn a_failed_dispatcher_start_is_logged_before_the_reconnect_sleep() {
         "a failed dispatcher start must be logged, not swallowed by a dropped JoinHandle (#2228)",
     );
 
-    let after = &AGENT_SRC[failed_at..];
+    // `get`, not `[failed_at..]`: the offset comes from `str::find`, so it is
+    // always a char boundary, but indexing says "I prove this" to nobody and
+    // trips the byte-slice ratchet (#2230). `get` cannot panic at all.
+    let after = AGENT_SRC
+        .get(failed_at..)
+        .expect("failed_at comes from str::find, so it is always a char boundary");
     let retry_at = after.find("reconnecting in 5s").expect(
         "the failure log must be followed by the reconnect notice so the operator sees a retry",
     );
