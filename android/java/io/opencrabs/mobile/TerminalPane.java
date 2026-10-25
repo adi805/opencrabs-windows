@@ -47,6 +47,15 @@ public final class TerminalPane extends View {
     /** Set by the extra-keys row so an armed modifier that gets consumed stops glowing. */
     private Runnable modifierListener;
 
+    /** UI state that must survive a restart, shared with the activity's own toggles. */
+    static final String PREFS = "opencrabs.ui";
+    static final String PREF_TEXT_SIZE = "text_px";
+
+    /** Cell sizes the A-/A+ keys step through, in raw pixels. */
+    private static final int TEXT_PX_MIN = 18;
+    private static final int TEXT_PX_MAX = 64;
+    private static final int TEXT_PX_STEP = 3;
+
     private static final int CURSOR_BLINK_MS = 500;
 
     /** View tag on the extra-keys row, so the activity can find or hide it without a field. */
@@ -56,11 +65,28 @@ public final class TerminalPane extends View {
     private int textSizePx = 30;
     private int cellWidth;
     private int cellHeight;
+    /** Last size pushed to the pty, so a layout pass does not re-issue the same resize. */
+    private int lastCols = -1;
+    private int lastRows = -1;
+    /**
+     * Notified with the grid actually pushed to the pty.
+     *
+     * <p>The activity shows it in the title, because a render that looks narrow is
+     * indistinguishable from a pty that was told a narrow width without reading the
+     * number back.
+     */
+    interface SizeListener {
+        void onSize(int cols, int rows);
+    }
+
+    private SizeListener sizeListener;
 
     private final Paint textPaint = new Paint();
     private final Paint fillPaint = new Paint();
     private final RectF tmpRect = new RectF();
     private final StringBuilder runText = new StringBuilder(256);
+    /** Scratch buffer for the per-cell fallback draw, one glyph cluster at a time. */
+    private final StringBuilder cellText = new StringBuilder(8);
 
     private boolean ctrlArmed;
     private boolean altArmed;
@@ -87,7 +113,7 @@ public final class TerminalPane extends View {
         textPaint.setAntiAlias(true);
         textPaint.setTextSize(textSizePx);
         fillPaint.setStyle(Paint.Style.FILL);
-        setTextSizePx(textSizePx);
+        setTextSizePx(loadTextSizePx());
     }
 
     /** Attach the session this pane renders. Call after {@link TerminalSession#initializeEmulator}. */
@@ -124,17 +150,66 @@ public final class TerminalPane extends View {
         invalidate();
     }
 
+    int getTextSizePx() {
+        return textSizePx;
+    }
+
+    /**
+     * Step the cell size, and remember the choice.
+     *
+     * <p>Font size is the biggest lever on a phone screen: a smaller cell fits more rows
+     * AND more columns, so this is the control that decides how much of the TUI is
+     * visible at once. The value is persisted here rather than in the activity because the
+     * pane already has a {@link Context}, and a listener hop through the activity bought
+     * nothing.
+     */
+    public void stepTextSize(int delta) {
+        int next = Math.max(TEXT_PX_MIN,
+            Math.min(TEXT_PX_MAX, textSizePx + delta * TEXT_PX_STEP));
+        setTextSizePx(next);
+        getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(PREF_TEXT_SIZE, next).apply();
+    }
+
+    private int loadTextSizePx() {
+        int stored = getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(PREF_TEXT_SIZE, 0);
+        if (stored <= 0) return textSizePx;
+        return Math.max(TEXT_PX_MIN, Math.min(TEXT_PX_MAX, stored));
+    }
+
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
         updateSessionSize();
     }
 
+    /**
+     * Push the current grid to the pty, and report it.
+     *
+     * <p>Guarded by the last value sent: a layout pass that changed nothing must not
+     * issue another SIGWINCH, because every resize makes the TUI repaint its whole
+     * frame and a resize storm looks like the screen is redrawing itself twice.
+     */
     private void updateSessionSize() {
-        if (session == null || cellWidth <= 0 || cellHeight <= 0) return;
+        if (cellWidth <= 0 || cellHeight <= 0) return;
+        // attachSession runs before the first layout pass, so both dimensions are
+        // still zero here. Sending the clamped 2x2 would make the TUI paint a
+        // two-column frame and then reflow to the real grid, which is one of the
+        // ways the screen ends up looking drawn twice. Wait for a real size.
+        if (getWidth() <= 0 || getHeight() <= 0) return;
         int cols = Math.max(2, getWidth() / cellWidth);
         int rows = Math.max(2, getHeight() / cellHeight);
+        if (sizeListener != null) sizeListener.onSize(cols, rows);
+        if (session == null) return;
+        if (cols == lastCols && rows == lastRows) return;
+        lastCols = cols;
+        lastRows = rows;
         session.updateSize(cols, rows, cellWidth, cellHeight);
+    }
+
+    void setSizeListener(SizeListener listener) {
+        sizeListener = listener;
     }
 
     @Override
@@ -235,7 +310,8 @@ public final class TerminalPane extends View {
                     continue;
                 }
                 if (runStartCol < col && runStyle != Long.MIN_VALUE) {
-                    drawRun(canvas, colors, row, runStartCol, col, runStyle, runText, top, baselineOffset);
+                    drawRun(canvas, colors, line, row, runStartCol, col, runStyle, runText,
+                        top, baselineOffset);
                 }
                 if (col < cols) {
                     runStartCol = col;
@@ -273,8 +349,9 @@ public final class TerminalPane extends View {
         }
     }
 
-    private void drawRun(Canvas canvas, TerminalColors colors, int row, int fromCol, int toCol,
-                         long style, StringBuilder text, int top, int baselineOffset) {
+    private void drawRun(Canvas canvas, TerminalColors colors, TerminalRow line, int row,
+                         int fromCol, int toCol, long style, StringBuilder text, int top,
+                         int baselineOffset) {
         int effect = TextStyle.decodeEffect(style);
         boolean inverse = (effect & TextStyle.CHARACTER_ATTRIBUTE_INVERSE) != 0;
         int fore = resolveColor(colors, TextStyle.decodeForeColor(style));
@@ -298,7 +375,24 @@ public final class TerminalPane extends View {
         textPaint.setFakeBoldText((effect & TextStyle.CHARACTER_ATTRIBUTE_BOLD) != 0);
         textPaint.setTextSkewX((effect & TextStyle.CHARACTER_ATTRIBUTE_ITALIC) != 0 ? -0.25f : 0f);
         textPaint.setAlpha((effect & TextStyle.CHARACTER_ATTRIBUTE_DIM) != 0 ? 140 : 255);
-        canvas.drawText(text, 0, text.length(), left, top + baselineOffset, textPaint);
+        // Draw the run in one call only when it genuinely fits its cell span. Fake bold
+        // widens every glyph advance by a fraction of a pixel, and a whole run drawn at
+        // natural advances then drifts right: over 80 columns the tail lands past the
+        // last cell and the right edge of the line gets clipped. Measuring first and
+        // falling back to one drawText per cell keeps every glyph inside its own column.
+        float span = (toCol - fromCol) * (float) cellWidth;
+        if (textPaint.measureText(text, 0, text.length()) <= span) {
+            canvas.drawText(text, 0, text.length(), left, top + baselineOffset, textPaint);
+        } else {
+            for (int col = fromCol; col < toCol; col++) {
+                int charIndex = line.findStartOfColumn(col);
+                cellText.setLength(0);
+                appendCellText(line, charIndex, cellText);
+                if (cellText.length() == 0) continue;
+                canvas.drawText(cellText, 0, cellText.length(), col * (float) cellWidth,
+                    top + baselineOffset, textPaint);
+            }
+        }
         textPaint.setFakeBoldText(false);
         textPaint.setTextSkewX(0f);
         textPaint.setAlpha(255);
