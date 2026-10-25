@@ -421,36 +421,40 @@ public final class TerminalPane extends View {
         textPaint.setFakeBoldText((effect & TextStyle.CHARACTER_ATTRIBUTE_BOLD) != 0);
         textPaint.setTextSkewX((effect & TextStyle.CHARACTER_ATTRIBUTE_ITALIC) != 0 ? -0.25f : 0f);
         textPaint.setAlpha((effect & TextStyle.CHARACTER_ATTRIBUTE_DIM) != 0 ? 140 : 255);
-        // Draw the run in one call only when it genuinely fits its cell span. Fake bold
-        // widens every glyph advance by a fraction of a pixel, and a whole run drawn at
-        // natural advances then drifts right: over 80 columns the tail lands past the
-        // last cell and the right edge of the line gets clipped. Measuring first and
-        // falling back to one drawText per cell keeps every glyph inside its own column.
-        float span = (toCol - fromCol) * cellWidth;
-        // The run must occupy exactly its cell span, and natural advances cannot
-        // be trusted to do that. Typeface.MONOSPACE only covers the glyphs its
-        // face carries: the TUI draws box-drawing (└─), arrows and emoji, none of
-        // which are in it, so those cells fall back to another font with a
-        // different advance. Drawing a mixed run at natural advances therefore
-        // accumulates drift, and the tail of the line lands in the wrong column,
-        // which reads as broken table borders and words shoved to the right.
+        // Draw one cell at a time, always. A run's natural width cannot be trusted to
+        // equal its cell count: Typeface.MONOSPACE only covers the glyphs its own face
+        // carries, and the TUI draws box-drawing (└─), arrows and emoji that fall back
+        // to another font with a different advance. Drawing a mixed run at natural
+        // advances accumulates drift, so the tail of the line lands in the wrong column.
         //
-        // Scaling the run to its span is what keeps the grid authoritative: the
-        // measured width is corrected once, up front, instead of being assumed.
-        float natural = textPaint.measureText(text, 0, text.length());
-        if (natural > 0f) {
-            textPaint.setTextScaleX(span / natural);
-            canvas.drawText(text, 0, text.length(), left, top + baselineOffset, textPaint);
+        // Scaling the whole run to its span fixes that total width but distorts every
+        // letter in the run, and only on the lines that happen to contain a fallback
+        // glyph: the same sentence came out wider on a line with an emoji than on one
+        // without, which reads as uneven letter spacing and text forced to fit. The grid
+        // stays the authority instead. Each glyph starts at its own column origin, which
+        // makes drift impossible, and only a glyph genuinely wider than the cells it
+        // owns is compressed, so ordinary text is never resized.
+        int lastDrawnCharIndex = -1;
+        for (int col = fromCol; col < toCol; col++) {
+            int charIndex = line.findStartOfColumn(col);
+            // A double-width glyph owns two cells but is stored once; the continuation
+            // cell resolves to the same index, and drawing it again would duplicate the
+            // character and shove the rest of the line one cell right.
+            if (charIndex < 0 || charIndex == lastDrawnCharIndex) continue;
+            lastDrawnCharIndex = charIndex;
+            cellText.setLength(0);
+            appendCellText(line, charIndex, cellText);
+            if (cellText.length() == 0) continue;
+            int codePoint = cellText.codePointAt(0);
+            if (codePoint == 0 || codePoint == ' ') continue;
+            int cells = WcWidth.width(codePoint);
+            if (cells <= 0) continue;
+            float cellSpan = cells * cellWidth;
+            float natural = textPaint.measureText(cellText, 0, cellText.length());
+            if (natural > cellSpan) textPaint.setTextScaleX(cellSpan / natural);
+            canvas.drawText(cellText, 0, cellText.length(), col * cellWidth,
+                top + baselineOffset, textPaint);
             textPaint.setTextScaleX(1f);
-        } else {
-            for (int col = fromCol; col < toCol; col++) {
-                int charIndex = line.findStartOfColumn(col);
-                cellText.setLength(0);
-                appendCellText(line, charIndex, cellText);
-                if (cellText.length() == 0) continue;
-                canvas.drawText(cellText, 0, cellText.length(), col * cellWidth,
-                    top + baselineOffset, textPaint);
-            }
         }
         textPaint.setFakeBoldText(false);
         textPaint.setTextSkewX(0f);
