@@ -148,8 +148,14 @@ fn a_real_announcement_is_caught_in_every_pack() {
 fn ordinary_prose_stays_clean_in_every_pack() {
     let samples = [
         ("en", "The config file lives in the home directory."),
-        ("es", "El archivo de configuración está en el directorio home."),
-        ("fr", "Le fichier de configuration se trouve dans le répertoire personnel."),
+        (
+            "es",
+            "El archivo de configuración está en el directorio home.",
+        ),
+        (
+            "fr",
+            "Le fichier de configuration se trouve dans le répertoire personnel.",
+        ),
         ("id", "File konfigurasi ada di direktori home."),
         ("ru", "Файл конфигурации находится в домашнем каталоге."),
         ("pt", "O ficheiro de configuração está na pasta home."),
