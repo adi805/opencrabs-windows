@@ -61,7 +61,6 @@ public class MainActivity extends Activity {
     private TerminalSession session;
     private TextView title;
     private LinearLayout toolbar;
-    private TextView keyboardToggle;
     private SharedPreferences prefs;
 
     /** True while the IME is up, i.e. while the title bar earns its space back. */
@@ -170,8 +169,6 @@ public class MainActivity extends Activity {
         FrameLayout shell = new FrameLayout(this);
         shell.addView(root, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        keyboardToggle = createKeyboardToggle();
-        shell.addView(keyboardToggle, keyboardToggleParams());
 
         setContentView(shell);
 
@@ -388,42 +385,6 @@ public class MainActivity extends Activity {
         decor.setSystemUiVisibility(flags);
     }
 
-    /**
-     * Floating keyboard switch, drawn on top of the terminal at the bottom-right.
-     *
-     * <p>Kept as a plain {@link TextView} rather than a material FAB because this build
-     * has no androidx: the APK is assembled with javac + d8 from vendored sources, so a
-     * support-library widget would mean unpacking an AAR at build time.
-     */
-    private TextView createKeyboardToggle() {
-        TextView toggle = new TextView(this);
-        // Plain ASCII on purpose: U+2328 (the keyboard glyph) is absent from Roboto on
-        // several Android builds and would render as a tofu box.
-        toggle.setText("KBD");
-        toggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-        toggle.setTextColor(0xff7fd1ff);
-        toggle.setGravity(Gravity.CENTER);
-        toggle.setPadding(dp(12), dp(8), dp(12), dp(8));
-        toggle.setBackgroundColor(0xcc1f1f1f);
-        toggle.setAlpha(0.85f);
-        toggle.setOnClickListener(v -> {
-            boolean shown = pane.toggleKeyboard();
-            v.setAlpha(shown ? 0.45f : 0.85f);
-        });
-        return toggle;
-    }
-
-    /** Sits above the extra-keys row so the two never overlap. */
-    private FrameLayout.LayoutParams keyboardToggleParams() {
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.BOTTOM | Gravity.END);
-        int margin = dp(6);
-        // 44 instead of 56: the extra-keys row below it lost about 10dp when it was
-        // compacted, so the old value left the toggle floating too high.
-        params.setMargins(margin, margin, margin, dp(44));
-        return params;
-    }
 
     /** Build the environment the core expects, then let the pane's first layout spawn it. */
     private void startSession() {
