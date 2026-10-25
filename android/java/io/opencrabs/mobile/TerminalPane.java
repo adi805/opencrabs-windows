@@ -63,7 +63,16 @@ public final class TerminalPane extends View {
 
     private TerminalSession session;
     private int textSizePx = 30;
-    private int cellWidth;
+    /**
+     * Cell advance in pixels, deliberately fractional.
+     *
+     * <p>Rounding it up (the old behaviour) threw away up to a full cell of width on
+     * every column: at 11px per cell a 1080px screen fit 98 columns and left a dead
+     * strip on the right that read as a margin. Keeping the fraction lets
+     * {@code cols = width / cellWidth} use the whole width and the last cell absorb the
+     * remainder.
+     */
+    private float cellWidth;
     private int cellHeight;
     /** Last size pushed to the pty, so a layout pass does not re-issue the same resize. */
     private int lastCols = -1;
@@ -143,8 +152,8 @@ public final class TerminalPane extends View {
         textPaint.setTextSize(textSizePx);
         Paint.FontMetrics fm = textPaint.getFontMetrics();
         cellHeight = (int) Math.ceil(fm.descent - fm.ascent + fm.leading);
-        cellWidth = (int) Math.ceil(textPaint.measureText("M"));
-        if (cellWidth <= 0) cellWidth = textSizePx / 2;
+        cellWidth = textPaint.measureText("M");
+        if (cellWidth <= 0f) cellWidth = textSizePx / 2f;
         requestLayout();
         updateSessionSize();
         invalidate();
@@ -192,20 +201,20 @@ public final class TerminalPane extends View {
      * frame and a resize storm looks like the screen is redrawing itself twice.
      */
     private void updateSessionSize() {
-        if (cellWidth <= 0 || cellHeight <= 0) return;
+        if (cellWidth <= 0f || cellHeight <= 0) return;
         // attachSession runs before the first layout pass, so both dimensions are
         // still zero here. Sending the clamped 2x2 would make the TUI paint a
         // two-column frame and then reflow to the real grid, which is one of the
         // ways the screen ends up looking drawn twice. Wait for a real size.
         if (getWidth() <= 0 || getHeight() <= 0) return;
-        int cols = Math.max(2, getWidth() / cellWidth);
+        int cols = Math.max(2, (int) (getWidth() / cellWidth));
         int rows = Math.max(2, getHeight() / cellHeight);
         if (sizeListener != null) sizeListener.onSize(cols, rows);
         if (session == null) return;
         if (cols == lastCols && rows == lastRows) return;
         lastCols = cols;
         lastRows = rows;
-        session.updateSize(cols, rows, cellWidth, cellHeight);
+        session.updateSize(cols, rows, Math.round(cellWidth), cellHeight);
     }
 
     void setSizeListener(SizeListener listener) {
@@ -380,7 +389,7 @@ public final class TerminalPane extends View {
         // natural advances then drifts right: over 80 columns the tail lands past the
         // last cell and the right edge of the line gets clipped. Measuring first and
         // falling back to one drawText per cell keeps every glyph inside its own column.
-        float span = (toCol - fromCol) * (float) cellWidth;
+        float span = (toCol - fromCol) * cellWidth;
         if (textPaint.measureText(text, 0, text.length()) <= span) {
             canvas.drawText(text, 0, text.length(), left, top + baselineOffset, textPaint);
         } else {
@@ -389,7 +398,7 @@ public final class TerminalPane extends View {
                 cellText.setLength(0);
                 appendCellText(line, charIndex, cellText);
                 if (cellText.length() == 0) continue;
-                canvas.drawText(cellText, 0, cellText.length(), col * (float) cellWidth,
+                canvas.drawText(cellText, 0, cellText.length(), col * cellWidth,
                     top + baselineOffset, textPaint);
             }
         }
