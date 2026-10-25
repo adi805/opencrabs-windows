@@ -141,6 +141,10 @@ jobs:
           done
 
           run_deadline=$((SECONDS + 3600))
+          # Rerun tolerance state. 0 = no attempt observed yet, so the first
+          # failure always opens the window instead of tripping it shut.
+          seen_attempt=0
+          stall_deadline=0
           while :; do
             status=$(printf '%s' "$run" | jq -r '.status')
             conclusion=$(printf '%s' "$run" | jq -r '.conclusion')
@@ -160,8 +164,31 @@ jobs:
                 echo "CI is green on $SHA. Ready to release."
                 exit 0
               fi
-              echo "::error::ci.yml run $id on $SHA concluded '$conclusion'. Refusing to publish a red commit (#2078)."
-              exit 1
+
+              # A red conclusion is not final while auto-rerun is alive.
+              # `Test` is killed by runner preemption (exit 143) often, and
+              # auto-rerun-preempted.yml restarts the SAME run id seconds
+              # later with a higher `run_attempt`. v0.2.2 lost its release
+              # that way: this gate read the failure at 01:36:42.8 and the
+              # rerun landed at 01:36:43.0, 0.2s behind it, so the gate
+              # refuses a commit that is being repaired under it. Refuse
+              # only once the attempt number stops moving instead. (#2078)
+              att=$(gh api "repos/$REPO/actions/runs/$id" -q '.run_attempt' 2>/dev/null || echo "")
+              if [ -z "$att" ] || [ "$att" = "null" ]; then
+                echo "::error::could not read run_attempt for $id, so a real failure cannot be told apart from a rerun."
+                exit 1
+              fi
+
+              if [ "$att" != "$seen_attempt" ]; then
+                echo "run $id attempt $att concluded '$conclusion'; watching 15 minutes for an auto-rerun past it..."
+                seen_attempt="$att"
+                stall_deadline=$((SECONDS + 900))
+              elif [ "$SECONDS" -ge "$stall_deadline" ]; then
+                echo "::error::ci.yml run $id on $SHA stayed '$conclusion' on attempt $att for 15 minutes with no auto-rerun. Refusing to publish a red commit (#2078)."
+                exit 1
+              else
+                echo "still '$conclusion' on attempt $att; auto-rerun window has $((stall_deadline - SECONDS))s left."
+              fi
             fi
 
             if [ "$SECONDS" -ge "$run_deadline" ]; then
