@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.14] - 2026-10-25
+
+26 commits since v0.5.13, 5 contributors. 64 files changed, +7,493 / -365 lines.
+
+This release reaches more people and breaks fewer files. Two new language packs land next to the existing ones, Arabic and Chinese, each with its own script detection, and the non-English packs now carry intent phrases at the same order of magnitude as English instead of a third of it. European Portuguese continuous narration is detected. Four edit-tool defects are fixed: the line operations in `edit_file` no longer drop the final newline or turn a CRLF file into LF, `hashline_edit` joins its output with the file's own line ending, the fuzzy fallback keeps the file's line endings, and a retry is no longer blocked after the missing file appears. CI gained a lint that fails the build when a new byte slice can panic, and the workflow actions, the Rust toolchain and the Linux build image are now pinned to immutable versions.
+
+### ✨ Features
+
+- `344a1959` **phantom**: add a Chinese language pack and CJK script detection (#2223)
+- `ebdc1cc9` **phantom**: add an Arabic language pack and Arabic script detection (#2222)
+
+### 🔧 Fixes
+
+- `855bd6f7` **tools**: join `hashline_edit` output with the file's own line ending (#2227)
+- `c51b6a7e` **tools**: preserve bytes in `edit_file` line operations (#2227)
+- `f07b91b5` **phantom**: bring the non-English packs to comparable coverage (#2225)
+- `03ffa11a` **phantom**: detect European Portuguese continuous narration (#2224)
+- `21f92922` **tasks**: settle a detached task on its row instead of announcing it twice (#2218)
+- `89e6494c` **phantom**: stop the URL check slicing inside multi-byte whitespace (#2220)
+- `c38bf52f` **ci**: pin the linux-amd64 release job to ubuntu-24.04 (#2206)
+- `b876f7ce` **tools**: keep the file's own line endings in the fuzzy edit fallback (#2212)
+- `d3e3758e` **tools**: clear the recent-failure guard when the world changed or a new turn starts (#2211)
+- `688365d0` **tools**: record the post-edit content so the next `write_file` is not refused (#2210)
+
+### 📖 Documentation
+
+- `cd736835` docs: name the Ubuntu 24.04 runtime packages correctly (#2219)
+- `dd7e5202` docs: document how to bump the pinned toolchain (#2215)
+- `896a3b27` docs: add the code of conduct, issue forms and pull request template (#2213)
+- `3ec99974` docs: simplify the sponsors table
+
+### 🧹 Miscellaneous
+
+- `097cf79d` test: format the new pack test modules and samples (#2225)
+- `43687f22` refactor: resolve the language registry through one table (#2226)
+- `1ecb56b5` ci: fail CI on a new `clippy::string_slice` site (#2221)
+- `5d85599a` test: run the published Linux asset before uploading it (#2214)
+- `87a9aab1` ci: run the test suite on Linux, not only on macOS (#2216)
+- `be8e4cf1` ci: pin every workflow action to an immutable commit (#2217)
+- `bb162126` ci: pin the Rust toolchain to 1.98.1 (#2215)
+- `739af815` chore: bump tokio to 1.54.1 (#2205)
+- `3cf5cd94` ci: fail the build when the shipped binary needs a newer glibc than we promise (#2209)
+- `b4dc5c57` ci: build the prerelease linux-amd64 asset on a pinned image (#2208)
+
+### 👥 Contributors
+
+5 contributors this release:
+
+- @adolfousier (Adolfo Usier)
+- @adi805 (Syafriadi)
+- @echo-xiangchen (Echo)
+- @yimengzhiyan (beizhuo li)
+- @VincentFeliciano (Vincent Feliciano)
+
+### 📊 Stats
+
+- 26 commits since v0.5.13
+- 64 files changed, +7,493 / -365 lines
+- 11,407 tests (11,369 passed, 0 failed, 38 ignored)
+
 ## [0.5.13] - 2026-10-24
 
 61 commits since v0.5.12, 5 contributors. 188 files changed, +14,367 / -1,600 lines.
@@ -9715,3 +9775,4 @@ fixes.
 [0.5.11]: https://github.com/opencrabs/opencrabs/compare/v0.5.10...v0.5.11
 [0.5.12]: https://github.com/opencrabs/opencrabs/compare/v0.5.11...v0.5.12
 [0.5.13]: https://github.com/opencrabs/opencrabs/compare/v0.5.12...v0.5.13
+[0.5.14]: https://github.com/opencrabs/opencrabs/compare/v0.5.13...v0.5.14

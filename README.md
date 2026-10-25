@@ -5129,7 +5129,7 @@ cargo build --release
 # Small release build
 cargo build --profile release-small
 
-# Run tests (11,333 tests: 1,170 test files under src/tests/, where tests
+# Run tests (11,407 tests: 1,179 test files under src/tests/, where tests
 # belong — zero inline blocks in production files);
 # 38 slower ones are #[ignore]d to keep the default
 # run fast: profile tests that touch ~/.opencrabs, browser end-to-end
