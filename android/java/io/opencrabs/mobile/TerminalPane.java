@@ -68,6 +68,18 @@ public final class TerminalPane extends View {
     /** Last size pushed to the pty, so a layout pass does not re-issue the same resize. */
     private int lastCols = -1;
     private int lastRows = -1;
+    /**
+     * Notified with the grid actually pushed to the pty.
+     *
+     * <p>The activity shows it in the title, because a render that looks narrow is
+     * indistinguishable from a pty that was told a narrow width without reading the
+     * number back.
+     */
+    interface SizeListener {
+        void onSize(int cols, int rows);
+    }
+
+    private SizeListener sizeListener;
 
     private final Paint textPaint = new Paint();
     private final Paint fillPaint = new Paint();
@@ -172,11 +184,27 @@ public final class TerminalPane extends View {
         updateSessionSize();
     }
 
+    /**
+     * Push the current grid to the pty, and report it.
+     *
+     * <p>Guarded by the last value sent: a layout pass that changed nothing must not
+     * issue another SIGWINCH, because every resize makes the TUI repaint its whole
+     * frame and a resize storm looks like the screen is redrawing itself twice.
+     */
     private void updateSessionSize() {
-        if (session == null || cellWidth <= 0 || cellHeight <= 0) return;
+        if (cellWidth <= 0 || cellHeight <= 0) return;
         int cols = Math.max(2, getWidth() / cellWidth);
         int rows = Math.max(2, getHeight() / cellHeight);
+        if (sizeListener != null) sizeListener.onSize(cols, rows);
+        if (session == null) return;
+        if (cols == lastCols && rows == lastRows) return;
+        lastCols = cols;
+        lastRows = rows;
         session.updateSize(cols, rows, cellWidth, cellHeight);
+    }
+
+    void setSizeListener(SizeListener listener) {
+        sizeListener = listener;
     }
 
     @Override

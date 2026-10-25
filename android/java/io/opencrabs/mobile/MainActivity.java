@@ -54,6 +54,8 @@ public class MainActivity extends Activity {
 
     /** UI state that must survive a restart: font size and the FULL toggle. */
     private static final String PREFS = TerminalPane.PREFS;
+    /** Request code for the system file picker opened by the ATTACH key. */
+    private static final int REQ_ATTACH = 0x0C7A;
     private static final String PREF_IMMERSIVE = "immersive";
 
     private TerminalPane pane;
@@ -120,6 +122,11 @@ public class MainActivity extends Activity {
         }
         pane = new TerminalPane(this);
         client.attachPane(pane);
+        // The title doubles as a size readout: whether the TUI is told 100 columns
+        // or 60 decides if a narrow render is the app's fault or the renderer's,
+        // and this is the only place that number can be seen on a phone.
+        pane.setSizeListener((cols, rows) ->
+            title.setText("OpenCrabs " + cols + "x" + rows));
 
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         immersive = prefs.getBoolean(PREF_IMMERSIVE, false);
@@ -387,7 +394,77 @@ public class MainActivity extends Activity {
 
 
     /** Build the environment the core expects, then let the pane's first layout spawn it. */
+    /**
+     * Kill the pty child when this activity goes away for good.
+     *
+     * <p>The core is a child of this process, and without this it survived every
+     * close: Android kills the app, the child is reparented to init, and the next
+     * launch cannot claim the profile. The rotation path is skipped on purpose:
+     * the session is handed to the next instance through
+     * {@code onRetainNonConfigurationInstance}, so killing it there would restart
+     * the agent on every screen turn.
+     */
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (isChangingConfigurations()) {
+            return;
+        }
+        if (session != null) {
+            session.finishIfRunning();
+            session = null;
+        }
+    }
+
+    /** Open the system picker. The result arrives in {@link #onActivityResult}. */
+    public void pickAttachment() {
+        android.content.Intent intent = new android.content.Intent(
+            android.content.Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        try {
+            startActivityForResult(intent, REQ_ATTACH);
+        } catch (android.content.ActivityNotFoundException e) {
+            Toast.makeText(this, "no file picker on this device", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /**
+     * Copy the picked file into the core's home and type its marker into the prompt.
+     *
+     * <p>The marker is not a private protocol: it is the same {@code <<IMG:path>>}
+     * text the chat channels already send, so the agent resolves it with the tools it
+     * already has instead of needing a new upload endpoint.
+     */
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_ATTACH || resultCode != RESULT_OK || data == null) {
+            return;
+        }
+        android.net.Uri uri = data.getData();
+        if (uri == null) {
+            return;
+        }
+        String marker = Attachments.importToHome(this, uri);
+        if (marker == null) {
+            Toast.makeText(this, "cannot read that file", Toast.LENGTH_LONG).show();
+            return;
+        }
+        // Trailing space, not a newline: the user still wants to add a question,
+        // and submitting here would send the marker on its own.
+        pane.sendText(marker + " ");
+    }
+
     private void startSession() {
+        // Before spawning: a core orphaned by a previous run still holds the
+        // profile's instance lock, and the new one would die with exit 75 after
+        // the preempt path gives up. Killing orphans first is what makes closing
+        // and reopening the app work at all.
+        int reaped = CoreReaper.reapOrphans();
+        if (reaped > 0) {
+            Log.i(TAG, "reaped " + reaped + " orphaned core process(es)");
+        }
         File binary = CoreService.coreBinary(this);
         if (!binary.exists()) {
             String message = "core binary missing: " + binary.getAbsolutePath();

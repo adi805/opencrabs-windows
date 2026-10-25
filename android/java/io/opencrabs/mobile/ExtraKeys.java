@@ -92,6 +92,14 @@ final class ExtraKeys {
             prefs.edit().putBoolean(PREF_KEYS_EXPANDED, false).apply();
             applyExpanded(scroll, handle, false);
         });
+        // Attaching is a phone-only affordance: the picker returns a uri this app
+        // alone can read, so the bytes are copied into the core home and the marker
+        // the chat channels already use is typed into the prompt.
+        addKey(context, row, "ATTACH", v -> {
+            if (context instanceof MainActivity) {
+                ((MainActivity) context).pickAttachment();
+            }
+        });
         addKey(context, row, "HIDE", v -> Keyboard.hide(context, pane));
         handle.setOnClickListener(v -> {
             prefs.edit().putBoolean(PREF_KEYS_EXPANDED, true).apply();
