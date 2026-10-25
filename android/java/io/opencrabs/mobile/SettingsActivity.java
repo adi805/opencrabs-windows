@@ -19,10 +19,18 @@ import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * Provider setup screen: the smallest thing that stops the TUI dead-ending on onboarding.
@@ -69,7 +77,8 @@ public class SettingsActivity extends Activity {
         TextView hint = new TextView(this);
         hint.setText("Written to config.toml and keys.toml in the app's OpenCrabs home. "
             + "Leave base URL empty for a built-in provider; fill it for a custom "
-            + "OpenAI-compatible endpoint.");
+            + "OpenAI-compatible endpoint. A custom provider needs a model: "
+            + "without one the core refuses every turn with MISSING_MODEL.");
         hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         hint.setPadding(0, dp(6), 0, dp(12));
         root.addView(hint);
@@ -78,10 +87,17 @@ public class SettingsActivity extends Activity {
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         baseUrlField = addField(root, "base URL (optional)", "",
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        modelField = addField(root, "model (optional)", "",
+        modelField = addField(root, "model (required for a custom provider)", "",
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         keyField = addField(root, "API key", "",
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+
+        // The model id is the one value this screen cannot invent, so offer
+        // the endpoint's own catalogue instead of asking the user to recall it.
+        Button fetchButton = new Button(this);
+        fetchButton.setText("Fetch models from endpoint");
+        fetchButton.setOnClickListener(v -> fetchModels());
+        root.addView(fetchButton);
 
         Button save = new Button(this);
         save.setText("Save");
@@ -306,9 +322,27 @@ public class SettingsActivity extends Activity {
                 baseUrlField.setText(baseUrl);
             }
         }
+        // The agent default wins, but a provider section carrying its own
+        // default_model is what actually serves the turn, so fall back to it
+        // rather than showing an empty field for a provider that has a model.
         String model = firstValue(config, "agent", "default_model");
+        if (model == null || model.length() == 0) {
+            String providerName = firstValue(config, "agent", "default_provider");
+            if (providerName != null && providerName.length() > 0) {
+                model = firstValue(config, "providers.custom." + providerName,
+                    "default_model");
+                if (model == null || model.length() == 0) {
+                    model = firstValue(config, "providers." + providerName,
+                        "default_model");
+                }
+            }
+        }
         if (model != null && model.length() > 0) {
             modelField.setText(model);
+        } else {
+            // Say it out loud instead of letting the TUI fail with a bare code.
+            status.setText("model is empty for this provider: the core will refuse "
+                + "every turn with MISSING_MODEL until one is set.");
         }
     }
 
@@ -370,6 +404,15 @@ public class SettingsActivity extends Activity {
             status.setText("base URL must start with http");
             return;
         }
+        // A custom provider with no model is exactly the state that makes the
+        // core answer every turn with MISSING_MODEL, and the TUI surfaces that
+        // as a bare code with no pointer back to this screen. Refuse to write it.
+        boolean customProvider = baseUrl.length() > 0;
+        if (customProvider && model.length() == 0) {
+            status.setText("model is required for a custom provider. "
+                + "Tap \"Fetch models from endpoint\" and pick one.");
+            return;
+        }
 
         File home = opencrabsHome();
         if (!home.isDirectory() && !home.mkdirs()) {
@@ -377,7 +420,7 @@ public class SettingsActivity extends Activity {
             return;
         }
 
-        boolean custom = baseUrl.length() > 0;
+        boolean custom = customProvider;
         String providerSection = custom ? "providers.custom." + provider : "providers." + provider;
 
         StringBuilder report = new StringBuilder();
@@ -421,6 +464,119 @@ public class SettingsActivity extends Activity {
         Log.i(TAG, "saved provider=" + provider + " custom=" + custom + " home=" + home);
         status.setText(report.toString());
         keyField.setText("");
+    }
+
+
+    /**
+     * Asks the endpoint which models it serves and lets the user pick one.
+     *
+     * <p>This exists because the model id is the one value the app cannot invent.
+     * A provider with a base URL and a key but no model makes the core answer
+     * every turn with {@code MISSING_MODEL}, and the TUI shows that as a bare
+     * error with no hint about which screen fixes it. The endpoint's own
+     * catalogue is the only source that cannot be wrong about what that
+     * particular endpoint serves.
+     */
+    private void fetchModels() {
+        String baseUrl = baseUrlField.getText().toString().trim();
+        if (!baseUrl.startsWith("http")) {
+            status.setText("fill the base URL first: it decides which /models to ask");
+            return;
+        }
+        final String url = baseUrl.replace("/chat/completions", "") + "/models";
+        final String key = keyField.getText().toString().trim();
+        status.setText("asking " + url + " ...");
+        new Thread(() -> {
+            String body;
+            try {
+                body = fetchModelsBlocking(url, key);
+            } catch (Exception e) {
+                Log.w(TAG, "model fetch failed: " + url, e);
+                body = null;
+            }
+            final String text = body;
+            runOnUiThread(() -> {
+                if (text == null) {
+                    status.setText("cannot read the model list. Type the model id by hand.");
+                    return;
+                }
+                String[] models = parseModelIds(text);
+                if (models.length == 0) {
+                    status.setText("the endpoint listed no model ids. "
+                        + "Type the model id by hand.");
+                    return;
+                }
+                showModelPicker(models);
+            });
+        }).start();
+    }
+
+    /** GET on the /models endpoint, body as text, or null on any non-200. */
+    private static String fetchModelsBlocking(String url, String key) throws IOException {
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(8000);
+            conn.setRequestMethod("GET");
+            if (key.length() > 0) {
+                conn.setRequestProperty("Authorization", "Bearer " + key);
+            }
+            if (conn.getResponseCode() != 200) {
+                Log.w(TAG, "model fetch HTTP " + conn.getResponseCode());
+                return null;
+            }
+            InputStream in = conn.getInputStream();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(in, "UTF-8"));
+            StringBuilder body = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                body.append(line);
+            }
+            reader.close();
+            return body.toString();
+        } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
+        }
+    }
+
+    /** Reads the id field of every entry in an [endpoint]-compatible /models body. */
+    private static String[] parseModelIds(String body) {
+        try {
+            JSONArray data = new JSONObject(body).optJSONArray("data");
+            if (data == null) {
+                return new String[0];
+            }
+            java.util.List<String> ids = new java.util.ArrayList<>();
+            for (int i = 0; i < data.length(); i++) {
+                JSONObject entry = data.optJSONObject(i);
+                if (entry == null) {
+                    continue;
+                }
+                String id = entry.optString("id", "");
+                if (id.length() > 0) {
+                    ids.add(id);
+                }
+            }
+            return ids.toArray(new String[0]);
+        } catch (Exception e) {
+            Log.w(TAG, "cannot parse the model list", e);
+            return new String[0];
+        }
+    }
+
+    /** Scrollable single-choice list: an endpoint can serve dozens of ids. */
+    private void showModelPicker(String[] models) {
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Pick a model")
+            .setItems(models, (dialog, which) -> {
+                modelField.setText(models[which]);
+                status.setText("model set to " + models[which] + ". Tap Save.");
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
     }
 
     private static String readText(File file) {
