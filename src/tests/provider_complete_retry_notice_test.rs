@@ -46,6 +46,7 @@ fn fast_retries(max_attempts: u32) -> RetryConfig {
         max_delay: Duration::from_millis(10),
         backoff_multiplier: 1.0,
         jitter: 0.0,
+        ..Default::default()
     }
 }
 

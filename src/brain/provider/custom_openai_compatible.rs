@@ -2274,6 +2274,41 @@ pub struct OpenAIProvider {
     thinking_loop_timeout: Option<u64>,
 }
 
+/// Pick the retry config for one request from the facts that decide it.
+///
+/// Split out of the provider's `retry_config` method so the selection rules
+/// can be pinned without widening that method's visibility: the decision is a
+/// pure function of the override, the resolved send URL, the provider name,
+/// whether the host is OpenRouter, and the model id.
+pub(crate) fn select_retry_config(
+    override_cfg: Option<&crate::utils::retry::RetryConfig>,
+    send_url: &str,
+    provider_name: &str,
+    is_openrouter: bool,
+    model: &str,
+) -> crate::utils::retry::RetryConfig {
+    if let Some(ovr) = override_cfg {
+        return ovr.clone();
+    }
+    // The built-in endpoint (#2232). A handshake timeout there means the proxy
+    // never answered at all, so the ladder stops after two consecutive
+    // timeouts instead of holding the user for five sends of the 120s endpoint
+    // budget. A 5xx, a 429 or a dropped connection keeps every attempt,
+    // because those are answers.
+    if crate::brain::provider::opencrabs_install::is_opencrabs_endpoint(Some(send_url)) {
+        return crate::utils::retry::RetryConfig::opencrabs_endpoint();
+    }
+    // Qwen, OpenRouter, and :free models: retry on 429 with backoff.
+    // OpenRouter upstream providers often have tight per-minute windows that
+    // reopen within seconds, so bailing to fallback on the first 429 is
+    // wasteful when a 4-attempt backoff would get through.
+    if provider_name == "qwen" || is_openrouter || model.ends_with(":free") {
+        crate::utils::retry::RetryConfig::qwen_cli_match()
+    } else {
+        crate::utils::retry::RetryConfig::default()
+    }
+}
+
 impl OpenAIProvider {
     /// Returns true if this provider targets OpenRouter (detected by base_url).
     fn is_openrouter(&self) -> bool {
@@ -2294,20 +2329,19 @@ impl OpenAIProvider {
     ///   flip rather than a true quota exhaustion. Retrying in-place keeps
     ///   the user on the free tier instead of silently burning paid credits
     ///   on the fallback chain.
+    /// - The built-in endpoint (`inference.opencrabs.com`) stops the ladder
+    ///   after two consecutive handshake timeouts, because a timeout there
+    ///   means the proxy never answered and more sends only repeat the
+    ///   silence (#2232).
     /// - All other providers keep the default (bail-to-fallback on 429).
     fn retry_config(&self, model: &str) -> crate::utils::retry::RetryConfig {
-        if let Some(ref ovr) = self.retry_config_override {
-            return ovr.clone();
-        }
-        // Qwen, OpenRouter, and :free models: retry on 429 with backoff.
-        // OpenRouter upstream providers often have tight per-minute windows
-        // that reopen within seconds — bailing to fallback on the first 429
-        // is wasteful when a 4-attempt backoff would get through.
-        if self.name == "qwen" || self.is_openrouter() || model.ends_with(":free") {
-            crate::utils::retry::RetryConfig::qwen_cli_match()
-        } else {
-            crate::utils::retry::RetryConfig::default()
-        }
+        select_retry_config(
+            self.retry_config_override.as_ref(),
+            &self.send_url(),
+            &self.name,
+            self.is_openrouter(),
+            model,
+        )
     }
 
     /// Create a new OpenAI provider with official API

@@ -124,6 +124,7 @@ async fn every_retryable_error_uses_the_full_patient_budget() {
         max_delay: Duration::from_millis(2),
         backoff_multiplier: 2.0,
         jitter: 0.0,
+        ..Default::default()
     };
 
     let calls = Arc::new(AtomicU32::new(0));
@@ -165,6 +166,7 @@ async fn retry_with_notify_fires_per_attempt_for_surfacing() {
         max_delay: Duration::from_millis(2),
         backoff_multiplier: 2.0,
         jitter: 0.0,
+        ..Default::default()
     };
 
     // Always-failing transient error → exhausts all 4 retries.
@@ -210,6 +212,7 @@ async fn retry_with_notify_does_not_fire_on_success_or_non_retryable() {
         max_delay: Duration::from_millis(2),
         backoff_multiplier: 2.0,
         jitter: 0.0,
+        ..Default::default()
     };
 
     // Immediate success → no notices.
@@ -251,6 +254,7 @@ async fn provider_error_drives_generic_retry() {
         max_delay: Duration::from_millis(5),
         backoff_multiplier: 2.0,
         jitter: 0.0,
+        ..Default::default()
     };
 
     // Transient: fails twice then succeeds.
@@ -297,4 +301,231 @@ async fn provider_error_drives_generic_retry() {
         1,
         "non-retryable must not retry"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Endpoint-scoped ladder stop (#2232).
+//
+// The built-in endpoint is a proxy in front of upstream models, so a handshake
+// timeout there means it never answered at all. Repeating the send only
+// repeats the silence, so its profile stops after two consecutive timeouts.
+// Every other error kind is an ANSWER and keeps the full attempt budget.
+// ---------------------------------------------------------------------------
+
+/// A timeout is the only error kind that may trip the streak.
+#[test]
+fn only_timeouts_count_as_handshake_timeouts() {
+    assert!(RetryableError::is_handshake_timeout(
+        &ProviderError::Timeout(120)
+    ));
+    assert!(!RetryableError::is_handshake_timeout(
+        &ProviderError::ApiError {
+            status: 503,
+            message: "upstream unavailable".to_string(),
+            error_type: None,
+        }
+    ));
+    assert!(!RetryableError::is_handshake_timeout(
+        &ProviderError::RateLimitExceeded("slow down".to_string())
+    ));
+    assert!(!RetryableError::is_handshake_timeout(
+        &ProviderError::StreamError("connection closed".to_string())
+    ));
+}
+
+/// The endpoint profile keeps the patient default budget and adds the streak.
+#[test]
+fn opencrabs_endpoint_profile_is_default_plus_a_timeout_streak() {
+    use crate::utils::retry::RetryConfig;
+
+    let endpoint = RetryConfig::opencrabs_endpoint();
+    let default = RetryConfig::default();
+    assert_eq!(endpoint.max_attempts, default.max_attempts);
+    assert_eq!(endpoint.initial_delay, default.initial_delay);
+    assert_eq!(endpoint.max_delay, default.max_delay);
+    assert_eq!(endpoint.backoff_multiplier, default.backoff_multiplier);
+    assert_eq!(endpoint.jitter, default.jitter);
+    assert_eq!(endpoint.abort_on_consecutive_timeouts, Some(2));
+    // Every other preset keeps the full budget: the streak is opt-in.
+    assert_eq!(default.abort_on_consecutive_timeouts, None);
+    assert_eq!(
+        RetryConfig::qwen_cli_match().abort_on_consecutive_timeouts,
+        None
+    );
+    assert_eq!(
+        RetryConfig::api_aggressive().abort_on_consecutive_timeouts,
+        None
+    );
+}
+
+#[tokio::test]
+async fn two_consecutive_timeouts_stop_the_ladder() {
+    use crate::utils::retry::{RetryConfig, retry};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let cfg = RetryConfig {
+        max_attempts: 4,
+        initial_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(2),
+        backoff_multiplier: 2.0,
+        jitter: 0.0,
+        abort_on_consecutive_timeouts: Some(2),
+    };
+
+    let calls = Arc::new(AtomicU32::new(0));
+    let c2 = calls.clone();
+    let out: Result<i32, ProviderError> = retry(
+        move || {
+            let c = c2.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err(ProviderError::Timeout(120))
+            }
+        },
+        &cfg,
+    )
+    .await;
+
+    assert!(out.is_err());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "two consecutive timeouts must stop the ladder instead of burning all 5 sends"
+    );
+}
+
+#[tokio::test]
+async fn a_5xx_keeps_every_attempt_even_with_a_timeout_streak_configured() {
+    use crate::utils::retry::{RetryConfig, retry};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let cfg = RetryConfig {
+        max_attempts: 4,
+        initial_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(2),
+        backoff_multiplier: 2.0,
+        jitter: 0.0,
+        abort_on_consecutive_timeouts: Some(2),
+    };
+
+    let calls = Arc::new(AtomicU32::new(0));
+    let c2 = calls.clone();
+    let out: Result<i32, ProviderError> = retry(
+        move || {
+            let c = c2.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err(ProviderError::ApiError {
+                    status: 503,
+                    message: "upstream unavailable".to_string(),
+                    error_type: None,
+                })
+            }
+        },
+        &cfg,
+    )
+    .await;
+
+    assert!(out.is_err());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        5,
+        "a 5xx is an answer, so it keeps the full 1 + 4 attempts"
+    );
+}
+
+#[tokio::test]
+async fn an_answer_resets_the_timeout_streak() {
+    use crate::utils::retry::{RetryConfig, retry};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let cfg = RetryConfig {
+        max_attempts: 4,
+        initial_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(2),
+        backoff_multiplier: 2.0,
+        jitter: 0.0,
+        abort_on_consecutive_timeouts: Some(2),
+    };
+
+    // Timeout, 503 (an answer, so the streak resets), timeout, timeout -> the
+    // stop lands on the fourth call, not the second.
+    let calls = Arc::new(AtomicU32::new(0));
+    let c2 = calls.clone();
+    let out: Result<i32, ProviderError> = retry(
+        move || {
+            let c = c2.clone();
+            async move {
+                match c.fetch_add(1, Ordering::SeqCst) {
+                    1 => Err(ProviderError::ApiError {
+                        status: 503,
+                        message: "upstream unavailable".to_string(),
+                        error_type: None,
+                    }),
+                    _ => Err(ProviderError::Timeout(120)),
+                }
+            }
+        },
+        &cfg,
+    )
+    .await;
+
+    assert!(out.is_err());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        4,
+        "the 503 must reset the streak, so the stop lands two timeouts later"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Provider-level selection (#2232).
+//
+// `retry_config()` is what every request path on the [OI] client reads, so the
+// endpoint profile has to be selected there. The check is on the resolved
+// send URL, which means a `[providers.custom.*]` section pointed at the same
+// host gets the same treatment as the built-in `opencrabs` one.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_endpoint_profile_is_selected_by_host_not_by_provider_name() {
+    use crate::brain::provider::custom_openai_compatible::select_retry_config;
+
+    let send_url = "https://inference.opencrabs.com/v1/chat/completions";
+
+    let built_in = select_retry_config(None, send_url, "opencrabs", false, "deepseek-v4.1-flash");
+    assert_eq!(
+        built_in.abort_on_consecutive_timeouts,
+        Some(2),
+        "the built-in endpoint must stop the ladder after two timeouts",
+    );
+
+    // Same host under a different provider name: the host check catches it.
+    let copied = select_retry_config(None, send_url, "my-copy", false, "deepseek-v4.1-flash");
+    assert_eq!(copied.abort_on_consecutive_timeouts, Some(2));
+
+    // Every other cloud provider keeps the full attempt budget.
+    let other = select_retry_config(
+        None,
+        "https://api.openai.com/v1/chat/completions",
+        "openai",
+        false,
+        "gpt-4o",
+    );
+    assert_eq!(other.abort_on_consecutive_timeouts, None);
+    assert_eq!(other.max_attempts, 4);
+
+    // An explicit override wins over the endpoint profile.
+    let override_cfg = crate::utils::retry::RetryConfig::api_aggressive();
+    let forced = select_retry_config(
+        Some(&override_cfg),
+        send_url,
+        "opencrabs",
+        false,
+        "deepseek-v4.1-flash",
+    );
+    assert_eq!(forced.abort_on_consecutive_timeouts, None);
 }

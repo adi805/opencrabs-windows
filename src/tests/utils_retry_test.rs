@@ -61,6 +61,7 @@ async fn test_retryable_error_retries() {
         max_delay: Duration::from_millis(10),
         backoff_multiplier: 2.0,
         jitter: 0.0,
+        ..Default::default()
     };
 
     let call_count = Arc::new(AtomicU32::new(0));
@@ -97,6 +98,7 @@ async fn test_max_attempts_exceeded() {
         max_delay: Duration::from_millis(10),
         backoff_multiplier: 2.0,
         jitter: 0.0,
+        ..Default::default()
     };
 
     let call_count = Arc::new(AtomicU32::new(0));
