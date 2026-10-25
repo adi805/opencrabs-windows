@@ -288,8 +288,14 @@ say "TUI (terminal rendered?)"
 TUI_LINE=""
 for _ in $(seq 1 12); do
   adb logcat -d -s OpenCrabsTerm:V OpenCrabsApp:V > "$OUT/logcat-tui.txt" 2>&1 || true
-  TUI_LINE="$(tr -d '\r' < "$OUT/logcat-tui.txt" | grep -m1 'tui rendered:')"
-  [ -n "$TUI_LINE" ] && break
+  # The pane emits one digest per layout pass, and the first passes run before
+  # the core has written a byte, so they legitimately report chars=0. Reading
+  # the newest digest and waiting while it is still empty is what makes this
+  # assertion describe the app instead of the race: taking the first match
+  # failed a healthy run whose later digest read chars=282 nonEmptyRows=5.
+  TUI_LINE="$(tr -d '\r' < "$OUT/logcat-tui.txt" | grep 'tui rendered:' | tail -1)"
+  TUI_CHARS_NOW="$(printf '%s\n' "$TUI_LINE" | sed -n 's/.*chars=\([0-9]*\).*/\1/p')"
+  [ -n "$TUI_LINE" ] && [ "${TUI_CHARS_NOW:-0}" -gt 0 ] && break
   sleep 5
 done
 echo "  ${TUI_LINE:-<no 'tui rendered:' digest in logcat>}"
