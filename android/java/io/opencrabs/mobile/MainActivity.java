@@ -122,11 +122,6 @@ public class MainActivity extends Activity {
         }
         pane = new TerminalPane(this);
         client.attachPane(pane);
-        // The title doubles as a size readout: whether the TUI is told 100 columns
-        // or 60 decides if a narrow render is the app's fault or the renderer's,
-        // and this is the only place that number can be seen on a phone.
-        pane.setSizeListener((cols, rows) ->
-            title.setText("OpenCrabs " + cols + "x" + rows));
 
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         immersive = prefs.getBoolean(PREF_IMMERSIVE, false);
@@ -139,6 +134,15 @@ public class MainActivity extends Activity {
         // 2dp vertical instead of 4: the title bar is chrome, and every dp it keeps is a
         // dp the terminal does not get.
         title.setPadding(dp(8), dp(2), dp(8), dp(2));
+
+        // The title doubles as a size readout: whether the TUI is told 100 columns or 60
+        // decides if a narrow render is the app's fault or the renderer's, and this is
+        // the only place that number can be seen on a phone. Registered AFTER the field
+        // is assigned (it used to be registered before, so a size change that arrived
+        // early wrote to a null field) and the pane width in px rides along, so one
+        // screenshot answers whether the pane got the whole screen or a padded slice.
+        pane.setSizeListener((cols, rows) ->
+            title.setText("OpenCrabs " + cols + "x" + rows + " " + pane.getWidth() + "px"));
 
         TextView full = toolButton("FULL");
         full.setOnClickListener(v -> setFullScreen(!immersive));

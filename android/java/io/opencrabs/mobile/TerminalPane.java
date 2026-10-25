@@ -152,11 +152,30 @@ public final class TerminalPane extends View {
         textPaint.setTextSize(textSizePx);
         Paint.FontMetrics fm = textPaint.getFontMetrics();
         cellHeight = (int) Math.ceil(fm.descent - fm.ascent + fm.leading);
-        cellWidth = textPaint.measureText("M");
+        cellWidth = measureCellWidth();
         if (cellWidth <= 0f) cellWidth = textSizePx / 2f;
         requestLayout();
         updateSessionSize();
         invalidate();
+    }
+
+    /**
+     * Width of one character cell, measured from a long run instead of a single glyph.
+     *
+     * <p>{@code measureText("M")} reports the advance of one character, and in a
+     * monospace face that can differ from the average advance {@code drawText} actually
+     * uses for a run by a fraction of a pixel. Dividing that fraction into the screen
+     * width is what made the grid disagree with the column count: the pane believed it
+     * had fewer columns than the width it was drawing into. A 32-glyph run averages the
+     * rounding out, so {@code cols * cellWidth} lands on the pane width.
+     */
+    private float measureCellWidth() {
+        final int n = 32;
+        StringBuilder probe = new StringBuilder(n);
+        for (int i = 0; i < n; i++) probe.append('M');
+        float run = textPaint.measureText(probe.toString());
+        if (run > 0f) return run / n;
+        return textPaint.measureText("M");
     }
 
     int getTextSizePx() {
