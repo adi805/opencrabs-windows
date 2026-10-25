@@ -50,6 +50,10 @@ final class ExtraKeys {
         // Through the emulator, so bracketed paste is honoured: writing the text as
         // keystrokes made a multi-line prompt submit at its first newline.
         addKey(context, row, "PASTE", v -> pane.pasteText(readClipboard(context)));
+        // Font size is the biggest lever on a phone: a smaller cell fits more columns AND
+        // more rows, so this row is the one that decides how much of the TUI is visible.
+        addKey(context, row, "A-", v -> pane.stepTextSize(-1));
+        addKey(context, row, "A+", v -> pane.stepTextSize(1));
         addKey(context, row, "HIDE", v -> Keyboard.hide(context, pane));
 
         HorizontalScrollView scroll = new HorizontalScrollView(context);
@@ -68,11 +72,14 @@ final class ExtraKeys {
         TextView key = new TextView(context);
         key.setText(label);
         key.setTypeface(Typeface.MONOSPACE);
-        key.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        key.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         key.setTextColor(0xffe6e6e6);
         key.setGravity(Gravity.CENTER);
-        int padH = (int) (10 * context.getResources().getDisplayMetrics().density);
-        int padV = (int) (6 * context.getResources().getDisplayMetrics().density);
+        // 7/3 instead of 10/6, and 12sp instead of 14sp. Measured cost of the old row was
+        // about 33dp of a 360dp-wide phone before a single line of terminal text: the row
+        // is chrome, so it gets the smallest padding that still leaves a 40dp-ish target.
+        int padH = (int) (7 * context.getResources().getDisplayMetrics().density);
+        int padV = (int) (3 * context.getResources().getDisplayMetrics().density);
         key.setPadding(padH, padV, padH, padV);
         key.setBackgroundColor(0xff2a2a2a);
         key.setClickable(true);
@@ -83,7 +90,7 @@ final class ExtraKeys {
         });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        int gap = (int) (2 * context.getResources().getDisplayMetrics().density);
+        int gap = (int) (1 * context.getResources().getDisplayMetrics().density);
         params.setMargins(gap, gap, gap, gap);
         row.addView(key, params);
         return key;

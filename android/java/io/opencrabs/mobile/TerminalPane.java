@@ -47,6 +47,15 @@ public final class TerminalPane extends View {
     /** Set by the extra-keys row so an armed modifier that gets consumed stops glowing. */
     private Runnable modifierListener;
 
+    /** UI state that must survive a restart, shared with the activity's own toggles. */
+    static final String PREFS = "opencrabs.ui";
+    static final String PREF_TEXT_SIZE = "text_px";
+
+    /** Cell sizes the A-/A+ keys step through, in raw pixels. */
+    private static final int TEXT_PX_MIN = 18;
+    private static final int TEXT_PX_MAX = 64;
+    private static final int TEXT_PX_STEP = 3;
+
     private static final int CURSOR_BLINK_MS = 500;
 
     /** View tag on the extra-keys row, so the activity can find or hide it without a field. */
@@ -87,7 +96,7 @@ public final class TerminalPane extends View {
         textPaint.setAntiAlias(true);
         textPaint.setTextSize(textSizePx);
         fillPaint.setStyle(Paint.Style.FILL);
-        setTextSizePx(textSizePx);
+        setTextSizePx(loadTextSizePx());
     }
 
     /** Attach the session this pane renders. Call after {@link TerminalSession#initializeEmulator}. */
@@ -122,6 +131,34 @@ public final class TerminalPane extends View {
         requestLayout();
         updateSessionSize();
         invalidate();
+    }
+
+    int getTextSizePx() {
+        return textSizePx;
+    }
+
+    /**
+     * Step the cell size, and remember the choice.
+     *
+     * <p>Font size is the biggest lever on a phone screen: a smaller cell fits more rows
+     * AND more columns, so this is the control that decides how much of the TUI is
+     * visible at once. The value is persisted here rather than in the activity because the
+     * pane already has a {@link Context}, and a listener hop through the activity bought
+     * nothing.
+     */
+    public void stepTextSize(int delta) {
+        int next = Math.max(TEXT_PX_MIN,
+            Math.min(TEXT_PX_MAX, textSizePx + delta * TEXT_PX_STEP));
+        setTextSizePx(next);
+        getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(PREF_TEXT_SIZE, next).apply();
+    }
+
+    private int loadTextSizePx() {
+        int stored = getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(PREF_TEXT_SIZE, 0);
+        if (stored <= 0) return textSizePx;
+        return Math.max(TEXT_PX_MIN, Math.min(TEXT_PX_MAX, stored));
     }
 
     @Override

@@ -1,10 +1,13 @@
 package io.opencrabs.mobile;
 
 import android.Manifest;
+import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
@@ -13,6 +16,8 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -46,10 +51,23 @@ public class MainActivity extends Activity {
     private static final String TAG = "OpenCrabsApp";
     private static final int REQ_POST_NOTIFICATIONS = 1;
 
+    /** UI state that must survive a restart: font size and the FULL toggle. */
+    private static final String PREFS = TerminalPane.PREFS;
+    private static final String PREF_IMMERSIVE = "immersive";
+
     private TerminalPane pane;
     private CoreSessionClient client;
     private TerminalSession session;
     private TextView title;
+    private LinearLayout toolbar;
+    private TextView keyboardToggle;
+    private SharedPreferences prefs;
+
+    /** True while the IME is up, i.e. while the title bar earns its space back. */
+    private boolean typing;
+
+    /** User-requested full screen: system bars and title bar hidden. */
+    private boolean immersive;
 
     /**
      * What a configuration change must not destroy.
@@ -100,43 +118,37 @@ public class MainActivity extends Activity {
         pane = new TerminalPane(this);
         client.attachPane(pane);
 
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        immersive = prefs.getBoolean(PREF_IMMERSIVE, false);
         title = new TextView(this);
         title.setText("OpenCrabs");
         title.setTextColor(0xffe6e6e6);
         title.setTypeface(Typeface.MONOSPACE);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         title.setGravity(Gravity.CENTER_VERTICAL);
-        title.setPadding(dp(8), dp(4), dp(8), dp(4));
+        // 2dp vertical instead of 4: the title bar is chrome, and every dp it keeps is a
+        // dp the terminal does not get.
+        title.setPadding(dp(8), dp(2), dp(8), dp(2));
 
-        TextView restart = new TextView(this);
-        restart.setText("RESTART");
-        restart.setTextColor(0xff7fd1ff);
-        restart.setTypeface(Typeface.MONOSPACE);
-        restart.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        restart.setGravity(Gravity.CENTER);
-        restart.setPadding(dp(10), dp(6), dp(10), dp(6));
-        restart.setOnClickListener(v -> restartCore());
+        TextView full = toolButton("FULL");
+        full.setOnClickListener(v -> setFullScreen(!immersive));
 
-        TextView settings = new TextView(this);
-        settings.setText("SETTINGS");
-        settings.setTextColor(0xff7fd1ff);
-        settings.setTypeface(Typeface.MONOSPACE);
-        settings.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        settings.setGravity(Gravity.CENTER);
-        settings.setPadding(dp(10), dp(6), dp(10), dp(6));
+        TextView settings = toolButton("SETTINGS");
         settings.setOnClickListener(v ->
             startActivity(new Intent(this, SettingsActivity.class)));
 
-        LinearLayout toolbar = new LinearLayout(this);
+        TextView restart = toolButton("RESTART");
+        restart.setOnClickListener(v -> restartCore());
+
+        toolbar = new LinearLayout(this);
         toolbar.setOrientation(LinearLayout.HORIZONTAL);
         toolbar.setBackgroundColor(0xff141414);
         LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         toolbar.addView(title, titleParams);
-        toolbar.addView(settings, new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        toolbar.addView(restart, new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        toolbar.addView(full, wrap());
+        toolbar.addView(settings, wrap());
+        toolbar.addView(restart, wrap());
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -154,7 +166,15 @@ public class MainActivity extends Activity {
         FrameLayout shell = new FrameLayout(this);
         shell.addView(root, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        shell.addView(createKeyboardToggle(), keyboardToggleParams());
+        keyboardToggle = createKeyboardToggle();
+        shell.addView(keyboardToggle, keyboardToggleParams());
+
+        // Edge-to-edge first, then the listener: the listener reports the insets that
+        // opt-out produces, so it has to be installed after the window stops fitting.
+        applyEdgeToEdge();
+        installInsetListener(shell);
+        applyImmersive(immersive);
+        toolbar.setVisibility(immersive ? View.GONE : View.VISIBLE);
         setContentView(shell);
 
         if (session != null && session.isRunning()) {
@@ -177,6 +197,149 @@ public class MainActivity extends Activity {
         return (int) (value * getResources().getDisplayMetrics().density);
     }
 
+    /** Compact toolbar button: 12sp monospace, 6dp horizontal padding. */
+    private TextView toolButton(String label) {
+        TextView button = new TextView(this);
+        button.setText(label);
+        button.setTextColor(0xff7fd1ff);
+        button.setTypeface(Typeface.MONOSPACE);
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(dp(6), dp(2), dp(6), dp(2));
+        return button;
+    }
+
+    private static LinearLayout.LayoutParams wrap() {
+        return new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    /**
+     * Stop the window from fitting itself around the system bars.
+     *
+     * <p>This is the fix for the keyboard covering the terminal. {@code
+     * android:windowSoftInputMode="adjustResize"} in the manifest is a no-op for apps
+     * targeting API 30 or newer, and this app targets 35, so the window never shrank and
+     * the IME was simply drawn on top of the prompt line and the extra-keys row. Once the
+     * window stops fitting itself, the insets arrive at {@link #installInsetListener} and
+     * the padding there is what actually keeps content above the keyboard.
+     *
+     * <p>Below API 30 the manifest attribute still works, so the legacy path only records
+     * that it did nothing. Splitting the paths keeps every reference to a class that does
+     * not exist on API 26 inside a method that is never called there.
+     */
+    private void applyEdgeToEdge() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            applyEdgeToEdgeModern();
+        } else {
+            Log.i(TAG, "edge-to-edge skipped: sdk=" + Build.VERSION.SDK_INT
+                + ", adjustResize still applies");
+        }
+    }
+
+    @TargetApi(Build.VERSION_CODES.R)
+    private void applyEdgeToEdgeModern() {
+        getWindow().setDecorFitsSystemWindows(false);
+    }
+
+    private void installInsetListener(View root) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            installInsetListenerModern(root);
+        } else {
+            installInsetListenerLegacy(root);
+        }
+    }
+
+    /**
+     * Pad the shell by the bars and the IME, whichever reaches further.
+     *
+     * <p>max() and not a sum: with the keyboard down the IME inset is zero and the
+     * navigation bar is the constraint, with it up the IME already covers that bar, so
+     * adding them would leave a dead strip of black under the extra-keys row.
+     *
+     * <p>The same pass is the single source of truth for "the user is typing", which is
+     * what collapses the title bar. Deriving it from the inset instead of tracking IME
+     * show/hide calls means a swipe-down keyboard, a hardware keyboard, or a rotation
+     * cannot leave the bar in the wrong state.
+     */
+    @TargetApi(Build.VERSION_CODES.R)
+    private void installInsetListenerModern(View root) {
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
+            Insets ime = insets.getInsets(WindowInsets.Type.ime());
+            v.setPadding(0, bars.top, 0, Math.max(bars.bottom, ime.bottom));
+            setTyping(ime.bottom > 0);
+            return insets;
+        });
+    }
+
+    @SuppressWarnings("deprecation")
+    private void installInsetListenerLegacy(View root) {
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            v.setPadding(0, insets.getSystemWindowInsetTop(), 0,
+                insets.getSystemWindowInsetBottom());
+            setTyping(insets.getSystemWindowInsetBottom() > dp(60));
+            return insets;
+        });
+    }
+
+    /**
+     * Collapse the title bar while the keyboard is up.
+     *
+     * <p>On a 360dp-wide phone the bar costs about 22dp plus the status bar, and while
+     * typing that is the difference between seeing the last few lines of the TUI and not.
+     * Guarded by the previous value because this runs from an insets pass: flipping
+     * visibility unconditionally would request another layout on every inset delivery.
+     */
+    private void setTyping(boolean nowTyping) {
+        if (nowTyping == typing) return;
+        typing = nowTyping;
+        // Immersive already hides the bar, so it owns visibility while it is on.
+        if (!immersive) toolbar.setVisibility(typing ? View.GONE : View.VISIBLE);
+    }
+
+    private void setFullScreen(boolean on) {
+        immersive = on;
+        prefs.edit().putBoolean(PREF_IMMERSIVE, on).apply();
+        applyImmersive(on);
+        toolbar.setVisibility(on || typing ? View.GONE : View.VISIBLE);
+        Toast.makeText(this, on ? "FULL: swipe to reveal bars" : "FULL off",
+            Toast.LENGTH_SHORT).show();
+    }
+
+    private void applyImmersive(boolean on) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            applyImmersiveModern(on);
+        } else {
+            applyImmersiveLegacy(on);
+        }
+    }
+
+    @TargetApi(Build.VERSION_CODES.R)
+    private void applyImmersiveModern(boolean on) {
+        WindowInsetsController controller = getWindow().getInsetsController();
+        if (controller == null) return;
+        if (on) {
+            controller.hide(WindowInsets.Type.systemBars());
+            controller.setSystemBarsBehavior(
+                WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        } else {
+            controller.show(WindowInsets.Type.systemBars());
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void applyImmersiveLegacy(boolean on) {
+        View decor = getWindow().getDecorView();
+        int flags = decor.getSystemUiVisibility();
+        if (on) {
+            flags |= View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+        } else {
+            flags &= ~(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION);
+        }
+        decor.setSystemUiVisibility(flags);
+    }
+
     /**
      * Floating keyboard switch, drawn on top of the terminal at the bottom-right.
      *
@@ -184,7 +347,7 @@ public class MainActivity extends Activity {
      * has no androidx: the APK is assembled with javac + d8 from vendored sources, so a
      * support-library widget would mean unpacking an AAR at build time.
      */
-    private View createKeyboardToggle() {
+    private TextView createKeyboardToggle() {
         TextView toggle = new TextView(this);
         // Plain ASCII on purpose: U+2328 (the keyboard glyph) is absent from Roboto on
         // several Android builds and would render as a tofu box.
@@ -208,7 +371,9 @@ public class MainActivity extends Activity {
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM | Gravity.END);
         int margin = dp(6);
-        params.setMargins(margin, margin, margin, dp(56));
+        // 44 instead of 56: the extra-keys row below it lost about 10dp when it was
+        // compacted, so the old value left the toggle floating too high.
+        params.setMargins(margin, margin, margin, dp(44));
         return params;
     }
 
