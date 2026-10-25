@@ -65,6 +65,17 @@ pub(crate) fn eol_at(content: &str, spans: &[(usize, usize)], index: usize) -> &
     "\n"
 }
 
+/// The ending a whole-document rebuild should use.
+///
+/// For callers that cannot splice because they replace the document wholesale
+/// (`hashline_edit` applies edits bottom-up over a line vector). A file with
+/// equal counts of both endings is treated as LF, the commoner case.
+pub(crate) fn dominant_eol(content: &str) -> &'static str {
+    let crlf = content.matches("\r\n").count();
+    let lf = content.matches('\n').count().saturating_sub(crlf);
+    if crlf > lf { "\r\n" } else { "\n" }
+}
+
 /// Rewrite caller-supplied text with `eol` as its line separator.
 ///
 /// `read_file` shows the model CR-stripped text, so a multi-line replacement

@@ -183,11 +183,18 @@ impl Tool for HashlineEditTool {
             apply_edit(&mut result_lines, edit);
         }
 
-        let new_content = result_lines.join("\n");
+        // Join with the file's own ending (#2227). A bare `\n` here rewrote
+        // every line of a CRLF file: editing one line converted the whole
+        // document to LF, and the result diff only listed the changed line, so
+        // nothing said so. This tool applies edits bottom-up over a line
+        // vector, so a mixed-ending file cannot keep per-line endings; the
+        // dominant ending wins, which `hashline_crlf_2227_test` pins.
+        let eol = crate::brain::tools::line_ops::dominant_eol(&content);
+        let new_content = result_lines.join(eol);
 
-        // Preserve trailing newline if original had one
+        // Preserve the final newline if the original had one
         let new_content = if content.ends_with('\n') && !new_content.ends_with('\n') {
-            format!("{}\n", new_content)
+            format!("{}{}", new_content, eol)
         } else {
             new_content
         };
