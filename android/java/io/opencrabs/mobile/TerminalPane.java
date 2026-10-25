@@ -65,11 +65,16 @@ public final class TerminalPane extends View {
     private int textSizePx = 30;
     private int cellWidth;
     private int cellHeight;
+    /** Last size pushed to the pty, so a layout pass does not re-issue the same resize. */
+    private int lastCols = -1;
+    private int lastRows = -1;
 
     private final Paint textPaint = new Paint();
     private final Paint fillPaint = new Paint();
     private final RectF tmpRect = new RectF();
     private final StringBuilder runText = new StringBuilder(256);
+    /** Scratch buffer for the per-cell fallback draw, one glyph cluster at a time. */
+    private final StringBuilder cellText = new StringBuilder(8);
 
     private boolean ctrlArmed;
     private boolean altArmed;
@@ -272,7 +277,8 @@ public final class TerminalPane extends View {
                     continue;
                 }
                 if (runStartCol < col && runStyle != Long.MIN_VALUE) {
-                    drawRun(canvas, colors, row, runStartCol, col, runStyle, runText, top, baselineOffset);
+                    drawRun(canvas, colors, line, row, runStartCol, col, runStyle, runText,
+                        top, baselineOffset);
                 }
                 if (col < cols) {
                     runStartCol = col;
@@ -310,8 +316,9 @@ public final class TerminalPane extends View {
         }
     }
 
-    private void drawRun(Canvas canvas, TerminalColors colors, int row, int fromCol, int toCol,
-                         long style, StringBuilder text, int top, int baselineOffset) {
+    private void drawRun(Canvas canvas, TerminalColors colors, TerminalRow line, int row,
+                         int fromCol, int toCol, long style, StringBuilder text, int top,
+                         int baselineOffset) {
         int effect = TextStyle.decodeEffect(style);
         boolean inverse = (effect & TextStyle.CHARACTER_ATTRIBUTE_INVERSE) != 0;
         int fore = resolveColor(colors, TextStyle.decodeForeColor(style));
@@ -335,7 +342,24 @@ public final class TerminalPane extends View {
         textPaint.setFakeBoldText((effect & TextStyle.CHARACTER_ATTRIBUTE_BOLD) != 0);
         textPaint.setTextSkewX((effect & TextStyle.CHARACTER_ATTRIBUTE_ITALIC) != 0 ? -0.25f : 0f);
         textPaint.setAlpha((effect & TextStyle.CHARACTER_ATTRIBUTE_DIM) != 0 ? 140 : 255);
-        canvas.drawText(text, 0, text.length(), left, top + baselineOffset, textPaint);
+        // Draw the run in one call only when it genuinely fits its cell span. Fake bold
+        // widens every glyph advance by a fraction of a pixel, and a whole run drawn at
+        // natural advances then drifts right: over 80 columns the tail lands past the
+        // last cell and the right edge of the line gets clipped. Measuring first and
+        // falling back to one drawText per cell keeps every glyph inside its own column.
+        float span = (toCol - fromCol) * (float) cellWidth;
+        if (textPaint.measureText(text, 0, text.length()) <= span) {
+            canvas.drawText(text, 0, text.length(), left, top + baselineOffset, textPaint);
+        } else {
+            for (int col = fromCol; col < toCol; col++) {
+                int charIndex = line.findStartOfColumn(col);
+                cellText.setLength(0);
+                appendCellText(line, charIndex, cellText);
+                if (cellText.length() == 0) continue;
+                canvas.drawText(cellText, 0, cellText.length(), col * (float) cellWidth,
+                    top + baselineOffset, textPaint);
+            }
+        }
         textPaint.setFakeBoldText(false);
         textPaint.setTextSkewX(0f);
         textPaint.setAlpha(255);
