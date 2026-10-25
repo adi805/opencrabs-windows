@@ -247,9 +247,24 @@ completion_claims = [
 line_start_re = "(?im)^[\\s\\-*•>]*(?:(?:ok|okay|bem|certo|tá|ta)\\s*,?\\s+)?(?:agora\\s+)?(?:deixe-me|vou|vamos|preciso|tenho que|devo|deveria|tenho de)\\s+\\w"
 
 # Anúncio de trabalho em curso que encerra o turno sem chamar nenhuma
-# ferramenta — "Executando os testes agora.", "Verificando…". Exige gerúndio
-# de ação + marcador de iminência (agora / … / : ).
-work_announcement_re = "(?i)^[\\s\\-*•>]*(?:(?:(?:e\\s+)?depois|(?:e\\s+)?ent[ãa]o|em\\s+seguida|logo\\s+ap[óo]s|e)[,]?\\s+)?(?:(?:ok|okay|bem|certo|tá|ta)[,.!:]?\\s+)?(?:estou\\s+|agora\\s+)?(?:executando|rodando|verificando|revisando|checando|construindo|compilando|testando|buscando|lendo|escrevendo|criando|gerando|atualizando|modificando|instalando|aplicando|implantando|baixando|enviando|removendo|deletando|corrigindo|consertando|analisando|investigando)\\b[^.!?:\\n]{0,60}?(?:\\s+agora(?:[.!…,:]+|\\s*(?:\\n|$))|\\.{3}|…|:\\s*(?:\\n|$))"
+# ferramenta. Este ficheiro leva as DUAS variantes do português, em grupos
+# visíveis, porque ambas descrevem o mesmo ato e partilham o mesmo pack
+# (#2224):
+#
+#   PT-PT: estar + "a" + infinitivo, "Estou a carregar os ficheiros."
+#     A forma contínua não descreve trabalho terminado, por isso não exige
+#     marcador de iminência. Todas as pessoas de estar entram: estou,
+#     estamos, está, estão, estava, estávamos, estavas, estavam. Uma frase
+#     de estado com o sujeito à frente ("O servidor está a rodar bem") fica
+#     de fora porque o braço está ancorado ao início da oração, e o sujeito
+#     ocupa essa posição. Não usar lookahead aqui: a crate `regex` não o
+#     suporta, `Regex::new` devolve Err e o braço inteiro morre em silêncio.
+#
+#   PT-BR: gerúndio, "Executando os testes agora.", "Estou carregando os
+#     arquivos agora." O gerúndio continua a exigir marcador (agora / … /
+#     :), senão "Executando os testes revelou três falhas" passaria a ser
+#     lido como anúncio.
+work_announcement_re = "(?i)^[\\s\\-*•>]*(?:(?:(?:e\\s+)?depois|(?:e\\s+)?ent[ãa]o|em\\s+seguida|logo\\s+ap[óo]s|e)[,]?\\s+)?(?:(?:ok|okay|bem|certo|tá|ta)[,.!:]?\\s+)?(?:(?:estou|estamos|est[áa]|est[ãa]o|estava|est[áa]vamos|estavas|estavam)\\s+a\\s+(?:carregar|executar|rodar|correr|verificar|revisar|checar|construir|compilar|testar|buscar|ler|escrever|criar|gerar|atualizar|modificar|instalar|aplicar|implantar|baixar|enviar|remover|deletar|corrigir|consertar|analisar|investigar|rever|configurar|mapear|planejar|planear|preparar|listar|documentar|limpar|reiniciar)\\b|(?:estou\\s+|agora\\s+)?(?:carregando|executando|rodando|verificando|revisando|checando|construindo|compilando|testando|buscando|lendo|escrevendo|criando|gerando|atualizando|modificando|instalando|aplicando|implantando|baixando|enviando|removendo|deletando|corrigindo|consertando|analisando|investigando)\\b[^.!?:\\n]{0,60}?(?:\\s+agora(?:[.!…,:]+|\\s*(?:\\n|$))|\\.{3}|…|:\\s*(?:\\n|$)))"
 # Gerund-led plan announcement carrying NO imminence marker — "Setting up the
 # plan, then mapping every call site before touching anything." Two reasons
 # the patterns above cannot see it (#1261): the verb is a PREPARATION verb
