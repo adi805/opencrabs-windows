@@ -115,7 +115,7 @@ fn the_pack_list_is_the_one_under_test() {
     // a second edit here. This pins the count so the floors cannot quietly
     // apply to fewer packs than the binary ships.
     assert_eq!(all_langs().len(), Lang::ALL.len());
-    assert_eq!(Lang::ALL.len(), 7);
+    assert_eq!(Lang::ALL.len(), 8);
 }
 
 /// One real announcement per pack, in the shape a speaker of that language
@@ -130,6 +130,8 @@ fn a_real_announcement_is_caught_in_every_pack() {
         ("id", "Saya akan memperbarui file konfigurasi."),
         ("ru", "Я обновлю файл конфигурации."),
         ("pt", "Vou atualizar o ficheiro de configuração."),
+        ("ar", "سأحدث ملف الإعدادات الآن."),
+        ("zh", "我会更新配置文件。"),
     ];
     for (code, sentence) in samples {
         assert!(
@@ -151,6 +153,8 @@ fn ordinary_prose_stays_clean_in_every_pack() {
         ("id", "File konfigurasi ada di direktori home."),
         ("ru", "Файл конфигурации находится в домашнем каталоге."),
         ("pt", "O ficheiro de configuração está na pasta home."),
+        ("ar", "ملف الإعدادات موجود في المجلد الرئيسي."),
+        ("zh", "配置文件位于用户主目录下。"),
     ];
     for (code, sentence) in samples {
         assert!(

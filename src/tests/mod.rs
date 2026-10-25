@@ -715,6 +715,7 @@ pub mod phantom_pt_pt_continuous_2224_test;
 pub mod phantom_structured_report_test;
 pub mod phantom_unbacked_facts_test;
 pub mod phantom_url_char_boundary_2220_test;
+pub mod phantom_zh_2223_test;
 pub mod plan_approval_gate_test;
 pub mod plan_card_budget_test;
 pub mod plan_card_line_breaks_test;
