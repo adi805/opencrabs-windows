@@ -670,6 +670,21 @@ fi
 OTHER=$(grep -icE 'ANR in|FATAL EXCEPTION' "$OUT/logcat-full.txt" 2>/dev/null) || OTHER=0
 echo "NOTE: unscoped ANR/fatal lines anywhere in logcat: ${OTHER:-0} (informational, not a failure)"
 
+# ------------------------------------------------------------- screenshot ----
+# Half the layout complaints are visual ("the content does not fill the width", "it
+# looks drawn twice") and no assertion can judge them. One frame per run turns that
+# into an image a human can look at afterwards, instead of a guess made from a
+# description. Non-zero bytes are the whole check: whether the layout is *right* is
+# still a judgement call, but "is there a frame at all" is not.
+say "screenshot"
+adb exec-out screencap -p > "$OUT/screen.png" 2> "$OUT/screencap.err" || true
+if [ -s "$OUT/screen.png" ]; then
+  pass "screenshot captured ($(wc -c < "$OUT/screen.png" | tr -d ' ') bytes)"
+else
+  cat "$OUT/screencap.err" 2>/dev/null || true
+  fail "screenshot capture produced no bytes"
+fi
+
 # ---------------------------------------------------------------- summary ----
 say "summary"
 printf 'sdk=%s abi=%s app_pid=%s core_pid=%s core_pid_after=%s failures=%s\n' \
