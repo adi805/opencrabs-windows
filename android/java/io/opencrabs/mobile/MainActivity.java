@@ -145,7 +145,8 @@ public class MainActivity extends Activity {
             // Numbers first, name last. The toolbar gives the title weight=1 next to
             // three buttons, so a narrow phone can clip this string; when that happens
             // the name is what should be lost, not the measurement the title exists for.
-            title.setText(cols + "x" + rows + " " + pane.getWidth() + "px  OpenCrabs");
+            title.setText(cols + "x" + rows + " c" + Math.round(pane.getCellWidth())
+                + " " + pane.getWidth() + " v" + appVersionName());
             // Report the grid out loud once. "The TUI looks narrow" has three different
             // causes: a cell width that disagrees with what drawText advances, a pty that
             // never received the resize, or a pane narrower than the screen. A title bar
@@ -156,7 +157,8 @@ public class MainActivity extends Activity {
                 title.setTag(Boolean.TRUE);
                 Toast.makeText(this, "grid " + cols + "x" + rows
                     + "  cell " + String.format(java.util.Locale.US, "%.2f", pane.getCellWidth())
-                    + "px  pane " + pane.getWidth() + "px", Toast.LENGTH_LONG).show();
+                    + "px  pane " + pane.getWidth() + "px  v" + appVersionName(),
+                    Toast.LENGTH_LONG).show();
             }
         });
 
@@ -263,6 +265,15 @@ public class MainActivity extends Activity {
 
         shell.addView(panel, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    /** Version name from the manifest, so one screenshot identifies the build behind it. */
+    private String appVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "?";
+        }
     }
 
     private int dp(int value) {
