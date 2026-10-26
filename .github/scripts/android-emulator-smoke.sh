@@ -288,8 +288,14 @@ say "TUI (terminal rendered?)"
 TUI_LINE=""
 for _ in $(seq 1 12); do
   adb logcat -d -s OpenCrabsTerm:V OpenCrabsApp:V > "$OUT/logcat-tui.txt" 2>&1 || true
-  TUI_LINE="$(tr -d '\r' < "$OUT/logcat-tui.txt" | grep -m1 'tui rendered:')"
-  [ -n "$TUI_LINE" ] && break
+  # The pane emits one digest per layout pass, and the first passes run before
+  # the core has written a byte, so they legitimately report chars=0. Reading
+  # the newest digest and waiting while it is still empty is what makes this
+  # assertion describe the app instead of the race: taking the first match
+  # failed a healthy run whose later digest read chars=282 nonEmptyRows=5.
+  TUI_LINE="$(tr -d '\r' < "$OUT/logcat-tui.txt" | grep 'tui rendered:' | tail -1)"
+  TUI_CHARS_NOW="$(printf '%s\n' "$TUI_LINE" | sed -n 's/.*chars=\([0-9]*\).*/\1/p')"
+  [ -n "$TUI_LINE" ] && [ "${TUI_CHARS_NOW:-0}" -gt 0 ] && break
   sleep 5
 done
 echo "  ${TUI_LINE:-<no 'tui rendered:' digest in logcat>}"
@@ -321,6 +327,26 @@ if grep -q "session prepared:" "$OUT/logcat-tui.txt"; then
 else
   fail "no 'session prepared:' line: MainActivity never attached a TerminalSession to the pane"
 fi
+
+# ------------------------------------------------------------- screenshot ----
+# The numbers above say what the pty was TOLD; only pixels say whether the
+# renderer actually painted into that grid. A pane that reports 84 columns and
+# paints 60 of them passes every assertion so far, and that exact gap is how a
+# build that looks broken on a phone shipped through a green smoke run. Capture
+# the frame and keep it in the evidence bundle so the layout can be looked at,
+# not inferred.
+say "screenshot"
+adb exec-out screencap -p > "$OUT/screen.png" 2>/dev/null || true
+if [ -s "$OUT/screen.png" ]; then
+  pass "captured screen.png ($(wc -c < "$OUT/screen.png") bytes)"
+else
+  echo "NOTE: screencap wrote no bytes; the visual evidence is missing for this run"
+fi
+# The first drawn frame logs the cell the grid was computed from, which is the
+# other half of the measurement: cols alone cannot separate a small grid from a
+# large cell.
+tr -d '\r' < "$OUT/logcat-tui.txt" | grep 'tui frame:' | tail -3 > "$OUT/tui-frame.txt" 2>&1 || true
+echo "  $(cat "$OUT/tui-frame.txt" 2>/dev/null | tail -1)"
 
 # -------------------------------------------------------------- core log ----
 # The core's own log is the only place that records WHY the surface is or is
@@ -669,6 +695,21 @@ fi
 # visible in the log, but never let it fail the run.
 OTHER=$(grep -icE 'ANR in|FATAL EXCEPTION' "$OUT/logcat-full.txt" 2>/dev/null) || OTHER=0
 echo "NOTE: unscoped ANR/fatal lines anywhere in logcat: ${OTHER:-0} (informational, not a failure)"
+
+# ------------------------------------------------------------- screenshot ----
+# Half the layout complaints are visual ("the content does not fill the width", "it
+# looks drawn twice") and no assertion can judge them. One frame per run turns that
+# into an image a human can look at afterwards, instead of a guess made from a
+# description. Non-zero bytes are the whole check: whether the layout is *right* is
+# still a judgement call, but "is there a frame at all" is not.
+say "screenshot"
+adb exec-out screencap -p > "$OUT/screen.png" 2> "$OUT/screencap.err" || true
+if [ -s "$OUT/screen.png" ]; then
+  pass "screenshot captured ($(wc -c < "$OUT/screen.png" | tr -d ' ') bytes)"
+else
+  cat "$OUT/screencap.err" 2>/dev/null || true
+  fail "screenshot capture produced no bytes"
+fi
 
 # ---------------------------------------------------------------- summary ----
 say "summary"

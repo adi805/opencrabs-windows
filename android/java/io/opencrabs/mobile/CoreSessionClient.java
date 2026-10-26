@@ -75,7 +75,6 @@ final class CoreSessionClient implements TerminalSessionClient {
      */
     private void logRenderDigestOnce(TerminalSession session) {
         if (renderDigestLogged || textChangedCount < 3) return;
-        renderDigestLogged = true;
         TerminalEmulator emulator;
         try {
             emulator = session.getEmulator();
@@ -97,6 +96,14 @@ final class CoreSessionClient implements TerminalSessionClient {
             // test's floor of two non-empty rows without printing anything.
             if (line != null && line.hasVisibleText()) nonEmptyRows++;
         }
+        // The first layout passes always run before the core writes its first
+        // byte, so they legitimately see a blank screen. Claiming the one-shot
+        // there burned the flag on chars=0 and left the smoke test reading a
+        // permanent empty buffer, failing a healthy app (2026-10-26: launch 2
+        // logged chars=0 at 1.1s while launch 1 needed 2.8s to reach chars=246).
+        // Wait until there is something to describe before spending the one-shot.
+        if (chars == 0 && nonEmptyRows == 0) return;
+        renderDigestLogged = true;
         Log.i(TAG, "tui rendered: textChanged=" + textChangedCount
             + " chars=" + chars
             + " nonEmptyRows=" + nonEmptyRows

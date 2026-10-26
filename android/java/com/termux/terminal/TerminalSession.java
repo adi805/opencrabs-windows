@@ -106,6 +106,30 @@ public final class TerminalSession extends TerminalOutput {
         } else {
             JNI.setPtyWindowSize(mTerminalFileDescriptor, rows, columns, cellWidthPixels, cellHeightPixels);
             mEmulator.resize(columns, rows, cellWidthPixels, cellHeightPixels);
+            clearScreen();
+        }
+    }
+
+    /**
+     * Blank every visible row after a resize.
+     *
+     * <p>{@link TerminalEmulator#resize} reflows the previous frame into the new column
+     * count so a shell's scrollback survives a rotation. That is right for a shell and
+     * wrong here: the core is a full-screen TUI and repaints every cell on SIGWINCH
+     * anyway, so the only thing the reflow buys is a window in which the reflowed old
+     * frame and the new frame are on screen at the same time. On a phone that reads as
+     * the screen being drawn twice, with half-wrapped text and leftover characters on
+     * the right. Clearing first makes the repaint land on blank cells.
+     */
+    private void clearScreen() {
+        TerminalBuffer screen = mEmulator.getScreen();
+        int rows = mEmulator.getRows();
+        for (int row = 0; row < rows; row++) {
+            TerminalRow line = screen.getRowForRendering(row);
+            if (line != null) {
+                line.clear(0);
+            }
+            screen.clearLineWrap(row);
         }
     }
 

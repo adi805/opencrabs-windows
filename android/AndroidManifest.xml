@@ -81,7 +81,14 @@
     </queries>
 
 
+    <!-- NoActionBar on purpose. MainActivity draws its own toolbar (version,
+         grid readout, settings, restart) and the pane needs every row it can
+         get; the framework action bar would only repeat the app label that the
+         launcher icon already says, at the cost of ~56dp of terminal height.
+         DeviceDefault.NoActionBar instead of Theme.Material.NoActionBar so the
+         Settings dialogs keep the device's own light/dark styling. -->
     <application
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
         android:label="OpenCrabs"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"

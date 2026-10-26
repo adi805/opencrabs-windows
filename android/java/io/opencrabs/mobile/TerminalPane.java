@@ -47,20 +47,78 @@ public final class TerminalPane extends View {
     /** Set by the extra-keys row so an armed modifier that gets consumed stops glowing. */
     private Runnable modifierListener;
 
+    /** UI state that must survive a restart, shared with the activity's own toggles. */
+    static final String PREFS = "opencrabs.ui";
+    static final String PREF_TEXT_SIZE = "text_px";
+
+    /** Cell sizes the A-/A+ keys step through, in raw pixels. */
+    private static final int TEXT_PX_MIN = 18;
+    private static final int TEXT_PX_MAX = 64;
+    private static final int TEXT_PX_STEP = 3;
+
+    /**
+     * Terminal face, shipped inside the APK under assets/fonts.
+     *
+     * <p>Both files must be present in android/assets/fonts; assemble-apk.sh fails
+     * the build if the directory is empty, so a release cannot silently regress to
+     * the platform face and its unpredictable cell density.
+     */
+    private static final String FONT_REGULAR = "fonts/DejaVuSansMono.ttf";
+    private static final String FONT_BOLD = "fonts/DejaVuSansMono-Bold.ttf";
+
     private static final int CURSOR_BLINK_MS = 500;
 
     /** View tag on the extra-keys row, so the activity can find or hide it without a field. */
     public static final String EXTRA_KEYS = "opencrabs.extraKeys";
 
     private TerminalSession session;
-    private int textSizePx = 30;
-    private int cellWidth;
+    /**
+     * Default glyph height in pixels.
+     *
+     * <p>30 was too big for a phone: the cell advance for a monospace face is about
+     * 0.58 of the text size, so 30px measured 17.4px per cell and a 1080px screen fit
+     * only 62 columns. Prose then wrapped at 62 characters and the right third of the
+     * screen looked empty, which reads as a broken layout even though the grid filled
+     * the width exactly. 22px measures about 12.8px per cell and fits ~84 columns,
+     * close to what Termux gives at its default, and A-/A+ still adjust from here.
+     */
+    private int textSizePx = 22;
+    /**
+     * Cell advance in pixels, deliberately fractional.
+     *
+     * <p>Rounding it up (the old behaviour) threw away up to a full cell of width on
+     * every column: at 11px per cell a 1080px screen fit 98 columns and left a dead
+     * strip on the right that read as a margin. Keeping the fraction lets
+     * {@code cols = width / cellWidth} use the whole width and the last cell absorb the
+     * remainder.
+     */
+    private float cellWidth;
     private int cellHeight;
+    /** Last size pushed to the pty, so a layout pass does not re-issue the same resize. */
+    private int lastCols = -1;
+    private int lastRows = -1;
+    /**
+     * Notified with the grid actually pushed to the pty.
+     *
+     * <p>The activity shows it in the title, because a render that looks narrow is
+     * indistinguishable from a pty that was told a narrow width without reading the
+     * number back.
+     */
+    interface SizeListener {
+        void onSize(int cols, int rows);
+    }
+
+    private SizeListener sizeListener;
 
     private final Paint textPaint = new Paint();
     private final Paint fillPaint = new Paint();
     private final RectF tmpRect = new RectF();
+    /** Terminal faces resolved once at construction, see {@link #loadTypeface}. */
+    private Typeface typefaceRegular;
+    private Typeface typefaceBold;
     private final StringBuilder runText = new StringBuilder(256);
+    /** Scratch buffer for the per-cell fallback draw, one glyph cluster at a time. */
+    private final StringBuilder cellText = new StringBuilder(8);
 
     private boolean ctrlArmed;
     private boolean altArmed;
@@ -83,11 +141,52 @@ public final class TerminalPane extends View {
         setClickable(true);
         setBackgroundColor(0xff000000);
 
-        textPaint.setTypeface(Typeface.MONOSPACE);
+        typefaceRegular = loadTypeface(false);
+        typefaceBold = loadTypeface(true);
+        textPaint.setTypeface(typefaceRegular);
         textPaint.setAntiAlias(true);
         textPaint.setTextSize(textSizePx);
         fillPaint.setStyle(Paint.Style.FILL);
-        setTextSizePx(textSizePx);
+        setTextSizePx(loadTextSizePx());
+    }
+
+    /**
+     * The terminal face, loaded from the APK instead of from the platform.
+     *
+     * <p>{@code Typeface.MONOSPACE} resolves to whatever face the device ROM
+     * supplies, and that face decides how much of each cell a glyph actually fills.
+     * Measured on the TECNO HIOS build, the ROM face put ink in only 56% of the
+     * cell: the grid itself was exact, 16px per column with no drift, but 44% of
+     * every cell was dead space, so the text read as thin and spread out and was
+     * tiring to follow. DejaVu Sans Mono fills about 80% of the cell, the density
+     * of the desktop terminal it is being compared against, and it carries the
+     * box-drawing, arrow and symbol glyphs the TUI emits, so those stop falling
+     * back to a second face partway through a line. Bundled rather than left to
+     * the device so every phone renders the same grid at the same size.
+     */
+    private Typeface loadTypeface(boolean bold) {
+        String path = bold ? FONT_BOLD : FONT_REGULAR;
+        String how = "asset";
+        Typeface face;
+        try {
+            face = Typeface.createFromAsset(getContext().getAssets(), path);
+        } catch (RuntimeException e) {
+            // A build without the asset should still draw something rather than
+            // crash, so fall back to the platform face and accept its density.
+            how = "rom-fallback";
+            face = bold ? Typeface.create(Typeface.MONOSPACE, Typeface.BOLD) : Typeface.MONOSPACE;
+        }
+        // Report the winning face and its advance at a fixed 100px, because the
+        // em ratio is what separates the two: DejaVu Sans Mono advances 1233/2048
+        // = 60.2px, the HIOS ROM face about 72.7px. Without this line a silent
+        // fallback to the ROM face is invisible, and the only evidence left is a
+        // screenshot nobody can measure precisely.
+        Paint probe = new Paint(Paint.ANTI_ALIAS_FLAG);
+        probe.setTypeface(face);
+        probe.setTextSize(100f);
+        Log.i(TAG, "typeface: " + how + " bold=" + bold + " path=" + path
+                + " face=" + face + " advance100=" + probe.measureText("M"));
+        return face;
     }
 
     /** Attach the session this pane renders. Call after {@link TerminalSession#initializeEmulator}. */
@@ -100,6 +199,14 @@ public final class TerminalPane extends View {
 
     public TerminalSession getSession() {
         return session;
+    }
+
+    /**
+     * Cell advance in pixels, so the activity can print the number the grid was
+     * computed from instead of inferring it from a screenshot.
+     */
+    public float getCellWidth() {
+        return cellWidth;
     }
 
     /**
@@ -117,11 +224,58 @@ public final class TerminalPane extends View {
         textPaint.setTextSize(textSizePx);
         Paint.FontMetrics fm = textPaint.getFontMetrics();
         cellHeight = (int) Math.ceil(fm.descent - fm.ascent + fm.leading);
-        cellWidth = (int) Math.ceil(textPaint.measureText("M"));
-        if (cellWidth <= 0) cellWidth = textSizePx / 2;
+        cellWidth = measureCellWidth();
+        if (cellWidth <= 0f) cellWidth = textSizePx / 2f;
         requestLayout();
         updateSessionSize();
         invalidate();
+    }
+
+    /**
+     * Width of one character cell, measured from a long run instead of a single glyph.
+     *
+     * <p>{@code measureText("M")} reports the advance of one character, and in a
+     * monospace face that can differ from the average advance {@code drawText} actually
+     * uses for a run by a fraction of a pixel. Dividing that fraction into the screen
+     * width is what made the grid disagree with the column count: the pane believed it
+     * had fewer columns than the width it was drawing into. A 32-glyph run averages the
+     * rounding out, so {@code cols * cellWidth} lands on the pane width.
+     */
+    private float measureCellWidth() {
+        final int n = 32;
+        StringBuilder probe = new StringBuilder(n);
+        for (int i = 0; i < n; i++) probe.append('M');
+        float run = textPaint.measureText(probe.toString());
+        if (run > 0f) return run / n;
+        return textPaint.measureText("M");
+    }
+
+    int getTextSizePx() {
+        return textSizePx;
+    }
+
+    /**
+     * Step the cell size, and remember the choice.
+     *
+     * <p>Font size is the biggest lever on a phone screen: a smaller cell fits more rows
+     * AND more columns, so this is the control that decides how much of the TUI is
+     * visible at once. The value is persisted here rather than in the activity because the
+     * pane already has a {@link Context}, and a listener hop through the activity bought
+     * nothing.
+     */
+    public void stepTextSize(int delta) {
+        int next = Math.max(TEXT_PX_MIN,
+            Math.min(TEXT_PX_MAX, textSizePx + delta * TEXT_PX_STEP));
+        setTextSizePx(next);
+        getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(PREF_TEXT_SIZE, next).apply();
+    }
+
+    private int loadTextSizePx() {
+        int stored = getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(PREF_TEXT_SIZE, 0);
+        if (stored <= 0) return textSizePx;
+        return Math.max(TEXT_PX_MIN, Math.min(TEXT_PX_MAX, stored));
     }
 
     @Override
@@ -130,11 +284,32 @@ public final class TerminalPane extends View {
         updateSessionSize();
     }
 
+    /**
+     * Push the current grid to the pty, and report it.
+     *
+     * <p>Guarded by the last value sent: a layout pass that changed nothing must not
+     * issue another SIGWINCH, because every resize makes the TUI repaint its whole
+     * frame and a resize storm looks like the screen is redrawing itself twice.
+     */
     private void updateSessionSize() {
-        if (session == null || cellWidth <= 0 || cellHeight <= 0) return;
-        int cols = Math.max(2, getWidth() / cellWidth);
+        if (cellWidth <= 0f || cellHeight <= 0) return;
+        // attachSession runs before the first layout pass, so both dimensions are
+        // still zero here. Sending the clamped 2x2 would make the TUI paint a
+        // two-column frame and then reflow to the real grid, which is one of the
+        // ways the screen ends up looking drawn twice. Wait for a real size.
+        if (getWidth() <= 0 || getHeight() <= 0) return;
+        int cols = Math.max(2, (int) (getWidth() / cellWidth));
         int rows = Math.max(2, getHeight() / cellHeight);
-        session.updateSize(cols, rows, cellWidth, cellHeight);
+        if (sizeListener != null) sizeListener.onSize(cols, rows);
+        if (session == null) return;
+        if (cols == lastCols && rows == lastRows) return;
+        lastCols = cols;
+        lastRows = rows;
+        session.updateSize(cols, rows, Math.round(cellWidth), cellHeight);
+    }
+
+    void setSizeListener(SizeListener listener) {
+        sizeListener = listener;
     }
 
     @Override
@@ -212,6 +387,15 @@ public final class TerminalPane extends View {
         if (drawCount == 1) {
             Log.i(TAG, "tui frame: draw=1 rows=" + rows + " cols=" + cols
                 + " cell=" + cellWidth + "x" + cellHeight);
+            // Report the grid the emulator ACTUALLY holds, at the moment the first frame
+            // is painted. The size listener used to be called only from
+            // updateSessionSize(), which has guards for a zero-width pane and a zero
+            // cell, and in practice it never fired: the title bar kept its initial text
+            // on both a phone and the emulator while the terminal rendered fine, so the
+            // readout the title exists for was never shown. onDraw runs whenever there is
+            // something to paint, and the numbers here are the ones the TUI is really
+            // drawing with, not the ones this class believes it computed.
+            if (sizeListener != null) sizeListener.onSize(cols, rows);
         }
         int baselineOffset = (int) -textPaint.getFontMetrics().ascent;
 
@@ -235,13 +419,22 @@ public final class TerminalPane extends View {
                     continue;
                 }
                 if (runStartCol < col && runStyle != Long.MIN_VALUE) {
-                    drawRun(canvas, colors, row, runStartCol, col, runStyle, runText, top, baselineOffset);
+                    drawRun(canvas, colors, line, row, runStartCol, col, runStyle, runText,
+                        top, baselineOffset);
                 }
                 if (col < cols) {
                     runStartCol = col;
                     runStyle = style;
                     runText.setLength(0);
-                    lastCharIndex = -1;
+                    // A style change can land on the CONTINUATION cell of a
+                    // double-width glyph: the TUI writes the status emoji in one
+                    // span and the text after it in another. Resetting to -1 made
+                    // that cell resolve to the same char index as the emoji and
+                    // append it a second time, so the glyph was drawn twice and
+                    // everything after it moved one cell right. Seeding from the
+                    // preceding cell keeps the wide char owned by the run that
+                    // started it.
+                    lastCharIndex = (col > 0) ? line.findStartOfColumn(col - 1) : -1;
                     col--; // re-handle this cell as the first cell of the new run
                 }
             }
@@ -273,8 +466,9 @@ public final class TerminalPane extends View {
         }
     }
 
-    private void drawRun(Canvas canvas, TerminalColors colors, int row, int fromCol, int toCol,
-                         long style, StringBuilder text, int top, int baselineOffset) {
+    private void drawRun(Canvas canvas, TerminalColors colors, TerminalRow line, int row,
+                         int fromCol, int toCol, long style, StringBuilder text, int top,
+                         int baselineOffset) {
         int effect = TextStyle.decodeEffect(style);
         boolean inverse = (effect & TextStyle.CHARACTER_ATTRIBUTE_INVERSE) != 0;
         int fore = resolveColor(colors, TextStyle.decodeForeColor(style));
@@ -287,7 +481,16 @@ public final class TerminalPane extends View {
 
         float left = fromCol * cellWidth;
         float right = toCol * cellWidth;
-        tmpRect.set(left, top, right, top + cellHeight);
+        // If this run opens on the continuation cell of a glyph the previous run
+        // already drew, that glyph overflows into this cell on purpose. Filling
+        // the background from fromCol painted over its right half and left a
+        // half circle with a hard vertical seam, which read as a doubled icon.
+        // The cell is already covered by the previous run's fill, so skip it.
+        float fillFromCol = fromCol;
+        if (fromCol > 0 && line.findStartOfColumn(fromCol) == line.findStartOfColumn(fromCol - 1)) {
+            fillFromCol = fromCol + 1;
+        }
+        tmpRect.set(fillFromCol * cellWidth, top, right, top + cellHeight);
         fillPaint.setColor(back);
         canvas.drawRect(tmpRect, fillPaint);
 
@@ -295,11 +498,50 @@ public final class TerminalPane extends View {
         if (invisible || text.length() == 0) return;
 
         textPaint.setColor(fore);
-        textPaint.setFakeBoldText((effect & TextStyle.CHARACTER_ATTRIBUTE_BOLD) != 0);
+        // A real bold face, not setFakeBoldText: the synthesized weight thickens
+        // strokes inside the same advance and smears a 16px cell at phone sizes.
+        // DejaVu Sans Mono Bold carries the identical 1233/2048 advance as the
+        // regular, so swapping the face cannot move a glyph off its column.
+        textPaint.setTypeface((effect & TextStyle.CHARACTER_ATTRIBUTE_BOLD) != 0
+            ? typefaceBold : typefaceRegular);
         textPaint.setTextSkewX((effect & TextStyle.CHARACTER_ATTRIBUTE_ITALIC) != 0 ? -0.25f : 0f);
         textPaint.setAlpha((effect & TextStyle.CHARACTER_ATTRIBUTE_DIM) != 0 ? 140 : 255);
-        canvas.drawText(text, 0, text.length(), left, top + baselineOffset, textPaint);
-        textPaint.setFakeBoldText(false);
+        // Draw one cell at a time, always. A run's natural width cannot be trusted to
+        // equal its cell count: Typeface.MONOSPACE only covers the glyphs its own face
+        // carries, and the TUI draws box-drawing (└─), arrows and emoji that fall back
+        // to another font with a different advance. Drawing a mixed run at natural
+        // advances accumulates drift, so the tail of the line lands in the wrong column.
+        //
+        // Scaling the whole run to its span fixes that total width but distorts every
+        // letter in the run, and only on the lines that happen to contain a fallback
+        // glyph: the same sentence came out wider on a line with an emoji than on one
+        // without, which reads as uneven letter spacing and text forced to fit. The grid
+        // stays the authority instead. Each glyph starts at its own column origin, which
+        // makes drift impossible, and only a glyph genuinely wider than the cells it
+        // owns is compressed, so ordinary text is never resized.
+        int lastDrawnCharIndex = (fromCol > 0) ? line.findStartOfColumn(fromCol - 1) : -1;
+        for (int col = fromCol; col < toCol; col++) {
+            int charIndex = line.findStartOfColumn(col);
+            // A double-width glyph owns two cells but is stored once; the continuation
+            // cell resolves to the same index, and drawing it again would duplicate the
+            // character and shove the rest of the line one cell right.
+            if (charIndex < 0 || charIndex == lastDrawnCharIndex) continue;
+            lastDrawnCharIndex = charIndex;
+            cellText.setLength(0);
+            appendCellText(line, charIndex, cellText);
+            if (cellText.length() == 0) continue;
+            int codePoint = cellText.codePointAt(0);
+            if (codePoint == 0 || codePoint == ' ') continue;
+            int cells = WcWidth.width(codePoint);
+            if (cells <= 0) continue;
+            float cellSpan = cells * cellWidth;
+            float natural = textPaint.measureText(cellText, 0, cellText.length());
+            if (natural > cellSpan) textPaint.setTextScaleX(cellSpan / natural);
+            canvas.drawText(cellText, 0, cellText.length(), col * cellWidth,
+                top + baselineOffset, textPaint);
+            textPaint.setTextScaleX(1f);
+        }
+        textPaint.setTypeface(typefaceRegular);
         textPaint.setTextSkewX(0f);
         textPaint.setAlpha(255);
 
@@ -366,19 +608,63 @@ public final class TerminalPane extends View {
      * could never be summoned after {@code Keyboard.hide()} or after the first layout.
      * Focus plus an explicit {@code showSoftInput} is what actually opens it.
      */
+    /** Accumulated vertical drag, in px, toward the next wheel notch. */
+    private float scrollAccum;
+    /** Y of the previous MOVE, so a drag can be measured without a VelocityTracker. */
+    private float scrollLastY;
+    /** True once this gesture scrolled, so its UP does not also raise the keyboard. */
+    private boolean scrolledThisGesture;
+
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
-            // Claim the gesture so the UP below is delivered to this view.
+            // Claim the gesture so MOVE and UP below are delivered to this view.
+            scrollAccum = 0f;
+            scrollLastY = event.getY();
+            scrolledThisGesture = false;
+            return true;
+        }
+        if (action == MotionEvent.ACTION_MOVE) {
+            float dy = scrollLastY - event.getY();
+            scrollLastY = event.getY();
+            scrollAccum += dy;
+            float step = Math.max(8f, cellHeight * 0.75f);
+            while (scrollAccum >= step) {
+                sendWheel(true);
+                scrollAccum -= step;
+                scrolledThisGesture = true;
+            }
+            while (scrollAccum <= -step) {
+                sendWheel(false);
+                scrollAccum += step;
+                scrolledThisGesture = true;
+            }
             return true;
         }
         if (action == MotionEvent.ACTION_UP) {
-            requestFocus();
-            Keyboard.show(getContext(), this);
+            // A swipe that scrolled must not also pop the keyboard.
+            if (!scrolledThisGesture) {
+                requestFocus();
+                Keyboard.show(getContext(), this);
+            }
             return true;
         }
         return super.onTouchEvent(event);
+    }
+
+    /**
+     * Send one mouse-wheel notch to the core as an SGR escape sequence.
+     *
+     * <p>The TUI runs with {@code EnableMouseCapture}, so crossterm turns a wheel notch
+     * into {@code TuiEvent::MouseScroll} and the app already routes that to its
+     * scrollback. No new core API is needed: the pane only has to speak the protocol a
+     * desktop terminal speaks. Button 64 is up, 65 is down, and the coordinates just have
+     * to land inside the grid.
+     */
+    private void sendWheel(boolean up) {
+        String seq = "\u001b[<" + (up ? 64 : 65) + ";1;1M";
+        sendBytes(seq.getBytes(StandardCharsets.UTF_8));
     }
 
     /** Flip the soft keyboard for this pane. Returns the state it was moved to. */

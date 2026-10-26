@@ -47,8 +47,8 @@ MIN_SDK=26
 # is: as two bare literals they can drift, and a versionCode that does not
 # increase is not a cosmetic bug, it is an APK Android refuses to install over
 # the previous one.
-VERSION_CODE=4
-VERSION_NAME=0.2.2
+VERSION_CODE=8
+VERSION_NAME=0.2.6
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "$#" -eq 0 ]; then
@@ -285,6 +285,22 @@ if [ "${#FLATS[@]}" -eq 0 ]; then
 fi
 echo "resources   : ${#FLATS[@]} flat files"
 
+# android/assets carries the terminal font. Bundling it is the point: the
+# platform face behind Typeface.MONOSPACE differs per ROM, and the TECNO one
+# filled only 56% of each cell, so the same grid read as thin and spread out.
+# -A is the only way aapt2 accepts an assets directory; without it the font is
+# silently absent from the APK and the app falls back to the ROM face again.
+if [ ! -d "$ROOT/android/assets" ]; then
+  echo "android/assets is missing; the terminal font would fall back to the ROM face" >&2
+  exit 1
+fi
+FONT_COUNT=$(find "$ROOT/android/assets/fonts" -type f -name '*.ttf' 2>/dev/null | wc -l)
+if [ "$FONT_COUNT" -eq 0 ]; then
+  echo "android/assets/fonts holds no .ttf; the terminal would render in the ROM face" >&2
+  exit 1
+fi
+echo "assets      : $FONT_COUNT ttf"
+
 "$BT/aapt2" link \
   -o "$OUT/base.apk" \
   --manifest "$ROOT/android/AndroidManifest.xml" \
@@ -293,6 +309,7 @@ echo "resources   : ${#FLATS[@]} flat files"
   --target-sdk-version 35 \
   --version-code "$VERSION_CODE" \
   --version-name "$VERSION_NAME" \
+  -A "$ROOT/android/assets" \
   "${FLATS[@]}"
 
 # --- 4. fold dex + libs into the apk ----------------------------------------
