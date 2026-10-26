@@ -76,6 +76,96 @@ fn spans_with_selection(
     Line::from(spans)
 }
 
+/// Pieces of the queue preview row, split out so the truncation maths can be
+/// unit-tested without a frame.
+pub(crate) struct QueueLineParts {
+    /// `⏳ queued (2): ` when a preview fits, otherwise just the count.
+    pub label: String,
+    /// The last queued message, flattened and cut to the room that is left.
+    pub preview: String,
+    /// What the queue does and which key edits it, chosen by available width.
+    pub hint: &'static str,
+}
+
+/// Build the queue preview row (#2237).
+///
+/// The row has to carry three facts on one line: how many messages are
+/// waiting, what is waiting, and that Enter did not send them. The hint
+/// degrades with the terminal width and the preview is what gets cut, so the
+/// explanation is never dropped before the key that acts on it.
+pub(crate) fn queue_line_parts(
+    msgs_count: usize,
+    last_msg: &str,
+    content_width: usize,
+) -> QueueLineParts {
+    let count = if msgs_count > 1 {
+        format!("⏳ queued ({msgs_count})")
+    } else {
+        "⏳ queued".to_string()
+    };
+
+    // The hint degrades by what is LEFT after the count and a usable preview,
+    // not by absolute width: the full sentence plus the count already spends
+    // most of an 80 column row.
+    const MIN_PREVIEW: usize = 24;
+    let count_width = unicode_width::UnicodeWidthStr::width(count.as_str());
+    let room_for_hint = content_width.saturating_sub(count_width + MIN_PREVIEW + 3);
+    let hint: &'static str = if room_for_hint >= 58 {
+        " · sends at the next tool call, or back to this box · ↑ edit"
+    } else if room_for_hint >= 36 {
+        " · sends at the next tool call · ↑ edit"
+    } else if room_for_hint >= 26 {
+        " · next tool call · ↑ edit"
+    } else {
+        " · ↑ edit"
+    };
+
+    // ": " after the count, plus a column of slack before the hint.
+    let reserved = count_width + unicode_width::UnicodeWidthStr::width(hint) + 3;
+    let budget = content_width.saturating_sub(reserved);
+
+    if budget < 8 {
+        return QueueLineParts {
+            label: count,
+            preview: String::new(),
+            hint,
+        };
+    }
+
+    let flat = last_msg.replace('\n', " ");
+    let preview = if unicode_width::UnicodeWidthStr::width(flat.as_str()) > budget {
+        let mut truncated: String = flat.chars().take(budget.saturating_sub(3)).collect();
+        truncated.push_str("...");
+        truncated
+    } else {
+        flat
+    };
+
+    QueueLineParts {
+        label: format!("{count}: "),
+        preview,
+        hint,
+    }
+}
+
+/// Bottom-left title for the input box while a turn is in flight (#2237).
+///
+/// `reserved` is the width the right-aligned context budget title already
+/// occupies. Returns `None` when what is left cannot fit a readable hint, so
+/// the two titles never overwrite each other on a narrow terminal.
+pub(crate) fn turn_in_flight_hint(available: u16, reserved: u16) -> Option<&'static str> {
+    const FULL: &str = " ⏳ turn running · Enter queues ";
+    const SHORT: &str = " ⏳ Enter queues ";
+    let room = available.saturating_sub(reserved) as usize;
+    if room >= unicode_width::UnicodeWidthStr::width(FULL) {
+        Some(FULL)
+    } else if room >= unicode_width::UnicodeWidthStr::width(SHORT) {
+        Some(SHORT)
+    } else {
+        None
+    }
+}
+
 /// Render queued messages above the input area.
 /// Returns the height consumed (0 if no queue).
 pub(super) fn render_queue(f: &mut Frame, app: &App, area: Rect) -> u16 {
@@ -105,30 +195,28 @@ pub(super) fn render_queue(f: &mut Frame, app: &App, area: Rect) -> u16 {
         )
     };
 
-    let dim_style = Style::default().fg(theme::role(Role::GrayMid));
-    // Show the last queued message as preview
-    let flat = last_msg.replace('\n', " ");
     let content_width = area.width.saturating_sub(2) as usize; // borders
-    let max_preview = content_width.saturating_sub(30);
-    let preview: String = if flat.chars().count() > max_preview {
-        let truncated: String = flat.chars().take(max_preview).collect();
-        format!("{}...", truncated)
-    } else {
-        flat
-    };
+    let parts = queue_line_parts(msgs_count, &last_msg, content_width);
 
-    let count_label = if msgs_count > 1 {
-        format!("⏳ queued ({}): ", msgs_count)
-    } else {
-        "⏳ queued: ".to_string()
-    };
-
+    // Brighter than it used to be: the row is the only thing on screen saying
+    // the text is waiting rather than sent, and it used to be the dimmest
+    // text in the frame (#2237).
     let line = Line::from(vec![
-        Span::styled(count_label, dim_style),
-        Span::styled(preview, dim_style.add_modifier(Modifier::ITALIC)),
         Span::styled(
-            "  (Up to edit)",
-            Style::default().fg(theme::role(Role::GrayDark)),
+            parts.label,
+            Style::default()
+                .fg(theme::role(Role::Warning))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            parts.preview,
+            Style::default()
+                .fg(theme::role(Role::TextPrimary))
+                .add_modifier(Modifier::ITALIC),
+        ),
+        Span::styled(
+            parts.hint,
+            Style::default().fg(theme::role(Role::WarningMuted)),
         ),
     ]);
 
@@ -143,7 +231,7 @@ pub(super) fn render_queue(f: &mut Frame, app: &App, area: Rect) -> u16 {
     let para = Paragraph::new(vec![line]).block(
         Block::default()
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(theme::role(Role::GrayDim))),
+            .border_style(Style::default().fg(theme::role(Role::GrayMid))),
     );
     f.render_widget(para, queue_area);
     queue_height
@@ -562,10 +650,33 @@ pub(super) fn render_input(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    // A turn in flight changes what Enter does: it queues instead of sending.
+    // The box used to look identical to the idle state, so text typed here
+    // appeared to vanish (#2237). Bottom-left, so it shares the border row
+    // with the right-aligned context budget title; the width check keeps the
+    // two from overwriting each other.
+    let in_flight_title = if app.is_processing {
+        turn_in_flight_hint(area.width, context_title.width() as u16).map(|text| {
+            Line::from(Span::styled(
+                text,
+                Style::default()
+                    .fg(theme::role(Role::Warning))
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .alignment(Alignment::Left)
+        })
+    } else {
+        None
+    };
+
     let mut block = Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
         .title_bottom(context_title)
         .border_style(border_style);
+
+    if let Some(title) = in_flight_title {
+        block = block.title_bottom(title);
+    }
 
     // Attachments rightmost, background task to their left (#836).
     if !app.attachments.is_empty() {
