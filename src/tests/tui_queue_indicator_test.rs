@@ -227,3 +227,129 @@ async fn a_queued_message_names_the_count_and_the_key_in_the_frame() {
         "the key that pulls it back for editing has to be named:\n{frame}"
     );
 }
+
+// --- the row's colour hierarchy (#2244) ------------------------------------
+
+/// Symbols of one row, one entry per cell, so assertions index by screen
+/// column instead of by byte offset.
+///
+/// Note that the `⏳` glyph is East Asian Width `W`: it is three bytes, but it
+/// is painted into one cell and the cell after it is reset by ratatui. So the
+/// symbol list is one entry per cell, and a wide glyph eats two of them (the
+/// second holding no symbol of its own).
+fn row_cells(buffer: &ratatui::buffer::Buffer, y: u16) -> Vec<ratatui::buffer::Cell> {
+    (0..buffer.area.width)
+        .map(|x| buffer[(x, y)].clone())
+        .collect()
+}
+
+fn first_cell_showing(cells: &[ratatui::buffer::Cell], symbol: &str) -> Option<u16> {
+    cells
+        .iter()
+        .position(|c| c.symbol() == symbol)
+        .map(|x| x as u16)
+}
+
+#[tokio::test]
+async fn the_queue_row_keeps_a_quiet_gray_hierarchy_without_amber() {
+    // #2244: #2237 brightened every part of this row so it would separate from
+    // the status line, and the result out-shouted the answer being written: the
+    // label went amber and bold (luma 184) and the preview went to the body
+    // colour (201), so a queued message read like a message instead of like
+    // chrome. The row now separates by its border and by the step between its
+    // parts, and no part of it is amber or the body colour.
+    //
+    // This is the guard the text-only tests could not provide: they assert
+    // wording, so a colour regression passed CI untouched.
+    use crate::tui::render::theme::{self, Role};
+
+    let (mut app, sid) = app_with_session().await;
+    // Reading the active theme is a shared-state read: another module switches
+    // it, so take the process-wide lock (after the await, per its contract).
+    let _guard = crate::tests::theme_global_lock::lock();
+    queue(&app, sid, &["hello bre"]);
+    let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+    terminal.draw(|f| render(f, &mut app)).unwrap();
+    let buffer = terminal.backend().buffer();
+
+    // The queue block is two rows: a top border and the content line. The
+    // content sits directly above the input box.
+    let content_y = app.input_area_y - 1;
+    let border_y = content_y - 1;
+    let cells = row_cells(buffer, content_y);
+    let row = row_text(buffer, content_y);
+    assert!(
+        row.contains("queued") && row.contains("hello bre"),
+        "the queue row has to be where this test expects it:\n{row}"
+    );
+
+    let preview_start = first_cell_showing(&cells, "h").expect("the preview is on the row");
+    let preview_end = preview_start + UnicodeWidthStr::width("hello bre") as u16;
+
+    let label_colour = theme::role(Role::GraySoft);
+    let preview_colour = theme::role(Role::TextSecondary);
+    let hint_colour = theme::role(Role::GrayMid);
+
+    // The hourglass is East Asian Width `W`, so ratatui paints it into column 0
+    // and resets column 1 to an empty cell (`set_stringn` in ratatui-core). That
+    // covered cell has no symbol and no colour of its own, so the walk steps
+    // over the cells a wide glyph occupies instead of demanding a colour from a
+    // cell the row never painted.
+    let mut x = 0usize;
+    while x < preview_start as usize {
+        let cell = &cells[x];
+        let width = UnicodeWidthStr::width(cell.symbol()).max(1);
+        assert_eq!(
+            cell.fg, label_colour,
+            "the label run must use GraySoft at column {x}:\n{row}"
+        );
+        x += width;
+    }
+    for x in preview_start..preview_end {
+        assert_eq!(
+            cells[x as usize].fg, preview_colour,
+            "the preview must use TextSecondary at column {x}, not the body colour:\n{row}"
+        );
+    }
+    for x in preview_end..buffer.area.width {
+        if cells[x as usize].symbol() == " " {
+            continue;
+        }
+        assert_eq!(
+            cells[x as usize].fg, hint_colour,
+            "the hint must use GrayMid at column {x}:\n{row}"
+        );
+    }
+
+    // Nothing amber anywhere in the row. A queue is a state, not a warning.
+    let banned = [
+        theme::role(Role::Warning),
+        theme::role(Role::WarningMuted),
+        theme::role(Role::TextPrimary),
+    ];
+    for (x, cell) in cells.iter().enumerate() {
+        assert!(
+            !banned.contains(&cell.fg),
+            "column {x} carries a colour this row must not use: {:?}\n{row}",
+            cell.fg
+        );
+    }
+
+    // The border is what separates the row now, so it has to be drawn and it
+    // has to be the quietest step of the four.
+    let border = row_text(buffer, border_y);
+    assert!(
+        border.contains('─'),
+        "the queue row keeps its top border:\n{border}"
+    );
+    for cell in row_cells(buffer, border_y) {
+        if cell.symbol() == " " {
+            continue;
+        }
+        assert_eq!(
+            cell.fg,
+            theme::role(Role::GrayDim),
+            "the border must use GrayDim:\n{border}"
+        );
+    }
+}

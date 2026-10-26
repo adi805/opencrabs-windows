@@ -180,26 +180,36 @@ pub(super) fn render_queue(f: &mut Frame, app: &App, area: Rect) -> u16 {
     let content_width = area.width.saturating_sub(2) as usize; // borders
     let parts = queue_line_parts(msgs_count, &last_msg, content_width);
 
-    // Brighter than it used to be: the row is the only thing on screen saying
-    // the text is waiting rather than sent, and it used to be the dimmest
-    // text in the frame (#2237).
+    // Quiet by design (#2244). The row has to read as its own row and no
+    // more: it sits directly above the input box, so anything loud pulls the
+    // eye away from the answer being written. #2237 raised every part of the
+    // row above the chrome around it to separate it from the status line, and
+    // the side effect was that the label went amber and bold and the preview
+    // went to the body colour, so a queued message read like a message instead
+    // of like chrome.
+    //
+    // Nothing here is amber, because a queued message is a state and not a
+    // warning, and the preview is deliberately not the body colour. On the
+    // default palette: label GraySoft 170, preview TextSecondary 141, hint
+    // GrayMid 100, border GrayDim 80. Presets remap these roles, so those
+    // numbers describe the default theme rather than a fixed contract. The
+    // border and the step between the parts are what separate the row now.
+    //
+    // Honest note for the next reader: the thinking line this row sits near is
+    // GrayDim (80), so the row is still brighter than that line. The amber and
+    // the body-coloured preview were what made it shout, not the step itself.
     let line = Line::from(vec![
         Span::styled(
             parts.label,
-            Style::default()
-                .fg(theme::role(Role::Warning))
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::role(Role::GraySoft)),
         ),
         Span::styled(
             parts.preview,
             Style::default()
-                .fg(theme::role(Role::TextPrimary))
+                .fg(theme::role(Role::TextSecondary))
                 .add_modifier(Modifier::ITALIC),
         ),
-        Span::styled(
-            parts.hint,
-            Style::default().fg(theme::role(Role::WarningMuted)),
-        ),
+        Span::styled(parts.hint, Style::default().fg(theme::role(Role::GrayMid))),
     ]);
 
     let queue_height = 2u16;
@@ -213,7 +223,7 @@ pub(super) fn render_queue(f: &mut Frame, app: &App, area: Rect) -> u16 {
     let para = Paragraph::new(vec![line]).block(
         Block::default()
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(theme::role(Role::GrayMid))),
+            .border_style(Style::default().fg(theme::role(Role::GrayDim))),
     );
     f.render_widget(para, queue_area);
     queue_height
