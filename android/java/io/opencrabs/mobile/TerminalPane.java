@@ -426,7 +426,15 @@ public final class TerminalPane extends View {
                     runStartCol = col;
                     runStyle = style;
                     runText.setLength(0);
-                    lastCharIndex = -1;
+                    // A style change can land on the CONTINUATION cell of a
+                    // double-width glyph: the TUI writes the status emoji in one
+                    // span and the text after it in another. Resetting to -1 made
+                    // that cell resolve to the same char index as the emoji and
+                    // append it a second time, so the glyph was drawn twice and
+                    // everything after it moved one cell right. Seeding from the
+                    // preceding cell keeps the wide char owned by the run that
+                    // started it.
+                    lastCharIndex = (col > 0) ? line.findStartOfColumn(col - 1) : -1;
                     col--; // re-handle this cell as the first cell of the new run
                 }
             }
@@ -473,7 +481,16 @@ public final class TerminalPane extends View {
 
         float left = fromCol * cellWidth;
         float right = toCol * cellWidth;
-        tmpRect.set(left, top, right, top + cellHeight);
+        // If this run opens on the continuation cell of a glyph the previous run
+        // already drew, that glyph overflows into this cell on purpose. Filling
+        // the background from fromCol painted over its right half and left a
+        // half circle with a hard vertical seam, which read as a doubled icon.
+        // The cell is already covered by the previous run's fill, so skip it.
+        float fillFromCol = fromCol;
+        if (fromCol > 0 && line.findStartOfColumn(fromCol) == line.findStartOfColumn(fromCol - 1)) {
+            fillFromCol = fromCol + 1;
+        }
+        tmpRect.set(fillFromCol * cellWidth, top, right, top + cellHeight);
         fillPaint.setColor(back);
         canvas.drawRect(tmpRect, fillPaint);
 
@@ -502,7 +519,7 @@ public final class TerminalPane extends View {
         // stays the authority instead. Each glyph starts at its own column origin, which
         // makes drift impossible, and only a glyph genuinely wider than the cells it
         // owns is compressed, so ordinary text is never resized.
-        int lastDrawnCharIndex = -1;
+        int lastDrawnCharIndex = (fromCol > 0) ? line.findStartOfColumn(fromCol - 1) : -1;
         for (int col = fromCol; col < toCol; col++) {
             int charIndex = line.findStartOfColumn(col);
             // A double-width glyph owns two cells but is stored once; the continuation
