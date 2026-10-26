@@ -166,13 +166,27 @@ public final class TerminalPane extends View {
      */
     private Typeface loadTypeface(boolean bold) {
         String path = bold ? FONT_BOLD : FONT_REGULAR;
+        String how = "asset";
+        Typeface face;
         try {
-            return Typeface.createFromAsset(getContext().getAssets(), path);
+            face = Typeface.createFromAsset(getContext().getAssets(), path);
         } catch (RuntimeException e) {
             // A build without the asset should still draw something rather than
             // crash, so fall back to the platform face and accept its density.
-            return bold ? Typeface.create(Typeface.MONOSPACE, Typeface.BOLD) : Typeface.MONOSPACE;
+            how = "rom-fallback";
+            face = bold ? Typeface.create(Typeface.MONOSPACE, Typeface.BOLD) : Typeface.MONOSPACE;
         }
+        // Report the winning face and its advance at a fixed 100px, because the
+        // em ratio is what separates the two: DejaVu Sans Mono advances 1233/2048
+        // = 60.2px, the HIOS ROM face about 72.7px. Without this line a silent
+        // fallback to the ROM face is invisible, and the only evidence left is a
+        // screenshot nobody can measure precisely.
+        Paint probe = new Paint(Paint.ANTI_ALIAS_FLAG);
+        probe.setTypeface(face);
+        probe.setTextSize(100f);
+        Log.i(TAG, "typeface: " + how + " bold=" + bold + " path=" + path
+                + " face=" + face + " advance100=" + probe.measureText("M"));
+        return face;
     }
 
     /** Attach the session this pane renders. Call after {@link TerminalSession#initializeEmulator}. */
