@@ -24,6 +24,28 @@ fn utf8_char_len(b: u8) -> usize {
     }
 }
 
+/// Text to hand back to the user when a turn ends before the tool loop drained
+/// the mid-turn queue.
+///
+/// Only user-typed entries qualify. A synthetic push (background task,
+/// sub-agent, session notify, recovery) carries `[System: ...]` framing in
+/// `context_text`, so pasting its `display_text` into the input box would put
+/// scaffolding in front of the user as if they had typed it.
+pub(crate) fn unconsumed_user_text(
+    msgs: &[crate::brain::agent::QueuedUserMessage],
+) -> Option<String> {
+    let typed: Vec<&str> = msgs
+        .iter()
+        .filter(|m| m.bg_meta.is_none() && m.context_text == m.display_text)
+        .map(|m| m.display_text.as_str())
+        .collect();
+    if typed.is_empty() {
+        None
+    } else {
+        Some(typed.join("\n"))
+    }
+}
+
 /// Extract the path argument of a `/cd` slash input (#1574).
 ///
 /// The dispatcher matched only the first token, and the `/cd` arm ignored
@@ -3413,12 +3435,28 @@ impl App {
             });
         }
 
-        // Clear any unconsumed queued message (tool loop may have already drained it)
-        if let Some(sid) = self.current_session.as_ref().map(|s| s.id)
-            && let Ok(mut q) = self.queued_messages.lock()
-            && q.remove(&sid).is_some()
-        {
-            tracing::info!("[TUI] Discarding unconsumed queued message at response complete");
+        // Hand back any queued message the turn ended without consuming. The
+        // tool loop drains the queue at a tool-call boundary; when the model
+        // answers straight after a queue there is no boundary left, and
+        // dropping the entry here lost the message outright: the user watched
+        // it listed as queued, then it never sent and never came back (#2236).
+        // Restore it to the input box the same way Arrow-Up dequeues, so
+        // nothing is auto-sent and the duplicate-submit guard (#798) stays
+        // untouched.
+        let unconsumed = self.current_session.as_ref().map(|s| s.id).and_then(|sid| {
+            self.queued_messages
+                .lock()
+                .ok()
+                .and_then(|mut q| q.remove(&sid))
+        });
+        if let Some(restored) = unconsumed.as_deref().and_then(unconsumed_user_text) {
+            if self.input_buffer.is_empty() {
+                self.input_buffer = restored;
+            } else {
+                self.input_buffer = format!("{restored}\n{}", self.input_buffer);
+            }
+            self.cursor_position = self.input_buffer.len();
+            tracing::info!("[TUI] Restored unconsumed queued message to the input buffer");
         }
 
         // Track context usage from latest response. Write to the

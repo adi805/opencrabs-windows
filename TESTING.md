@@ -809,6 +809,7 @@ Born from two real incidents (#646, #1178): hard-coded fixture constants broke o
 | Tests — TUI Theme Picker | 10 | `src/tests/tui_theme_picker_test.rs` |
 | Tests — Tui Theme Presets | 15 | `src/tests/tui_theme_presets_test.rs` |
 | Tests — TUI Tool Stack | 10 | `src/tests/tui_tool_stack_test.rs` |
+| Tests — TUI Unconsumed Queue | 5 | `src/tests/tui_unconsumed_queue_test.rs` |
 | Tests — TUI User Themes | 10 | `src/tests/tui_user_themes_test.rs` |
 | Tests — Turn Duration | 6 | `src/tests/turn_duration_test.rs` |
 | Tests — Turn Ranges | 40 | `src/tests/turn_ranges_test.rs` |
