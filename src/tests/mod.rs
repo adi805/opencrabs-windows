@@ -833,6 +833,7 @@ pub mod tui_plan_tests_test;
 pub mod tui_process_commands_test;
 pub mod tui_queue_indicator_test;
 pub mod tui_rebuild_working_dir_test;
+pub mod tui_reclaim_after_panic_test;
 pub mod tui_render_utils_test;
 pub mod tui_restore_test;
 pub mod tui_session_switch_state_test;

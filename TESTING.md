@@ -804,6 +804,7 @@ Born from two real incidents (#646, #1178): hard-coded fixture constants broke o
 | Tests — TUI Process Commands | 3 | `src/tests/tui_process_commands_test.rs` |
 | Tests — TUI Remote Upload | 12 | `src/tests/tui_remote_upload_test.rs` |
 | Tests — TUI Queue Indicator | 10 | `src/tests/tui_queue_indicator_test.rs` |
+| Tests — TUI Reclaim After Panic | 9 | `src/tests/tui_reclaim_after_panic_test.rs` |
 | Tests — TUI Render Clear | 4 | `src/tests/tui_render_clear_test.rs` |
 | Tests — TUI Render Utils | 12 | `src/tests/tui_render_utils_test.rs` |
 | Tests — TUI Session Switch State | 7 | `src/tests/tui_session_switch_state_test.rs` |
