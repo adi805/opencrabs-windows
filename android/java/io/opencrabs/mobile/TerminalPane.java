@@ -56,6 +56,16 @@ public final class TerminalPane extends View {
     private static final int TEXT_PX_MAX = 64;
     private static final int TEXT_PX_STEP = 3;
 
+    /**
+     * Terminal face, shipped inside the APK under assets/fonts.
+     *
+     * <p>Both files must be present in android/assets/fonts; assemble-apk.sh fails
+     * the build if the directory is empty, so a release cannot silently regress to
+     * the platform face and its unpredictable cell density.
+     */
+    private static final String FONT_REGULAR = "fonts/DejaVuSansMono.ttf";
+    private static final String FONT_BOLD = "fonts/DejaVuSansMono-Bold.ttf";
+
     private static final int CURSOR_BLINK_MS = 500;
 
     /** View tag on the extra-keys row, so the activity can find or hide it without a field. */
@@ -103,6 +113,9 @@ public final class TerminalPane extends View {
     private final Paint textPaint = new Paint();
     private final Paint fillPaint = new Paint();
     private final RectF tmpRect = new RectF();
+    /** Terminal faces resolved once at construction, see {@link #loadTypeface}. */
+    private Typeface typefaceRegular;
+    private Typeface typefaceBold;
     private final StringBuilder runText = new StringBuilder(256);
     /** Scratch buffer for the per-cell fallback draw, one glyph cluster at a time. */
     private final StringBuilder cellText = new StringBuilder(8);
@@ -128,11 +141,38 @@ public final class TerminalPane extends View {
         setClickable(true);
         setBackgroundColor(0xff000000);
 
-        textPaint.setTypeface(Typeface.MONOSPACE);
+        typefaceRegular = loadTypeface(false);
+        typefaceBold = loadTypeface(true);
+        textPaint.setTypeface(typefaceRegular);
         textPaint.setAntiAlias(true);
         textPaint.setTextSize(textSizePx);
         fillPaint.setStyle(Paint.Style.FILL);
         setTextSizePx(loadTextSizePx());
+    }
+
+    /**
+     * The terminal face, loaded from the APK instead of from the platform.
+     *
+     * <p>{@code Typeface.MONOSPACE} resolves to whatever face the device ROM
+     * supplies, and that face decides how much of each cell a glyph actually fills.
+     * Measured on the TECNO HIOS build, the ROM face put ink in only 56% of the
+     * cell: the grid itself was exact, 16px per column with no drift, but 44% of
+     * every cell was dead space, so the text read as thin and spread out and was
+     * tiring to follow. DejaVu Sans Mono fills about 80% of the cell, the density
+     * of the desktop terminal it is being compared against, and it carries the
+     * box-drawing, arrow and symbol glyphs the TUI emits, so those stop falling
+     * back to a second face partway through a line. Bundled rather than left to
+     * the device so every phone renders the same grid at the same size.
+     */
+    private Typeface loadTypeface(boolean bold) {
+        String path = bold ? FONT_BOLD : FONT_REGULAR;
+        try {
+            return Typeface.createFromAsset(getContext().getAssets(), path);
+        } catch (RuntimeException e) {
+            // A build without the asset should still draw something rather than
+            // crash, so fall back to the platform face and accept its density.
+            return bold ? Typeface.create(Typeface.MONOSPACE, Typeface.BOLD) : Typeface.MONOSPACE;
+        }
     }
 
     /** Attach the session this pane renders. Call after {@link TerminalSession#initializeEmulator}. */
@@ -427,7 +467,12 @@ public final class TerminalPane extends View {
         if (invisible || text.length() == 0) return;
 
         textPaint.setColor(fore);
-        textPaint.setFakeBoldText((effect & TextStyle.CHARACTER_ATTRIBUTE_BOLD) != 0);
+        // A real bold face, not setFakeBoldText: the synthesized weight thickens
+        // strokes inside the same advance and smears a 16px cell at phone sizes.
+        // DejaVu Sans Mono Bold carries the identical 1233/2048 advance as the
+        // regular, so swapping the face cannot move a glyph off its column.
+        textPaint.setTypeface((effect & TextStyle.CHARACTER_ATTRIBUTE_BOLD) != 0
+            ? typefaceBold : typefaceRegular);
         textPaint.setTextSkewX((effect & TextStyle.CHARACTER_ATTRIBUTE_ITALIC) != 0 ? -0.25f : 0f);
         textPaint.setAlpha((effect & TextStyle.CHARACTER_ATTRIBUTE_DIM) != 0 ? 140 : 255);
         // Draw one cell at a time, always. A run's natural width cannot be trusted to
@@ -465,7 +510,7 @@ public final class TerminalPane extends View {
                 top + baselineOffset, textPaint);
             textPaint.setTextScaleX(1f);
         }
-        textPaint.setFakeBoldText(false);
+        textPaint.setTypeface(typefaceRegular);
         textPaint.setTextSkewX(0f);
         textPaint.setAlpha(255);
 
