@@ -714,6 +714,7 @@ pub mod phantom_playback_claim_test;
 pub mod phantom_post_success_exemption_test;
 pub mod phantom_pronoun_drop_test;
 pub mod phantom_pt_pt_continuous_2224_test;
+pub mod phantom_scan_shape_test;
 pub mod phantom_side_effect_test;
 pub mod phantom_structured_report_test;
 pub mod phantom_unbacked_facts_test;
