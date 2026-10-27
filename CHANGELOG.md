@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15] - 2026-10-27
+
+16 commits since v0.5.14. 41 files changed, +2,821 / -572 lines.
+
+### 🔧 Fixes
+
+- `83c8eea81` **Queue row softened to a gray hierarchy**: every span now sits under the thinking line's luma instead of above it; the amber is gone and a rendered test pins the colours, so a brightness regression fails CI instead of shipping (#2244)
+- `3f3cff3fa` **A turn halted by suggest_options no longer renders intermediate narration as its answer** (#2240)
+- `f8ef89d3a` **Dropped the in-flight border title from the input box**: the row claimed attention the queue row was built for (#2243)
+- `59ea0421e` **History marker and splash tip now name PageUp**: both said Ctrl+O, which folds the newest turn instead of paging (#2242)
+- `12ae04bde` **Ctrl+O no longer throws the viewport when the turn header is off screen**: the anchor captured a saturated row 0, so expanding a long answer jumped you to the top of the turn (#2241)
+- `cc63d8296` **A caught render panic hands the terminal back**: raw mode was left off, so keystrokes echoed into the status bar and only Enter worked (#2238)
+- `74499164a` **The input box says Enter queues during a turn**, and the queue row names the key that edits it (#2237)
+- `5deaa70c4` **A mid-turn queued message is handed back to the input box** when the turn ends before a tool boundary drains it (#2236)
+- `0b28c6354` **The built-in endpoint is matched by parsed host, not substring**: any URL that merely contained `inference.opencrabs.com` was misclassified, and every special-case keyed off that check (#2234)
+- `c3a885246` **The mouse-fragment gate stops eating characters typed after a `[`** (#2233)
+- `0cb652c52` **The built-in endpoint gets a 120s handshake** and stops the retry ladder after 2 silent timeouts instead of burning all 5 sends on a dead endpoint (#2232)
+- `5d9f58976` **Evolve retries release-asset fetches** and splits a dropped connection from a bad checksum (#2229)
+- `cf5722c8d` **A failed Telegram dispatcher startup recovers instead of panicking**, so the reconnect loop runs (#2228)
+
+### 📖 Documentation
+
+- `edd4e1e8e` README and architecture docs said 3x stream retries where the code retries 5 (#2231)
+
+### 🧹 Miscellaneous
+
+- `ea01d6e79` The phantom language scan has a work-shape guard: traversal counts pinned input-flat, mutation-tested red, so the three packs landing next cannot bend the scan input-proportional (#2245)
+- `30e0b248a` The Telegram dispatcher sentinel is off the byte-slice ratchet, keeping lint green (#2230)
+
+### 👥 Contributors
+
+1 contributor this release:
+
+- @adolfousier (Adolfo Usier)
+
+### 📊 Stats
+
+- 16 commits since v0.5.14
+- 41 files changed, +2,821 / -572 lines
+- 11,422 tests (11,422 passed, 0 failed, 38 ignored)
+
+
 ## [0.5.14] - 2026-10-25
 
 26 commits since v0.5.13, 5 contributors. 64 files changed, +7,493 / -365 lines.
@@ -9776,3 +9818,4 @@ fixes.
 [0.5.12]: https://github.com/opencrabs/opencrabs/compare/v0.5.11...v0.5.12
 [0.5.13]: https://github.com/opencrabs/opencrabs/compare/v0.5.12...v0.5.13
 [0.5.14]: https://github.com/opencrabs/opencrabs/compare/v0.5.13...v0.5.14
+[0.5.15]: https://github.com/opencrabs/opencrabs/compare/v0.5.14...v0.5.15

@@ -4003,7 +4003,7 @@ Any tool on your `$PATH` works. If it runs in your terminal, OpenCrabs can use i
 
 | Shortcut | Action |
 |----------|--------|
-| `Enter` | Send message |
+| `Enter` | Send when idle; while a turn runs, Enter queues the text and `↑` pulls it back into the box |
 | `Ctrl+J` | New line (vim — also Alt+Enter / Shift+Enter on supported terminals) |
 | `←` / `→` | Move cursor one character |
 | `↑` / `↓` | Navigate lines (multiline), jump to start/end (single-line), then history |
@@ -5129,7 +5129,7 @@ cargo build --release
 # Small release build
 cargo build --profile release-small
 
-# Run tests (11,407 tests: 1,179 test files under src/tests/, where tests
+# Run tests (11,422 tests: 1,186 test files under src/tests/, where tests
 # belong — zero inline blocks in production files);
 # 38 slower ones are #[ignore]d to keep the default
 # run fast: profile tests that touch ~/.opencrabs, browser end-to-end
