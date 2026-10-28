@@ -2270,16 +2270,27 @@ impl App {
                         }
                     }
                     _ => {
-                        // Two-byte escape (e.g. ESC =, ESC >)
-                        i += 1;
+                        // Two-byte escape (e.g. ESC =, ESC >). Only an ASCII
+                        // byte is consumed: a multi-byte char has to stay at
+                        // `i` so the next iteration copies it whole. Stepping
+                        // into the middle of one made the copy below panic
+                        // (#2247).
+                        if bytes[i].is_ascii() {
+                            i += 1;
+                        }
                     }
                 }
             } else {
                 // Normal byte — figure out how many bytes this UTF-8 char is
                 // and copy the whole character to preserve multi-byte (emoji, CJK, etc.)
                 let ch_len = utf8_char_len(bytes[i]);
-                if i + ch_len <= len {
-                    // SAFETY: the input is a valid &str so this slice is a valid char
+                // The boundary check is belt and braces: an escape arm can
+                // leave `i` inside a character, and slicing there panics
+                // (#2247).
+                if i + ch_len <= len
+                    && text.is_char_boundary(i)
+                    && text.is_char_boundary(i + ch_len)
+                {
                     out.push_str(&text[i..i + ch_len]);
                 }
                 i += ch_len;
@@ -2318,7 +2329,10 @@ impl App {
                 continue;
             }
             let ch_len = utf8_char_len(bytes[i]);
-            if i + ch_len <= bytes.len() {
+            if i + ch_len <= bytes.len()
+                && text.is_char_boundary(i)
+                && text.is_char_boundary(i + ch_len)
+            {
                 out.push_str(&text[i..i + ch_len]);
             }
             i += ch_len;
