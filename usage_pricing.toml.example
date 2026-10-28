@@ -231,3 +231,16 @@ entries = [
   { prefix = "opencode-zen",        input_per_m = 0.0,   output_per_m = 0.0   },
   { prefix = "opencode-go",         input_per_m = 0.0,   output_per_m = 0.0   },
 ]
+
+[providers.gateway]
+entries = [
+  # "coder-model" is not a model, it is the placeholder id that six providers
+  # (modelscope, zhipu, alibaba-qwen, dialagram, xiaomi) wrote into the ledger in
+  # April 2026, so no vendor card stands behind it and no single real rate can be
+  # read off it. This row bills the conservative unknown-model default on purpose,
+  # the same 3.00/15.00 the estimator uses when nothing matches, so those legacy
+  # rows stop reading as free instead of inventing a vendor price. Only the 34
+  # rows that recorded zero are affected; the 178 that already carry a cost keep
+  # it.
+  { prefix = "coder-model",        input_per_m = 3.00,  output_per_m = 15.00, cache_write_per_m = 3.75, cache_read_per_m = 0.30 },
+]

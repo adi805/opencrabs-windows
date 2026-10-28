@@ -171,3 +171,27 @@ fn mimo_v2_6_is_priced_and_v2_5_stops_hitting_the_default() {
     assert_rates("mimo-v2.5-pro", 1.0, 3.0, None, None);
     assert_rates("mimo-v2.5-flash", 0.14, 0.28, None, Some(0.0028));
 }
+
+// ── Whole-id aliases ────────────────────────────────────────────────────────
+
+#[test]
+fn a_two_character_live_id_reaches_its_family_through_the_alias_table() {
+    // Moonshot serves Kimi K3 as plain "k3". MIN_MATCH_OVERLAP is three, so the
+    // id offers the "kimi-k3" row an overlap of exactly two and every substring
+    // tier rejects it: the row existed and still never matched (#2254). The
+    // alias table resolves it by whole id.
+    assert_rates("k3", 3.0, 15.0, Some(3.75), Some(0.30));
+    // And the alias must not swallow the longer ids that share the stem.
+    assert_rates("k3-256k", 3.0, 15.0, None, Some(0.30));
+    assert_rates("k3.1-pro", 4.0, 20.0, Some(4.0), Some(0.20));
+    assert_rates("kimi-k3", 3.0, 15.0, None, None);
+}
+
+#[test]
+fn the_gateway_placeholder_id_bills_the_unknown_model_default() {
+    // "coder-model" is a placeholder written by six providers, not a model, so
+    // the row deliberately carries the app's conservative unknown-model default
+    // rather than an invented vendor card. It exists so the 34 legacy rows that
+    // recorded zero stop reading as free.
+    assert_rates("coder-model", 3.0, 15.0, Some(3.75), Some(0.30));
+}
