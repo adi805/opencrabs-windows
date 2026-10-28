@@ -1022,6 +1022,7 @@ pub mod usage_grouping_test;
 pub mod usage_ledger_cache_split_test;
 pub mod usage_ledger_test;
 pub mod usage_model_cost_test;
+pub mod usage_pricing_new_models_test;
 pub mod user_correction_metadata_test;
 pub mod utc_timestamp_test;
 pub mod utf8_carry_test;
