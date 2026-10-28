@@ -4,8 +4,8 @@
 
 use super::dashboard::{DashboardState, advertised_keys};
 use super::data::{
-    ActivityStats, CacheStats, DailyStats, DashboardData, ModelEntry, ProjectStats, ToolStats,
-    fmt_cost, fmt_tokens,
+    ActivityStats, CacheStats, DailyStats, DashboardData, ModelEntry, ProjectStats, SummaryStats,
+    ToolStats, fmt_cost, fmt_tokens,
 };
 use crate::tui::render::theme::{self, Role};
 use ratatui::{
@@ -43,18 +43,46 @@ fn card_block(title: &str, focused: bool) -> Block<'_> {
 pub fn render_summary(f: &mut Frame, data: &DashboardData, area: Rect, period_label: &str) {
     let s = &data.summary;
     let version = crate::VERSION;
-    let line = Line::from(vec![
+    // The figure is what each call recorded, with a table estimate standing in
+    // for rows that recorded nothing, and it always equals the sum of the By
+    // Model rows. Two markers keep it from reading as total spend (#2249):
+    // `~` when any part of it is an estimate, and the share of tokens that
+    // carry no recorded cost at all.
+    let cost_str = if data.models.iter().any(|m| m.estimated) {
+        format!("~{}", fmt_cost(s.total_cost))
+    } else {
+        fmt_cost(s.total_cost)
+    };
+    let mut head = vec![
         Span::styled(format!("v{version}  "), accent()),
         Span::styled("Tokens: ", LABEL),
         Span::styled(fmt_tokens(s.total_tokens), BOLD),
         Span::styled("  Cost: ", LABEL),
-        Span::styled(fmt_cost(s.total_cost), BOLD),
+        Span::styled(cost_str, BOLD),
+    ];
+    let tail = [
         Span::styled("  Sessions: ", LABEL),
         Span::styled(format!("{}", s.session_count), BOLD),
         Span::styled("  Calls: ", LABEL),
         Span::styled(format!("{}", s.call_count), BOLD),
         Span::styled(format!("  [{}]", period_label), accent()),
-    ]);
+    ];
+    // The share is worth having, but it is the first thing to drop when the bar
+    // would have to clip: the line is centred, so an overflow eats the version
+    // off the left and the period label off the right.
+    if let Some(pct) = unpriced_share(s) {
+        let marker = format!(" ({pct:.0}% unpriced)");
+        let used: usize = head
+            .iter()
+            .chain(tail.iter())
+            .map(|sp| sp.content.chars().count())
+            .sum();
+        if used + marker.chars().count() <= area.width as usize {
+            head.push(Span::styled(marker, DIM));
+        }
+    }
+    head.extend(tail);
+    let line = Line::from(head);
     let block = Block::default()
         .borders(Borders::BOTTOM)
         .border_style(Style::default().fg(Color::DarkGray));
@@ -62,6 +90,15 @@ pub fn render_summary(f: &mut Frame, data: &DashboardData, area: Rect, period_la
         .block(block)
         .alignment(Alignment::Center);
     f.render_widget(paragraph, area);
+}
+
+/// Share (0-100) of tokens whose calls recorded no cost, or `None` when the
+/// ledger holds no such tokens, so a clean ledger renders no marker.
+fn unpriced_share(s: &SummaryStats) -> Option<f64> {
+    if s.total_tokens <= 0 || s.unpriced_tokens <= 0 {
+        return None;
+    }
+    Some(s.unpriced_tokens as f64 / s.total_tokens as f64 * 100.0)
 }
 
 // ── Daily Activity ───────────────────────────────────────────────────────────

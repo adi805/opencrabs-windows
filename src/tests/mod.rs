@@ -295,6 +295,7 @@ pub mod custom_provider_section_resolver_test;
 pub mod daemon_profile_scope_test;
 pub mod daemon_scheduler_lock_test;
 pub mod daily_backup_rotation_test;
+pub mod dashboard_attribution_test;
 pub mod datetime_awareness_test;
 pub mod db_database_test;
 pub mod db_migration_33_heal_test;
