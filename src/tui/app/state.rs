@@ -1330,10 +1330,20 @@ impl App {
             self.selected_session_index = 0;
             return;
         };
+        self.focus_session_by_id(current_id);
+    }
+
+    /// Put the picker cursor on a specific session by ID — the same
+    /// identity-never-index anchoring rule as `focus_current_session`.
+    /// Used after writes that reorder the list (favorite toggle re-queries
+    /// `ORDER BY favorite DESC, ...`), where the pre-write index points at
+    /// whatever slid into that slot. Falls back to the top when the session
+    /// is filtered out or gone.
+    pub(crate) fn focus_session_by_id(&mut self, session_id: Uuid) {
         self.selected_session_index = self
             .visible_session_indices()
             .iter()
-            .position(|&i| self.sessions.get(i).is_some_and(|s| s.id == current_id))
+            .position(|&i| self.sessions.get(i).is_some_and(|s| s.id == session_id))
             .unwrap_or(0);
     }
 

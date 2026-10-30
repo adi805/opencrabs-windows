@@ -235,7 +235,7 @@ impl ProjectRepository {
             .interact(move |conn| {
                 let mut stmt = conn.prepare_cached(
                     "SELECT * FROM sessions WHERE project_id = ?1 AND archived_at IS NULL
-                     ORDER BY updated_at DESC",
+                     ORDER BY favorite DESC, updated_at DESC",
                 )?;
                 let rows = stmt.query_map(params![pid], Session::from_row)?;
                 rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -254,7 +254,7 @@ impl ProjectRepository {
             .interact(move |conn| {
                 let mut stmt = conn.prepare_cached(
                     "SELECT * FROM sessions WHERE project_id IS NULL AND archived_at IS NULL
-                     ORDER BY updated_at DESC",
+                     ORDER BY favorite DESC, updated_at DESC",
                 )?;
                 let rows = stmt.query_map([], Session::from_row)?;
                 rows.collect::<std::result::Result<Vec<_>, _>>()

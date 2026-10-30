@@ -1265,4 +1265,5 @@ pub mod theme_boot_pack_test;
 pub mod usage_key_names_log_test;
 pub mod usage_prompt_share_test;
 
+pub mod session_favorite_test;
 pub mod session_switch_transcript_test;

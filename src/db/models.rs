@@ -156,6 +156,11 @@ pub struct Session {
     /// Stable channel identity `[chat:<id>]` extracted from the title
     /// (#1721). NULL for TUI/local sessions; unique across live rows.
     pub channel_chat_key: Option<String>,
+    /// User-pinned favorite. Favorites sort ahead of everything else in the
+    /// session list (`ORDER BY favorite DESC, updated_at DESC`); the flag is
+    /// set only by explicit user action (picker toggle), never by background
+    /// flows, so it never decays.
+    pub favorite: bool,
 }
 
 impl Session {
@@ -178,6 +183,7 @@ impl Session {
                 .flatten()
                 .and_then(|s| Uuid::parse_str(&s).ok()),
             channel_chat_key: row.get("channel_chat_key")?,
+            favorite: row.get::<_, i32>("favorite").unwrap_or(0) != 0,
         })
     }
 
@@ -202,6 +208,7 @@ impl Session {
             auto_title_attempted: false,
             project_id: None,
             channel_chat_key: None,
+            favorite: false,
         }
     }
 

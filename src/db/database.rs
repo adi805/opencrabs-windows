@@ -156,6 +156,10 @@ pub(crate) const MIGRATION_SQL: &[&str] = &[
     include_str!("../migrations/20261015000001_add_usage_ledger_cache_read_tokens.sql"),
     include_str!("../migrations/20261016000001_add_discord_tool_cards.sql"),
     include_str!("../migrations/20261019000001_add_usage_ledger_prompt_tokens.sql"),
+    // Favorite sessions: user-pinned flag on sessions. ALTER TABLE ADD
+    // COLUMN with a constant default (0), so appended last per the list
+    // invariant above; no heal pass is needed.
+    include_str!("../migrations/20261030000001_add_session_favorite.sql"),
 ];
 
 pub(crate) fn build_migrations() -> Migrations<'static> {

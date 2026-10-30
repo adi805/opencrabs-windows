@@ -339,6 +339,31 @@ impl SessionRepository {
         Ok(())
     }
 
+    /// Set (or clear) the user-pinned favorite flag on one session.
+    ///
+    /// A dedicated single-column write, not `update()`: toggling favorite is
+    /// a display action and must not bump `updated_at`, so the recency order
+    /// of the rest of the list stays exactly as it was (#1465's cousin: any
+    /// write that reorders the list under the picker is a cursor hazard).
+    pub async fn set_favorite(&self, id: Uuid, favorite: bool) -> Result<()> {
+        let id_str = id.to_string();
+        let flag: i64 = if favorite { 1 } else { 0 };
+        self.pool
+            .get()
+            .await
+            .context("Failed to get connection")?
+            .interact(move |conn| {
+                conn.execute(
+                    "UPDATE sessions SET favorite = ?1 WHERE id = ?2",
+                    params![flag, id_str],
+                )
+            })
+            .await
+            .map_err(interact_err)?
+            .context("Failed to set session favorite")?;
+        Ok(())
+    }
+
     /// Bulk-write a `(provider, model)` pair to every non-archived session
     /// in one statement (#1367). Rows already on the pair are excluded by
     /// the NULL-safe `IS NOT` predicate, and `updated_at` is never touched,
@@ -563,7 +588,7 @@ impl SessionRepository {
                 };
 
                 let sql = format!(
-                    "SELECT * FROM sessions{} ORDER BY updated_at DESC{}",
+                    "SELECT * FROM sessions{} ORDER BY favorite DESC, updated_at DESC{}",
                     where_sql, limit_sql
                 );
 
@@ -586,7 +611,8 @@ impl SessionRepository {
             .context("Failed to get connection")?
             .interact(|conn| {
                 let mut stmt = conn.prepare_cached(
-                    "SELECT * FROM sessions WHERE archived_at IS NULL ORDER BY updated_at DESC",
+                    "SELECT * FROM sessions WHERE archived_at IS NULL
+                     ORDER BY favorite DESC, updated_at DESC",
                 )?;
                 let rows = stmt.query_map([], Session::from_row)?;
                 rows.collect::<std::result::Result<Vec<_>, _>>()

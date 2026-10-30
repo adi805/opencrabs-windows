@@ -2825,6 +2825,44 @@ impl App {
                     self.selected_session_index = self.sessions.len().saturating_sub(1);
                 }
             }
+        } else if event.code == KeyCode::Char('s') || event.code == KeyCode::Char('S') {
+            // Toggle the user-pinned favorite flag. `s` (star) rather than
+            // `f`: `f` already opens the session files browser. The write is
+            // a dedicated single-column UPDATE that never touches
+            // `updated_at`, so the rest of the list keeps its recency order;
+            // only the toggled session moves (into or out of the favorites
+            // group). The cursor re-anchors on the session's ID because the
+            // reload reorders the list under it (the #1465 rule).
+            if let Some(session) = self.sessions.get(self.selected_session_index) {
+                let session_id = session.id;
+                let new_value = !session.favorite;
+                match self
+                    .session_service
+                    .set_session_favorite(session_id, new_value)
+                    .await
+                {
+                    Ok(now) => {
+                        let title = self
+                            .sessions
+                            .iter()
+                            .find(|s| s.id == session_id)
+                            .and_then(|s| s.title.clone())
+                            .unwrap_or_else(|| "New Chat".to_string());
+                        self.notification = Some(if now {
+                            format!("★ Favorited: {title}")
+                        } else {
+                            format!("Unfavorited: {title}")
+                        });
+                        self.notification_shown_at = Some(std::time::Instant::now());
+                        self.load_sessions().await?;
+                        self.focus_session_by_id(session_id);
+                    }
+                    Err(e) => {
+                        self.notification = Some(format!("Failed to favorite: {e}"));
+                        self.notification_shown_at = Some(std::time::Instant::now());
+                    }
+                }
+            }
         } else if event.code == KeyCode::Char('f') || event.code == KeyCode::Char('F') {
             // Open session files browser
             if let Some(session) = self.sessions.get(self.selected_session_index) {

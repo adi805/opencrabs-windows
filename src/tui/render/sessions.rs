@@ -590,10 +590,20 @@ fn session_row(
 
     // Left gutter, then the name padded to its column, then each column
     // right-aligned inside its fixed width, then the right gutter.
-    let name = truncate_to_width(
-        session.title.as_deref().unwrap_or("New Chat"),
-        plan.name_width,
-    );
+    // Favorites carry a star prefix so the top group is visually distinct;
+    // the prefix counts against the name width so columns never drift.
+    let raw_title = session.title.as_deref().unwrap_or("New Chat");
+    let name_text = if session.favorite {
+        format!("★ {raw_title}")
+    } else {
+        raw_title.to_string()
+    };
+    let name = truncate_to_width(&name_text, plan.name_width);
+    let name_style = if session.favorite && !is_selected && !is_assigned_to_target {
+        name_style.fg(theme::role(Role::Warning))
+    } else {
+        name_style
+    };
     let mut spans = vec![
         Span::raw(" ".repeat(GUTTER)),
         Span::styled(name.clone(), name_style),

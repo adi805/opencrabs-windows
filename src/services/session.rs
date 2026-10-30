@@ -58,6 +58,7 @@ impl SessionService {
             auto_title_attempted: false,
             project_id: None,
             channel_chat_key: None,
+            favorite: false,
         };
 
         repo.create(&session)
@@ -121,6 +122,7 @@ impl SessionService {
             auto_title_attempted: false,
             project_id: None,
             channel_chat_key: None,
+            favorite: false,
         };
 
         let (result, created) = repo
@@ -188,6 +190,22 @@ impl SessionService {
 
         tracing::info!("Updated session title: {}", id);
         Ok(())
+    }
+
+    /// Toggle (or explicitly set) the user-pinned favorite flag.
+    ///
+    /// Read-back after write so the TUI notification can show the resulting
+    /// state ("Favorited: X" / "Unfavorited: X") without assuming the write
+    /// landed on the row it thinks it did.
+    pub async fn set_session_favorite(&self, id: Uuid, favorite: bool) -> Result<bool> {
+        let repo = SessionRepository::new(self.context.pool());
+        repo.set_favorite(id, favorite)
+            .await
+            .context("Failed to set session favorite")?;
+
+        let now_favorite = self.get_session_required(id).await?.favorite;
+        tracing::info!("Session {} favorite set to {}", id, now_favorite);
+        Ok(now_favorite)
     }
 
     /// Update session usage statistics and record to the cumulative usage ledger.

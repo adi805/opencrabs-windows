@@ -147,6 +147,7 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App, area: Rect) {
         kv("D", "Delete", cyan),
         kv("/", "Search sessions", cyan),
         kv("F", "Session files", cyan),
+        kv("S", "Favorite / unfavorite", cyan),
         kv("P", "Projects", cyan),
         kv("Esc", "Back to chat", cyan),
         Line::from(""),
