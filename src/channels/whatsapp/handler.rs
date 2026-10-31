@@ -667,6 +667,38 @@ pub(crate) async fn handle_message(
     let idle_timeout_hours = wa_cfg.session_idle_hours;
     let voice_config = cfg.voice_config();
 
+    // The PAIRED account's own number (captured at PairSuccess into owner_jid) is
+    // the correct self-chat target. allowed_phones[0] is only right when it IS
+    // the paired account (self-DM); for a number paired to serve other people's
+    // DMs it may be an allowed CONTACT, so prefer owner_jid and fall back to the
+    // first allowed phone.
+    //
+    // Resolved here rather than next to the session key (#2183): the pending
+    // approval gate below asks the same question ("is this the owner"), and two
+    // checks that disagree on who the paired account is are how an owner's own
+    // "yes" gets refused. One value, both gates.
+    let owner_number = match wa_state.owner_jid().await {
+        Some(jid) => jid
+            .split('@')
+            .next()
+            .unwrap_or("")
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .trim_start_matches('+')
+            .to_string(),
+        None => wa_cfg
+            .allowed_phones
+            .first()
+            .map(|a| a.trim_start_matches('+').to_string())
+            .unwrap_or_default(),
+    };
+    let owner_number = if owner_number.is_empty() {
+        None
+    } else {
+        Some(owner_number)
+    };
+
     // #1525: recovered history frames must not wake the agent. Offline sync
     // and PDO recovery arrive through this same pipeline, flagged on the
     // message info; for opted-in chats they are stored (windowed, tagged
@@ -746,14 +778,46 @@ pub(crate) async fn handle_message(
     //
     // Deliberately NOT used for the allow/owner checks: those accept either
     // identity, which is a different question from picking one.
-    let canonical_phone =
-        super::identity::canonical_user(&info.source.sender, info.source.sender_alt.as_ref());
+    // The twin the stanza did NOT carry (#2183). `canonical_user` can only use
+    // what arrived with the message, so a LID-addressed stanza with no
+    // `sender_pn` falls back to the opaque id. Every reader below then compares
+    // something that is not a phone number against config that holds phone
+    // numbers: the owner gate answers "not the owner", so the owner's own DM is
+    // handled as a stranger, and the session is filed under a second key until
+    // the next boot's reconciliation folds it back (#2178). The Signal store
+    // learned the pair, so ask it once, here, and use the answer for the
+    // response gate, the session key, the owner gate and the reply target alike.
+    let lid_pn_store = wa_state.lid_pn_store().await;
+    let resolved_pn = super::identity::resolve_pn(
+        lid_pn_store.as_ref(),
+        &info.source.sender,
+        info.source.sender_alt.as_ref(),
+    )
+    .await;
+    let canonical_phone = match resolved_pn.clone() {
+        Some(pn) => pn,
+        None => {
+            super::identity::canonical_user(&info.source.sender, info.source.sender_alt.as_ref())
+        }
+    };
     let chat_user_part = chat_user(&info);
+    // The bot pairs AS the owner, so the owner's own messages arrive in the
+    // "Message Yourself" self-chat addressed by LID, while the connection
+    // greeting and the config identify the owner by PN. Keying the session by the
+    // raw sender would create a SECOND owner session (wa-<LID>) separate from the
+    // greeting's (wa-<PN>): the "two sessions every time" bug. Computed here
+    // rather than next to the session key (#2183) because the pending-approval
+    // gate below asks the same question, and two answers that disagree are how an
+    // owner's own "yes" gets refused.
+    let is_owner_self_chat = info.source.is_from_me && sender_user == chat_user_part;
     if !wa_should_respond(
         wa_cfg.response_policy,
         info.source.is_from_me,
         &sender_user,
-        sender_alt_user.as_deref(),
+        // Either twin: the stanza's own, else the stored one (#2183). A LID
+        // sender whose PN we now know must not be dropped by an allow list that
+        // holds phone numbers.
+        sender_alt_user.as_deref().or(resolved_pn.as_deref()),
         &chat_user_part,
         &wa_cfg.allowed_phones,
         &wa_cfg.bot_owner,
@@ -828,23 +892,21 @@ pub(crate) async fn handle_message(
         // allowlist is unconfigured/deny, not "everyone is owner"). A non-owner
         // reply is dropped, not resolved.
         if let Some(c) = choice {
-            // Either identity is accepted, matching the gate further down this
-            // function. A LID-addressed owner replying "yes" arrives as digits
-            // that are not their phone number, so checking `phone` alone
-            // refused the owner's own approval and the tool call then timed out
-            // after five minutes (#1533). This needs no canonical value: the
-            // question is "is this person the owner", not "which of their two
-            // names do we file them under".
-            let is_owner =
-                crate::config::owner::is_owner(&wa_cfg.allowed_phones, &wa_cfg.bot_owner, &phone)
-                    || sender_alt_user.as_deref().is_some_and(|alt| {
-                        crate::config::owner::is_owner(
-                            &wa_cfg.allowed_phones,
-                            &wa_cfg.bot_owner,
-                            alt,
-                        )
-                    });
-            if !is_owner {
+            // One predicate, both gates (#2183). A LID-addressed owner replying
+            // "yes" arrives as digits that are not their phone number, so checking
+            // `phone` alone refused the owner's own approval and the tool call then
+            // timed out after five minutes (#1533). Same helper as the gate further
+            // down this function, so the two can no longer disagree about who the
+            // owner is.
+            if !is_owner_identity(
+                is_owner_self_chat,
+                owner_number.as_deref(),
+                &phone,
+                sender_alt_user.as_deref(),
+                resolved_pn.as_deref(),
+                &wa_cfg.allowed_phones,
+                &wa_cfg.bot_owner,
+            ) {
                 tracing::warn!(
                     "WhatsApp: non-owner {} replied approval {:?} — refused (OC-01)",
                     phone,
@@ -1066,41 +1128,11 @@ pub(crate) async fn handle_message(
         return;
     }
 
-    // The bot pairs AS the owner, so the owner's own messages arrive in the
-    // "Message Yourself" self-chat addressed by LID (e.g. 236927743742100),
-    // while the connection greeting and config identify the owner by PN
-    // (351933536442). Keying the session by the raw sender would create a
-    // SECOND owner session (wa-<LID>) separate from the greeting's (wa-<PN>) —
-    // the "two sessions every time" bug. Collapse the owner's self-chat to the
-    // configured owner number (the same one the greeting uses) so the owner
-    // always resolves to exactly one session regardless of PN/LID addressing.
-    let is_owner_self_chat = info.source.is_from_me && sender_user == chat_user_part;
-    // The PAIRED account's own number (captured at PairSuccess into owner_jid) is
-    // the correct self-chat target. allowed_phones[0] is only right when it IS
-    // the paired account (self-DM); for a number paired to serve other people's
-    // DMs it may be an allowed CONTACT, so prefer owner_jid and fall back to the
-    // first allowed phone.
-    let owner_number = match wa_state.owner_jid().await {
-        Some(jid) => jid
-            .split('@')
-            .next()
-            .unwrap_or("")
-            .split(':')
-            .next()
-            .unwrap_or("")
-            .trim_start_matches('+')
-            .to_string(),
-        None => wa_cfg
-            .allowed_phones
-            .first()
-            .map(|a| a.trim_start_matches('+').to_string())
-            .unwrap_or_default(),
-    };
-    let owner_number = if owner_number.is_empty() {
-        None
-    } else {
-        Some(owner_number)
-    };
+    // Collapse the owner's self-chat to the configured owner number (the same one
+    // the greeting uses) so the owner always resolves to exactly one session
+    // regardless of PN/LID addressing. `is_owner_self_chat` and `owner_number`
+    // were both resolved above (#2183), next to the approval gate that asks the
+    // same question: one value, both gates.
     let session_phone = match (is_owner_self_chat, &owner_number) {
         (true, Some(num)) => num.clone(),
         // Preferring `sender_alt` outright reads as "prefer the phone number"
@@ -1122,25 +1154,23 @@ pub(crate) async fn handle_message(
     // LID-addressed DMs (#276 follow-up): non-owner contacts also send from LID
     // JIDs now, and the same encrypt fan-out issue applies. When the chat JID is
     // a LID and sender_alt carries the PN, convert to PN JID so the response
-    // can be delivered.
+    // can be delivered. #2183: the stanza does not always carry `sender_pn`, and
+    // then there was no deliverable target at all and the reply was dropped, so
+    // the PN the store knows is the second source.
     let reply_target: wacore_binary::jid::Jid = match (is_owner_self_chat, &owner_number) {
         (true, Some(num)) => format!("{num}@s.whatsapp.net")
             .parse()
             .unwrap_or_else(|_| info.source.chat.clone()),
         _ => {
             // For non-owner DMs, if the chat JID is a LID (privacy-preserving),
-            // convert to PN JID using sender_alt so the response can be delivered.
-            // LID JIDs can't receive messages (same encrypt fan-out issue as owner self-chat).
+            // convert to PN JID so the response can be delivered. LID JIDs can't
+            // receive messages (same encrypt fan-out issue as owner self-chat).
             if !info.source.is_group && info.source.chat.is_lid() {
-                if let Some(ref alt) = sender_alt_user {
-                    let alt_jid = format!("{alt}@s.whatsapp.net");
-                    if let Ok(jid) = alt_jid.parse() {
-                        jid
-                    } else {
-                        info.source.chat.clone()
-                    }
-                } else {
-                    info.source.chat.clone()
+                match sender_alt_user.as_deref().or(resolved_pn.as_deref()) {
+                    Some(pn) => format!("{pn}@s.whatsapp.net")
+                        .parse()
+                        .unwrap_or_else(|_| info.source.chat.clone()),
+                    None => info.source.chat.clone(),
                 }
             } else {
                 info.source.chat.clone()
@@ -1170,15 +1200,15 @@ pub(crate) async fn handle_message(
     // and is not the same as ownership, so it is gone from here. Ownership is
     // now the self-chat, the configured owner number, or the canonical owner
     // resolver over allowed_phones + bot_owner.
-    let is_owner = is_owner_self_chat
-        || owner_number.as_deref() == Some(phone.as_str())
-        || sender_alt_user
-            .as_deref()
-            .is_some_and(|alt| owner_number.as_deref() == Some(alt))
-        || crate::config::owner::is_owner(&wa_cfg.allowed_phones, &wa_cfg.bot_owner, &phone)
-        || sender_alt_user.as_deref().is_some_and(|alt| {
-            crate::config::owner::is_owner(&wa_cfg.allowed_phones, &wa_cfg.bot_owner, alt)
-        });
+    let is_owner = is_owner_identity(
+        is_owner_self_chat,
+        owner_number.as_deref(),
+        &phone,
+        sender_alt_user.as_deref(),
+        resolved_pn.as_deref(),
+        &wa_cfg.allowed_phones,
+        &wa_cfg.bot_owner,
+    );
 
     // Sessions are keyed by a stable `[chat:wa-<phone>]` suffix so auto-rename
     // of the visible label still resolves to the same row (issue #121).
@@ -2506,4 +2536,47 @@ pub(crate) async fn send_connection_greeting(
             ));
         }
     }
+}
+
+/// Is this sender the owner of the paired account? The single answer for both
+/// gates in [`handle_message`] (#2183).
+///
+/// Two places in one turn ask this question: resolving a pending approval (an
+/// approval is keyed by sender, so an allow-listed contact must not resolve
+/// their own tool call, OC-01) and the owner-only flows further down. Each used
+/// to hold its own copy of the predicate, and a copy that drifts is exactly how
+/// the owner's own "yes" got refused while the very same message was handled as
+/// the owner (#1533).
+///
+/// Every identity the sender might be known by is asked, because the config holds
+/// phone numbers while a LID-addressed stanza may carry neither the PN nor
+/// anything that looks like one:
+///
+/// - the self-chat, which is the owner by construction;
+/// - `owner_number`, the paired account captured at PairSuccess;
+/// - `sender_alt`, the stanza's own twin (the PN for a LID sender);
+/// - `resolved_pn`, the PN `identity::resolve_pn` asked the Signal store for when
+///   the stanza omitted that twin;
+/// - the canonical resolver over `allowed_phones` and `bot_owner`, which stays
+///   deny-by-default on an empty config (OC-02).
+fn is_owner_identity(
+    is_owner_self_chat: bool,
+    owner_number: Option<&str>,
+    phone: &str,
+    sender_alt: Option<&str>,
+    resolved_pn: Option<&str>,
+    allowed_phones: &[String],
+    bot_owner: &[String],
+) -> bool {
+    if is_owner_self_chat {
+        return true;
+    }
+    let known = [Some(phone), sender_alt, resolved_pn];
+    if known.iter().flatten().any(|id| owner_number == Some(*id)) {
+        return true;
+    }
+    known
+        .iter()
+        .flatten()
+        .any(|id| crate::config::owner::is_owner(allowed_phones, bot_owner, id))
 }

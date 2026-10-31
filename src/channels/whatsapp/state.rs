@@ -24,6 +24,11 @@ pub struct WhatsAppState {
     pub(super) client: Mutex<Option<Arc<Client>>>,
     /// Owner's JID (phone@s.whatsapp.net) — first in allowed_phones list
     pub(super) owner_jid: Mutex<Option<String>>,
+    /// The Signal store, so the identity resolver can read the authoritative
+    /// LID→PN map (#2183). Set once when the agent opens the store; `None`
+    /// before pairing or after a failed open, which makes the resolver a no-op
+    /// instead of an error.
+    pub(super) lid_pn_store: Mutex<Option<super::store::Store>>,
     /// Pending tool approvals: phone → oneshot sender of WaApproval.
     /// When a tool approval is in flight, the next message from that phone
     /// (text or button tap) is interpreted as Yes/Always/No instead of
@@ -141,6 +146,7 @@ impl WhatsAppState {
         Self {
             client: Mutex::new(None),
             owner_jid: Mutex::new(None),
+            lid_pn_store: Mutex::new(None),
             pending_approvals: Mutex::new(HashMap::new()),
             pending_followups: Mutex::new(HashMap::new()),
             cancel_tokens: Mutex::new(HashMap::new()),
@@ -164,5 +170,16 @@ impl WhatsAppState {
             outbox: super::outbox::Outbox::default(),
             rate_limiter: std::sync::Arc::new(super::rate_limit::WhatsappRateLimiter::new()),
         }
+    }
+
+    /// Attach the Signal store so [`super::identity::resolve_pn`] can read the
+    /// authoritative LID→PN map. Called once when the agent opens the store.
+    pub async fn set_lid_pn_store(&self, store: super::store::Store) {
+        *self.lid_pn_store.lock().await = Some(store);
+    }
+
+    /// The Signal store, once the agent has opened it.
+    pub async fn lid_pn_store(&self) -> Option<super::store::Store> {
+        self.lid_pn_store.lock().await.clone()
     }
 }

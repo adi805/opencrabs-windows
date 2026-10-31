@@ -237,6 +237,11 @@ impl WhatsAppAgent {
                 }
             }
 
+            // Hand the store to the shared state so the per-message identity resolver
+            // can read the authoritative LID→PN map (#2183). Cloned, not moved:
+            // the bot builder takes the original by value below.
+            wa_state.set_lid_pn_store(backend.clone()).await;
+
             let bot_result = Bot::builder()
                 .with_backend(backend)
                 .with_transport_factory(TokioWebSocketTransportFactory::new())
