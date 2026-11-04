@@ -122,7 +122,7 @@ impl App {
     /// because completion is only recorded on `Complete`.
     fn quit_from_onboarding(&mut self) {
         if let Some(ref wizard) = self.onboarding
-            && let Err(e) = wizard.apply_config()
+            && let Err(e) = wizard.apply_config_preserving_providers()
         {
             tracing::warn!("Wizard quit: partial save failed: {}", e);
         }
@@ -248,8 +248,11 @@ impl App {
                 WizardAction::Cancel => {
                     // Persist whatever the user entered before dropping the wizard.
                     // Without this, going back from channel setup loses all typed values.
+                    // Provider sweep off: the user is leaving, not picking (#1233's
+                    // provider twin): turning every other provider off here is
+                    // what wiped `enabled` flags on 5 Nov.
                     if let Some(ref wizard) = self.onboarding
-                        && let Err(e) = wizard.apply_config()
+                        && let Err(e) = wizard.apply_config_preserving_providers()
                     {
                         // Surface it, do not just log (#914). Leaving the
                         // wizard is exactly when the user stops looking, so a
@@ -855,9 +858,12 @@ impl App {
                     // have PlaceholderProvider at this point).
                     if self.agent_service.provider_name() == "none" {
                         if let Some(ref wizard) = self.onboarding
-                            && let Err(e) = wizard.apply_config()
+                            && let Err(e) = wizard.apply_config_preserving_providers()
                         {
-                            tracing::warn!("Brain gen: apply_config before generation: {}", e);
+                            tracing::warn!(
+                                "Brain gen: provider-preserving save before generation: {}",
+                                e
+                            );
                             self.push_system_message(format!(
                                 "⚠️ Settings NOT saved before brain generation: {e}"
                             ));

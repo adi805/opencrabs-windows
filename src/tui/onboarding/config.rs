@@ -313,6 +313,30 @@ impl OnboardingWizard {
     /// In quick_jump mode, only writes settings relevant to the current step to avoid
     /// overwriting unrelated channel/provider settings loaded with defaults.
     pub fn apply_config(&self) -> Result<(), String> {
+        self.apply_config_inner(true)
+    }
+
+    /// Save the wizard's config WITHOUT sweeping the `enabled` flag of every
+    /// other provider.
+    ///
+    /// `apply_config` opens by writing `enabled = false` to every section in
+    /// `[providers.*]` before enabling the pick. That is right when the pick is
+    /// the user's own choice: choosing a provider is how they say "use this
+    /// one". It is destructive when the user never chose one. Leaving the
+    /// wizard (Esc, Ctrl+C), stepping back, and the pre-generation save all run
+    /// a save the user never asked for, carrying whatever the wizard happened
+    /// to be displaying. On an install that already had providers in use that
+    /// sweep turned them off: the provider other sessions were pinned to, and
+    /// the built-in `opencrabs` section, so the next boot fell through to
+    /// whichever custom provider happened to sort first. Nothing the user typed
+    /// is lost either way: this writes the same fields, it just does not sweep.
+    pub fn apply_config_preserving_providers(&self) -> Result<(), String> {
+        self.apply_config_inner(false)
+    }
+
+    /// Shared body of the two save entry points. `sweep_providers` is the
+    /// provider-pick flag documented on `apply_config_preserving_providers`.
+    fn apply_config_inner(&self, sweep_providers: bool) -> Result<(), String> {
         // Determine which sections to write based on quick_jump + current step
         let write_provider = !self.quick_jump
             || matches!(
@@ -348,6 +372,7 @@ impl OnboardingWizard {
             write_voice,
             write_image,
             true,
+            sweep_providers,
         )
     }
 
@@ -382,6 +407,9 @@ impl OnboardingWizard {
             write_voice,
             write_image,
             false,
+            // A step-scoped save only runs on a transition the user made, so
+            // leaving ProviderAuth IS their provider pick: sweep.
+            true,
         )
         .map_err(|e| format!("{} step: {}", section, e))
     }
@@ -390,6 +418,11 @@ impl OnboardingWizard {
     /// `finalize` also runs the completion-only tasks (template seeding,
     /// daemon install) in their original position; step-scoped saves pass
     /// false so a mid-wizard save never seeds templates or installs services.
+    ///
+    /// `sweep_providers` gates the disable-all provider sweep. It must be true
+    /// only for a save that carries the user's own provider pick; see
+    /// `apply_config_preserving_providers` for what a sweep on an incidental
+    /// save does to an install that is already configured.
     fn write_scoped_config(
         &self,
         write_provider: bool,
@@ -397,6 +430,7 @@ impl OnboardingWizard {
         write_voice: bool,
         write_image: bool,
         finalize: bool,
+        sweep_providers: bool,
     ) -> Result<(), String> {
         // Empty-custom_name guard: a custom provider with no name typed yet
         // would format the section as `providers.custom.` (empty subkey) and
@@ -445,8 +479,11 @@ impl OnboardingWizard {
         };
 
         if write_provider {
-            // Disable all providers first, then enable selected one
-            {
+            // Disable all providers first, then enable selected one, but ONLY
+            // when this save carries the user's own provider pick. See
+            // `apply_config_preserving_providers`: a quit/cancel/pre-generation
+            // save must not turn off providers the user never touched.
+            if sweep_providers {
                 let all_sections = if let Ok(cfg) = Config::load() {
                     crate::utils::providers::all_config_sections(&cfg.providers)
                 } else {
