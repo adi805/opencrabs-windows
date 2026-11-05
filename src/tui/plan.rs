@@ -1281,6 +1281,14 @@ fn expectation_starts(haystack: &str) -> Vec<usize> {
             continue;
         }
         for window in 0..=(words.len() - parts.len()) {
+            // A stem that sits INSIDE a dashed flag is part of the flag, not
+            // an expectation: `--no-fail-fast` is one token, and reading its
+            // "fail" as the end of the command cut "cargo test --workspace
+            // --no-", which the gate then ran and answered "unexpected
+            // argument '--no-'". A real expectation follows a space.
+            if words[window].0 > 0 && haystack.as_bytes()[words[window].0 - 1] == b'-' {
+                continue;
+            }
             let hit = parts.iter().enumerate().all(|(k, part)| {
                 words[window + k]
                     .1

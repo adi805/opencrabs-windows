@@ -85,6 +85,20 @@ fn plan_spec_check_keeps_criteria_order() {
     );
 }
 
+#[test]
+fn plan_spec_check_keeps_a_flag_whose_stem_reads_as_an_expectation() {
+    // `--no-fail-fast` carries the stem "fail". Cutting there locked
+    // "cargo test --workspace --no-", which the gate ran and answered
+    // "unexpected argument '--no-'" on a task that was done right.
+    let commands = extract_check_commands(&criteria(&[
+        "cargo test --workspace --no-fail-fast --no-run exits 0",
+    ]));
+    assert_eq!(
+        commands,
+        vec!["cargo test --workspace --no-fail-fast --no-run".to_string()]
+    );
+}
+
 // ── extraction: every refusal below is on purpose ────────────────────
 
 #[test]
