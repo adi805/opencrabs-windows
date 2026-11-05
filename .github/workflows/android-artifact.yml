@@ -29,6 +29,18 @@ on:
         required: false
         type: boolean
         default: false
+      # Full variant (accessibility bridge present) signed with the committed
+      # debug key. lite drops the automation bridge to dodge Play Protect, but
+      # a phone that already runs a debug-signed install cannot switch to the
+      # release-signed APK: Android fails it with
+      # INSTALL_FAILED_UPDATE_INCOMPATIBLE. Without this input the only ways to
+      # get the accessibility bridge onto that phone are uninstalling first
+      # (which deletes config.toml and keys.toml) or rotating the install key.
+      debug_sign:
+        description: "Sign with the committed debug key while KEEPING the accessibility service."
+        required: false
+        type: boolean
+        default: false
   # Reusable so release-fork.yml can build the APK at the tag being published.
   # Without this the release workflow has no way to produce an Android asset,
   # and the only alternative is attaching an APK that some earlier branch run
@@ -52,6 +64,11 @@ on:
       # declarations Play Protect blocks. Costs the automation bridge.
       lite:
         description: "Build the lite variant (no accessibility service, debug signing)."
+        required: false
+        type: boolean
+        default: false
+      debug_sign:
+        description: "Sign with the committed debug key while keeping the accessibility service."
         required: false
         type: boolean
         default: false
@@ -249,9 +266,9 @@ jobs:
           # certificate changed (INSTALL_FAILED_UPDATE_INCOMPATIBLE, shown to
           # the user as "App not installed"). Blanking these three is what
           # makes assemble-apk.sh fall back to android/debug.keystore.
-          ANDROID_KEYSTORE_B64: ${{ !inputs.lite && secrets.ANDROID_KEYSTORE_B64 || '' }}
-          ANDROID_KEYSTORE_PASS: ${{ !inputs.lite && secrets.ANDROID_KEYSTORE_PASS || '' }}
-          ANDROID_KEY_ALIAS: ${{ !inputs.lite && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEYSTORE_B64: ${{ (!inputs.lite && !inputs.debug_sign) && secrets.ANDROID_KEYSTORE_B64 || '' }}
+          ANDROID_KEYSTORE_PASS: ${{ (!inputs.lite && !inputs.debug_sign) && secrets.ANDROID_KEYSTORE_PASS || '' }}
+          ANDROID_KEY_ALIAS: ${{ (!inputs.lite && !inputs.debug_sign) && secrets.ANDROID_KEY_ALIAS || '' }}
         run: bash android/assemble-apk.sh apk-input/opencrabs
 
       # The APK is now a terminal client, not just a daemon shell: it carries a
@@ -435,7 +452,7 @@ jobs:
       # install block on a user's device. Guarded on the secret being
       # present so fork PRs without secret access keep building debug APKs.
       - name: Assert the APK carries the release certificate
-        if: env.ANDROID_KEYSTORE_B64 != '' && !inputs.lite
+        if: env.ANDROID_KEYSTORE_B64 != '' && !inputs.lite && !inputs.debug_sign
         env:
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
@@ -458,8 +475,8 @@ jobs:
           fi
           echo "signer: CN=OpenCrabs Release (private key held in repo secrets)"
 
-      - name: Assert the lite build carries the debug certificate
-        if: inputs.lite
+      - name: Assert the debug-signed build carries the debug certificate
+        if: inputs.lite || inputs.debug_sign
         run: |
           set -euo pipefail
           APK=android/out/opencrabs-release.apk
@@ -479,7 +496,7 @@ jobs:
       - name: Upload the APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ${{ inputs.lite && 'opencrabs-android-apk-lite' || 'opencrabs-android-apk' }}
+          name: ${{ inputs.lite && 'opencrabs-android-apk-lite' || (inputs.debug_sign && 'opencrabs-android-apk-auto' || 'opencrabs-android-apk') }}
           path: android/out/opencrabs-release.apk
           if-no-files-found: error
           retention-days: 30
