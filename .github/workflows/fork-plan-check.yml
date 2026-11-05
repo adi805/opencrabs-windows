@@ -1,0 +1,72 @@
+name: Fork check (plan criteria)
+
+# Runner bukti khusus fork, bukan gate upstream.
+#
+# Kenapa file ini ada: CI repo sudah mengirim pull_request dari fork ke
+# ubuntu-latest (ci.yml, ekspresi runs-on di job lint). Itu terbukti di run
+# 41937294690 (2026-11-04): job "Lint" selesai 14m40s di runner hosted
+# "GitHub Actions 1000017437". Jadi kapasitas hosted-nya nyata, bukan asumsi.
+#
+# Yang bikin gate penuh tidak bisa dipakai apa adanya di fork:
+#   1. job `Build` memakai matrix `self-hosted` / aarch64-apple-darwin saja.
+#      Fork tidak punya runner itu, jadi job-nya menunggu selamanya.
+#   2. job `Test` bergantung pada `audit`, dan `cargo audit` sekarang merah
+#      karena advisory baru (RUSTSEC-2026-0414, crate zip, high) yang belum
+#      ada di daftar --ignore ci.yml. Akibatnya `Test` selalu `skipped`,
+#      bukan merah karena kode.
+#
+# File ini menjalankan tepat gate yang harus dilewati branch ini, di runner
+# hosted: format, ratchet clippy yang sama persis dengan job Lint, lalu uji
+# yang jadi acceptance criterion. Tidak ada gate upstream yang dilonggarkan,
+# karena file ini tidak pernah dikirim ke upstream.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/plan-criteria-dash-stem
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: fmt + clippy ratchet + plan_spec_check
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Install Rust (from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          cache-on-failure: true
+
+      - name: Install ALSA dev + mold
+        run: sudo apt-get update -qq && sudo apt-get install -y libasound2-dev mold clang
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Byte-slice ratchet self-test
+        run: python3 scripts/check-byte-slice-ratchet.py --self-test
+
+      # Sama seperti job Lint: satu clippy run memegang -D warnings untuk semua
+      # lint lain, sementara clippy::string_slice tetap warning supaya ratchet
+      # bisa membaca daftar site. `touch` wajib karena pada cache yang dipulihkan
+      # setiap unit terlihat fresh dan clippy tidak mengeluarkan diagnosa apa pun.
+      - name: Clippy, with the byte-slice ratchet
+        run: |
+          touch src/lib.rs
+          python3 scripts/check-byte-slice-ratchet.py
+
+      - name: plan_spec_check
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+        run: cargo test --locked --profile ci --all-features --lib plan_spec_check -- --nocapture
