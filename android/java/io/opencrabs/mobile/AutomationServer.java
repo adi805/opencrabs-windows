@@ -38,8 +38,8 @@ import java.util.concurrent.Executors;
  *   <li>Every request needs a token, compared in constant time. The token is
  *       generated per install into the app's private files dir, which only this
  *       app and the core process it spawned can read.</li>
- *   <li>Refuses to serve at all while the accessibility service is disconnected,
- *       so a disabled service cannot be half-driven.</li>
+ *   <li>Refuses to serve at all when the shell backend has no Shizuku binder or
+ *       no permission, so a half-driven phone is not reported as working.</li>
  * </ul>
  */
 public final class AutomationServer {
@@ -67,12 +67,19 @@ public final class AutomationServer {
 
     private final Context mContext;
     private final ExecutorService mWorkers = Executors.newFixedThreadPool(2);
+    /**
+     * Shell-backed UI control. The accessibility service this used to hold is
+     * gone: a manifest that declares ACCESSIBILITY cannot be installed from a
+     * chat app at all, because Play Protect blocks it outright.
+     */
+    private final ShellAutomation mBackend;
     private volatile boolean mRunning;
     private ServerSocket mSocket;
     private String mToken;
 
     private AutomationServer(Context context) {
         mContext = context.getApplicationContext();
+        mBackend = new ShellAutomation(mContext);
     }
 
     public static synchronized void start(Context context) {
@@ -250,14 +257,26 @@ public final class AutomationServer {
     }
 
     private void route(Socket c, String method, String path, String body) throws Exception {
-        CrabsAccessibilityService svc = CrabsAccessibilityService.getInstance();
+        ShellAutomation auto = mBackend;
 
         // /status answers even with the service off, so the caller can tell
         // "not enabled" apart from "server down".
         if ("/status".equals(path)) {
             JSONObject o = new JSONObject();
             o.put("server", true);
-            o.put("accessibility", CrabsAccessibilityService.isConnected());
+            o.put("backend", "shizuku");
+            // Kept so an older caller reading this key does not mistake a
+            // working shell backend for a dead one.
+            o.put("accessibility", false);
+            o.put("shizuku", new JSONObject()
+                    .put("running", ShellAutomation.shizukuRunning())
+                    .put("permission", ShellAutomation.permissionGranted())
+                    .put("uid", ShellAutomation.serverUid()));
+            String why = ShellAutomation.explain();
+            o.put("ready", why == null);
+            if (why != null) {
+                o.put("reason", why);
+            }
             writeJson(c, 200, o);
             return;
         }
@@ -288,15 +307,17 @@ public final class AutomationServer {
             return;
         }
 
-        if (svc == null) {
-            writeJson(c, 503, error("accessibility service not enabled"));
+        if (!ShellAutomation.ready()) {
+            String why = ShellAutomation.explain();
+            writeJson(c, 503, error(why == null
+                    ? "shell backend unavailable" : why));
             return;
         }
 
         switch (path) {
             case "/packages": {
                 JSONArray arr = new JSONArray();
-                List<String> pkgs = svc.launchablePackages();
+                List<String> pkgs = auto.launchablePackages();
                 for (String p : pkgs) {
                     arr.put(p);
                 }
@@ -306,7 +327,7 @@ public final class AutomationServer {
                 return;
             }
             case "/dump": {
-                JSONArray nodes = svc.dumpScreen();
+                JSONArray nodes = auto.dumpScreen();
                 JSONObject o = new JSONObject();
                 o.put("nodes", nodes);
                 o.put("count", nodes.length());
@@ -315,25 +336,25 @@ public final class AutomationServer {
             }
             case "/tap": {
                 JSONObject in = new JSONObject(body);
-                boolean ok = svc.tap((float) in.getDouble("x"), (float) in.getDouble("y"));
+                boolean ok = auto.tap((float) in.getDouble("x"), (float) in.getDouble("y"));
                 writeJson(c, 200, result(ok));
                 return;
             }
             case "/click": {
                 JSONObject in = new JSONObject(body);
-                boolean ok = svc.clickText(in.getString("text"));
+                boolean ok = auto.clickText(in.getString("text"));
                 writeJson(c, 200, result(ok));
                 return;
             }
             case "/type": {
                 JSONObject in = new JSONObject(body);
-                boolean ok = svc.setText(in.getString("text"));
+                boolean ok = auto.setText(in.getString("text"));
                 writeJson(c, 200, result(ok));
                 return;
             }
             case "/swipe": {
                 JSONObject in = new JSONObject(body);
-                boolean ok = svc.swipe(
+                boolean ok = auto.swipe(
                         (float) in.getDouble("x1"), (float) in.getDouble("y1"),
                         (float) in.getDouble("x2"), (float) in.getDouble("y2"),
                         in.optLong("ms", 300));
@@ -342,14 +363,14 @@ public final class AutomationServer {
             }
             case "/global": {
                 JSONObject in = new JSONObject(body);
-                boolean ok = svc.global(in.getString("action"));
+                boolean ok = auto.global(in.getString("action"));
                 writeJson(c, 200, result(ok));
                 return;
             }
             case "/launch": {
                 JSONObject in = new JSONObject(body);
-                boolean ok = svc.launch(in.getString("package"));
-                writeJson(c, 200, startResult(ok));
+                boolean ok = auto.launch(in.getString("package"));
+                writeJson(c, 200, result(ok));
                 return;
             }
             default:

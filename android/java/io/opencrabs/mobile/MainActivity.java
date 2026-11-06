@@ -112,6 +112,13 @@ public class MainActivity extends Activity {
         // backgrounded. It refuses to serve anything except /status until the
         // user enables the accessibility service.
         AutomationServer.start(this);
+        // Shizuku delivers its binder asynchronously through ShizukuProvider, so
+        // the listener goes in at every activity start and the sticky variant
+        // replays a binder that already arrived. Asking for the permission here
+        // (rather than silently failing on the first command) is what turns a
+        // dead automation surface into one Shizuku dialog the user can accept.
+        ShellBridge.init();
+        ShellBridge.requestPermission();
 
         Retained retained = (Retained) getLastNonConfigurationInstance();
         if (retained != null) {

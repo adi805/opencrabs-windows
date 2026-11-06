@@ -224,12 +224,11 @@ public class SettingsActivity extends Activity {
      * The bridge that lets the agent drive other apps.
      *
      * <p>This is the one control in this screen that hands over real power: with
-     * it on, the agent can read the screen of any app and tap anything. So the
-     * switch here is not a switch at all, it is a button that opens the system's
-     * own Accessibility screen. Android deliberately does not let an app enable
-     * its own accessibility service, and routing through the system UI is the
-     * only way the grant stays something the user did rather than something the
-     * app did to them.
+     * it on, the agent can read the screen of any app and tap anything. The
+     * grant is not ours to hand out: it lives in Shizuku, which runs the
+     * commands as the shell user and shows its own allow dialog. So the button
+     * opens Shizuku, and the status line explains why automation is off rather
+     * than leaving the user to guess.
      */
     private void addAutomationSection(LinearLayout root) {
         TextView heading = new TextView(this);
@@ -241,16 +240,16 @@ public class SettingsActivity extends Activity {
 
         TextView hint = new TextView(this);
         hint.setText("Lets the agent read other apps' screens and tap, type or swipe "
-            + "for you. Off unless you turn it on in Android's accessibility settings, "
-            + "and Android shows a permanent switch there to revoke it. Automating a "
-            + "third-party service can violate its terms and put your account at risk, "
-            + "so use it on apps that permit it.");
+            + "for you. It needs Shizuku running (started over wireless debugging, and "
+            + "again after every reboot) plus a one-time permission grant there. "
+            + "Automating a third-party service can violate its terms and put your "
+            + "account at risk, so use it on apps that permit it.");
         hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         hint.setPadding(0, dp(6), 0, dp(8));
         root.addView(hint);
 
         automationButton = new Button(this);
-        automationButton.setOnClickListener(v -> openAccessibilitySettings());
+        automationButton.setOnClickListener(v -> openShizuku());
         root.addView(automationButton);
 
         automationStatus = new TextView(this);
@@ -260,11 +259,18 @@ public class SettingsActivity extends Activity {
         root.addView(automationStatus);
     }
 
-    private void openAccessibilitySettings() {
+    private void openShizuku() {
         try {
-            startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS));
-        } catch (ActivityNotFoundException e) {
-            automationStatus.setText("This build has no accessibility settings screen.");
+            Intent launch = getPackageManager()
+                .getLaunchIntentForPackage("moe.shizuku.privileged.api");
+            if (launch == null) {
+                automationStatus.setText("Shizuku is not installed. Install it, start it "
+                    + "over wireless debugging, then come back here.");
+                return;
+            }
+            startActivity(launch);
+        } catch (Exception e) {
+            automationStatus.setText("Cannot open Shizuku: " + e.getMessage());
         }
     }
 
@@ -272,13 +278,15 @@ public class SettingsActivity extends Activity {
         if (automationButton == null || automationStatus == null) {
             return;
         }
-        boolean connected = CrabsAccessibilityService.isConnected();
-        automationButton.setText(connected
-            ? "Automation is on (tap to review)"
-            : "Enable automation in accessibility settings");
-        automationStatus.setText(connected
+        String why = ShellAutomation.explain();
+        boolean ready = why == null;
+        automationButton.setText(ready
+            ? "Automation is on (tap to open Shizuku)"
+            : "Automation is off: tap to open Shizuku");
+        automationStatus.setText(ready
             ? "bridge ready on 127.0.0.1:" + AutomationServer.PORT
-            : "bridge idle: service not enabled");
+                + " as uid " + ShellAutomation.serverUid()
+            : why);
     }
 
     private EditText addField(LinearLayout root, String label, String initial, int inputType) {
