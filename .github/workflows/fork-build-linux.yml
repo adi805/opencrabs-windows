@@ -17,7 +17,14 @@ name: Fork build (linux binary, all features)
 # local-stt, whatsapp, discord, slack, pdfium, eval, dan profiling.
 
 on:
+  # `workflow_dispatch` sengaja tidak dipakai: GitHub hanya mendaftarkan
+  # dispatch untuk workflow yang sudah ada di default branch, sementara branch
+  # ini tidak boleh menyentuh `main` fork. Trigger `push` di branch ini sendiri
+  # setara dan tidak butuh apa pun di default branch.
   workflow_dispatch:
+  push:
+    branches:
+      - build/linux-binary
 
 permissions:
   contents: read
