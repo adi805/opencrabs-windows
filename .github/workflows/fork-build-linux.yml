@@ -1,0 +1,72 @@
+name: Fork build (linux binary, all features)
+
+# Job build khusus fork: menghasilkan binary Linux x86_64 yang membawa patch
+# branch ini, supaya hasilnya bisa dipakai di mesin sendiri tanpa build lokal.
+#
+# Kenapa file terpisah dan bukan menempel di fork-plan-check.yml: workflow itu
+# dipicu `push`, jadi setiap commit baru akan membatalkan run yang sedang
+# berjalan (grup concurrency default per ref). File ini hanya `workflow_dispatch`,
+# jadi bisa ditembak kapan saja tanpa mengganggu gate.
+#
+# Kenapa bukan release.yml: job `wait-for-ci` di sana menolak commit yang tidak
+# ada di `main` (gate #2078), dan branch ini sengaja tidak menyentuh main.
+#
+# Perintah build disalin persis dari release.yml baris 355:
+#   cargo build --locked --release --target <target> --all-features
+# Jadi binary di sini memuat feature yang sama dengan rilis resmi, termasuk
+# local-stt, whatsapp, discord, slack, pdfium, eval, dan profiling.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build linux x86_64 (all features)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Install Rust (from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.98.1
+
+      # Sama dengan release.yml: di Linux hanya libasound2-dev yang dibutuhkan
+      # feature suara. mold + clang mempercepat link, bukan syarat.
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev mold clang
+
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          cache-on-failure: true
+
+      - name: Build
+        run: |
+          cargo build --locked --release \
+            --target x86_64-unknown-linux-gnu \
+            --all-features
+
+      - name: Record binary identity
+        run: |
+          BIN="target/x86_64-unknown-linux-gnu/release/opencrabs"
+          ls -l "$BIN"
+          sha256sum "$BIN" | tee /tmp/opencrabs.sha256
+          file "$BIN"
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: opencrabs-linux-x86_64-all-features
+          path: |
+            target/x86_64-unknown-linux-gnu/release/opencrabs
+            /tmp/opencrabs.sha256
+          if-no-files-found: error
+          retention-days: 7
