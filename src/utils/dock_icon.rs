@@ -19,9 +19,14 @@
 //!   is main-thread and GUI-session only, and touching it in either wrong
 //!   context can abort the process, so both cases log and do nothing.
 //!
-//! Every non-macOS target compiles the helpers (they are pure) and skips the
-//! FFI, so the tests below run on the Linux CI runners too.
+//! Every non-macOS target compiles the helpers only under `cfg(test)` and skips
+//! the FFI, so the tests below run on the Linux CI runners too. Gate itu wajib:
+//! di build Linux biasa helper-nya tak pernah dipanggil, dan `-D warnings`
+//! menolak `dead_code`.
 
+/// Hanya blok macOS yang memakai `Path`, jadi di Linux (non-test) import ini
+/// jadi `unused_imports` dan langsung mematikan gerbang `-D warnings`.
+#[cfg(target_os = "macos")]
 use std::path::Path;
 
 /// Icon bytes shipped in the binary, the same asset the `.app` bundle uses.
@@ -36,12 +41,20 @@ pub const ENV_ICON_PATH: &str = "OPENCRABS_DOCK_ICON";
 
 /// Upper bound on an override file. A Dock icon has no business being larger
 /// than this, and a runaway path should not cost the process its memory.
+/// Pemakainya cuma `icon_bytes` (macOS), jadi tanpa gate ini clippy Linux
+/// melaporkannya `dead_code`.
+#[cfg(target_os = "macos")]
 const MAX_ICON_BYTES: u64 = 16 * 1024 * 1024;
 
 /// An `.icns` file starts with the ASCII magic `icns` and a big-endian total
 /// length that must cover the whole buffer. Checking it here means a truncated
 /// or wrong-format override is rejected with a log line instead of handing
 /// AppKit garbage.
+///
+/// Dipakai blok macOS dan uji, bukan build Linux biasa. Tanpa `cfg` ini file
+/// utuhnya tetap dikompilasi di Linux tapi fungsinya tak pernah dipanggil,
+/// jadi `-D warnings` menolaknya sebagai `dead_code`.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn icns_is_valid(bytes: &[u8]) -> bool {
     if bytes.len() < 8 || &bytes[0..4] != b"icns" {
         return false;
