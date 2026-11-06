@@ -24,20 +24,13 @@ name: Android binary (artifact)
 on:
   workflow_dispatch:
     inputs:
-      lite:
-        description: "Build the lite variant: no accessibility service, debug signing."
-        required: false
-        type: boolean
-        default: false
-      # Full variant (accessibility bridge present) signed with the committed
-      # debug key. lite drops the automation bridge to dodge Play Protect, but
-      # a phone that already runs a debug-signed install cannot switch to the
-      # release-signed APK: Android fails it with
-      # INSTALL_FAILED_UPDATE_INCOMPATIBLE. Without this input the only ways to
-      # get the accessibility bridge onto that phone are uninstalling first
-      # (which deletes config.toml and keys.toml) or rotating the install key.
+      # Sign with the committed debug key instead of the release key. A phone
+      # that already runs a debug-signed install cannot switch to a differently
+      # signed APK: Android fails it with INSTALL_FAILED_UPDATE_INCOMPATIBLE,
+      # and the only other ways out are uninstalling first (which deletes
+      # config.toml and keys.toml) or rotating the install key.
       debug_sign:
-        description: "Sign with the committed debug key while KEEPING the accessibility service."
+        description: "Sign with the committed debug key instead of the release key."
         required: false
         type: boolean
         default: false
@@ -58,17 +51,8 @@ on:
         required: false
         type: string
         default: ""
-      # Lite variant: the accessibility service is stripped from the manifest
-      # and the APK is signed with the committed debug key, so it installs
-      # OVER an already installed debug-signed build and carries none of the
-      # declarations Play Protect blocks. Costs the automation bridge.
-      lite:
-        description: "Build the lite variant (no accessibility service, debug signing)."
-        required: false
-        type: boolean
-        default: false
       debug_sign:
-        description: "Sign with the committed debug key while keeping the accessibility service."
+        description: "Sign with the committed debug key instead of the release key."
         required: false
         type: boolean
         default: false
@@ -246,12 +230,6 @@ jobs:
           ndk-version: r27d
           add-to-path: false
 
-      # Toggled before the assemble step, which reads android/AndroidManifest.xml
-      # from the working tree: the edit is in the checkout, disposable by design.
-      - name: Strip the accessibility service for the lite variant
-        if: inputs.lite
-        run: python3 scripts/strip-lite-manifest.py android/AndroidManifest.xml android/AndroidManifest.xml
-
       - name: Assemble the APK
         env:
           # Both names: the runner image preinstalls an NDK and exports
@@ -261,14 +239,14 @@ jobs:
           # Release certificate from repo secrets. Without these the script
           # falls back to the committed debug key, and Play Protect blocks
           # debug-signed installs on real phones (v0.2.1, 2026-10-24).
-          # A lite build MUST be debug-signed: the phone already runs a
+          # A debug_sign build MUST be debug-signed: the phone already runs a
           # debug-signed install, and Android refuses to replace an app whose
           # certificate changed (INSTALL_FAILED_UPDATE_INCOMPATIBLE, shown to
           # the user as "App not installed"). Blanking these three is what
           # makes assemble-apk.sh fall back to android/debug.keystore.
-          ANDROID_KEYSTORE_B64: ${{ (!inputs.lite && !inputs.debug_sign) && secrets.ANDROID_KEYSTORE_B64 || '' }}
-          ANDROID_KEYSTORE_PASS: ${{ (!inputs.lite && !inputs.debug_sign) && secrets.ANDROID_KEYSTORE_PASS || '' }}
-          ANDROID_KEY_ALIAS: ${{ (!inputs.lite && !inputs.debug_sign) && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEYSTORE_B64: ${{ !inputs.debug_sign && secrets.ANDROID_KEYSTORE_B64 || '' }}
+          ANDROID_KEYSTORE_PASS: ${{ !inputs.debug_sign && secrets.ANDROID_KEYSTORE_PASS || '' }}
+          ANDROID_KEY_ALIAS: ${{ !inputs.debug_sign && secrets.ANDROID_KEY_ALIAS || '' }}
         run: bash android/assemble-apk.sh apk-input/opencrabs
 
       # The APK is now a terminal client, not just a daemon shell: it carries a
@@ -280,8 +258,6 @@ jobs:
       # phone, so it is checked here, against the packed artifact.
       - name: Assert the APK carries the PTY bridge and the terminal emulator
         shell: bash
-        env:
-          LITE: ${{ inputs.lite }}
         run: |
           set -euo pipefail
           APK=android/out/opencrabs-release.apk
@@ -342,17 +318,10 @@ jobs:
 
       - name: Assert the APK carries a launcher icon and the boot receiver
         shell: bash
-        env:
-          # The manifest assertion below branches on the build mode, so this
-          # step needs the flag too. It used to live only on the preceding
-          # step, which meant LITE always read as unset here and the lite
-          # build was rejected for having exactly the manifest it was asked
-          # to produce (run 40165998395 died there while the APK was correct).
-          LITE: ${{ inputs.lite }}
         run: |
           set -euo pipefail
           APK=android/out/opencrabs-release.apk
-          echo "build mode: LITE=${LITE:-unset}"
+          echo "build mode: single variant"
 
           # The icon is a resource, so it is invisible to the dex check above: a
           # build with an empty android/res and no android:icon attribute installs
@@ -395,12 +364,10 @@ jobs:
           echo "BootReceiver: present in the dex"
 
           # The automation bridge has two failure modes that both build fine:
-          # the service class missing from the dex (the source glob dropped it),
-          # and the service declared in the manifest without
-          # BIND_ACCESSIBILITY_SERVICE, which would let ANY app on the device
-          # bind it and drive the phone. Both are asserted, because neither
-          # shows up as a build error.
-          for CLS in CrabsAccessibilityService AutomationServer; do
+          # a class missing from the dex (the source glob or the compile list
+          # dropped it), and the manifest drift checked below. The classes are
+          # asserted because neither shows up as a build error.
+          for CLS in AutomationServer ShellBridge ShellAutomation; do
             if ! grep -qF "Lio/opencrabs/mobile/${CLS};" <<< "$STRINGS"; then
               echo "::error::${CLS} is not in the dex: the automation bridge would be missing at runtime."
               exit 1
@@ -417,31 +384,27 @@ jobs:
             echo "::error::aapt2 could not dump the packaged AndroidManifest.xml, so the service declaration cannot be verified."
             exit 1
           fi
-          # The two modes assert OPPOSITE things, so the checks cannot be
-          # shared. Lite mode strips the declaration on purpose: demanding
-          # it here would reject the one build that installs without
-          # touching Play Protect settings, which is the whole point.
-          if [ "${LITE:-false}" = "true" ]; then
-            if grep -qF 'BIND_ACCESSIBILITY_SERVICE' <<< "$MANIFEST_XML"; then
-              echo "::error::this is a lite build but the APK still declares BIND_ACCESSIBILITY_SERVICE, so Play Protect will block the install anyway."
-              exit 1
-            fi
-            if grep -qF 'CrabsAccessibilityService' <<< "$MANIFEST_XML"; then
-              echo "::error::lite build still declares CrabsAccessibilityService, so the strip did not take effect."
-              exit 1
-            fi
-            echo "lite build: accessibility service absent from the manifest, as intended"
-          else
-            if ! grep -qF 'CrabsAccessibilityService' <<< "$MANIFEST_XML"; then
-              echo "::error::CrabsAccessibilityService is not declared in the packaged manifest."
-              exit 1
-            fi
-            if ! grep -qF 'android.permission.BIND_ACCESSIBILITY_SERVICE' <<< "$MANIFEST_XML"; then
-              echo "::error::the accessibility service is declared without BIND_ACCESSIBILITY_SERVICE, so any app could bind it and drive the device."
-              exit 1
-            fi
-            echo "accessibility service: declared with BIND_ACCESSIBILITY_SERVICE"
+          # The accessibility service is gone for good: it is the declaration
+          # Play Protect blocks on a real phone, and it used to be stripped
+          # only for the lite variant. Assert it is really absent, and assert
+          # the Shizuku provider the shell backend needs is really declared.
+          if grep -qF 'BIND_ACCESSIBILITY_SERVICE' <<< "$MANIFEST_XML"; then
+            echo "::error::the APK still declares BIND_ACCESSIBILITY_SERVICE, so Play Protect will block the install."
+            exit 1
           fi
+          if grep -qF 'CrabsAccessibilityService' <<< "$MANIFEST_XML"; then
+            echo "::error::the APK still declares CrabsAccessibilityService."
+            exit 1
+          fi
+          if ! grep -qF 'moe.shizuku.privileged.api' <<< "$MANIFEST_XML"; then
+            echo "::error::the APK does not declare the Shizuku package in <queries>, so the shell backend can never see the Shizuku app."
+            exit 1
+          fi
+          if ! grep -qF 'ShizukuProvider' <<< "$MANIFEST_XML"; then
+            echo "::error::the APK does not declare rikka.shizuku.ShizukuProvider, so Shizuku can never hand the app its binder."
+            exit 1
+          fi
+          echo "manifest: accessibility absent, Shizuku provider declared"
 
       # The badging and dex checks prove what the APK CONTAINS, not who
       # signed it. If the secrets ever go missing (rotated token, moved
@@ -452,7 +415,7 @@ jobs:
       # install block on a user's device. Guarded on the secret being
       # present so fork PRs without secret access keep building debug APKs.
       - name: Assert the APK carries the release certificate
-        if: env.ANDROID_KEYSTORE_B64 != '' && !inputs.lite && !inputs.debug_sign
+        if: env.ANDROID_KEYSTORE_B64 != '' && !inputs.debug_sign
         env:
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
@@ -476,7 +439,7 @@ jobs:
           echo "signer: CN=OpenCrabs Release (private key held in repo secrets)"
 
       - name: Assert the debug-signed build carries the debug certificate
-        if: inputs.lite || inputs.debug_sign
+        if: inputs.debug_sign
         run: |
           set -euo pipefail
           APK=android/out/opencrabs-release.apk
@@ -488,7 +451,7 @@ jobs:
           CERTS="$("$BT" verify --print-certs "$APK" 2>/dev/null || true)"
           printf '%s\n' "$CERTS" | grep -E 'certificate DN' || true
           if ! grep -qi "Android Debug" <<< "$CERTS"; then
-            echo "::error::a lite build must carry the committed debug certificate so it can replace an already installed build. Any other signer fails with INSTALL_FAILED_UPDATE_INCOMPATIBLE."
+            echo "::error::a debug_sign build must carry the committed debug certificate so it can replace an already installed build. Any other signer fails with INSTALL_FAILED_UPDATE_INCOMPATIBLE."
             exit 1
           fi
           echo "signer: Android Debug (installs over an existing debug-signed install)"
@@ -496,7 +459,7 @@ jobs:
       - name: Upload the APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ${{ inputs.lite && 'opencrabs-android-apk-lite' || (inputs.debug_sign && 'opencrabs-android-apk-auto' || 'opencrabs-android-apk') }}
+          name: ${{ inputs.debug_sign && 'opencrabs-android-apk-auto' || 'opencrabs-android-apk' }}
           path: android/out/opencrabs-release.apk
           if-no-files-found: error
           retention-days: 30
